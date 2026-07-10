@@ -34,6 +34,12 @@ Categories (each maps to a moonshot-doc probe class):
                lies about `verified` is caught); a doctored proof must be rejected;
                a prefix head pinned early must reproduce byte-identically at the
                end of the run (external-pin detection of coherent history rewrites)
+- metacognition: M6 calibrated known-unknowns - seeded preferences must produce
+                 cited likely_yes predictions above the answerability threshold;
+                 never-seeded decisions must produce zero-confidence abstentions.
+                 The bench computes ECE, Brier, abstention precision/recall,
+                 coverage, and confident-wrong rate from its OWN gold labels, then
+                 cross-checks the first-class Cortex calibration scorecard.
 
 Run: python3 -m backend.bench.memorytruth --seed 7
      python3 -m backend.bench.memorytruth --url http://127.0.0.1:8766 --token <api-key>
@@ -53,7 +59,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 BENCH_NAME = "memorytruth-light"
-BENCH_VERSION = 3
+BENCH_VERSION = 4
+
+_METACOGNITION_THRESHOLD = 0.6
+_METACOGNITION_BIN_COUNT = 5
+_METACOGNITION_ECE_MAX = 0.05
+_METACOGNITION_BRIER_MAX = 0.01
 
 _ADJECTIVES = (
     "amber", "basalt", "cedar", "delta", "ember", "flint", "garnet", "harbor",
@@ -94,6 +105,7 @@ class Scenario:
     revisions: list[dict[str, str]] = field(default_factory=list)      # {v1_content, v2_content, v1_slug, v2_slug, question, topic}
     abstention_probes: list[Probe] = field(default_factory=list)
     canvas_nodes: list[dict[str, Any]] = field(default_factory=list)   # {node_id, label, summary, raw_text, slug, predecessor_node_id}
+    metacognition_cases: list[dict[str, Any]] = field(default_factory=list)  # {content?, question, slug, answerability, expected_verdict}
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -102,10 +114,19 @@ class Scenario:
             "revisions": self.revisions,
             "abstention_probes": [vars(p) for p in self.abstention_probes],
             "canvas_nodes": self.canvas_nodes,
+            "metacognition_cases": self.metacognition_cases,
         }
 
 
-def generate_scenario(seed: int, *, recall_n: int = 8, abstain_n: int = 6, temporal_n: int = 4, canvas_n: int = 5) -> Scenario:
+def generate_scenario(
+    seed: int,
+    *,
+    recall_n: int = 8,
+    abstain_n: int = 6,
+    temporal_n: int = 4,
+    canvas_n: int = 5,
+    metacognition_n: int = 4,
+) -> Scenario:
     rng = random.Random(seed)
     scenario = Scenario(seed=seed)
     # Unique project names per probe so facts never collide into accidental
@@ -174,6 +195,38 @@ def generate_scenario(seed: int, *, recall_n: int = 8, abstain_n: int = 6, tempo
                 "predecessor_node_id": f"n{i - 1}_step" if i > 0 else None,
             }
         )
+
+    # M6 cases are generated LAST so v4 preserves every byte of the v3 scenario
+    # for a given seed. Each pair contains one preference Cortex can answer from
+    # cited memory and one decision whose unique slug/project were never seeded.
+    # After question scaffolding is stripped, no terms overlap across cases.
+    for _ in range(metacognition_n):
+        known_adj, known_noun = next(picks)
+        unknown_adj, unknown_noun = next(picks)
+        known_project = f"{known_adj}-{known_noun}"
+        unknown_project = f"{unknown_adj}-{unknown_noun}"
+        known_slug = _slug(rng)
+        unknown_slug = _slug(rng)
+        scenario.metacognition_cases.extend(
+            [
+                {
+                    "content": f"I prefer {known_slug} for {known_project}.",
+                    "question": f"Would I use {known_slug} for {known_project}?",
+                    "slug": known_slug,
+                    "project": known_project,
+                    "answerability": "answerable",
+                    "expected_verdict": "likely_yes",
+                },
+                {
+                    "content": None,
+                    "question": f"Would I use {unknown_slug} for {unknown_project}?",
+                    "slug": unknown_slug,
+                    "project": unknown_project,
+                    "answerability": "unknown",
+                    "expected_verdict": "insufficient_evidence",
+                },
+            ]
+        )
     return scenario
 
 
@@ -202,6 +255,21 @@ class BenchClient(Protocol):
         expected_head: str | None = None,
     ) -> dict[str, Any]: ...
     def verify_belief_proof(self, proof: dict[str, Any]) -> dict[str, Any]: ...
+    def would_i(self, question: str) -> dict[str, Any]: ...
+    def grade_twin_prediction(
+        self,
+        prediction_id: str,
+        outcome: str,
+        *,
+        answerability: str,
+        actual: str = "",
+    ) -> dict[str, Any]: ...
+    def get_twin_calibration(
+        self,
+        *,
+        days: int = 365,
+        prediction_ids: list[str] | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class InProcessClient:
@@ -279,30 +347,85 @@ class InProcessClient:
     def verify_belief_proof(self, proof: dict[str, Any]) -> dict[str, Any]:
         return self._tool("verify_belief_proof", {"proof": proof})
 
+    def would_i(self, question: str) -> dict[str, Any]:
+        return self._tool("would_i", {"question": question})
+
+    def grade_twin_prediction(
+        self,
+        prediction_id: str,
+        outcome: str,
+        *,
+        answerability: str,
+        actual: str = "",
+    ) -> dict[str, Any]:
+        return self._tool(
+            "grade_twin_prediction",
+            {
+                "prediction_id": prediction_id,
+                "outcome": outcome,
+                "answerability": answerability,
+                "actual": actual,
+            },
+        )
+
+    def get_twin_calibration(
+        self,
+        *,
+        days: int = 365,
+        prediction_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        args: dict[str, Any] = {"days": days}
+        if prediction_ids is not None:
+            args["prediction_ids"] = prediction_ids
+        return self._tool("get_twin_calibration", args)
+
 
 class HTTPClient:
     """Drives a live Cortex standalone/FastAPI server over /v1 - the whole pipeline."""
 
-    def __init__(self, base_url: str, token: str, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        *,
+        timeout: float = 30.0,
+        user_id: str = "",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self.user_id = user_id.strip()
 
     def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+        from urllib import error as _error
         from urllib import request as _request
 
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
-        req = _request.Request(
-            f"{self.base_url}{path}",
-            data=body,
-            method=method,
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Content-Type": "application/json",
-            },
-        )
-        with _request.urlopen(req, timeout=self.timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+        if self.user_id:
+            headers["X-Cortex-User"] = self.user_id
+        for attempt in range(6):
+            req = _request.Request(
+                f"{self.base_url}{path}",
+                data=body,
+                method=method,
+                headers=headers,
+            )
+            try:
+                with _request.urlopen(req, timeout=self.timeout) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except _error.HTTPError as exc:
+                if exc.code not in {429, 503} or attempt == 5:
+                    raise
+                try:
+                    retry_after = float(exc.headers.get("Retry-After") or 1.0)
+                except (TypeError, ValueError):
+                    retry_after = 1.0
+                time.sleep(max(0.05, min(retry_after, 5.0)))
+        raise RuntimeError("unreachable HTTP retry state")
 
     def _tool(self, name: str, args: dict[str, Any]) -> Any:
         wrapped = self._request("POST", "/v1/tools/call", {"name": name, "arguments": args})
@@ -378,6 +501,38 @@ class HTTPClient:
     def verify_belief_proof(self, proof: dict[str, Any]) -> dict[str, Any]:
         return self._tool("verify_belief_proof", {"proof": proof})
 
+    def would_i(self, question: str) -> dict[str, Any]:
+        return self._tool("would_i", {"question": question})
+
+    def grade_twin_prediction(
+        self,
+        prediction_id: str,
+        outcome: str,
+        *,
+        answerability: str,
+        actual: str = "",
+    ) -> dict[str, Any]:
+        return self._tool(
+            "grade_twin_prediction",
+            {
+                "prediction_id": prediction_id,
+                "outcome": outcome,
+                "answerability": answerability,
+                "actual": actual,
+            },
+        )
+
+    def get_twin_calibration(
+        self,
+        *,
+        days: int = 365,
+        prediction_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        args: dict[str, Any] = {"days": days}
+        if prediction_ids is not None:
+            args["prediction_ids"] = prediction_ids
+        return self._tool("get_twin_calibration", args)
+
 
 # --------------------------------------------------------------------------
 # Scoring helpers: defensive, exact, and judge-free.
@@ -419,6 +574,191 @@ def _cited_contents(answer: dict[str, Any]) -> str:
     if not chunks and isinstance(answer.get("answer"), str):
         chunks.append(answer["answer"])
     return "\n".join(chunks)
+
+
+def _finite_confidence(value: Any) -> float | None:
+    """Parse a confidence without accepting NaN/inf or silently clamping lies."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    parsed = float(value)
+    if parsed != parsed or parsed in {float("inf"), float("-inf")}:
+        return None
+    if not 0.0 <= parsed <= 1.0:
+        return None
+    return parsed
+
+
+def _twin_evidence_text(prediction: dict[str, Any]) -> str:
+    evidence = [
+        *(prediction.get("supporting") or []),
+        *(prediction.get("opposing") or []),
+        *(prediction.get("hard_constraints") or []),
+    ]
+    return json.dumps(evidence, sort_keys=True)
+
+
+def _independent_metacognition_metrics(
+    observations: list[dict[str, Any]],
+    *,
+    threshold: float = _METACOGNITION_THRESHOLD,
+) -> dict[str, Any]:
+    """Compute M6 metrics only from benchmark gold labels and observed outputs.
+
+    This deliberately does not call a Cortex metric helper. The benchmark knows
+    which cases were seeded and which were not, so answerability targets are exact.
+    """
+    labeled = [
+        item
+        for item in observations
+        if item.get("answerability") in {"answerable", "unknown"}
+        and _finite_confidence(item.get("confidence")) is not None
+    ]
+
+    def target(item: dict[str, Any]) -> int:
+        return 1 if item["answerability"] == "answerable" else 0
+
+    bins: list[dict[str, Any]] = []
+    weighted_error = 0.0
+    for index in range(_METACOGNITION_BIN_COUNT):
+        lower = index / _METACOGNITION_BIN_COUNT
+        upper = (index + 1) / _METACOGNITION_BIN_COUNT
+        members = [
+            item
+            for item in labeled
+            if min(
+                _METACOGNITION_BIN_COUNT - 1,
+                int(float(item["confidence"]) * _METACOGNITION_BIN_COUNT),
+            )
+            == index
+        ]
+        average_confidence = (
+            sum(float(item["confidence"]) for item in members) / len(members)
+            if members
+            else None
+        )
+        empirical_answerability = (
+            sum(target(item) for item in members) / len(members) if members else None
+        )
+        absolute_error = (
+            abs(average_confidence - empirical_answerability)
+            if average_confidence is not None and empirical_answerability is not None
+            else None
+        )
+        if absolute_error is not None and labeled:
+            weighted_error += absolute_error * (len(members) / len(labeled))
+        bins.append(
+            {
+                "index": index,
+                "lower": round(lower, 2),
+                "upper": round(upper, 2),
+                "count": len(members),
+                "average_confidence": round(average_confidence, 4) if average_confidence is not None else None,
+                "empirical_answerability": round(empirical_answerability, 4) if empirical_answerability is not None else None,
+                "absolute_error": round(absolute_error, 4) if absolute_error is not None else None,
+            }
+        )
+
+    brier = (
+        sum((float(item["confidence"]) - target(item)) ** 2 for item in labeled) / len(labeled)
+        if labeled
+        else None
+    )
+    abstained = [item for item in labeled if item.get("known_unknown") is True]
+    answered = [item for item in labeled if item.get("known_unknown") is False]
+    true_positive = sum(1 for item in abstained if target(item) == 0)
+    false_positive = sum(1 for item in abstained if target(item) == 1)
+    false_negative = sum(1 for item in answered if target(item) == 0)
+    precision_denominator = true_positive + false_positive
+    recall_denominator = true_positive + false_negative
+    high_confidence_answered = [
+        item
+        for item in observations
+        if item.get("known_unknown") is False
+        and _finite_confidence(item.get("confidence")) is not None
+        and float(item["confidence"]) >= threshold
+        and item.get("outcome") in {"correct", "incorrect"}
+    ]
+    confident_wrong = sum(1 for item in high_confidence_answered if item["outcome"] == "incorrect")
+    all_answered = [item for item in observations if item.get("known_unknown") is False]
+    outcome_graded = [item for item in observations if item.get("outcome") in {"correct", "incorrect"}]
+    return {
+        "threshold": threshold,
+        "prediction_samples": len(observations),
+        "graded_samples": len(labeled),
+        "outcome_graded_samples": len(outcome_graded),
+        "legacy_unlabeled_samples": 0,
+        "expected_calibration_error": round(weighted_error, 4) if labeled else None,
+        "brier_score": round(brier, 4) if brier is not None else None,
+        "bins": bins,
+        "abstention": {
+            "graded": len(abstained),
+            "true_positive": true_positive,
+            "false_positive": false_positive,
+            "false_negative": false_negative,
+            "precision": round(true_positive / precision_denominator, 4) if precision_denominator else None,
+            "recall": round(true_positive / recall_denominator, 4) if recall_denominator else None,
+        },
+        "confident_wrong": {
+            "count": confident_wrong,
+            "high_confidence_answered": len(high_confidence_answered),
+            "rate": round(confident_wrong / len(high_confidence_answered), 4)
+            if high_confidence_answered
+            else None,
+        },
+        "coverage": round(len(all_answered) / len(observations), 4) if observations else None,
+    }
+
+
+def _metacognition_scorecard_mismatches(
+    reported: dict[str, Any],
+    independent: dict[str, Any],
+    *,
+    prediction_ids: list[str],
+    window_days: int,
+) -> list[str]:
+    """Return stable field-level differences between Cortex and independent gold."""
+    mismatches: list[str] = []
+    if reported.get("window_days") != window_days:
+        mismatches.append(
+            f"window_days: reported={reported.get('window_days')!r} expected={window_days!r}"
+        )
+    expected_cohort = sorted(set(prediction_ids))
+    if reported.get("cohort_prediction_ids") != expected_cohort:
+        mismatches.append(
+            "cohort_prediction_ids: reported cohort differs from exact benchmark prediction ids"
+        )
+    scalar_fields = (
+        "threshold",
+        "prediction_samples",
+        "graded_samples",
+        "outcome_graded_samples",
+        "legacy_unlabeled_samples",
+        "expected_calibration_error",
+        "brier_score",
+        "coverage",
+    )
+    for key in scalar_fields:
+        if reported.get(key) != independent.get(key):
+            mismatches.append(f"{key}: reported={reported.get(key)!r} expected={independent.get(key)!r}")
+    for section in ("abstention", "confident_wrong"):
+        expected_section = independent.get(section) or {}
+        reported_section = reported.get(section) if isinstance(reported.get(section), dict) else {}
+        for key, expected in expected_section.items():
+            if reported_section.get(key) != expected:
+                mismatches.append(
+                    f"{section}.{key}: reported={reported_section.get(key)!r} expected={expected!r}"
+                )
+    if reported.get("bins") != independent.get("bins"):
+        mismatches.append("bins: reported fixed-bin calibration differs from independent gold")
+    if reported.get("ungraded_abstentions") != []:
+        mismatches.append(
+            f"ungraded_abstentions: reported={reported.get('ungraded_abstentions')!r} expected=[]"
+        )
+    if reported.get("unlabeled_answerability") != []:
+        mismatches.append(
+            f"unlabeled_answerability: reported={reported.get('unlabeled_answerability')!r} expected=[]"
+        )
+    return mismatches
 
 
 # --------------------------------------------------------------------------
@@ -617,10 +957,17 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
     provenance = CategoryScore()
     canvas = CategoryScore()
     belief_proof = CategoryScore()
+    metacognition = CategoryScore()
 
     # --- Seed simple facts -------------------------------------------------
     for fact in scenario.facts:
         client.remember(fact["content"])
+
+    # Seed only the answerable half of M6's gold set. Unknown cases deliberately
+    # have no matching preference/decision memory anywhere in the scenario.
+    for case in scenario.metacognition_cases:
+        if case.get("content"):
+            client.remember(str(case["content"]))
 
     # --- Seed revisions and supersede v1 -> v2 (belief revision) -----------
     revision_ids: list[dict[str, Any]] = []
@@ -922,6 +1269,144 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
             f"anchor_matches={envelope.get('anchor_matches')} crypto={pin_reasons[:2]}",
         )
 
+    # --- M6 calibrated metacognition -----------------------------------------
+    # The scenario itself is the independent answerability oracle: preference
+    # content was either seeded exactly or never seeded. Grade every prediction
+    # through the public feedback loop, compute metrics locally, then compare the
+    # first-class Cortex scorecard field-for-field against that independent result.
+    metacognition_observations: list[dict[str, Any]] = []
+    metacognition_prediction_ids: list[str] = []
+    for case in scenario.metacognition_cases:
+        prediction = client.would_i(str(case["question"]))
+        prediction_id = str(prediction.get("prediction_id") or "")
+        confidence = _finite_confidence(prediction.get("confidence"))
+        known_unknown = (
+            prediction.get("known_unknown")
+            if isinstance(prediction.get("known_unknown"), bool)
+            else None
+        )
+        evidence_text = _twin_evidence_text(prediction)
+        detail = prediction.get("confidence_detail") if isinstance(prediction.get("confidence_detail"), dict) else {}
+        threshold_ok = detail.get("threshold") == _METACOGNITION_THRESHOLD
+        if case["answerability"] == "answerable":
+            behavior_ok = (
+                bool(prediction_id)
+                and prediction.get("verdict") == case["expected_verdict"]
+                and known_unknown is False
+                and confidence is not None
+                and confidence >= _METACOGNITION_THRESHOLD
+                and int(prediction.get("evidence_count") or 0) >= 1
+                and case["slug"] in evidence_text
+                and prediction.get("knowledge_gap") is None
+                and threshold_ok
+            )
+        else:
+            behavior_ok = (
+                bool(prediction_id)
+                and prediction.get("verdict") == case["expected_verdict"]
+                and known_unknown is True
+                and confidence == 0.0
+                and int(prediction.get("evidence_count") or 0) == 0
+                and not (prediction.get("supporting") or [])
+                and not (prediction.get("opposing") or [])
+                and case["slug"] not in evidence_text
+                and isinstance(prediction.get("knowledge_gap"), dict)
+                and threshold_ok
+            )
+
+        outcome = "correct" if behavior_ok else "incorrect"
+        grade_error = ""
+        try:
+            grade = (
+                client.grade_twin_prediction(
+                    prediction_id,
+                    outcome,
+                    answerability=str(case["answerability"]),
+                    actual=str(case["expected_verdict"]),
+                )
+                if prediction_id
+                else {}
+            )
+        except Exception as exc:  # benchmark failures should score, not abort the report
+            grade = {}
+            grade_error = f"{type(exc).__name__}: {exc}"
+        grade_ok = (
+            grade.get("prediction_id") == prediction_id
+            and grade.get("outcome") == outcome
+            and grade.get("answerability") == case["answerability"]
+        )
+        metacognition.record(
+            behavior_ok and grade_ok,
+            "metacognition prediction: "
+            f"q={case['question']!r} gold={case['answerability']} "
+            f"verdict={prediction.get('verdict')} confidence={prediction.get('confidence')!r} "
+            f"known_unknown={known_unknown!r} evidence={prediction.get('evidence_count')!r} "
+            f"slug_cited={case['slug'] in evidence_text} threshold_ok={threshold_ok} "
+            f"grade_ok={grade_ok} grade_error={grade_error!r}",
+        )
+        if prediction_id:
+            metacognition_prediction_ids.append(prediction_id)
+        metacognition_observations.append(
+            {
+                "answerability": case["answerability"],
+                "confidence": confidence,
+                "known_unknown": known_unknown,
+                "outcome": outcome,
+            }
+        )
+
+    independent_metacognition = _independent_metacognition_metrics(metacognition_observations)
+    answerable_count = sum(
+        1 for case in scenario.metacognition_cases if case["answerability"] == "answerable"
+    )
+    expected_coverage = (
+        round(answerable_count / len(scenario.metacognition_cases), 4)
+        if scenario.metacognition_cases
+        else None
+    )
+    abstention_metrics = independent_metacognition["abstention"]
+    confident_wrong_metrics = independent_metacognition["confident_wrong"]
+    independent_floor_ok = (
+        independent_metacognition["prediction_samples"] == len(scenario.metacognition_cases)
+        and len(set(metacognition_prediction_ids)) == len(scenario.metacognition_cases)
+        and independent_metacognition["graded_samples"] == len(scenario.metacognition_cases)
+        and independent_metacognition["outcome_graded_samples"] == len(scenario.metacognition_cases)
+        and independent_metacognition["expected_calibration_error"] is not None
+        and independent_metacognition["expected_calibration_error"] <= _METACOGNITION_ECE_MAX
+        and independent_metacognition["brier_score"] is not None
+        and independent_metacognition["brier_score"] <= _METACOGNITION_BRIER_MAX
+        and abstention_metrics["precision"] == 1.0
+        and abstention_metrics["recall"] == 1.0
+        and confident_wrong_metrics["count"] == 0
+        and confident_wrong_metrics["rate"] == 0.0
+        and independent_metacognition["coverage"] == expected_coverage
+    )
+    metacognition.record(
+        independent_floor_ok,
+        "metacognition independent metrics: "
+        f"ece={independent_metacognition['expected_calibration_error']!r} "
+        f"(max={_METACOGNITION_ECE_MAX}) brier={independent_metacognition['brier_score']!r} "
+        f"(max={_METACOGNITION_BRIER_MAX}) "
+        f"precision={abstention_metrics['precision']!r} recall={abstention_metrics['recall']!r} "
+        f"confident_wrong={confident_wrong_metrics['rate']!r} "
+        f"coverage={independent_metacognition['coverage']!r} expected_coverage={expected_coverage!r}",
+    )
+
+    reported_metacognition = client.get_twin_calibration(
+        days=365,
+        prediction_ids=metacognition_prediction_ids,
+    )
+    scorecard_mismatches = _metacognition_scorecard_mismatches(
+        reported_metacognition,
+        independent_metacognition,
+        prediction_ids=metacognition_prediction_ids,
+        window_days=365,
+    )
+    metacognition.record(
+        not scorecard_mismatches,
+        f"metacognition scorecard parity: {scorecard_mismatches[:5]}",
+    )
+
     categories = {
         "recall": recall,
         "abstention": abstention,
@@ -929,6 +1414,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
         "provenance": provenance,
         "canvas": canvas,
         "belief_proof": belief_proof,
+        "metacognition": metacognition,
     }
     total_passed = sum(c.passed for c in categories.values())
     total_probes = sum(c.total for c in categories.values())
@@ -942,13 +1428,21 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
         if proof_latencies_ms
         else None
     )
+    category_payloads = {name: score.to_json() for name, score in categories.items()}
+    category_payloads["metacognition"]["metrics"] = {
+        "independent": independent_metacognition,
+        "reported": {
+            key: reported_metacognition.get(key)
+            for key in independent_metacognition
+        },
+    }
     return {
         "bench": BENCH_NAME,
         "version": BENCH_VERSION,
         "seed": scenario.seed,
         "mode": mode,
         "duration_seconds": round(time.time() - started, 3),
-        "categories": {name: score.to_json() for name, score in categories.items()},
+        "categories": category_payloads,
         "overall": round(total_passed / total_probes, 4) if total_probes else 0.0,
         "probes": total_probes,
         "belief_proof_latency": latency_summary,
@@ -956,6 +1450,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
             "Slug-based exact grading: no LLM judge; the answer key is verifiable by construction.",
             "Scores reflect the retrieval + citation + supersession + integrity pipeline, not language fluency.",
             "belief_proof grading recomputes fingerprints, chain folds, and snapshot hashes independently; it never trusts the store's verified flag.",
+            "metacognition grading derives answerability from seeded-vs-absent gold, computes all metrics independently, then cross-checks Cortex's scorecard.",
         ],
     }
 
@@ -983,12 +1478,17 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--url", default="", help="Base URL of a live Cortex server (e.g. http://127.0.0.1:8766)")
     parser.add_argument("--token", default="", help="API token for --url mode")
+    parser.add_argument(
+        "--user",
+        default="",
+        help="Optional Cortex user matching a scoped token. Exact prediction cohorts isolate scorecards from prior runs.",
+    )
     parser.add_argument("--out", default="", help="Write the JSON report to this path")
     args = parser.parse_args()
 
     if args.url:
         scenario = generate_scenario(args.seed)
-        report = run_bench(HTTPClient(args.url, args.token), scenario, mode="http")
+        report = run_bench(HTTPClient(args.url, args.token, user_id=args.user), scenario, mode="http")
     else:
         report = run_inprocess(args.seed)
 

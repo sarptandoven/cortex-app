@@ -542,6 +542,8 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["window_days"], 30)
+        self.assertEqual(payload["prediction_samples"], 0)
+        self.assertIsNone(payload["cohort_prediction_ids"])
         self.assertEqual(payload["graded_samples"], 0)
         self.assertIsNone(payload["expected_calibration_error"])
         self.assertIsNone(payload["abstention"]["precision"])
@@ -570,8 +572,18 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(graded.status_code, 200)
         self.assertEqual(graded.json()["outcome"], "correct")
         self.assertEqual(graded.json()["answerability"], "unknown")
-        calibration = self.client.get("/v1/twin/calibration", headers=headers)
+        prediction_id = prediction.json()["prediction_id"]
+        calibration = self.client.get(
+            "/v1/twin/calibration",
+            params=[("prediction_ids", prediction_id), ("prediction_ids", "twin_missing")],
+            headers=headers,
+        )
         self.assertEqual(calibration.status_code, 200)
+        self.assertEqual(calibration.json()["prediction_samples"], 1)
+        self.assertEqual(
+            calibration.json()["cohort_prediction_ids"],
+            sorted([prediction_id, "twin_missing"]),
+        )
         self.assertEqual(calibration.json()["graded_samples"], 1)
 
     def test_ask_endpoint_prefers_source_backed_citations_over_uncited_matches(self) -> None:

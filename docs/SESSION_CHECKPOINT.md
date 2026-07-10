@@ -1,4 +1,17 @@
-# Session checkpoint — 2026-07-09
+# Session checkpoint — 2026-07-10
+
+## M6 calibrated metacognition and MemoryTruth v4
+
+- Backend milestone committed as `70c8d86`.
+- Ask and `would_i` now expose deterministic confidence, explicit known-unknowns, and actionable knowledge gaps with a hard zero-evidence abstention invariant.
+- Correctness (`correct/incorrect/unclear`) and answerability (`answerable/unknown/unclear`) are orthogonal grading labels.
+- `get_twin_calibration` reports ECE, Brier, fixed bins, abstention precision/recall, coverage, confident-wrong rate, and legacy/unlabeled populations.
+- Exact `prediction_ids` cohort filtering is available through MCP, FastAPI, and standalone, preventing prior history from contaminating evaluations.
+- MemoryTruth v4 adds independently graded metacognition as category seven, sabotage tests, hand-calculated metric tests, and repeatable live HTTP runs with bounded 429/503 Retry-After handling.
+- Seeds 7/21/42/99/1234 score 1.0 in all seven categories. Affected suite: 212 passed + 12 subtests. Live pipeline: 3 passed + 2 subtests. Full backend suite: 1665 passed + 385 subtests. Final independent review: Ship.
+- Next recommended moonshot: M5 poison-proof shared memory, unless redirected.
+
+## Earlier phased expansion checkpoint
 
 Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES.md).
 

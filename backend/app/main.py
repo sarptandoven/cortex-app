@@ -1932,9 +1932,14 @@ def twin_scorecard(
 @app.get("/v1/twin/calibration")
 def twin_calibration(
     days: int = Query(default=90, ge=1, le=365),
+    prediction_ids: list[str] | None = Query(default=None, max_length=120),
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
-    return store.get_twin_calibration(user_id, days=days)
+    return store.get_twin_calibration(
+        user_id,
+        days=days,
+        prediction_ids=prediction_ids[:100] if prediction_ids is not None else None,
+    )
 
 
 @app.get("/v1/alerts")

@@ -20521,9 +20521,12 @@ class CortexStore:
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             return default
         try:
-            return self._bounded_confidence(float(value))
+            parsed = float(value)
         except (TypeError, ValueError, OverflowError):
             return default
+        if not math.isfinite(parsed):
+            return default
+        return self._bounded_confidence(parsed)
 
     def _raw_metacognition_confidence(self, components: dict[str, float]) -> float:
         return self._bounded_confidence(
@@ -20931,6 +20934,7 @@ class CortexStore:
         user_id: str,
         *,
         days: int = 90,
+        prediction_ids: list[str] | None = None,
         _records: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """M6 read-model: answerability ECE, abstention quality, and confident-wrong rate.
@@ -20941,6 +20945,17 @@ class CortexStore:
         """
         window_days = max(1, min(int(days), 365))
         records = _records if _records is not None else self._twin_prediction_records(user_id, days=window_days)
+        cohort = (
+            {
+                str(prediction_id).strip()
+                for prediction_id in prediction_ids[:100]
+                if str(prediction_id).strip()
+            }
+            if prediction_ids is not None
+            else None
+        )
+        if cohort is not None:
+            records = [record for record in records if record["prediction_id"] in cohort]
         outcome_graded = [record for record in records if record.get("outcome") in {"correct", "incorrect"}]
         labeled = [
             record
@@ -21042,6 +21057,8 @@ class CortexStore:
         return {
             "window_days": window_days,
             "threshold": self._METACOGNITION_THRESHOLD,
+            "prediction_samples": len(records),
+            "cohort_prediction_ids": sorted(cohort) if cohort is not None else None,
             "graded_samples": len(labeled),
             "outcome_graded_samples": len(outcome_graded),
             "legacy_unlabeled_samples": sum(
@@ -21072,6 +21089,7 @@ class CortexStore:
                 "ECE, Brier score, and abstention metrics cover only explicit answerable/unknown labels.",
                 "Correctness and answerability are separate: a supported answer can be wrong and an unsupported guess can be right.",
                 "legacy_unlabeled_samples reports pre-M6 correctness grades that cannot honestly be used as answerability labels.",
+                "prediction_ids can scope this read model to an exact evaluation cohort without contamination from earlier runs.",
                 "Grade items in ungraded_abstentions to measure abstention precision and recall.",
                 f"Empirical bin calibration activates only after {self._METACOGNITION_MIN_BIN_SAMPLES} outcomes in that bin.",
             ],

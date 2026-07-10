@@ -10,7 +10,8 @@ Three properties make the bench trustworthy, and each gets a test class:
    supersession, or the integrity chain shows up here as a floor break.
 3. Non-tautology - the bench must actually be able to FAIL. We sabotage the
    store in targeted ways (confabulating gate, leaking supersession filter,
-   tampered integrity event) and assert the matching category score drops.
+   tampered integrity event, overconfident unknowns, lying calibration report)
+   and assert the matching category score drops.
    Without these, a "1.0" would prove nothing about the pipeline.
 """
 
@@ -24,6 +25,9 @@ from backend.app.database import init_db
 from backend.app.storage import CortexStore, connect
 from backend.bench.memorytruth import (
     InProcessClient,
+    _finite_confidence,
+    _independent_metacognition_metrics,
+    _metacognition_scorecard_mismatches,
     generate_scenario,
     run_bench,
 )
@@ -52,7 +56,35 @@ class ScenarioDeterminismTests(unittest.TestCase):
         slugs = [fact["slug"] for fact in scenario.facts]
         slugs += [rev["v1_slug"] for rev in scenario.revisions]
         slugs += [rev["v2_slug"] for rev in scenario.revisions]
+        slugs += [node["slug"] for node in scenario.canvas_nodes]
+        slugs += [case["slug"] for case in scenario.metacognition_cases]
         self.assertEqual(len(slugs), len(set(slugs)))
+
+    def test_v4_metacognition_generation_does_not_change_v3_scenario_bytes(self) -> None:
+        without_m6 = generate_scenario(7, metacognition_n=0)
+        with_m6 = generate_scenario(7)
+        self.assertEqual(without_m6.facts, with_m6.facts)
+        self.assertEqual(without_m6.revisions, with_m6.revisions)
+        self.assertEqual(without_m6.abstention_probes, with_m6.abstention_probes)
+        self.assertEqual(without_m6.canvas_nodes, with_m6.canvas_nodes)
+
+    def test_metacognition_gold_is_balanced_and_unknowns_are_never_seeded(self) -> None:
+        scenario = generate_scenario(7)
+        answerable = [case for case in scenario.metacognition_cases if case["answerability"] == "answerable"]
+        unknown = [case for case in scenario.metacognition_cases if case["answerability"] == "unknown"]
+        self.assertEqual(len(answerable), len(unknown))
+        self.assertTrue(answerable)
+        self.assertTrue(all(case["content"] for case in answerable))
+        self.assertTrue(all(case["content"] is None for case in unknown))
+        seeded = "\n".join(
+            [fact["content"] for fact in scenario.facts]
+            + [revision["v1_content"] for revision in scenario.revisions]
+            + [revision["v2_content"] for revision in scenario.revisions]
+            + [str(case["content"]) for case in answerable]
+        )
+        for case in unknown:
+            self.assertNotIn(case["slug"], seeded)
+            self.assertNotIn(case["project"], seeded)
 
     def test_abstention_projects_never_overlap_seeded_facts(self) -> None:
         scenario = generate_scenario(7)
@@ -74,6 +106,80 @@ class ScenarioDeterminismTests(unittest.TestCase):
                 report.pop("belief_proof_latency")  # wall-clock, informational only
                 reports.append(report)
         self.assertEqual(reports[0], reports[1])
+
+
+class IndependentMetacognitionMetricTests(unittest.TestCase):
+    def test_mixed_fixture_matches_hand_calculated_metrics_and_bin_boundaries(self) -> None:
+        metrics = _independent_metacognition_metrics(
+            [
+                {"answerability": "unknown", "confidence": 0.0, "known_unknown": True, "outcome": "correct"},
+                {"answerability": "answerable", "confidence": 0.2, "known_unknown": True, "outcome": "incorrect"},
+                {"answerability": "unknown", "confidence": 0.6, "known_unknown": False, "outcome": "incorrect"},
+                {"answerability": "answerable", "confidence": 1.0, "known_unknown": False, "outcome": "correct"},
+            ]
+        )
+
+        self.assertEqual(metrics["prediction_samples"], 4)
+        self.assertEqual(metrics["graded_samples"], 4)
+        self.assertEqual(metrics["expected_calibration_error"], 0.35)
+        self.assertEqual(metrics["brier_score"], 0.25)
+        self.assertEqual([item["count"] for item in metrics["bins"]], [1, 1, 0, 1, 1])
+        self.assertEqual(metrics["bins"][1]["absolute_error"], 0.8)
+        self.assertEqual(metrics["bins"][3]["absolute_error"], 0.6)
+        self.assertEqual(metrics["abstention"]["true_positive"], 1)
+        self.assertEqual(metrics["abstention"]["false_positive"], 1)
+        self.assertEqual(metrics["abstention"]["false_negative"], 1)
+        self.assertEqual(metrics["abstention"]["precision"], 0.5)
+        self.assertEqual(metrics["abstention"]["recall"], 0.5)
+        self.assertEqual(metrics["confident_wrong"]["count"], 1)
+        self.assertEqual(metrics["confident_wrong"]["high_confidence_answered"], 2)
+        self.assertEqual(metrics["confident_wrong"]["rate"], 0.5)
+        self.assertEqual(metrics["coverage"], 0.5)
+
+    def test_confidence_parser_rejects_non_numeric_and_out_of_range_values(self) -> None:
+        for value in (None, "0.5", True, False, float("nan"), float("inf"), -0.01, 1.01):
+            with self.subTest(value=value):
+                self.assertIsNone(_finite_confidence(value))
+        for value in (0, 0.2, 1):
+            with self.subTest(value=value):
+                self.assertEqual(_finite_confidence(value), float(value))
+
+    def test_scorecard_parity_rejects_population_contamination(self) -> None:
+        metrics = _independent_metacognition_metrics(
+            [
+                {"answerability": "unknown", "confidence": 0.0, "known_unknown": True, "outcome": "correct"},
+                {"answerability": "answerable", "confidence": 1.0, "known_unknown": False, "outcome": "correct"},
+            ]
+        )
+        reported = {
+            **metrics,
+            "window_days": 365,
+            "cohort_prediction_ids": ["twin_a", "twin_b"],
+            "ungraded_abstentions": [],
+            "unlabeled_answerability": [],
+        }
+        self.assertEqual(
+            _metacognition_scorecard_mismatches(
+                reported,
+                metrics,
+                prediction_ids=["twin_a", "twin_b"],
+                window_days=365,
+            ),
+            [],
+        )
+
+        reported["cohort_prediction_ids"] = ["twin_a", "twin_b", "twin_history"]
+        reported["prediction_samples"] = 3
+        reported["unlabeled_answerability"] = [{"prediction_id": "twin_history"}]
+        mismatches = _metacognition_scorecard_mismatches(
+            reported,
+            metrics,
+            prediction_ids=["twin_a", "twin_b"],
+            window_days=365,
+        )
+        self.assertTrue(any(item.startswith("cohort_prediction_ids:") for item in mismatches))
+        self.assertTrue(any(item.startswith("prediction_samples:") for item in mismatches))
+        self.assertTrue(any(item.startswith("unlabeled_answerability:") for item in mismatches))
 
 
 class HonestyFloorTests(unittest.TestCase):
@@ -355,6 +461,66 @@ class NonTautologyTests(unittest.TestCase):
             if failure.startswith("belief_proof pin:")
         ]
         self.assertTrue(pin_failures, "expected the PIN probe to be the one that caught the rewrite")
+
+    def test_overconfident_unknown_tanks_metacognition(self) -> None:
+        # Sabotage: turn every honest twin abstention into a confident uncited
+        # answer at the response boundary. Independent seeded-vs-absent gold must
+        # catch it even though the underlying event was originally honest.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _fresh_store(Path(tmp))
+            original = store.would_i
+            state = {"laundered": 0}
+
+            def overconfident(user_id, question, **kwargs):
+                result = original(user_id, question, **kwargs)
+                if result.get("known_unknown") is True:
+                    result["verdict"] = "likely_yes"
+                    result["confidence"] = 0.95
+                    result["known_unknown"] = False
+                    result["knowledge_gap"] = None
+                    state["laundered"] += 1
+                return result
+
+            store.would_i = overconfident
+            client = InProcessClient(store, "bench-user")
+            report = run_bench(client, generate_scenario(7), mode="inprocess")
+        self.assertGreater(state["laundered"], 0, "sabotage never fired; test is vacuous")
+        self.assertLess(
+            report["categories"]["metacognition"]["score"],
+            1.0,
+            msg="bench failed to detect overconfident answers for never-seeded decisions",
+        )
+
+    def test_lying_calibration_scorecard_tanks_metacognition(self) -> None:
+        # Sabotage: predictions remain perfect, but the first-class scorecard lies
+        # about its ECE. The bench's independent calculation must reject it.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _fresh_store(Path(tmp))
+            original = store.get_twin_calibration
+            state = {"lied": False}
+
+            def lying_scorecard(user_id, **kwargs):
+                result = original(user_id, **kwargs)
+                result["expected_calibration_error"] = 0.5
+                state["lied"] = True
+                return result
+
+            store.get_twin_calibration = lying_scorecard
+            client = InProcessClient(store, "bench-user")
+            report = run_bench(client, generate_scenario(7), mode="inprocess")
+        self.assertTrue(state["lied"], "sabotage never fired; test is vacuous")
+        self.assertLess(
+            report["categories"]["metacognition"]["score"],
+            1.0,
+            msg="bench failed to detect a calibration scorecard that disagrees with independent gold",
+        )
+        self.assertTrue(
+            any(
+                failure.startswith("metacognition scorecard parity:")
+                for failure in report["categories"]["metacognition"]["failures"]
+            ),
+            "expected scorecard parity to name the lie",
+        )
 
 
 if __name__ == "__main__":

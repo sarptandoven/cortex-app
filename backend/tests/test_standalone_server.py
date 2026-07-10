@@ -79,7 +79,7 @@ class FakeStore:
         self.write_obsidian_pages_calls: list[tuple[str, str | None, int]] = []
         self.sync_agent_sessions_calls: list[tuple] = []
         self.source_reputation_calls: list[tuple] = []
-        self.twin_calibration_calls: list[tuple[str, int]] = []
+        self.twin_calibration_calls: list[tuple[str, int, list[str] | None]] = []
         self.twin_grade_calls: list[dict] = []
         self.integrity_digest_calls: list[str] = []
         self.verify_integrity_calls: list[tuple] = []
@@ -339,11 +339,19 @@ class FakeStore:
             "caveats": [],
         }
 
-    def get_twin_calibration(self, user_id: str, *, days: int = 90) -> dict:
-        self.twin_calibration_calls.append((user_id, days))
+    def get_twin_calibration(
+        self,
+        user_id: str,
+        *,
+        days: int = 90,
+        prediction_ids: list[str] | None = None,
+    ) -> dict:
+        self.twin_calibration_calls.append((user_id, days, prediction_ids))
         return {
             "window_days": days,
             "threshold": 0.6,
+            "prediction_samples": 0,
+            "cohort_prediction_ids": sorted(prediction_ids) if prediction_ids is not None else None,
             "graded_samples": 0,
             "expected_calibration_error": None,
             "brier_score": None,
@@ -2847,13 +2855,19 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(self.fake_store.answer_calls[-1]["limit"], 2)
 
     def test_twin_calibration_route_forwards_to_store(self) -> None:
-        with self.get("/v1/twin/calibration?days=30") as response:
+        with self.get(
+            "/v1/twin/calibration?days=30&prediction_ids=twin_a&prediction_ids=twin_b"
+        ) as response:
             payload = json.loads(response.read().decode("utf-8"))
 
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["window_days"], 30)
+        self.assertEqual(payload["cohort_prediction_ids"], ["twin_a", "twin_b"])
         self.assertIsNone(payload["expected_calibration_error"])
-        self.assertEqual(self.fake_store.twin_calibration_calls[-1], ("local", 30))
+        self.assertEqual(
+            self.fake_store.twin_calibration_calls[-1],
+            ("local", 30, ["twin_a", "twin_b"]),
+        )
 
     def test_twin_grade_route_forwards_answerability_separately(self) -> None:
         with self.post_json(

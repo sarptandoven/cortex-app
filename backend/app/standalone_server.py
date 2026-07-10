@@ -2163,6 +2163,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     store.get_twin_calibration(
                         user_id,
                         days=_int_param(params, "days", 90, 1, 365),
+                        prediction_ids=(params.get("prediction_ids") or [])[:100]
+                        if "prediction_ids" in params
+                        else None,
                     )
                 )
                 return

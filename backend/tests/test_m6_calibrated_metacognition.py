@@ -358,6 +358,11 @@ class CalibratedMetacognitionTests(unittest.TestCase):
         self.assertEqual(scorecard["predictions"], 1)
         self.assertEqual(scorecard["calibration"]["graded_samples"], 0)
 
+    def test_non_finite_confidence_metadata_is_never_treated_as_certainty(self) -> None:
+        self.assertIsNone(self.store._confidence_or_default(float("nan")))
+        self.assertIsNone(self.store._confidence_or_default(float("inf")))
+        self.assertIsNone(self.store._confidence_or_default(float("-inf")))
+
     def test_twin_scorecard_embeds_the_same_calibration_read_model(self) -> None:
         self._record_prediction(
             "twin_known", confidence=0.9, known_unknown=False,
@@ -392,6 +397,28 @@ class CalibratedMetacognitionTests(unittest.TestCase):
         )
         self.assertEqual(graded["answerability"], "unknown")
         self.assertEqual(self.store.get_twin_calibration(self.user_id)["graded_samples"], 1)
+
+        unrelated = self.store.would_i(self.user_id, "Would I charter a private jet this summer?")
+        self.store.grade_twin_prediction(
+            self.user_id,
+            unrelated["prediction_id"],
+            "correct",
+            answerability="unknown",
+        )
+        self.assertEqual(self.store.get_twin_calibration(self.user_id)["graded_samples"], 2)
+
+        scoped = mcp_tools.call_tool(
+            self.store,
+            self.user_id,
+            "get_twin_calibration",
+            {"days": 30, "prediction_ids": [prediction["prediction_id"], "twin_missing"]},
+        )
+        self.assertEqual(scoped["prediction_samples"], 1)
+        self.assertEqual(
+            scoped["cohort_prediction_ids"],
+            sorted([prediction["prediction_id"], "twin_missing"]),
+        )
+        self.assertEqual(scoped["graded_samples"], 1)
 
 
 if __name__ == "__main__":

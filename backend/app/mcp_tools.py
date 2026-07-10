@@ -1118,6 +1118,12 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "days": {"type": "integer", "default": 90, "minimum": 1, "maximum": 365},
+                "prediction_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 120},
+                    "maxItems": 100,
+                    "description": "Optional exact prediction cohort, for isolated evaluation without historical contamination.",
+                },
             },
         },
     },
@@ -1790,6 +1796,30 @@ def _text_arg(args: dict[str, Any], key: str, default: str = "", *, max_chars: i
     if len(value) > max_chars:
         raise ValueError(f"MCP argument '{key}' exceeds {max_chars} characters.")
     return value
+
+
+def _text_list_arg(
+    args: dict[str, Any],
+    key: str,
+    *,
+    max_items: int = 100,
+    max_chars: int = 120,
+) -> list[str] | None:
+    raw = args.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError(f"MCP argument '{key}' must be an array.")
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in raw[:max_items]:
+        value = str(item or "").strip()
+        if len(value) > max_chars:
+            raise ValueError(f"MCP argument '{key}' items exceed {max_chars} characters.")
+        if value and value not in seen:
+            seen.add(value)
+            values.append(value)
+    return values
 
 
 def _markdown_memory_list(title: str, items: list[dict[str, Any]]) -> str:
@@ -3021,7 +3051,11 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         result = store.get_twin_scorecard(user_id, days=_bounded_int_arg(args, "days", 90, maximum=365))
         return store.agent_payload(user_id, result)
     if name == "get_twin_calibration":
-        result = store.get_twin_calibration(user_id, days=_bounded_int_arg(args, "days", 90, maximum=365))
+        result = store.get_twin_calibration(
+            user_id,
+            days=_bounded_int_arg(args, "days", 90, maximum=365),
+            prediction_ids=_text_list_arg(args, "prediction_ids"),
+        )
         return store.agent_payload(user_id, result)
     if name == "get_proactive_alerts":
         status = str(args.get("status") or "delivered").strip().lower()

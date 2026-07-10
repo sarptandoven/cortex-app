@@ -124,6 +124,23 @@ class MemoryTruthLivePipelineTests(unittest.TestCase):
         local_scores = {name: payload["score"] for name, payload in local_report["categories"].items()}
         self.assertEqual(http_scores, local_scores)
 
+    def test_two_consecutive_live_runs_are_cohort_isolated_and_retry_safe(self) -> None:
+        """A real token may already have history and may exhaust its initial burst.
+        Exact prediction cohorts prevent score contamination; bounded Retry-After
+        handling lets the second run honor the server limiter instead of failing."""
+        client = HTTPClient(
+            f"http://127.0.0.1:{self.port}",
+            "memorytruth-pipeline-token",
+            timeout=60.0,
+        )
+        for seed in (99, 1234):
+            with self.subTest(seed=seed):
+                report = run_bench(client, generate_scenario(seed), mode="http")
+                self.assertEqual(report["categories"]["metacognition"]["score"], 1.0)
+                independent = report["categories"]["metacognition"]["metrics"]["independent"]
+                reported = report["categories"]["metacognition"]["metrics"]["reported"]
+                self.assertEqual(reported, independent)
+
 
 if __name__ == "__main__":
     unittest.main()
