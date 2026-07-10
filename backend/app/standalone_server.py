@@ -144,7 +144,14 @@ def _required_api_scope(method: str, path: str) -> str:
     # so they are reads (verify-* are POSTs only because they carry input in the body).
     if normalized_path == "/v1/export/bundle":
         return "export"
-    if normalized_path in {"/v1/integrity/digest", "/v1/integrity/verify", "/v1/export/manifest", "/v1/export/verify"}:
+    if normalized_path in {
+        "/v1/beliefs/proof",
+        "/v1/beliefs/proof/verify",
+        "/v1/integrity/digest",
+        "/v1/integrity/verify",
+        "/v1/export/manifest",
+        "/v1/export/verify",
+    }:
         return "read"
     # Obsidian write-back persists distilled memory into user-owned vault files (egress out of
     # Cortex custody) — export-scoped like the bulk exports, parity with the MCP tool.
@@ -1361,6 +1368,17 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
+            if method == "POST" and path == "/v1/beliefs/proof/verify":
+                body = self._json_body()
+                try:
+                    proof = body.get("proof")
+                    if not isinstance(proof, dict):
+                        raise ValueError("proof must be a JSON object")
+                    expected_head = str(body.get("expected_head") or "").strip() or None
+                    self._send_json(store.verify_belief_proof(proof, expected_head=expected_head))
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
             if method == "POST" and path == "/v1/export/verify":
                 # Phase D: verify a portable bundle WITHOUT trusting its source. Pure function of
                 # the bundle bytes; auth-gated for parity but never touches the caller's own store.
@@ -2095,13 +2113,32 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
             if method == "GET" and path == "/v1/beliefs/timeline":
-                self._send_json(
-                    store.get_belief_timeline(
-                        user_id,
-                        (params.get("topic") or [""])[0],
-                        limit=_int_param(params, "limit", 20, 1, 50),
+                try:
+                    self._send_json(
+                        store.get_belief_timeline(
+                            user_id,
+                            (params.get("topic") or [""])[0],
+                            limit=_int_param(params, "limit", 20, 1, 50),
+                            as_of=(params.get("as_of") or [None])[0],
+                        )
                     )
-                )
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "GET" and path == "/v1/beliefs/proof":
+                try:
+                    self._send_json(
+                        store.get_belief_proof(
+                            user_id,
+                            (params.get("topic") or [""])[0],
+                            valid_at=(params.get("valid_at") or [None])[0],
+                            known_at=(params.get("known_at") or [None])[0],
+                            expected_head=(params.get("expected_head") or [None])[0],
+                            limit=_int_param(params, "limit", 20, 1, 50),
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
             if method == "GET" and path == "/v1/eval/scorecard":
                 self._send_json(

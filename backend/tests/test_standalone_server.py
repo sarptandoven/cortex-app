@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 from urllib import error, request
+from urllib.parse import urlencode
 
 from backend.app.config import Settings
 
@@ -83,6 +84,9 @@ class FakeStore:
         self.export_manifest_calls: list[str] = []
         self.export_portable_bundle_calls: list[str] = []
         self.verify_portable_bundle_calls: list[dict] = []
+        self.belief_timeline_calls: list[dict] = []
+        self.belief_proof_calls: list[dict] = []
+        self.verify_belief_proof_calls: list[dict] = []
         self.oauth_pending: dict[tuple[str, str], dict] = {}
 
     def remember_oauth_pending(self, *, state, user_id, flow, payload, ttl_seconds: int = 600) -> None:
@@ -352,6 +356,61 @@ class FakeStore:
             "matches": matches,
             "event_count": 3,
             "last_event_at": "2026-07-01T10:00:00Z",
+        }
+
+    def get_belief_timeline(
+        self,
+        user_id: str,
+        topic: str,
+        *,
+        limit: int = 20,
+        as_of: str | None = None,
+    ) -> dict:
+        self.belief_timeline_calls.append(
+            {"user_id": user_id, "topic": topic, "limit": limit, "as_of": as_of}
+        )
+        return {"topic": topic, "as_of": as_of, "timelines": [], "generated_at": "2026-07-01T10:00:00Z"}
+
+    def get_belief_proof(
+        self,
+        user_id: str,
+        topic: str,
+        *,
+        valid_at: str | None = None,
+        known_at: str | None = None,
+        expected_head: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        if not str(topic or "").strip():
+            raise ValueError("topic is required")
+        call = {
+            "user_id": user_id,
+            "topic": topic,
+            "valid_at": valid_at,
+            "known_at": known_at,
+            "expected_head": expected_head,
+            "limit": limit,
+        }
+        self.belief_proof_calls.append(call)
+        return {
+            "topic": topic,
+            "valid_at": valid_at,
+            "known_at": known_at,
+            "beliefs": [{"memory_id": "mem-proof", "sealed": True}],
+            "abstained": False,
+            "proof": {
+                "proof_version": "v1",
+                "chain_head_at_known_at": "deadbeef" * 8,
+                "verified": True,
+            },
+        }
+
+    def verify_belief_proof(self, proof: dict, *, expected_head: str | None = None) -> dict:
+        self.verify_belief_proof_calls.append({"proof": proof, "expected_head": expected_head})
+        return {
+            "verified": proof.get("proof_version") == "v1" or proof.get("proof", {}).get("proof_version") == "v1",
+            "anchored_verified": bool(expected_head),
+            "errors": [],
         }
 
     def export_manifest(self, user_id: str) -> dict:
@@ -4814,6 +4873,91 @@ class StandaloneServerTests(unittest.TestCase):
                     timeout=5,
                 )
             self.assertEqual(context.exception.code, 403)
+        finally:
+            self.fake_store.api_token_scopes = ["read"]
+
+    def test_belief_proof_routes_on_shipping_server(self) -> None:
+        query = urlencode(
+            {
+                "topic": "launch database",
+                "valid_at": "2026-02-01T00:00:00+00:00",
+                "known_at": "2026-07-01T00:00:00+00:00",
+                "expected_head": "deadbeef" * 8,
+                "limit": 7,
+            }
+        )
+        with self.get(f"/v1/beliefs/proof?{query}") as response:
+            proof = json.loads(response.read().decode("utf-8"))
+        self.assertTrue(proof["proof"]["verified"])
+        self.assertEqual(
+            self.fake_store.belief_proof_calls[-1],
+            {
+                "user_id": "local",
+                "topic": "launch database",
+                "valid_at": "2026-02-01T00:00:00+00:00",
+                "known_at": "2026-07-01T00:00:00+00:00",
+                "expected_head": "deadbeef" * 8,
+                "limit": 7,
+            },
+        )
+
+        timeline_query = urlencode(
+            {"topic": "launch database", "as_of": "2026-02-01T00:00:00+00:00", "limit": 4}
+        )
+        with self.get(f"/v1/beliefs/timeline?{timeline_query}") as response:
+            timeline = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(timeline["as_of"], "2026-02-01T00:00:00+00:00")
+        self.assertEqual(self.fake_store.belief_timeline_calls[-1]["limit"], 4)
+
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/beliefs/proof/verify",
+                data=json.dumps({"proof": proof, "expected_head": "deadbeef" * 8}).encode("utf-8"),
+                headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                method="POST",
+            ),
+            timeout=5,
+        ) as response:
+            self.assertTrue(json.loads(response.read().decode("utf-8"))["verified"])
+        self.assertEqual(
+            self.fake_store.verify_belief_proof_calls[-1],
+            {"proof": proof, "expected_head": "deadbeef" * 8},
+        )
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.get("/v1/beliefs/proof?topic=")
+        self.assertEqual(context.exception.code, 422)
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/beliefs/proof/verify",
+                    data=json.dumps({"proof": "not-an-object"}).encode("utf-8"),
+                    headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 422)
+
+        # Both GET proof and POST pure verification are read-scoped.
+        self.fake_store.api_token_scopes = ["read"]
+        read_headers = {"Authorization": "Bearer cxa-standalone-token"}
+        try:
+            with request.urlopen(
+                request.Request(self.base_url + f"/v1/beliefs/proof?{query}", headers=read_headers),
+                timeout=5,
+            ) as response:
+                self.assertEqual(response.status, 200)
+            with request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/beliefs/proof/verify",
+                    data=json.dumps({"proof": proof, "expected_head": "deadbeef" * 8}).encode("utf-8"),
+                    headers={**read_headers, "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            ) as response:
+                self.assertEqual(response.status, 200)
         finally:
             self.fake_store.api_token_scopes = ["read"]
 

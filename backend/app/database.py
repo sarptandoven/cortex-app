@@ -99,7 +99,9 @@ CREATE TABLE IF NOT EXISTS memories (
   valid_from TEXT,
   valid_to TEXT,
   superseded_by TEXT,
+  superseded_at TEXT,
   captured_at TEXT NOT NULL,
+  recorded_at TEXT,
   updated_at TEXT,
   raw_excerpt TEXT,
   occurrences INTEGER NOT NULL DEFAULT 1,
@@ -201,6 +203,7 @@ CREATE TABLE IF NOT EXISTS memory_events (
   object_type TEXT NOT NULL,
   event_type TEXT NOT NULL,
   metadata_json TEXT NOT NULL DEFAULT '{}',
+  fingerprint_sha256 TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -383,6 +386,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
   topics
 );
 
+CREATE VIRTUAL TABLE IF NOT EXISTS belief_snapshot_fts USING fts5(
+  event_id UNINDEXED,
+  user_id UNINDEXED,
+  memory_id UNINDEXED,
+  content,
+  topics,
+  recorded_at UNINDEXED
+);
+
 CREATE INDEX IF NOT EXISTS idx_memories_user_time ON memories(user_id, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(user_id, kind);
 CREATE INDEX IF NOT EXISTS idx_tasks_open ON tasks(user_id, status);
@@ -435,9 +447,12 @@ MIGRATIONS = [
     "ALTER TABLE memories ADD COLUMN valid_from TEXT",
     "ALTER TABLE memories ADD COLUMN valid_to TEXT",
     "ALTER TABLE memories ADD COLUMN superseded_by TEXT",
+    "ALTER TABLE memories ADD COLUMN superseded_at TEXT",
+    "ALTER TABLE memories ADD COLUMN recorded_at TEXT",
     "ALTER TABLE memories ADD COLUMN occurrences INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE memories ADD COLUMN author_class TEXT NOT NULL DEFAULT 'unknown'",
     "ALTER TABLE memories ADD COLUMN trust_score REAL NOT NULL DEFAULT 0.5",
+    "ALTER TABLE memory_events ADD COLUMN fingerprint_sha256 TEXT",
     "ALTER TABLE import_sessions ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
 ]
 
@@ -448,6 +463,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_active_kind_rank ON memories(user_id, st
 CREATE INDEX IF NOT EXISTS idx_memories_active_layer_rank ON memories(user_id, status, layer, importance DESC, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_active_sector_rank ON memories(user_id, status, sector, importance DESC, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_validity ON memories(user_id, status, valid_from, valid_to, superseded_by);
+CREATE INDEX IF NOT EXISTS idx_memories_transaction_time ON memories(user_id, recorded_at, superseded_at);
 CREATE INDEX IF NOT EXISTS idx_memories_capture_status ON memories(user_id, capture_id, status);
 CREATE INDEX IF NOT EXISTS idx_memory_relations_source ON memory_relations(user_id, source_memory_id, kind);
 CREATE INDEX IF NOT EXISTS idx_memory_relations_target ON memory_relations(user_id, target_memory_id, kind);
@@ -464,6 +480,11 @@ CREATE INDEX IF NOT EXISTS idx_edges_user_created ON graph_edges(user_id, create
 CREATE INDEX IF NOT EXISTS idx_edges_user_target ON graph_edges(user_id, target_id);
 CREATE INDEX IF NOT EXISTS idx_events_user_created ON memory_events(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_user_type_event_created ON memory_events(user_id, object_type, event_type, created_at DESC);
+CREATE TRIGGER IF NOT EXISTS invalidate_memory_event_fingerprint
+AFTER UPDATE OF id, object_id, object_type, event_type, metadata_json, created_at ON memory_events
+BEGIN
+  UPDATE memory_events SET fingerprint_sha256 = NULL WHERE rowid = NEW.rowid;
+END;
 CREATE INDEX IF NOT EXISTS idx_api_tokens_active ON api_tokens(audience, revoked_at, user_id);
 CREATE INDEX IF NOT EXISTS idx_source_accounts_user_source ON source_accounts(user_id, source, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_source_accounts_identifier ON source_accounts(user_id, source, account_identifier);
@@ -562,6 +583,39 @@ def _apply_lightweight_migrations(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+    # M2 Proof-of-Belief: old rows predate explicit transaction time. Preserve them honestly as
+    # legacy-derived transaction bounds rather than pretending they were cryptographically sealed
+    # when first learned. New writes use a dedicated microsecond-precision recorded_at, while this
+    # backfill gives old vaults deterministic point-in-time behavior immediately after migration.
+    conn.execute(
+        "UPDATE memories SET recorded_at = captured_at "
+        "WHERE recorded_at IS NULL OR recorded_at = ''"
+    )
+    # Never invent transaction time from updated_at: that field may be a trust rescore, rebuild, or
+    # metadata edit. Only an actual pre-M2 conflict_resolved receipt is a defensible supersession
+    # boundary. Rows without one remain explicitly unknown/legacy-derived.
+    conn.execute(
+        """
+        UPDATE memories
+        SET superseded_at = (
+          SELECT MIN(e.created_at)
+          FROM memory_events AS e
+          WHERE e.user_id = memories.user_id
+            AND e.event_type = 'conflict_resolved'
+            AND json_valid(e.metadata_json)
+            AND json_extract(e.metadata_json, '$.stale_id') = memories.id
+        )
+        WHERE superseded_by IS NOT NULL AND superseded_by != ''
+          AND (superseded_at IS NULL OR superseded_at = '')
+          AND EXISTS (
+            SELECT 1 FROM memory_events AS e
+            WHERE e.user_id = memories.user_id
+              AND e.event_type = 'conflict_resolved'
+              AND json_valid(e.metadata_json)
+              AND json_extract(e.metadata_json, '$.stale_id') = memories.id
+          )
+        """
+    )
 
 
 def _migrate_entities_composite_primary_key(conn: sqlite3.Connection) -> None:

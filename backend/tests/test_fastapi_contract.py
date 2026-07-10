@@ -1239,6 +1239,110 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(self.client.get("/v1/integrity/digest", headers=ro_headers).status_code, 200)
         self.assertEqual(self.client.get("/v1/export/bundle", headers=ro_headers).status_code, 403)
 
+    def test_belief_proof_endpoints_contract(self) -> None:
+        user = "m2-belief-proof-rest"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        content = "The M2 launch database is Postgres."
+        main_module.store.update_settings(user, {"review_new_captures": False})
+        main_module.store.save_capture(
+            user_id=user,
+            content=content,
+            source="note",
+            source_url="cortex-capture://m2-rest-proof",
+            title=None,
+            extracted={
+                "_timestamp": "2026-01-01T00:00:00+00:00",
+                "summary": content,
+                "records": [
+                    {
+                        "id": "mem_m2_rest_proof",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": content,
+                        "summary": content,
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "occurred_at": "2026-01-01T00:00:00+00:00",
+                        "valid_from": "2026-01-01T00:00:00+00:00",
+                        "topics": ["M2", "launch", "database"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+        proof_response = self.client.get(
+            "/v1/beliefs/proof",
+            params={
+                "topic": "M2 launch database",
+                "valid_at": "2026-02-01T00:00:00+00:00",
+                "known_at": "2099-01-01T00:00:00+00:00",
+            },
+            headers=headers,
+        )
+        self.assertEqual(proof_response.status_code, 200, proof_response.text)
+        proof = proof_response.json()
+        self.assertTrue(proof["proof"]["verified"], proof)
+        self.assertEqual(proof["beliefs"][0]["memory_id"], "mem_m2_rest_proof")
+
+        verified = self.client.post(
+            "/v1/beliefs/proof/verify",
+            json={"proof": proof, "expected_head": proof["proof"]["chain_head_at_known_at"]},
+            headers=headers,
+        )
+        self.assertEqual(verified.status_code, 200, verified.text)
+        self.assertTrue(verified.json()["verified"], verified.json())
+        self.assertTrue(verified.json()["anchored_verified"], verified.json())
+
+        timeline = self.client.get(
+            "/v1/beliefs/timeline",
+            params={"topic": "M2 launch database", "as_of": "2099-02-01T00:00:00+00:00"},
+            headers=headers,
+        )
+        self.assertEqual(timeline.status_code, 200, timeline.text)
+        self.assertEqual(timeline.json()["as_of"], "2099-02-01T00:00:00+00:00")
+        self.assertIsNotNone(timeline.json()["timelines"][0]["belief_at_as_of"])
+
+        bad_time = self.client.get(
+            "/v1/beliefs/proof",
+            params={"topic": "M2 launch database", "known_at": "not-a-time"},
+            headers=headers,
+        )
+        self.assertEqual(bad_time.status_code, 422)
+        malformed = self.client.post(
+            "/v1/beliefs/proof/verify",
+            json={"proof": "not-an-object"},
+            headers=headers,
+        )
+        self.assertEqual(malformed.status_code, 422)
+
+        ro_token = "cxa_m2_belief_proof_ro_123456789"
+        registered = self.client.post(
+            "/v1/integrations/api-token",
+            json={"token": ro_token, "label": "M2 belief proof read", "scopes": ["read"]},
+            headers=headers,
+        )
+        self.assertEqual(registered.status_code, 200)
+        ro_headers = {"Authorization": f"Bearer {ro_token}", "X-Cortex-User": user}
+        self.assertEqual(
+            self.client.get(
+                "/v1/beliefs/proof",
+                params={"topic": "M2 launch database"},
+                headers=ro_headers,
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/v1/beliefs/proof/verify",
+                json={"proof": proof, "expected_head": proof["proof"]["chain_head_at_known_at"]},
+                headers=ro_headers,
+            ).status_code,
+            200,
+        )
+
     def test_working_canvas_endpoints_contract(self) -> None:
         """M3 REST surface: recording a node is write-scoped and returns the receipt (never the
         raw text); the canvas read is compact Mermaid; the drill-down read recovers verified raw

@@ -36,7 +36,7 @@ from .models import AgentSessionsSyncRequest, AgentSessionsSyncResponse, APIToke
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
 from .models import CaptureChangePage, SyncIngestRequest, SyncIngestResponse
 from .models import GradeAnswerRequest, WouldIRequest, DraftAsMeRequest, GradeTwinPredictionRequest
-from .models import VerifyIntegrityRequest, VerifyBundleRequest
+from .models import VerifyBeliefProofRequest, VerifyIntegrityRequest, VerifyBundleRequest
 from .models import WorkingCanvasNodeRequest, WorkingCanvasNodeResponse, WorkingCanvasResponse
 from .oauth_broker import register_oauth_broker_routes
 from .oidc_registry import OidcError, OidcProviderRegistry
@@ -246,7 +246,14 @@ def _required_api_scope(method: str, path: str) -> str:
     # because they carry input in the body, so they must be pinned to read too.
     if normalized_path == "/v1/export/bundle":
         return "export"
-    if normalized_path in {"/v1/integrity/digest", "/v1/integrity/verify", "/v1/export/manifest", "/v1/export/verify"}:
+    if normalized_path in {
+        "/v1/beliefs/proof",
+        "/v1/beliefs/proof/verify",
+        "/v1/integrity/digest",
+        "/v1/integrity/verify",
+        "/v1/export/manifest",
+        "/v1/export/verify",
+    }:
         return "read"
     # Obsidian write-back persists distilled memory into user-owned vault files (egress out of
     # Cortex custody) — export-scoped like the bulk exports, parity with the MCP tool.
@@ -1824,9 +1831,49 @@ def decision_history(
 def belief_timeline(
     topic: str = Query(default="", max_length=240),
     limit: int = Query(default=20, ge=1, le=50),
+    as_of: str | None = Query(default=None, max_length=80),
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
-    return store.get_belief_timeline(user_id, topic, limit=limit)
+    try:
+        return store.get_belief_timeline(user_id, topic, limit=limit, as_of=as_of)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/v1/beliefs/proof")
+def belief_proof(
+    topic: str = Query(..., min_length=1, max_length=240),
+    valid_at: str | None = Query(default=None, max_length=80),
+    known_at: str | None = Query(default=None, max_length=80),
+    expected_head: str | None = Query(default=None, max_length=128),
+    limit: int = Query(default=20, ge=1, le=50),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    """M2: reconstruct valid-time belief state using only transaction-time-sealed receipts."""
+    try:
+        return store.get_belief_proof(
+            user_id,
+            topic,
+            valid_at=valid_at,
+            known_at=known_at,
+            expected_head=expected_head,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/beliefs/proof/verify")
+def verify_belief_proof(
+    payload: VerifyBeliefProofRequest,
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    """M2: pure verification of a self-contained Proof-of-Belief envelope."""
+    del user_id
+    try:
+        return store.verify_belief_proof(payload.proof, expected_head=payload.expected_head)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/v1/eval/scorecard")

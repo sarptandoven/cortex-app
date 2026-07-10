@@ -594,14 +594,42 @@ TOOLS = [
     },
     {
         "name": "get_belief_timeline",
-        "description": "Return the revision history of a belief: for each memory matching the topic, the current version plus every superseded revision, with authorship, trust, and citations. Read-only.",
+        "description": "Return the revision history of a belief: for each memory matching the topic, the current version plus every superseded revision, with authorship, trust, citations, and an optional as_of slice where valid-time and known-time are the same point. Use get_belief_proof when those times differ. Read-only.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "topic": {"type": "string", "description": "Belief or topic to trace, e.g. 'preferred database'."},
                 "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 50},
+                "as_of": {"type": "string", "description": "Optional ISO-8601 shorthand applied to both valid time and transaction time. Use get_belief_proof when those points differ."},
             },
             "required": ["topic"],
+        },
+    },
+    {
+        "name": "get_belief_proof",
+        "description": "Reconstruct what Cortex believed at valid-time X as known at transaction-time Y, with chain-sealed snapshot receipts, an anchorable hash-chain segment, and Merkle inclusion paths for normal-sized histories. Read-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "description": "Belief or topic to prove."},
+                "valid_at": {"type": "string", "description": "Optional ISO-8601 real-world time being asked about."},
+                "known_at": {"type": "string", "description": "Optional ISO-8601 transaction-time cutoff for what Cortex had recorded."},
+                "expected_head": {"type": "string", "description": "Optional externally pinned integrity-chain head for the known_at prefix."},
+                "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 50},
+            },
+            "required": ["topic"],
+        },
+    },
+    {
+        "name": "verify_belief_proof",
+        "description": "Purely verify receipt inclusion for a self-contained Proof-of-Belief envelope without reading or trusting the local store. Supply expected_head separately for anchored verification. Search completeness is reported separately and is not claimed by this proof. Read-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "proof": {"type": "object"},
+                "expected_head": {"type": "string", "description": "Optional trusted chain head supplied separately from the untrusted proof."},
+            },
+            "required": ["proof"],
         },
     },
     {
@@ -1184,6 +1212,8 @@ READ_TOOLS = {
     "get_decisions",
     "get_decision_history",
     "get_belief_timeline",
+    "get_belief_proof",
+    "verify_belief_proof",
     "get_tool_scorecard",
     "get_source_reputation",
     # Phase D integrity/portability reads: digest + verify expose only hashes/counts (no content),
@@ -1343,6 +1373,8 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "list_agent_sessions": "List Agent Sessions",
     "close_agent_session": "Close Agent Session",
     "get_belief_timeline": "Trace Belief Timeline",
+    "get_belief_proof": "Prove Belief at a Point in Time",
+    "verify_belief_proof": "Verify Belief Proof",
     "get_tool_scorecard": "Review Tool Scorecard",
     "get_source_reputation": "Source Reputation",
     "get_memory_integrity": "Memory Integrity Digest",
@@ -2888,9 +2920,37 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         return store.agent_payload(user_id, result)
     if name == "get_belief_timeline":
         topic = _text_arg(args, "topic", "", max_chars=240)
-        result = store.get_belief_timeline(user_id, topic, limit=_bounded_int_arg(args, "limit", 20, maximum=50))
+        result = store.get_belief_timeline(
+            user_id,
+            topic,
+            limit=_bounded_int_arg(args, "limit", 20, maximum=50),
+            as_of=args.get("as_of"),
+        )
         store.record_context_reuse(user_id, surface="mcp", query=topic, target="belief-timeline")
         return store.agent_payload(user_id, result)
+    if name == "get_belief_proof":
+        topic = _text_arg(args, "topic", "", max_chars=240)
+        result = store.get_belief_proof(
+            user_id,
+            topic,
+            valid_at=args.get("valid_at"),
+            known_at=args.get("known_at"),
+            expected_head=args.get("expected_head"),
+            limit=_bounded_int_arg(args, "limit", 20, maximum=50),
+        )
+        store.record_context_reuse(user_id, surface="mcp", query=topic, target="belief-proof")
+        return store.agent_payload(user_id, result)
+    if name == "verify_belief_proof":
+        proof = args.get("proof")
+        if not isinstance(proof, dict):
+            raise ValueError("proof must be an object")
+        return store.agent_payload(
+            user_id,
+            store.verify_belief_proof(
+                proof,
+                expected_head=_text_arg(args, "expected_head", "", max_chars=128) or None,
+            ),
+        )
     if name == "get_tool_scorecard":
         result = store.get_tool_scorecard(
             user_id,

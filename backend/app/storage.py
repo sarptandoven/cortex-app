@@ -1535,6 +1535,11 @@ def _isoformat_z(value: datetime) -> str:
     return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _transaction_now_iso() -> str:
+    """Microsecond-precision UTC time for ordering belief transactions within one second."""
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
 def _bounded_int(value: Any, *, minimum: int, maximum: int) -> int | None:
     try:
         parsed = int(value)
@@ -2898,6 +2903,8 @@ class CortexStore:
         # below can rely on the column existing.
         self._ensure_memory_occurrences_column()
         self._ensure_provenance_substrate()
+        self._ensure_event_fingerprints()
+        self._ensure_belief_snapshot_search_index()
 
     def _ensure_memory_occurrences_column(self) -> None:
         with connect(self.db_path) as conn:
@@ -2909,6 +2916,127 @@ class CortexStore:
                 # open will converge, and nothing can touch memories before then.
                 if "duplicate column name" not in message and "no such table" not in message:
                     raise
+
+    def _ensure_event_fingerprints(self) -> None:
+        """Backfill the derived per-event hash once for legacy databases.
+
+        New writes persist it atomically. A database trigger clears the cache whenever any covered
+        event field changes, so integrity reads recompute the mutated row instead of trusting stale
+        derived data. This keeps 10k-event proof generation below the M2 latency floor without
+        weakening silent-tamper detection.
+        """
+        with connect(self.db_path) as conn:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT rowid AS event_rowid, id, object_id, object_type, event_type,
+                           metadata_json, created_at
+                    FROM memory_events
+                    WHERE fingerprint_sha256 IS NULL OR fingerprint_sha256 = ''
+                    """
+                ).fetchall()
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc).lower() or "no such column" in str(exc).lower():
+                    return
+                raise
+            updates = []
+            for row in rows:
+                event = {
+                    "id": row["id"],
+                    "object_id": row["object_id"],
+                    "object_type": row["object_type"],
+                    "event_type": row["event_type"],
+                    "metadata": self._json_or_empty(row["metadata_json"]),
+                    "created_at": row["created_at"],
+                }
+                updates.append((self._integrity_event_fingerprint(event), row["event_rowid"]))
+            if updates:
+                conn.executemany(
+                    "UPDATE memory_events SET fingerprint_sha256 = ? WHERE rowid = ?",
+                    updates,
+                )
+
+    @staticmethod
+    def _belief_snapshot_search_text(snapshot: dict[str, Any]) -> tuple[str, str]:
+        content = "\n".join(
+            value
+            for value in [
+                str(snapshot.get("content") or "").strip(),
+                str(snapshot.get("summary") or "").strip(),
+            ]
+            if value
+        )
+        topics = " ".join(str(value) for value in (snapshot.get("topics") or []))
+        return content, topics
+
+    def _index_belief_snapshot_event(
+        self,
+        conn,
+        event: dict[str, Any],
+        snapshot: dict[str, Any],
+    ) -> None:
+        event_id = str(event.get("id") or "")
+        if not event_id:
+            return
+        content, topics = self._belief_snapshot_search_text(snapshot)
+        conn.execute("DELETE FROM belief_snapshot_fts WHERE event_id = ?", (event_id,))
+        conn.execute(
+            """
+            INSERT INTO belief_snapshot_fts(event_id, user_id, memory_id, content, topics, recorded_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                str(event.get("user_id") or ""),
+                str(snapshot.get("memory_id") or event.get("object_id") or ""),
+                content,
+                topics,
+                str(event.get("created_at") or ""),
+            ),
+        )
+
+    def _ensure_belief_snapshot_search_index(self) -> None:
+        """Rebuild the derived historical-snapshot FTS only when its receipt count drifts."""
+        with connect(self.db_path) as conn:
+            try:
+                event_count = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM memory_events
+                    WHERE object_type = 'memory'
+                      AND event_type IN ('belief_recorded', 'belief_revised')
+                    """
+                ).fetchone()[0]
+                index_count = conn.execute("SELECT COUNT(*) FROM belief_snapshot_fts").fetchone()[0]
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc).lower():
+                    return
+                raise
+            if event_count == index_count:
+                return
+            conn.execute("DELETE FROM belief_snapshot_fts")
+            rows = conn.execute(
+                """
+                SELECT id, user_id, object_id, event_type, metadata_json, created_at
+                FROM memory_events
+                WHERE object_type = 'memory'
+                  AND event_type IN ('belief_recorded', 'belief_revised')
+                ORDER BY created_at ASC, rowid ASC
+                """
+            ).fetchall()
+            for row in rows:
+                metadata = self._json_or_empty(row["metadata_json"])
+                snapshot = metadata.get("snapshot") if isinstance(metadata.get("snapshot"), dict) else {}
+                self._index_belief_snapshot_event(
+                    conn,
+                    {
+                        "id": row["id"],
+                        "user_id": row["user_id"],
+                        "object_id": row["object_id"],
+                        "event_type": row["event_type"],
+                        "created_at": row["created_at"],
+                    },
+                    snapshot,
+                )
 
     def _ensure_provenance_substrate(self) -> None:
         """Phase 0 substrate: authorship/trust columns plus the agent_sessions and context_packs
@@ -11264,7 +11392,7 @@ class CortexStore:
         current_id = str(current_id or "").strip()
         if not stale_id or not current_id or stale_id == current_id:
             return False
-        timestamp = now_iso()
+        timestamp = _transaction_now_iso()
         with connect(self.db_path) as conn:
             valid = {
                 row["id"]
@@ -11275,6 +11403,18 @@ class CortexStore:
             }
             if stale_id not in valid or current_id not in valid:
                 return False
+            stale_before = self._memory_from_row(
+                conn.execute(
+                    "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+                    (user_id, stale_id),
+                ).fetchone()
+            )
+            current_memory = self._memory_from_row(
+                conn.execute(
+                    "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+                    (user_id, current_id),
+                ).fetchone()
+            )
             # Phase 3 invariant: an agent-authored memory may not supersede a user-authored
             # one through the agent-facing tool path. Humans resolve that direction in the
             # review UI (which edits/deletes directly), so here it is refused and audited.
@@ -11295,9 +11435,20 @@ class CortexStore:
                     {"target_id": stale_id, "current_id": current_id, "reason": "agent_over_user"},
                 )
                 return False
+            effective_at = str(
+                current_memory.get("valid_from")
+                or current_memory.get("occurred_at")
+                or timestamp
+            )
             conn.execute(
-                "UPDATE memories SET superseded_by = ?, updated_at = ? WHERE user_id = ? AND id = ?",
-                (current_id, timestamp, user_id, stale_id),
+                """
+                UPDATE memories
+                SET superseded_by = ?, superseded_at = ?,
+                    valid_to = CASE WHEN valid_to IS NULL OR valid_to = '' THEN ? ELSE valid_to END,
+                    updated_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (current_id, timestamp, effective_at, timestamp, user_id, stale_id),
             )
             # Supersession lowers derived trust (Phase 3); rescore the stale row now so packs
             # and the ledger agree without waiting for the nightly job.
@@ -11319,6 +11470,23 @@ class CortexStore:
                         stale_id,
                     ),
                 )
+            stale_after = self._memory_from_row(
+                conn.execute(
+                    "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+                    (user_id, stale_id),
+                ).fetchone()
+            )
+            # Supersession changes our current knowledge of the stale belief's valid-time interval.
+            # Seal that corrected interval as a new transaction-time version before recording the
+            # relationship receipt. Historical valid-time queries can then still return the old fact
+            # for dates before effective_at without reviving it for dates after the replacement.
+            self._record_belief_snapshot_event(
+                conn,
+                user_id,
+                stale_after,
+                created_at=timestamp,
+                reason="conflict_resolved",
+            )
             self._event(
                 conn,
                 user_id,
@@ -11327,16 +11495,178 @@ class CortexStore:
                 "conflict_resolved",
                 {"stale_id": stale_id, "current_id": current_id},
             )
-        self.vault.patch_memory(stale_id, {"superseded_by": current_id, "updated_at": timestamp})
+            self._record_belief_supersession_event(
+                conn,
+                user_id,
+                stale=stale_before,
+                current=current_memory,
+                effective_at=effective_at,
+                created_at=timestamp,
+                reason="conflict_resolved",
+            )
+        self.vault.patch_memory(
+            stale_id,
+            {
+                "superseded_by": current_id,
+                "superseded_at": timestamp,
+                "valid_to": stale_before.get("valid_to") or effective_at,
+                "updated_at": timestamp,
+            },
+        )
         return True
 
-    def get_belief_timeline(self, user_id: str, topic: str, *, limit: int = 20) -> dict[str, Any]:
+    @staticmethod
+    def _belief_snapshot(memory: dict[str, Any]) -> dict[str, Any]:
+        """Canonical belief state sealed into a receipt event.
+
+        Mutable ranking signals (trust, occurrences) are deliberately excluded: a proof answers
+        what Cortex believed and why, not the current retrieval score. Full content is included so
+        history is reconstructible even if the live memory row is later edited or deleted.
+        """
+        return {
+            "memory_id": str(memory.get("id") or ""),
+            "capture_id": memory.get("capture_id"),
+            "kind": str(memory.get("kind") or "observation"),
+            "layer": str(memory.get("layer") or "semantic"),
+            "content": str(memory.get("content") or ""),
+            "summary": str(memory.get("summary") or ""),
+            "source": str(memory.get("source") or ""),
+            "source_url": memory.get("source_url"),
+            "confidence": str(memory.get("confidence") or "confirmed"),
+            "importance": int(memory.get("importance") or 3),
+            "author_class": normalize_author_class(memory.get("author_class")),
+            "occurred_at": memory.get("occurred_at"),
+            "valid_from": memory.get("valid_from"),
+            "valid_to": memory.get("valid_to"),
+            "captured_at": memory.get("captured_at"),
+            "topics": [str(value) for value in (memory.get("topics") or [])],
+            "entity_ids": [str(value) for value in (memory.get("entity_ids") or [])],
+            "provenance": memory.get("provenance") if isinstance(memory.get("provenance"), dict) else {},
+        }
+
+    @classmethod
+    def _belief_snapshot_sha(cls, snapshot: dict[str, Any]) -> str:
+        canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _record_belief_snapshot_event(
+        self,
+        conn,
+        user_id: str,
+        memory: dict[str, Any],
+        *,
+        created_at: str | None = None,
+        reason: str = "memory_saved",
+    ) -> dict[str, Any]:
+        """Seal one unique memory snapshot into the append-only integrity log.
+
+        Idempotent retries and vault rebuilds do not append duplicates: the snapshot hash is checked
+        against every existing receipt for this memory first. A same-id Markdown/source edit becomes
+        belief_revised, preserving both transaction-time versions instead of silently retconning.
+        """
+        snapshot = self._belief_snapshot(memory)
+        snapshot_sha = self._belief_snapshot_sha(snapshot)
+        rows = conn.execute(
+            """
+            SELECT id, event_type, metadata_json, created_at
+            FROM memory_events
+            WHERE user_id = ? AND object_type = 'memory' AND object_id = ?
+              AND event_type IN ('belief_recorded', 'belief_revised')
+            ORDER BY created_at ASC, rowid ASC
+            """,
+            (user_id, snapshot["memory_id"]),
+        ).fetchall()
+        for row in rows:
+            metadata = self._json_or_empty(row["metadata_json"])
+            if hmac.compare_digest(str(metadata.get("snapshot_sha256") or ""), snapshot_sha):
+                return {
+                    "id": row["id"],
+                    "event_type": row["event_type"],
+                    "created_at": row["created_at"],
+                    "metadata": metadata,
+                    "deduplicated": True,
+                }
+        event_type = "belief_recorded" if not rows else "belief_revised"
+        event = self._event(
+            conn,
+            user_id,
+            snapshot["memory_id"],
+            "memory",
+            event_type,
+            {
+                "schema_version": 1,
+                "snapshot_sha256": snapshot_sha,
+                "snapshot": snapshot,
+                "reason": str(reason or "memory_saved")[:120],
+            },
+            created_at=created_at or _transaction_now_iso(),
+        )
+        self._index_belief_snapshot_event(conn, event, snapshot)
+        return event
+
+    def _record_belief_supersession_event(
+        self,
+        conn,
+        user_id: str,
+        *,
+        stale: dict[str, Any],
+        current: dict[str, Any],
+        effective_at: str,
+        created_at: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        stale_id = str(stale.get("id") or "")
+        current_id = str(current.get("id") or "")
+        existing = conn.execute(
+            """
+            SELECT id, metadata_json, created_at
+            FROM memory_events
+            WHERE user_id = ? AND object_type = 'memory' AND object_id = ?
+              AND event_type = 'belief_superseded'
+            ORDER BY created_at DESC, rowid DESC
+            """,
+            (user_id, stale_id),
+        ).fetchall()
+        for row in existing:
+            metadata = self._json_or_empty(row["metadata_json"])
+            if str(metadata.get("current_memory_id") or "") == current_id:
+                return {"id": row["id"], "created_at": row["created_at"], "metadata": metadata, "deduplicated": True}
+        return self._event(
+            conn,
+            user_id,
+            stale_id,
+            "memory",
+            "belief_superseded",
+            {
+                "schema_version": 1,
+                "stale_memory_id": stale_id,
+                "current_memory_id": current_id,
+                "effective_at": effective_at,
+                "stale_snapshot_sha256": self._belief_snapshot_sha(self._belief_snapshot(stale)),
+                "current_snapshot_sha256": self._belief_snapshot_sha(self._belief_snapshot(current)),
+                "reason": str(reason or "superseded")[:120],
+            },
+            created_at=created_at,
+        )
+
+    def get_belief_timeline(
+        self,
+        user_id: str,
+        topic: str,
+        *,
+        limit: int = 20,
+        as_of: str | None = None,
+    ) -> dict[str, Any]:
         """Phase 3 read-only revision history: how a belief evolved. Finds memories matching
         the topic (search incl. superseded), stitches superseded_by chains, and returns each
         chain newest-belief-first with per-revision citations. Pure query — no writes."""
         query = str(topic or "").strip()
+        normalized_as_of = _normalize_as_of_filter(as_of)
+        as_of_dt = _parse_iso_timestamp(normalized_as_of)
+        if normalized_as_of and as_of_dt is None:
+            raise ValueError("as_of must be an ISO-8601 date or timestamp")
         if not query:
-            return {"topic": "", "timelines": [], "generated_at": now_iso()}
+            return {"topic": "", "as_of": normalized_as_of, "timelines": [], "generated_at": now_iso()}
         capped = max(1, min(int(limit), 50))
         matches = self.search(user_id, query, limit=capped)
         by_id: dict[str, dict[str, Any]] = {}
@@ -11415,7 +11745,21 @@ class CortexStore:
                 "valid_from": memory.get("valid_from"),
                 "valid_to": memory.get("valid_to"),
                 "superseded_by": str(memory.get("superseded_by") or "").strip() or None,
+                "recorded_at": memory.get("recorded_at") or memory.get("captured_at"),
+                "superseded_at": memory.get("superseded_at"),
             }
+
+        def _contains(revision: dict[str, Any], point: datetime) -> bool:
+            valid_from = _parse_iso_timestamp(revision.get("valid_from"))
+            valid_to = _parse_iso_timestamp(revision.get("valid_to"))
+            recorded_at = _parse_iso_timestamp(revision.get("recorded_at"))
+            superseded_at = _parse_iso_timestamp(revision.get("superseded_at"))
+            return (
+                (valid_from is None or valid_from <= point)
+                and (valid_to is None or point < valid_to)
+                and (recorded_at is None or recorded_at <= point)
+                and (superseded_at is None or point < superseded_at)
+            )
 
         timelines: list[dict[str, Any]] = []
         for head, stale_ids in heads.items():
@@ -11436,6 +11780,11 @@ class CortexStore:
                     "current_memory_id": head,
                     "revised": len(revisions) > 1,
                     "revisions": revisions,
+                    "belief_at_as_of": (
+                        next((revision for revision in revisions if _contains(revision, as_of_dt)), None)
+                        if as_of_dt is not None
+                        else None
+                    ),
                 }
             )
         # Deterministic ordering: revised beliefs first (they ARE the timeline), then recency.
@@ -11443,7 +11792,389 @@ class CortexStore:
             key=lambda t: (t["revised"], str(t["revisions"][0].get("captured_at") or "")),
             reverse=True,
         )
-        return {"topic": query, "timelines": timelines[:capped], "generated_at": now_iso()}
+        return {
+            "topic": query,
+            "as_of": normalized_as_of,
+            "timelines": timelines[:capped],
+            "generated_at": now_iso(),
+        }
+
+    @staticmethod
+    def _belief_interval_contains(
+        *,
+        point: datetime,
+        start: str | None,
+        end: str | None,
+    ) -> bool:
+        start_dt = _parse_iso_timestamp(start)
+        end_dt = _parse_iso_timestamp(end)
+        return (start_dt is None or start_dt <= point) and (end_dt is None or point < end_dt)
+
+    def _historical_belief_memory_ids(
+        self,
+        user_id: str,
+        query: str,
+        *,
+        known_at: datetime,
+        limit: int,
+    ) -> list[str]:
+        """Find candidates in immutable receipt snapshots, not only mutable current rows.
+
+        A same-id revision may remove every word from the original claim. Current-row search would
+        then incorrectly abstain for a known_at before that revision. The derived FTS projection is
+        rebuilt from chain-sealed receipts and keeps 10k-memory candidate discovery below the M2
+        latency floor; Python still validates the matched text and transaction cutoff.
+        """
+        normalized_query = " ".join(str(query or "").casefold().split())
+        terms = [
+            term.casefold()
+            for term in self._lexical_fallback_terms(query, limit=8)
+            if len(term.strip()) >= 2
+        ]
+        if not terms:
+            terms = [term for term in re.findall(r"[\w-]+", normalized_query) if len(term) >= 2]
+        match_query = " AND ".join(
+            f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms[:6]
+        )
+        candidate_limit = max(200, min(max(1, int(limit)) * 40, 2000))
+        with connect(self.db_path) as conn:
+            rows = (
+                conn.execute(
+                    """
+                    SELECT memory_id, content, topics, recorded_at
+                    FROM belief_snapshot_fts
+                    WHERE belief_snapshot_fts MATCH ? AND user_id = ?
+                      AND julianday(recorded_at) <= julianday(?)
+                    ORDER BY julianday(recorded_at) DESC, rowid DESC
+                    LIMIT ?
+                    """,
+                    (match_query, user_id, known_at.isoformat(), candidate_limit),
+                ).fetchall()
+                if match_query
+                else []
+            )
+        memory_ids: list[str] = []
+        for row in rows:
+            created_at = _parse_iso_timestamp(row["recorded_at"])
+            if created_at is None or created_at > known_at:
+                continue
+            haystack = f"{row['content']} {row['topics']}".casefold()
+            normalized_haystack = " ".join(haystack.split())
+            if normalized_query not in normalized_haystack and terms and not all(
+                term in normalized_haystack for term in terms
+            ):
+                continue
+            memory_id = str(row["memory_id"] or "")
+            if memory_id and memory_id not in memory_ids:
+                memory_ids.append(memory_id)
+        return memory_ids
+
+    @staticmethod
+    def _belief_selection_manifest(
+        *,
+        topic: str,
+        valid_at: str,
+        known_at: str,
+        beliefs: list[dict[str, Any]],
+        matched_count: int,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Canonical result-set declaration checked by the pure inclusion verifier.
+
+        The manifest prevents accidental/intermediary suppression unless it too is rewritten. It is
+        deliberately labeled selection-only: cryptographic completeness for arbitrary search would
+        require an authenticated search index or shipping every belief receipt to the verifier.
+        """
+        return {
+            "topic_sha256": hashlib.sha256(topic.encode("utf-8")).hexdigest(),
+            "valid_at": valid_at,
+            "known_at": known_at,
+            "record_receipt_event_ids": [
+                str(belief.get("record_receipt_event_id") or "") for belief in beliefs
+            ],
+            "memory_ids": [str(belief.get("memory_id") or "") for belief in beliefs],
+            "result_count": len(beliefs),
+            "matched_count": matched_count,
+            "abstained": not beliefs,
+            "limit": limit,
+            "truncated": matched_count > len(beliefs),
+            "completeness_contract": "server-selected; receipts prove inclusion, not search completeness",
+        }
+
+    def get_belief_proof(
+        self,
+        user_id: str,
+        topic: str,
+        *,
+        valid_at: str | None = None,
+        known_at: str | None = None,
+        expected_head: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Reconstruct what Cortex believed at valid-time X as known at transaction-time Y.
+
+        New/revised snapshots are read from chain-sealed belief events, never reconstructed from a
+        mutable current row. Legacy rows remain queryable but are explicitly marked unsealed. Each
+        receipt gets a hash-chain suffix binding it to the known-at head. Normal-sized histories also
+        include a compact Merkle path; large histories omit that redundant second proof to preserve
+        the 10k-vault latency floor.
+        """
+        query = str(topic or "").strip()
+        if not query:
+            raise ValueError("topic is required")
+        capped = max(1, min(int(limit), 50))
+        generated_at = _transaction_now_iso()
+        normalized_known = _normalize_as_of_filter(known_at) or generated_at
+        normalized_valid = _normalize_as_of_filter(valid_at) or normalized_known
+        known_dt = _parse_iso_timestamp(normalized_known)
+        valid_dt = _parse_iso_timestamp(normalized_valid)
+        if known_dt is None:
+            raise ValueError("known_at must be an ISO-8601 date or timestamp")
+        if valid_dt is None:
+            raise ValueError("valid_at must be an ISO-8601 date or timestamp")
+        # With no explicit transaction cutoff, generated_at is taken after the existing event read
+        # model and therefore the proof covers the current head. Explicit cutoffs always take the
+        # slower parsed path so even unusual future-dated/restored events are handled correctly.
+        known_includes_current_head = not str(known_at or "").strip()
+
+        memory_ids = self._historical_belief_memory_ids(
+            user_id,
+            query,
+            known_at=known_dt,
+            limit=capped,
+        )
+        timeline = self.get_belief_timeline(user_id, query, limit=capped)
+        for item in timeline.get("timelines", []):
+            for revision in item.get("revisions", []):
+                memory_id = str(revision.get("memory_id") or "")
+                if memory_id and memory_id not in memory_ids:
+                    memory_ids.append(memory_id)
+        if not memory_ids:
+            proof = self._integrity_merkle_proof(
+                user_id,
+                through=normalized_known,
+                relevant_event_ids=set(),
+                include_all=known_includes_current_head,
+            )
+            if expected_head is not None:
+                proof["expected_head"] = str(expected_head).strip().lower() or None
+                proof["anchor_matches"] = bool(proof["expected_head"]) and hmac.compare_digest(
+                    proof["expected_head"], proof["chain_head_at_known_at"]
+                )
+            proof["selection"] = self._belief_selection_manifest(
+                topic=query,
+                valid_at=normalized_valid,
+                known_at=normalized_known,
+                beliefs=[],
+                matched_count=0,
+                limit=capped,
+            )
+            verification = self.verify_belief_proof(
+                {"beliefs": [], "proof": proof},
+                verify_chain_segment=False,
+            )
+            proof["verified"] = verification["verified"]
+            proof["verification_errors"] = verification["errors"]
+            return {
+                "topic": query,
+                "valid_at": normalized_valid,
+                "known_at": normalized_known,
+                "beliefs": [],
+                "abstained": True,
+                "proof": proof,
+                "generated_at": generated_at,
+            }
+
+        placeholders = ",".join("?" for _ in memory_ids)
+        with connect(self.db_path) as conn:
+            memory_rows = conn.execute(
+                f"SELECT * FROM memories WHERE user_id = ? AND id IN ({placeholders})",
+                [user_id, *memory_ids],
+            ).fetchall()
+            event_rows = conn.execute(
+                f"""
+                SELECT rowid AS event_rowid, id, object_id, object_type, event_type, metadata_json, created_at
+                FROM memory_events
+                WHERE user_id = ? AND object_type = 'memory'
+                  AND object_id IN ({placeholders})
+                  AND event_type IN ('belief_recorded', 'belief_revised', 'belief_superseded')
+                ORDER BY created_at ASC, rowid ASC
+                """,
+                [user_id, *memory_ids],
+            ).fetchall()
+
+        memories = {row["id"]: self._memory_from_row(row) for row in memory_rows}
+        snapshots: dict[str, list[dict[str, Any]]] = {memory_id: [] for memory_id in memory_ids}
+        supersessions: dict[str, list[dict[str, Any]]] = {memory_id: [] for memory_id in memory_ids}
+        relevant_event_ids: set[str] = set()
+        for row in event_rows:
+            event = {
+                "id": row["id"],
+                "object_id": row["object_id"],
+                "object_type": row["object_type"],
+                "event_type": row["event_type"],
+                "metadata": self._json_or_empty(row["metadata_json"]),
+                "created_at": row["created_at"],
+            }
+            if _parse_iso_timestamp(event["created_at"]) and _parse_iso_timestamp(event["created_at"]) <= known_dt:
+                relevant_event_ids.add(event["id"])
+            if event["event_type"] == "belief_superseded":
+                supersessions.setdefault(event["object_id"], []).append(event)
+            else:
+                snapshots.setdefault(event["object_id"], []).append(event)
+
+        beliefs: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for memory_id in memory_ids:
+            row_memory = memories.get(memory_id)
+            events_for_memory = snapshots.get(memory_id, [])
+            superseded_events = supersessions.get(memory_id, [])
+            for index, event in enumerate(events_for_memory):
+                metadata = event["metadata"]
+                snapshot = metadata.get("snapshot") if isinstance(metadata.get("snapshot"), dict) else {}
+                expected_snapshot_sha = str(metadata.get("snapshot_sha256") or "")
+                actual_snapshot_sha = self._belief_snapshot_sha(snapshot)
+                next_recorded_at = (
+                    events_for_memory[index + 1]["created_at"]
+                    if index + 1 < len(events_for_memory)
+                    else None
+                )
+                superseded_event = next(
+                    (
+                        candidate
+                        for candidate in superseded_events
+                        if _parse_iso_timestamp(candidate["created_at"])
+                        and _parse_iso_timestamp(candidate["created_at"]) <= known_dt
+                        and _parse_iso_timestamp(candidate["created_at"]) >= _parse_iso_timestamp(event["created_at"])
+                    ),
+                    None,
+                )
+                # A supersession receipt does not erase the stale fact's historical valid-time
+                # interval. The corrected snapshot written at supersession becomes the next
+                # transaction-time version and is what closes this version.
+                transaction_end = next_recorded_at
+                if not self._belief_interval_contains(
+                    point=known_dt,
+                    start=event["created_at"],
+                    end=transaction_end,
+                ):
+                    continue
+                if not self._belief_interval_contains(
+                    point=valid_dt,
+                    start=snapshot.get("valid_from"),
+                    end=snapshot.get("valid_to"),
+                ):
+                    continue
+                latest_snapshot = index == len(events_for_memory) - 1
+                current_matches = (
+                    self._belief_snapshot_sha(self._belief_snapshot(row_memory)) == actual_snapshot_sha
+                    if row_memory is not None and latest_snapshot
+                    else None
+                )
+                beliefs.append(
+                    {
+                        **snapshot,
+                        "snapshot_sha256": expected_snapshot_sha,
+                        "sealed": True,
+                        "snapshot_verified": bool(expected_snapshot_sha)
+                        and hmac.compare_digest(expected_snapshot_sha, actual_snapshot_sha),
+                        "transaction_time": {
+                            "recorded_at": event["created_at"],
+                            "superseded_at": transaction_end,
+                            "known_at": normalized_known,
+                        },
+                        "valid_time": {
+                            "valid_from": snapshot.get("valid_from"),
+                            "valid_to": snapshot.get("valid_to"),
+                            "queried_at": normalized_valid,
+                        },
+                        "record_receipt_event_id": event["id"],
+                        "supersession_receipt_event_id": (
+                            superseded_event["id"] if superseded_event is not None else None
+                        ),
+                        "current_row_matches_snapshot": current_matches,
+                    }
+                )
+
+            if events_for_memory or row_memory is None:
+                continue
+            # Honest legacy fallback. It supports point-in-time behavior after migration but makes no
+            # claim that the original transaction was sealed before M2 existed.
+            if self._belief_interval_contains(
+                point=known_dt,
+                start=row_memory.get("recorded_at") or row_memory.get("captured_at"),
+                end=row_memory.get("superseded_at"),
+            ) and self._belief_interval_contains(
+                point=valid_dt,
+                start=row_memory.get("valid_from"),
+                end=row_memory.get("valid_to"),
+            ):
+                snapshot = self._belief_snapshot(row_memory)
+                beliefs.append(
+                    {
+                        **snapshot,
+                        "snapshot_sha256": self._belief_snapshot_sha(snapshot),
+                        "sealed": False,
+                        "snapshot_verified": False,
+                        "transaction_time": {
+                            "recorded_at": row_memory.get("recorded_at") or row_memory.get("captured_at"),
+                            "superseded_at": row_memory.get("superseded_at"),
+                            "known_at": normalized_known,
+                            "provenance": "legacy-derived",
+                        },
+                        "valid_time": {
+                            "valid_from": row_memory.get("valid_from"),
+                            "valid_to": row_memory.get("valid_to"),
+                            "queried_at": normalized_valid,
+                        },
+                        "record_receipt_event_id": None,
+                        "supersession_receipt_event_id": None,
+                        "current_row_matches_snapshot": True,
+                    }
+                )
+                warnings.append(f"{memory_id} predates M2 and has no sealed belief receipt")
+
+        beliefs.sort(
+            key=lambda item: str((item.get("transaction_time") or {}).get("recorded_at") or ""),
+            reverse=True,
+        )
+        matched_count = len(beliefs)
+        beliefs = beliefs[:capped]
+        proof = self._integrity_merkle_proof(
+            user_id,
+            through=normalized_known,
+            relevant_event_ids=relevant_event_ids,
+            include_all=known_includes_current_head,
+        )
+        if expected_head is not None:
+            proof["expected_head"] = str(expected_head).strip().lower() or None
+            proof["anchor_matches"] = bool(proof["expected_head"]) and hmac.compare_digest(
+                proof["expected_head"], proof["chain_head_at_known_at"]
+            )
+        proof["selection"] = self._belief_selection_manifest(
+            topic=query,
+            valid_at=normalized_valid,
+            known_at=normalized_known,
+            beliefs=beliefs,
+            matched_count=matched_count,
+            limit=capped,
+        )
+        verification = self.verify_belief_proof(
+            {"beliefs": beliefs, "proof": proof},
+            verify_chain_segment=False,
+        )
+        proof["verified"] = verification["verified"]
+        proof["verification_errors"] = verification["errors"]
+        return {
+            "topic": query,
+            "valid_at": normalized_valid,
+            "known_at": normalized_known,
+            "beliefs": beliefs,
+            "abstained": not beliefs,
+            "warnings": warnings,
+            "proof": proof,
+            "generated_at": generated_at,
+        }
 
     def _answer_current_language_score(self, item: dict[str, Any]) -> int:
         text = str(item.get("content") or item.get("summary") or "").casefold()
@@ -13539,7 +14270,7 @@ class CortexStore:
     def _archive_capture_derivatives_in_conn(self, conn, user_id: str, capture_id: str, *, timestamp: str) -> dict[str, Any]:
         memory_rows = conn.execute(
             """
-            SELECT id, kind, layer
+            SELECT *
             FROM memories
             WHERE user_id = ?
               AND capture_id = ?
@@ -13628,7 +14359,7 @@ class CortexStore:
         replacement_set = set(replacement_ids)
         rows = conn.execute(
             """
-            SELECT id, kind, layer
+            SELECT *
             FROM memories
             WHERE user_id = ?
               AND capture_id = ?
@@ -13643,11 +14374,50 @@ class CortexStore:
             if memory_id in replacement_set:
                 continue
             replacement_id = replacement_by_kind_layer.get((row["kind"], row["layer"])) or replacement_ids[0]
+            current = next(memory for memory in replacements if memory["id"] == replacement_id)
+            transaction_at = _transaction_now_iso()
+            effective_at = str(current.get("valid_from") or current.get("occurred_at") or timestamp)
+            stale = self._memory_from_row(row)
             conn.execute(
-                "UPDATE memories SET superseded_by = ?, updated_at = ? WHERE user_id = ? AND id = ?",
-                (replacement_id, timestamp, user_id, memory_id),
+                """
+                UPDATE memories
+                SET superseded_by = ?, superseded_at = ?,
+                    valid_to = CASE WHEN valid_to IS NULL OR valid_to = '' THEN ? ELSE valid_to END,
+                    updated_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (replacement_id, transaction_at, effective_at, transaction_at, user_id, memory_id),
             )
-            self.vault.patch_memory(memory_id, {"superseded_by": replacement_id, "updated_at": timestamp})
+            stale_after_row = conn.execute(
+                "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+                (user_id, memory_id),
+            ).fetchone()
+            stale_after = self._memory_from_row(stale_after_row)
+            self._record_belief_snapshot_event(
+                conn,
+                user_id,
+                stale_after,
+                created_at=transaction_at,
+                reason="source_record_replaced",
+            )
+            self._record_belief_supersession_event(
+                conn,
+                user_id,
+                stale=stale,
+                current=current,
+                effective_at=effective_at,
+                created_at=transaction_at,
+                reason="source_record_replaced",
+            )
+            self.vault.patch_memory(
+                memory_id,
+                {
+                    "superseded_by": replacement_id,
+                    "superseded_at": transaction_at,
+                    "valid_to": stale.get("valid_to") or effective_at,
+                    "updated_at": transaction_at,
+                },
+            )
             linked += 1
         return linked
 
@@ -16595,6 +17365,7 @@ class CortexStore:
                     pass
             self._clear_user_vectors(conn, user_id)
             conn.execute("DELETE FROM memory_fts WHERE memory_id IN (SELECT id FROM memories WHERE user_id = ?)", (user_id,))
+            conn.execute("DELETE FROM belief_snapshot_fts WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_entities WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_topics WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_relations WHERE user_id = ?", (user_id,))
@@ -16904,8 +17675,9 @@ class CortexStore:
             rows = conn.execute(
                 "SELECT id, capture_id, user_id, kind, layer, content, summary, source, source_url, "
                 "confidence, importance, status, sector, source_type, provenance_json, topics_json, "
-                "entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, occurrences, "
-                "captured_at, updated_at, raw_excerpt FROM memories WHERE user_id = ?",
+                "entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, superseded_at, "
+                "occurrences, captured_at, recorded_at, updated_at, raw_excerpt FROM memories "
+                "WHERE user_id = ?",
                 (user_id,),
             ).fetchall()
         all_written = True
@@ -16946,10 +17718,22 @@ class CortexStore:
         # note failed to parse (corrupt) — those must not be silently dropped on rebuild. Markdown
         # wins for ids present in both.
         markdown_memories = self.vault.iter_memory_markdown_records(user_id)
+        json_memories = {
+            str(memory.get("id")): memory
+            for memory in self.vault.iter_records("memories", user_id)
+            if memory.get("id")
+        }
+        # Markdown remains authoritative for user-editable fields. Immutable/system fields that
+        # the parser intentionally strips (M2 transaction timestamps, derived trust) survive from
+        # the canonical JSON record instead of becoming user-editable through frontmatter.
+        markdown_memories = [
+            {**json_memories.get(str(memory.get("id")), {}), **memory}
+            for memory in markdown_memories
+        ]
         markdown_memory_ids = {str(memory.get("id")) for memory in markdown_memories if memory.get("id")}
         json_only_memories = [
             memory
-            for memory in self.vault.iter_records("memories", user_id)
+            for memory in json_memories.values()
             if str(memory.get("id")) not in markdown_memory_ids
         ]
         memories = list(markdown_memories) + json_only_memories
@@ -16963,6 +17747,7 @@ class CortexStore:
         with connect(self.db_path) as conn:
             self._clear_user_vectors(conn, user_id)
             conn.execute("DELETE FROM memory_fts WHERE memory_id IN (SELECT id FROM memories WHERE user_id = ?)", (user_id,))
+            conn.execute("DELETE FROM belief_snapshot_fts WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_entities WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_topics WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM task_entities WHERE user_id = ?", (user_id,))
@@ -17280,8 +18065,8 @@ class CortexStore:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO memories
-                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, occurrences, captured_at, updated_at, raw_excerpt, author_class, trust_score)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, superseded_at, occurrences, captured_at, recorded_at, updated_at, raw_excerpt, author_class, trust_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         memory["id"],
@@ -17305,11 +18090,13 @@ class CortexStore:
                         _normalize_validity_bound(memory.get("valid_from"), end_of_day=False),
                         _normalize_validity_bound(memory.get("valid_to"), end_of_day=True),
                         memory.get("superseded_by"),
+                        memory.get("superseded_at"),
                         # Restore, never accrue: a rebuild re-inserts every vault memory exactly
                         # once, so the persisted count round-trips intact and rebuilds stay
                         # idempotent. Records that predate occurrences default to 1.
                         _memory_occurrences(memory.get("occurrences")),
                         captured_at,
+                        memory.get("recorded_at") or captured_at,
                         memory.get("updated_at") or captured_at,
                         memory.get("raw_excerpt"),
                         rebuilt_author_class,
@@ -17404,18 +18191,64 @@ class CortexStore:
                 )
 
             for event in events:
+                restored_event = {
+                    "id": event["id"],
+                    "object_id": event.get("object_id", ""),
+                    "object_type": event.get("object_type", "unknown"),
+                    "event_type": event.get("event_type", "unknown"),
+                    "metadata": event.get("metadata", {}),
+                    "created_at": event.get("created_at") or timestamp,
+                }
                 conn.execute(
-                    "INSERT OR REPLACE INTO memory_events(id, user_id, object_id, object_type, event_type, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    """
+                    INSERT OR REPLACE INTO memory_events
+                    (id, user_id, object_id, object_type, event_type, metadata_json, fingerprint_sha256, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
                     (
-                        event["id"],
+                        restored_event["id"],
                         user_id,
-                        event.get("object_id", ""),
-                        event.get("object_type", "unknown"),
-                        event.get("event_type", "unknown"),
-                        json.dumps(event.get("metadata", {})),
-                        event.get("created_at") or timestamp,
+                        restored_event["object_id"],
+                        restored_event["object_type"],
+                        restored_event["event_type"],
+                        json.dumps(restored_event["metadata"]),
+                        self._integrity_event_fingerprint(restored_event),
+                        restored_event["created_at"],
                     ),
                 )
+                if restored_event["event_type"] in {"belief_recorded", "belief_revised"}:
+                    restored_snapshot = (
+                        restored_event["metadata"].get("snapshot")
+                        if isinstance(restored_event["metadata"], dict)
+                        and isinstance(restored_event["metadata"].get("snapshot"), dict)
+                        else {}
+                    )
+                    self._index_belief_snapshot_event(
+                        conn,
+                        {**restored_event, "user_id": user_id},
+                        restored_snapshot,
+                    )
+
+            # M2: after the historical event log is restored, ensure every current vault snapshot
+            # has a receipt. Existing receipts deduplicate; a hand-edited same-id Markdown note gets
+            # a belief_revised event, while a legacy vault is honestly sealed only *now* (the event
+            # reason makes clear that its original captured_at was not retrospectively proven).
+            for memory in memories:
+                memory_id = str(memory.get("id") or "")
+                if not memory_id:
+                    continue
+                row = conn.execute(
+                    "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+                    (user_id, memory_id),
+                ).fetchone()
+                if row is not None:
+                    self._record_belief_snapshot_event(
+                        conn,
+                        user_id,
+                        self._memory_from_row(row),
+                        created_at=_transaction_now_iso(),
+                        reason="vault_rebuild_backfill",
+                    )
 
             self._event(
                 conn,
@@ -18323,6 +19156,9 @@ class CortexStore:
     # without side data. Versioned so the hashing scheme can evolve without ambiguity.
     INTEGRITY_CHAIN_GENESIS = "cortex:integrity:v1:genesis"
     INTEGRITY_CHAIN_VERSION = "v1"
+    BELIEF_PROOF_VERSION = "v1"
+    BELIEF_MERKLE_EMPTY = hashlib.sha256(b"cortex:belief-proof:v1:empty").hexdigest()
+    BELIEF_MERKLE_MAX_EVENTS = 2048
 
     @staticmethod
     def _integrity_event_fingerprint(event: dict[str, Any]) -> str:
@@ -18361,7 +19197,8 @@ class CortexStore:
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT id, object_id, object_type, event_type, metadata_json, created_at
+                SELECT id, object_id, object_type, event_type, metadata_json,
+                       fingerprint_sha256, created_at
                 FROM memory_events
                 WHERE user_id = ?
                 ORDER BY created_at ASC, rowid ASC
@@ -18369,21 +19206,409 @@ class CortexStore:
                 (user_id,),
             ).fetchall()
         for row in rows:
-            event = {
-                "id": row["id"],
-                "object_id": row["object_id"],
-                "object_type": row["object_type"],
-                "event_type": row["event_type"],
-                "metadata": self._json_or_empty(row["metadata_json"]),
-                "created_at": row["created_at"],
-            }
-            fingerprint = self._integrity_event_fingerprint(event)
+            cached_fingerprint = str(row["fingerprint_sha256"] or "")
+            if len(cached_fingerprint) == 64:
+                fingerprint = cached_fingerprint
+            else:
+                fingerprint = self._integrity_event_fingerprint(
+                    {
+                        "id": row["id"],
+                        "object_id": row["object_id"],
+                        "object_type": row["object_type"],
+                        "event_type": row["event_type"],
+                        "metadata": self._json_or_empty(row["metadata_json"]),
+                        "created_at": row["created_at"],
+                    }
+                )
             head = self._integrity_link(head, fingerprint)
             count += 1
             if first_at is None:
                 first_at = row["created_at"]
             last_at = row["created_at"]
         return head, count, first_at, last_at
+
+    @classmethod
+    def _belief_merkle_leaf(cls, index: int, fingerprint: str) -> str:
+        return hashlib.sha256(
+            f"cortex:belief-proof:{cls.BELIEF_PROOF_VERSION}:{index}:{fingerprint}".encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _belief_merkle_parent(left: str, right: str) -> str:
+        return hashlib.sha256(f"{left}:{right}".encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _belief_merkle_levels(cls, fingerprints: list[str]) -> list[list[str]]:
+        if not fingerprints:
+            return [[cls.BELIEF_MERKLE_EMPTY]]
+        levels = [[cls._belief_merkle_leaf(index, value) for index, value in enumerate(fingerprints)]]
+        while len(levels[-1]) > 1:
+            current = levels[-1]
+            parent: list[str] = []
+            for index in range(0, len(current), 2):
+                left = current[index]
+                right = current[index + 1] if index + 1 < len(current) else left
+                parent.append(cls._belief_merkle_parent(left, right))
+            levels.append(parent)
+        return levels
+
+    def _integrity_merkle_proof(
+        self,
+        user_id: str,
+        *,
+        through: str,
+        relevant_event_ids: set[str],
+        include_all: bool = False,
+    ) -> dict[str, Any]:
+        """Derive compact inclusion paths over the event prefix known at `through`.
+
+        The ordered fingerprints are identical to the existing v1 integrity chain inputs. The
+        Merkle root is an additional compact inclusion anchor: it lets a verifier prove selected
+        belief receipts belong to that exact history without receiving unrelated event metadata.
+        """
+        through_dt = _parse_iso_timestamp(through)
+        if through_dt is None:
+            raise ValueError("known_at must be an ISO-8601 date or timestamp")
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT rowid AS event_rowid, id, object_id, object_type, event_type,
+                       metadata_json, fingerprint_sha256, created_at
+                FROM memory_events
+                WHERE user_id = ?
+                ORDER BY created_at ASC, rowid ASC
+                """,
+                (user_id,),
+            ).fetchall()
+
+        cutoff_events: list[dict[str, Any]] = []
+        cutoff_fingerprints: list[str] = []
+        current_links: list[str] = []
+        current_head = self.INTEGRITY_CHAIN_GENESIS
+        first_at: str | None = None
+        last_at: str | None = None
+        for row in rows:
+            cached_fingerprint = str(row["fingerprint_sha256"] or "")
+            relevant = row["id"] in relevant_event_ids
+            metadata = (
+                self._json_or_empty(row["metadata_json"])
+                if relevant or len(cached_fingerprint) != 64
+                else {}
+            )
+            event = {
+                "id": row["id"],
+                "object_id": row["object_id"],
+                "object_type": row["object_type"],
+                "event_type": row["event_type"],
+                "metadata": metadata,
+                "created_at": row["created_at"],
+            }
+            fingerprint = (
+                cached_fingerprint
+                if len(cached_fingerprint) == 64
+                else self._integrity_event_fingerprint(event)
+            )
+            current_head = self._integrity_link(current_head, fingerprint)
+            current_links.append(current_head)
+            if not include_all:
+                event_dt = _parse_iso_timestamp(event["created_at"])
+                if event_dt is None or event_dt > through_dt:
+                    continue
+            cutoff_events.append(event)
+            cutoff_fingerprints.append(fingerprint)
+            if first_at is None:
+                first_at = event["created_at"]
+            last_at = event["created_at"]
+
+        if len(cutoff_events) == len(rows):
+            # Default/current proofs cover the whole event history. Reuse the chain links already
+            # folded above rather than hashing all 10k events a second time.
+            cutoff_links = current_links
+            cutoff_head = current_head
+        else:
+            cutoff_links = []
+            cutoff_head = self.INTEGRITY_CHAIN_GENESIS
+            for fingerprint in cutoff_fingerprints:
+                cutoff_head = self._integrity_link(cutoff_head, fingerprint)
+                cutoff_links.append(cutoff_head)
+
+        # The chain segment is the authoritative proof against an externally pinned chain head.
+        # Merkle paths are a compact second check for normal-sized histories, but constructing a
+        # full tree at 10k+ events would violate M2's <50 ms query target while adding no security
+        # beyond the already-returned chain segment.
+        merkle_included = len(cutoff_fingerprints) <= self.BELIEF_MERKLE_MAX_EVENTS
+        levels = self._belief_merkle_levels(cutoff_fingerprints) if merkle_included else []
+        root = levels[-1][0] if levels else None
+        receipts: list[dict[str, Any]] = []
+        relevant_indices = [
+            index for index, event in enumerate(cutoff_events) if event["id"] in relevant_event_ids
+        ]
+        chain_segment_start_index = min(relevant_indices) if relevant_indices else len(cutoff_events)
+        chain_head_before_segment = (
+            self.INTEGRITY_CHAIN_GENESIS
+            if chain_segment_start_index == 0
+            else cutoff_links[chain_segment_start_index - 1]
+        )
+        # Hash-chain membership is not logarithmically provable without a separately pinned Merkle
+        # root. Return the honest suffix from the earliest relevant receipt to the known-at head:
+        # unrelated events expose only ids + fingerprints, while an externally pinned chain head
+        # makes any rewrite, insertion, deletion, or reorder in this suffix detectable.
+        chain_segment = [
+            [cutoff_events[index]["id"], cutoff_fingerprints[index]]
+            for index in range(chain_segment_start_index, len(cutoff_events))
+        ]
+        for index, event in enumerate(cutoff_events):
+            if event["id"] not in relevant_event_ids:
+                continue
+            position = index
+            path: list[dict[str, str]] = []
+            if levels:
+                for level in levels[:-1]:
+                    sibling_position = position ^ 1
+                    if sibling_position >= len(level):
+                        sibling_position = position
+                    path.append(
+                        {
+                            "side": "left" if sibling_position < position else "right",
+                            "hash": level[sibling_position],
+                        }
+                    )
+                    position //= 2
+            receipts.append(
+                {
+                    "event": event,
+                    "event_index": index,
+                    "fingerprint": cutoff_fingerprints[index],
+                    "chain_link_hash": cutoff_links[index],
+                    "merkle_path": path,
+                }
+            )
+        return {
+            "proof_version": self.BELIEF_PROOF_VERSION,
+            "chain_version": self.INTEGRITY_CHAIN_VERSION,
+            "genesis": self.INTEGRITY_CHAIN_GENESIS,
+            "known_at": through,
+            "event_count_at_known_at": len(cutoff_events),
+            "first_event_at": first_at,
+            "last_event_at": last_at,
+            "chain_head_at_known_at": cutoff_head,
+            "current_chain_head": current_head,
+            "chain_segment_start_index": chain_segment_start_index,
+            "chain_head_before_segment": chain_head_before_segment,
+            "chain_segment": chain_segment,
+            "merkle_root_at_known_at": root,
+            "merkle_included": merkle_included,
+            "receipts": receipts,
+            "anchor_matches": None,
+            "contract": (
+                "Pin chain_head_at_known_at externally. The chain segment binds each selected "
+                "receipt to that head; the Merkle path is a compact second inclusion check. Without "
+                "an external pin, this is tamper-evident rather than tamper-proof."
+            ),
+        }
+
+    def verify_belief_proof(
+        self,
+        proof: dict[str, Any],
+        *,
+        verify_chain_segment: bool = True,
+        expected_head: str | None = None,
+    ) -> dict[str, Any]:
+        """Pure receipt-inclusion verification of an M2 proof. No store state is trusted or read.
+
+        This verifies returned snapshots against chain-bound receipts. It intentionally reports
+        completeness_verified=False: arbitrary search completeness needs an authenticated search
+        index (or every belief receipt), which this first proof format does not pretend to provide.
+        """
+        if not isinstance(proof, dict):
+            raise ValueError("proof must be an object")
+        beliefs = proof.get("beliefs") if isinstance(proof.get("beliefs"), list) else []
+        envelope = proof.get("proof") if isinstance(proof.get("proof"), dict) else proof
+        errors: list[str] = []
+        selection_manifest_matches = True
+        if envelope.get("proof_version") != self.BELIEF_PROOF_VERSION:
+            errors.append("unsupported proof_version")
+        merkle_root = str(envelope.get("merkle_root_at_known_at") or "")
+        verified_receipts: set[str] = set()
+        verified_snapshot_shas: dict[str, str] = {}
+        segment_entries: dict[int, tuple[str, str]] = {}
+        claimed_chain_head = str(envelope.get("chain_head_at_known_at") or "")
+        if verify_chain_segment:
+            try:
+                segment_start = int(envelope.get("chain_segment_start_index"))
+            except (TypeError, ValueError):
+                segment_start = -1
+                errors.append("invalid chain_segment_start_index")
+            segment = envelope.get("chain_segment")
+            if not isinstance(segment, list):
+                segment = []
+                errors.append("malformed chain segment")
+            try:
+                event_count = int(envelope.get("event_count_at_known_at"))
+            except (TypeError, ValueError):
+                event_count = -1
+                errors.append("invalid event_count_at_known_at")
+            chain_head = str(envelope.get("chain_head_before_segment") or "")
+            if segment_start < 0 or event_count < 0 or segment_start + len(segment) != event_count:
+                errors.append("chain segment does not reach the known-at head")
+            for offset, item in enumerate(segment):
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    event_id = str(item[0] or "")
+                    fingerprint = str(item[1] or "")
+                elif isinstance(item, dict):
+                    event_id = str(item.get("event_id") or "")
+                    fingerprint = str(item.get("fingerprint") or "")
+                else:
+                    errors.append("malformed chain segment entry")
+                    continue
+                if not event_id or len(fingerprint) != 64:
+                    errors.append(f"{event_id or 'chain segment'} malformed fingerprint")
+                    continue
+                event_index = segment_start + offset
+                segment_entries[event_index] = (event_id, fingerprint)
+                chain_head = self._integrity_link(chain_head, fingerprint)
+            if not chain_head or not claimed_chain_head or not hmac.compare_digest(chain_head, claimed_chain_head):
+                errors.append("chain segment head mismatch")
+        embedded_expected_head = str(envelope.get("expected_head") or "")
+        trusted_expected_head = str(expected_head or "").strip().lower()
+        comparison_head = trusted_expected_head or embedded_expected_head
+        if comparison_head and not hmac.compare_digest(comparison_head, claimed_chain_head):
+            errors.append("expected chain head does not match the known-at anchor")
+        for receipt in envelope.get("receipts") or []:
+            if not isinstance(receipt, dict) or not isinstance(receipt.get("event"), dict):
+                errors.append("malformed receipt")
+                continue
+            event = receipt["event"]
+            event_id = str(event.get("id") or "")
+            fingerprint = self._integrity_event_fingerprint(event)
+            if not hmac.compare_digest(fingerprint, str(receipt.get("fingerprint") or "")):
+                errors.append(f"{event_id or 'receipt'} fingerprint mismatch")
+                continue
+            try:
+                event_index = int(receipt.get("event_index"))
+            except (TypeError, ValueError):
+                errors.append(f"{event_id or 'receipt'} invalid event_index")
+                continue
+            segment_entry = segment_entries.get(event_index)
+            if verify_chain_segment and segment_entry != (event_id, fingerprint):
+                errors.append(f"{event_id or 'receipt'} is not bound to the chain segment")
+                continue
+            if merkle_root:
+                node = self._belief_merkle_leaf(event_index, fingerprint)
+                for sibling in receipt.get("merkle_path") or []:
+                    if not isinstance(sibling, dict) or sibling.get("side") not in {"left", "right"}:
+                        errors.append(f"{event_id or 'receipt'} malformed Merkle path")
+                        node = ""
+                        break
+                    sibling_hash = str(sibling.get("hash") or "")
+                    node = (
+                        self._belief_merkle_parent(sibling_hash, node)
+                        if sibling["side"] == "left"
+                        else self._belief_merkle_parent(node, sibling_hash)
+                    )
+                if not node or not hmac.compare_digest(node, merkle_root):
+                    errors.append(f"{event_id or 'receipt'} Merkle inclusion mismatch")
+                    continue
+            metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+            if event.get("event_type") in {"belief_recorded", "belief_revised"}:
+                snapshot = metadata.get("snapshot") if isinstance(metadata.get("snapshot"), dict) else {}
+                actual_sha = self._belief_snapshot_sha(snapshot)
+                expected_sha = str(metadata.get("snapshot_sha256") or "")
+                if not expected_sha or not hmac.compare_digest(actual_sha, expected_sha):
+                    errors.append(f"{event_id or 'receipt'} belief snapshot mismatch")
+                    continue
+                verified_snapshot_shas[event_id] = expected_sha
+            verified_receipts.add(event_id)
+
+        for belief in beliefs:
+            if not isinstance(belief, dict):
+                errors.append("malformed belief")
+                continue
+            if not belief.get("sealed"):
+                errors.append(f"{belief.get('memory_id') or 'belief'} is legacy/unsealed")
+                continue
+            receipt_id = str(belief.get("record_receipt_event_id") or "")
+            if not receipt_id or receipt_id not in verified_snapshot_shas:
+                errors.append(f"{belief.get('memory_id') or 'belief'} missing verified receipt")
+                continue
+            belief_snapshot = self._belief_snapshot(
+                {
+                    **belief,
+                    "id": belief.get("memory_id"),
+                }
+            )
+            actual_belief_sha = self._belief_snapshot_sha(belief_snapshot)
+            claimed_belief_sha = str(belief.get("snapshot_sha256") or "")
+            if not claimed_belief_sha or not hmac.compare_digest(actual_belief_sha, claimed_belief_sha):
+                errors.append(f"{belief.get('memory_id') or 'belief'} returned snapshot mismatch")
+            elif not hmac.compare_digest(claimed_belief_sha, verified_snapshot_shas[receipt_id]):
+                errors.append(f"{belief.get('memory_id') or 'belief'} receipt does not seal returned snapshot")
+            if not belief.get("snapshot_verified"):
+                errors.append(f"{belief.get('memory_id') or 'belief'} snapshot was not verified")
+
+        selection = envelope.get("selection")
+        if not isinstance(selection, dict):
+            selection_manifest_matches = False
+            errors.append("missing selection manifest")
+        else:
+            actual_receipt_ids = [str(belief.get("record_receipt_event_id") or "") for belief in beliefs]
+            actual_memory_ids = [str(belief.get("memory_id") or "") for belief in beliefs]
+            try:
+                selected_count = int(selection.get("result_count"))
+                matched_count = int(selection.get("matched_count"))
+                selected_limit = int(selection.get("limit"))
+            except (TypeError, ValueError):
+                selected_count = matched_count = selected_limit = -1
+            outer_topic = proof.get("topic")
+            outer_valid_at = proof.get("valid_at")
+            outer_known_at = proof.get("known_at")
+            topic_matches = (
+                not isinstance(outer_topic, str)
+                or hmac.compare_digest(
+                    str(selection.get("topic_sha256") or ""),
+                    hashlib.sha256(outer_topic.encode("utf-8")).hexdigest(),
+                )
+            )
+            valid_at_matches = outer_valid_at is None or selection.get("valid_at") == outer_valid_at
+            known_at_matches = outer_known_at is None or selection.get("known_at") == outer_known_at
+            abstained_matches = (
+                proof.get("abstained") is None
+                or bool(proof.get("abstained")) == bool(selection.get("abstained"))
+            )
+            selection_manifest_matches = (
+                selection.get("record_receipt_event_ids") == actual_receipt_ids
+                and selection.get("memory_ids") == actual_memory_ids
+                and selected_count == len(beliefs)
+                and bool(selection.get("abstained")) == (not beliefs)
+                and selected_limit >= len(beliefs)
+                and matched_count >= len(beliefs)
+                and bool(selection.get("truncated")) == (matched_count > len(beliefs))
+                and topic_matches
+                and valid_at_matches
+                and known_at_matches
+                and abstained_matches
+            )
+            if not selection_manifest_matches:
+                errors.append("selection manifest does not match returned beliefs")
+        if envelope.get("anchor_matches") is False and not comparison_head:
+            errors.append("expected chain head does not match the known-at anchor")
+        inclusion_verified = not errors
+        return {
+            "verified": inclusion_verified,
+            "inclusion_verified": inclusion_verified,
+            "selection_manifest_matches": selection_manifest_matches,
+            "completeness_verified": False,
+            "verification_scope": "receipt_inclusion",
+            "anchor_source": (
+                "external" if trusted_expected_head else "embedded" if embedded_expected_head else "none"
+            ),
+            "anchored_verified": inclusion_verified and bool(trusted_expected_head),
+            "receipts_verified": len(verified_receipts),
+            "beliefs_checked": len(beliefs),
+            "chain_head_at_known_at": envelope.get("chain_head_at_known_at"),
+            "merkle_root_at_known_at": envelope.get("merkle_root_at_known_at"),
+            "errors": errors,
+        }
 
     def integrity_digest(self, user_id: str) -> dict[str, Any]:
         """A tamper-evident summary of the memory's whole history: the hash-chain head over the
@@ -20937,9 +22162,15 @@ class CortexStore:
         # accrues an occurrence instead of silently collapsing; a re-extraction of the same
         # capture (worker retry, vault rebuild materialization) stays idempotent.
         existing_memory = conn.execute(
-            "SELECT capture_id, occurrences FROM memories WHERE user_id = ? AND id = ?",
+            "SELECT capture_id, occurrences, recorded_at FROM memories WHERE user_id = ? AND id = ?",
             (user_id, memory_id),
         ).fetchone()
+        recorded_at = (
+            str(existing_memory["recorded_at"] or "").strip()
+            if existing_memory is not None
+            else ""
+        ) or _transaction_now_iso()
+        superseded_at = recorded_at if superseded_by else None
         occurrences = 1
         if existing_memory:
             occurrences = _memory_occurrences(existing_memory["occurrences"])
@@ -20957,8 +22188,8 @@ class CortexStore:
         conn.execute(
             """
             INSERT OR REPLACE INTO memories
-            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, occurrences, captured_at, updated_at, raw_excerpt, author_class, trust_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, superseded_at, occurrences, captured_at, recorded_at, updated_at, raw_excerpt, author_class, trust_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 memory_id,
@@ -20981,8 +22212,10 @@ class CortexStore:
                 valid_from,
                 valid_to,
                 superseded_by,
+                superseded_at,
                 occurrences,
                 captured_at,
+                recorded_at,
                 captured_at,
                 raw_excerpt,
                 author_class,
@@ -21018,7 +22251,7 @@ class CortexStore:
             topics=topics,
             captured_at=captured_at,
         )
-        return {
+        memory = {
             "id": memory_id,
             "capture_id": capture_id,
             "user_id": user_id,
@@ -21040,8 +22273,10 @@ class CortexStore:
             "valid_from": valid_from,
             "valid_to": valid_to,
             "superseded_by": superseded_by,
+            "superseded_at": superseded_at,
             "occurrences": occurrences,
             "captured_at": captured_at,
+            "recorded_at": recorded_at,
             "updated_at": captured_at,
             "raw_excerpt": raw_excerpt,
             "author_class": author_class,
@@ -21049,6 +22284,38 @@ class CortexStore:
             # included on the payload for API consumers but never treated as user-editable.
             "trust_score": trust_score,
         }
+        receipt_at = _transaction_now_iso()
+        receipt = self._record_belief_snapshot_event(
+            conn,
+            user_id,
+            memory,
+            created_at=receipt_at,
+            reason="memory_saved",
+        )
+        memory["belief_receipt_event_id"] = receipt["id"]
+        if existing_memory is not None and not receipt.get("deduplicated"):
+            # Same-id edits are new transaction-time versions, not retcons at the original time.
+            memory["recorded_at"] = receipt["created_at"]
+            conn.execute(
+                "UPDATE memories SET recorded_at = ? WHERE user_id = ? AND id = ?",
+                (receipt["created_at"], user_id, memory_id),
+            )
+        if superseded_by:
+            current_row = conn.execute(
+                "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+                (user_id, superseded_by),
+            ).fetchone()
+            if current_row is not None:
+                self._record_belief_supersession_event(
+                    conn,
+                    user_id,
+                    stale=memory,
+                    current=self._memory_from_row(current_row),
+                    effective_at=str(valid_to or recorded_at),
+                    created_at=superseded_at or recorded_at,
+                    reason="saved_as_superseded",
+                )
+        return memory
 
     def _find_echo_original(self, conn, user_id: str, content: str, memory_id: str):
         """Find an active user/connector-authored memory whose normalized content matches an
@@ -21179,6 +22446,7 @@ class CortexStore:
         superseded_by: str | None,
     ) -> dict[str, Any]:
         memory_id = duplicate["id"]
+        transaction_at = _transaction_now_iso()
         conn.execute(
             """
             UPDATE memories
@@ -21192,6 +22460,7 @@ class CortexStore:
                 valid_from = ?,
                 valid_to = ?,
                 superseded_by = ?,
+                superseded_at = CASE WHEN ? IS NULL THEN NULL ELSE COALESCE(superseded_at, ?) END,
                 updated_at = ?
             WHERE user_id = ? AND id = ?
             """,
@@ -21206,6 +22475,8 @@ class CortexStore:
                 valid_from,
                 valid_to,
                 superseded_by,
+                superseded_by,
+                transaction_at,
                 captured_at,
                 user_id,
                 memory_id,
@@ -21244,7 +22515,31 @@ class CortexStore:
             "SELECT * FROM memories WHERE user_id = ? AND id = ?",
             (user_id, memory_id),
         ).fetchone()
-        return self._memory_from_row(row)
+        memory = self._memory_from_row(row)
+        receipt = self._record_belief_snapshot_event(
+            conn,
+            user_id,
+            memory,
+            created_at=transaction_at,
+            reason="source_record_refreshed",
+        )
+        memory["belief_receipt_event_id"] = receipt["id"]
+        if superseded_by:
+            current_row = conn.execute(
+                "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+                (user_id, superseded_by),
+            ).fetchone()
+            if current_row is not None:
+                self._record_belief_supersession_event(
+                    conn,
+                    user_id,
+                    stale=memory,
+                    current=self._memory_from_row(current_row),
+                    effective_at=str(valid_to or transaction_at),
+                    created_at=memory.get("superseded_at") or transaction_at,
+                    reason="source_record_refreshed_as_superseded",
+                )
+        return memory
 
     def _save_memory_relations_for_capture(
         self,
@@ -23836,16 +25131,22 @@ class CortexStore:
         )
         return {"id": edge_id, "user_id": user_id, "source_id": source_id, "target_id": target_id, "kind": kind, "weight": weight, "evidence_id": evidence_id, "created_at": created_at}
 
-    def _event(self, conn, user_id: str, object_id: str, object_type: str, event_type: str, metadata: dict[str, Any]) -> dict[str, Any]:
-        created_at = now_iso()
+    def _event(
+        self,
+        conn,
+        user_id: str,
+        object_id: str,
+        object_type: str,
+        event_type: str,
+        metadata: dict[str, Any],
+        *,
+        created_at: str | None = None,
+    ) -> dict[str, Any]:
+        created_at = str(created_at or now_iso())
         # created_at has second precision, so the id seed needs a nonce: without it, two events
         # for the same object in the same second collide and INSERT OR REPLACE silently drops
         # the earlier one (observed with rapid mcp:{tool} tool_call logging).
         event_id = stable_id("evt_", user_id + object_id + object_type + event_type + created_at + uuid.uuid4().hex)
-        conn.execute(
-            "INSERT OR REPLACE INTO memory_events(id, user_id, object_id, object_type, event_type, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (event_id, user_id, object_id, object_type, event_type, json.dumps(metadata), created_at),
-        )
         event = {
             "id": event_id,
             "user_id": user_id,
@@ -23855,6 +25156,23 @@ class CortexStore:
             "metadata": metadata,
             "created_at": created_at,
         }
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_events
+            (id, user_id, object_id, object_type, event_type, metadata_json, fingerprint_sha256, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                user_id,
+                object_id,
+                object_type,
+                event_type,
+                json.dumps(metadata),
+                self._integrity_event_fingerprint(event),
+                created_at,
+            ),
+        )
         self.vault.append_event(event)
         return event
 
@@ -24188,6 +25506,7 @@ class CortexStore:
             "valid_from": row["valid_from"] if "valid_from" in keys else None,
             "valid_to": row["valid_to"] if "valid_to" in keys else None,
             "superseded_by": row["superseded_by"] if "superseded_by" in keys else None,
+            "superseded_at": row["superseded_at"] if "superseded_at" in keys else None,
             "occurrences": _memory_occurrences(row["occurrences"]) if "occurrences" in keys else 1,
             "author_class": normalize_author_class(row["author_class"] if "author_class" in keys else "unknown"),
             "trust_score": normalize_trust_score(
@@ -24195,6 +25514,7 @@ class CortexStore:
                 row["author_class"] if "author_class" in keys else "unknown",
             ),
             "captured_at": row["captured_at"],
+            "recorded_at": row["recorded_at"] if "recorded_at" in keys else row["captured_at"],
             "updated_at": row["updated_at"] if "updated_at" in keys else row["captured_at"],
             "raw_excerpt": row["raw_excerpt"],
         }

@@ -250,6 +250,13 @@ class VerifyIntegrityRequest(BaseModel):
     expected_head: str = Field(..., min_length=1, max_length=128)
 
 
+class VerifyBeliefProofRequest(BaseModel):
+    """M2: verify a self-contained Proof-of-Belief envelope without trusting its source."""
+
+    proof: dict[str, Any]
+    expected_head: str | None = Field(default=None, min_length=1, max_length=128)
+
+
 class VerifyBundleRequest(BaseModel):
     """Phase D: verify a portable memory bundle WITHOUT trusting its source — recompute the payload
     hash from the embedded payload and check it against the manifest. Pure function of its input."""

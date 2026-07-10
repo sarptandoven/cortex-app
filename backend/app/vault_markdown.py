@@ -36,7 +36,9 @@ MEMORY_FRONTMATTER_FIELDS: tuple[str, ...] = (
     "valid_from",
     "valid_to",
     "superseded_by",
+    "superseded_at",
     "captured_at",
+    "recorded_at",
     "updated_at",
     "capture_id",
     "user_id",
@@ -72,7 +74,7 @@ _GENERATED_KEYS = ("_link_names", "_backlinks")
 # tags: projected from topics at render time. trust_score: a DERIVED ranking signal recomputed
 # from author_class (+ Phase 3 corroboration) — never rendered into notes and stripped on parse,
 # so a hand-edited score can never enter the rebuild source of truth.
-_PROJECTED_ONLY_FIELDS = ("tags", "trust_score")
+_PROJECTED_ONLY_FIELDS = ("tags", "trust_score", "recorded_at", "superseded_at")
 
 
 def _wikilink(name: str) -> str:
