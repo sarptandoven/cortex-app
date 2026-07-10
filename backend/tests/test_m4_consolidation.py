@@ -120,6 +120,22 @@ class MemoryConsolidationTests(unittest.TestCase):
         status = self.store.hot_context_cache_status(self.USER)
         self.assertEqual(status["entries"][0]["status"], "stale")
 
+    def test_engine_version_drift_is_not_reported_as_current(self) -> None:
+        self._seed_conflict()
+        self.store.run_memory_consolidation(self.USER, hot_requests=[self._request()])
+
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE hot_context_packs SET engine_version = 0 WHERE user_id = ?",
+                (self.USER,),
+            )
+
+        entry = self.store.hot_context_cache_status(self.USER)["entries"][0]
+        self.assertEqual(entry["status"], "active")
+        self.assertEqual(entry["engine_version"], 0)
+        self.assertGreater(entry["current_engine_version"], 0)
+        self.assertFalse(entry["current"])
+
     def test_tampered_pack_is_never_served(self) -> None:
         self._seed_conflict()
         result = self.store.run_memory_consolidation(self.USER, hot_requests=[self._request()])
@@ -306,6 +322,24 @@ class MemoryConsolidationTests(unittest.TestCase):
         self.assertEqual(ran["processed"], 1)
         self.assertEqual(ran["jobs"][0]["job_type"], "sleep_consolidation")
         self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+
+    def test_queued_sleep_pass_honors_current_maintenance_setting(self) -> None:
+        self._seed_conflict()
+        self.store.enqueue_memory_consolidation(
+            self.USER,
+            run_at="2000-01-01T00:00:00Z",
+            hot_requests=[self._request()],
+        )
+        self.store.update_settings(self.USER, {"allow_agent_maintenance": False})
+
+        ran = self.store.run_due_jobs(self.USER, limit=1, schedule_source_syncs=False)
+
+        self.assertEqual(ran["processed"], 1)
+        self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+        self.assertTrue(ran["jobs"][0]["result"]["skipped"])
+        self.assertEqual(ran["jobs"][0]["result"]["reason"], "agent_maintenance_disabled")
+        self.assertEqual(len(self.store.detect_conflicts(self.USER)), 1)
+        self.assertEqual(self.store.get_memory_consolidation(self.USER)["runs"], [])
 
     def test_job_coalescing_merges_requests_and_fails_closed(self) -> None:
         first = self.store.enqueue_memory_consolidation(

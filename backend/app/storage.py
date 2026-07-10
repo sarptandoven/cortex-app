@@ -15920,6 +15920,7 @@ class CortexStore:
         entries = []
         for row in rows:
             request = self._json_or_empty(row["request_json"])
+            stored_engine_version = int(row["engine_version"] or 0)
             entries.append(
                 {
                     "cache_key": row["cache_key"],
@@ -15928,8 +15929,14 @@ class CortexStore:
                     "status": row["status"],
                     "source_revision": int(row["source_revision"] or 0),
                     "current_revision": revision,
-                    "current": row["status"] == "active"
-                    and (int(row["source_revision"]) if row["source_revision"] is not None else -1) == revision,
+                    "engine_version": stored_engine_version,
+                    "current_engine_version": CONTEXT_ENGINE_VERSION,
+                    "current": (
+                        row["status"] == "active"
+                        and (int(row["source_revision"]) if row["source_revision"] is not None else -1)
+                        == revision
+                        and stored_engine_version == CONTEXT_ENGINE_VERSION
+                    ),
                     "hit_count": int(row["hit_count"] or 0),
                     "last_hit_at": row["last_hit_at"],
                     "updated_at": row["updated_at"],
@@ -23808,6 +23815,19 @@ class CortexStore:
 
     def _process_sleep_consolidation_job(self, job: dict[str, Any]) -> dict[str, Any]:
         payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        # A queued job must honor the user's current Trust controls at execution time.
+        # The setting may have been disabled after the job was enqueued, so the
+        # internal call below must not be allowed to bypass this check. Complete a
+        # disabled job as an explicit no-op instead of retrying a policy decision.
+        try:
+            self.require_agent_access(job["user_id"], "maintenance")
+        except PermissionError:
+            return {
+                "status": "skipped",
+                "skipped": True,
+                "reason": "agent_maintenance_disabled",
+                "completed_at": now_iso(),
+            }
         result = self.run_memory_consolidation(
             job["user_id"],
             hot_requests=payload.get("hot_requests") if isinstance(payload.get("hot_requests"), list) else None,
