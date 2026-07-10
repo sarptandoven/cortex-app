@@ -1341,9 +1341,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         processing=str(body.get("processing") or "sync"),
                         max_records=max_records,
                         cursor_name=str(body.get("cursor_name") or "local-folder"),
-                        # A vault the user explicitly connects is trusted by default: its notes go
-                        # straight into memory instead of Review. Pass review_required=true to gate.
-                        review_required=bool(body.get("review_required", False)),
+                        # Default direct notes sync to Review so first-time users can approve what
+                        # becomes memory. Explicit trusted flows may pass review_required=false.
+                        review_required=bool(body.get("review_required", True)),
                     )
                     self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
                 except FileNotFoundError as exc:

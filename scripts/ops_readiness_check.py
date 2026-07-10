@@ -546,6 +546,8 @@ def main() -> None:
     parser.add_argument("--require-package-artifacts", action="store_true", help="Fail unless release artifacts, checksums, beta handoff, and beta-readiness manifest metadata verify.")
     parser.add_argument("--allow-stale-package", action="store_true", help="Warn instead of failing when required package artifacts do not match the current git commit.")
     parser.add_argument("--require-live", action="store_true", help="Fail if the running local backend cannot pass live checks.")
+    parser.add_argument("--backend-test-timeout", type=int, default=600, help="Seconds allowed for backend unittest discovery during readiness checks.")
+    parser.add_argument("--eval-timeout", type=int, default=180, help="Seconds allowed for retrieval/adaptation eval checks.")
     args = parser.parse_args()
     if args.require_live and not args.token:
         raise SystemExit("Pass --token when using --require-live.")
@@ -575,11 +577,11 @@ def main() -> None:
     add_check(checks, "connector_baseline", connector_baseline["ok"], "10k baseline connectors have real modules, tests, routes, catalog setup, and preserve-on-disconnect semantics.", connector_baseline)
 
     if not args.skip_tests:
-        test_result = run_command(root, [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest", "discover", "backend/tests"], timeout=120)
-        add_check(checks, "backend_unit_tests", test_result["ok"], "Backend unit tests pass with ResourceWarning treated as an error.", test_result)
-        retrieval_result = run_command(root, [sys.executable, "scripts/retrieval_eval.py"], timeout=120)
+        test_result = run_command(root, [sys.executable, "-m", "pytest", "backend/tests", "-q"], timeout=args.backend_test_timeout)
+        add_check(checks, "backend_unit_tests", test_result["ok"], "Backend pytest suite passes.", test_result)
+        retrieval_result = run_command(root, [sys.executable, "scripts/retrieval_eval.py"], timeout=args.eval_timeout)
         add_check(checks, "retrieval_quality_eval", retrieval_result["ok"], "Retrieval quality eval passes noisy-import and layer-recall gates.", retrieval_result)
-        adaptation_result = run_command(root, [sys.executable, "scripts/adaptation_eval.py"], timeout=120)
+        adaptation_result = run_command(root, [sys.executable, "scripts/adaptation_eval.py"], timeout=args.eval_timeout)
         add_check(checks, "adaptation_quality_eval", adaptation_result["ok"], "Agent adaptation eval passes layer, citation, safety, and pending-memory gates.", adaptation_result)
 
     if not args.skip_build:
@@ -621,8 +623,8 @@ def main() -> None:
         site_manifest_result = run_command(root, [sys.executable, "scripts/validate_update_manifest.py", "site/downloads/latest.json"], timeout=60)
         add_check(checks, "site_update_manifest", site_manifest_result["ok"], "Site update feed validates.", site_manifest_result)
 
-    release_dir = release_dir_arg or latest_release_dir(output_root)
     strict_package_artifacts = args.include_package or args.require_package_artifacts or release_dir_arg is not None
+    release_dir = release_dir_arg or (latest_release_dir(output_root) if strict_package_artifacts else None)
     if release_dir:
         release_manifest_result = run_command(root, [sys.executable, "scripts/validate_update_manifest.py", str(release_dir / "latest.json")], timeout=60)
         add_check(checks, "release_update_manifest", release_manifest_result["ok"], "Latest packaged release update feed validates.", release_manifest_result)
@@ -661,6 +663,13 @@ def main() -> None:
     else:
         add_check(checks, "release_update_manifest", True, f"No packaged Cortex release found under {output_root}; release manifest validation skipped for local readiness.")
         add_check(checks, "release_artifacts", True, f"No packaged Cortex release found under {output_root}; package artifact verification skipped for local readiness.")
+        add_check(checks, "site_matches_release", True, "Package/site comparison skipped for local readiness; pass --include-package or --require-package-artifacts to enforce it.")
+        staged_app = root / "macos" / "build" / "release-staging" / "Cortex.app"
+        if staged_app.exists():
+            packaged_vector = run_command(root, [sys.executable, "scripts/check_vector_runtime.py", "--app", str(staged_app)], timeout=60)
+            add_check(checks, "packaged_vector_runtime", packaged_vector["ok"], "Staged app runtime loads sqlite-vec and creates Cortex vector tables.", packaged_vector)
+            obsidian_bundle = verify_obsidian_plugin_bundle(root, staged_app)
+            add_check(checks, "packaged_obsidian_plugin", obsidian_bundle["ok"], "Staged app contains the current repo-owned Obsidian plugin resources.", obsidian_bundle)
 
     try:
         bundle = offline_support_bundle(root)

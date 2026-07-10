@@ -5537,10 +5537,8 @@ class CortexStore:
             connection_type="local_folder",
             status="empty" if empty_complete_scan else "connected",
             auth_state="needs_content" if empty_complete_scan else "healthy",
-            # A vault the user explicitly connected is trusted by default: its notes are added to
-            # memory directly rather than dumped into Review one-by-one (reviewing your own notes
-            # folder is not a sensible default and made a connected vault look like it "never
-            # synced"). Callers can pass review_required=True to keep the review gate.
+            # Default direct notes sync to Review so a first-time user can see and approve what
+            # becomes memory. Trusted/import flows can pass review_required=False explicitly.
             policy={"review_required": bool(review_required), "allow_ai_context": True},
             metadata=metadata,
             last_error=scan.errors[0]["error"] if scan.errors else None,
