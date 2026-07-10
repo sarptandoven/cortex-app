@@ -102,6 +102,7 @@ A self-signed but unpinned bundle is rejected by default. Obtain the expected si
 `failOpen` defaults to `true`: if live Cortex is unavailable or an offline bundle fails verification, OpenClaw continues with its original messages and no injected Cortex context. Set `failOpen: false` when missing verified memory must stop the run.
 
 Recalled content is wrapped with an explicit instruction that it is evidence, not executable instructions. Memory ids and source references remain visible for citation.
+Bundle-mode context also exposes the verified signer id, source-tenant SHA-256 binding, continuity-chain head, and authoritative payload SHA-256 so the receiving agent can retain bundle-level provenance instead of seeing detached facts. The raw verified source tenant remains available through the verifier API but is not interpolated into the model prompt.
 
 ## Portable verifier API
 
@@ -113,6 +114,7 @@ import { verifyPortableMemoryBundle } from "@cortex/openclaw-context/portable";
 const result = verifyPortableMemoryBundle(bundle, expectedSigningKeyId);
 if (!result.verified) throw new Error(result.error ?? "verification failed");
 console.log(result.payload?.memories);
+console.log(result.sourceUserId, result.chainHead, result.payloadSha256);
 ```
 
 See [`docs/PORTABLE_MEMORY_PROTOCOL_V2.md`](../../docs/PORTABLE_MEMORY_PROTOCOL_V2.md) for the byte-level protocol and committed cross-language test vector.

@@ -242,6 +242,8 @@ not arbitrary search completeness; an authenticated search index remains a futur
 
 **Phase 2 implemented (July 2026).** The published `cortex-portable-memory` protocol v2 uses exact authoritative UTF-8 payload bytes, strict outer/protocol version dispatch, algorithm-bound proof and signature preimages, a Draft 2020-12 schema, and a deterministic Python-produced cross-language test vector. The `@cortex/openclaw-context` reference plugin independently verifies signed bundles with signer pinning for offline recall, or injects cited live Cortex context through OpenClaw's current `contextEngine` lifecycle. The private v1 wire format remains compatibility-only; new exports use the language-neutral protocol v2 envelope.
 
+**Phase 3 interoperability gate implemented (July 2026).** A deterministic N=3 Python-signed vector now crosses both receiving paths: Python import -> MCP search preserves all three source ids and full `portable_lineage`, while the OpenClaw bundle adapter recalls all three memory ids and source references plus the verified signer, source-tenant SHA-256 binding, continuity head, and payload digest. A defined 11-case signed-field tamper corpus is rejected 11/11, and strict offline mode fails closed on a modified bundle.
+
 **Measurable objective.** Cross-agent recall: export from Cortex, import into an OpenClaw/MCP client, verify N memories recalled with intact provenance and 100% signature-verification (tampered bundles rejected 100%). Adoption is the long-term metric; verification integrity is the shippable one.
 
 **Effort:** high (protocol + adapters + evangelism). **Moat:** maximal if we're first. **The platform endgame.**

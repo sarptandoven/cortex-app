@@ -5,13 +5,13 @@
 Repo: `~/repos/cortex-app`
 Branch: `mass-scale-app-redesign`
 
-Shipped milestones: **M1 -> M3 -> M2 -> M6 -> M5 -> M7 -> M4 -> M8 stage 1**.
+Shipped milestones: **M1 -> M3 -> M2 -> M6 -> M5 -> M7 -> M4 -> M8 stages 1-3**.
 
 ## Latest state: M8 signed portable memory protocol v2
 
 HEAD before this work: `21f3d26 Add signed portable memory import`.
 
-The active uncommitted M8 stage publishes a language-neutral portable-memory protocol v2 and an OpenClaw adapter package:
+The latest M8 stages publish a language-neutral portable-memory protocol v2, an OpenClaw adapter package, and a measured cross-agent interoperability gate:
 
 - `backend/app/storage.py` now exports outer bundle `v3` / protocol `2` with authoritative signed `payload_bytes`, strict unpadded base64url decoding, bounded JSON validation, duplicate-key rejection for payload bytes, proof SHA-256, fixed ASCII signature/proof preimages, Ed25519 signer id validation, empty-chain support, and strict outer/protocol version dispatch.
 - Private signed `v2` / protocol `1` bundles remain verifiable/importable for compatibility. Legacy unsigned `v1` bundles remain payload-verifiable but are not importable.
@@ -20,15 +20,17 @@ The active uncommitted M8 stage publishes a language-neutral portable-memory pro
 - `spec/portable-memory/v2/schema.json` plus `spec/portable-memory/v2/test-vectors/cortex-python.json` provide cross-language fixtures.
 - `scripts/generate_portable_memory_vectors.py` regenerates the committed Python vector.
 - `packages/openclaw-cortex-context/` is a TypeScript OpenClaw `contextEngine` adapter that supports live Cortex context and offline signed bundle verification with signer pinning.
+- M8 stage 3 adds `cortex-python-n3.json`: three Python-signed memories cross Python import/MCP recall and OpenClaw offline recall with record and bundle provenance intact. The receiving prompt carries signer id, source-tenant SHA-256 binding, continuity head, payload SHA-256, memory ids, and source references. The raw tenant is verifier API data, not prompt text.
+- The TypeScript verifier rejects a defined 11-case signed-field tamper corpus 11/11, and strict bundle mode stops assembly on tampering.
 
 Validation on this tree:
 
 ```text
 python3 -m pytest backend/tests/test_m8_portable_memory.py -q
-# 13 passed, 7 subtests passed
+# 14 passed, 13 subtests passed
 
 cd packages/openclaw-cortex-context && npm test
-# 5 passed
+# 8 passed
 
 python3 scripts/generate_portable_memory_vectors.py
 git diff --check

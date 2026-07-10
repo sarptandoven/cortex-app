@@ -280,9 +280,9 @@ Reference implementations enforce:
 
 Deployments MAY use lower limits and SHOULD enforce HTTP request-body limits before parsing.
 
-## 13. Test vector
+## 13. Test vectors
 
-The deterministic Python-produced vector is:
+The deterministic Python-produced conformance vector is:
 
 - [`spec/portable-memory/v2/test-vectors/cortex-python.json`](../spec/portable-memory/v2/test-vectors/cortex-python.json)
 - Generator: [`scripts/generate_portable_memory_vectors.py`](../scripts/generate_portable_memory_vectors.py)
@@ -297,6 +297,12 @@ It deliberately includes:
 - One active memory with a source citation
 
 Both the Python backend and the TypeScript OpenClaw verifier must accept it. Tests mutate the payload object, payload bytes, proof, signer pin, and signature and require rejection.
+
+The cross-agent interoperability vector is:
+
+- [`spec/portable-memory/v2/test-vectors/cortex-python-n3.json`](../spec/portable-memory/v2/test-vectors/cortex-python-n3.json)
+
+It contains three active memories with distinct record-level provenance and a non-empty three-event continuity commitment. The reference gate requires all three memories to survive Python import and MCP recall with `portable_lineage` intact, and requires the OpenClaw adapter to recall all three with their memory ids, source references, signer id, source-tenant SHA-256 binding, continuity head, and payload digest visible. The raw verified tenant is available to verifier API callers but is not interpolated into the model prompt. The TypeScript tamper corpus mutates 11 independently signed or verified fields and requires 11/11 rejection. Strict bundle mode also proves that a tampered bundle stops assembly rather than silently injecting partial context.
 
 The generator's fixed private seed is public test material. Its signer id MUST NOT be trusted for production bundles.
 

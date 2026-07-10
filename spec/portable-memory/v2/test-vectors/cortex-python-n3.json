@@ -1,0 +1,193 @@
+{
+  "cortex_bundle_version": "v3",
+  "integrity_proof": {
+    "chain_head": "97aed284cf03f14d003079361cbede2a733d93b2b039f2eeb932b8de6e49358b",
+    "chain_version": "v1",
+    "event_count": 3,
+    "event_fingerprints": [
+      "52346f40543e0868a4558f3d1b35c010ed5a6241529027d3f7f44de8e532cf54",
+      "f23d17ae937a9227e234292a117aecbd37b31e840268f97f32642061de9c5f0e",
+      "146a8d7c525f4190f3cb0c2ee54f5eefb01fc6235a266920878af2163b74b34b"
+    ],
+    "genesis": "cortex:integrity:v1:genesis"
+  },
+  "manifest": {
+    "chain_head": "97aed284cf03f14d003079361cbede2a733d93b2b039f2eeb932b8de6e49358b",
+    "chain_version": "v1",
+    "event_count": 3,
+    "generated_at": "2026-07-10T00:00:00+00:00",
+    "payload_bytes": 3044,
+    "payload_sha256": "37de7a865b033ba3deceb13a5e86216aafabf86256c16328aa7fcda69c987e29",
+    "proof_sha256": "da310e38922d34b2928e00b41b3a309d235bf2912f79018d06c5d464103f70d5",
+    "record_counts": {
+      "captures": 0,
+      "edges": 0,
+      "entities": 0,
+      "imports": 0,
+      "memories": 3,
+      "tasks": 0
+    },
+    "signing_key_id": "56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c",
+    "user_id": "portable-vector-user"
+  },
+  "payload": {
+    "captures": [],
+    "edges": [],
+    "entities": [],
+    "exported_at": "2026-07-10T00:00:00+00:00",
+    "imports": [],
+    "memories": [
+      {
+        "author_class": "user",
+        "author_principal_id": "portable-vector-user",
+        "captured_at": "2026-07-10T00:01:00+00:00",
+        "confidence": "confirmed",
+        "content": "Café launch database decision: use PostgreSQL.",
+        "entity_ids": [],
+        "id": "mem_portable_interop_1",
+        "importance": 5,
+        "kind": "decision",
+        "layer": "decision",
+        "occurred_at": null,
+        "occurrences": 1,
+        "provenance": {
+          "fixture": true,
+          "receipt_id": "evt_portable_interop_1",
+          "source_sha256": "ac6529b0a7dcc32c90dcf92f12954b43bef804bcb225dcfad38e5d99b39d6122"
+        },
+        "raw_excerpt": "Café launch database decision: use PostgreSQL.",
+        "recorded_at": "2026-07-10T00:01:00+00:00",
+        "sector": "work",
+        "source": "note",
+        "source_type": "note",
+        "source_url": "note://portable-interop/1",
+        "status": "active",
+        "summary": "Café launch uses PostgreSQL.",
+        "superseded_at": null,
+        "superseded_by": null,
+        "topics": [
+          "Café",
+          "launch",
+          "PostgreSQL",
+          "database"
+        ],
+        "trust_score": 1.0,
+        "updated_at": "2026-07-10T00:01:00+00:00",
+        "user_id": "portable-vector-user",
+        "valid_from": null,
+        "valid_to": null
+      },
+      {
+        "author_class": "user",
+        "author_principal_id": "portable-vector-user",
+        "captured_at": "2026-07-10T00:02:00+00:00",
+        "confidence": "confirmed",
+        "content": "Café launch date is October 14.",
+        "entity_ids": [],
+        "id": "mem_portable_interop_2",
+        "importance": 5,
+        "kind": "observation",
+        "layer": "event",
+        "occurred_at": null,
+        "occurrences": 1,
+        "provenance": {
+          "fixture": true,
+          "receipt_id": "evt_portable_interop_2",
+          "source_sha256": "d82f37b57b3df3394513da60b914f3ddbb3ed618f5bcfa11c20ee016178f2341"
+        },
+        "raw_excerpt": "Café launch date is October 14.",
+        "recorded_at": "2026-07-10T00:02:00+00:00",
+        "sector": "work",
+        "source": "note",
+        "source_type": "note",
+        "source_url": "note://portable-interop/2",
+        "status": "active",
+        "summary": "Café launch is scheduled for October 14.",
+        "superseded_at": null,
+        "superseded_by": null,
+        "topics": [
+          "Café",
+          "launch",
+          "October 14",
+          "schedule"
+        ],
+        "trust_score": 1.0,
+        "updated_at": "2026-07-10T00:02:00+00:00",
+        "user_id": "portable-vector-user",
+        "valid_from": null,
+        "valid_to": null
+      },
+      {
+        "author_class": "user",
+        "author_principal_id": "portable-vector-user",
+        "captured_at": "2026-07-10T00:03:00+00:00",
+        "confidence": "confirmed",
+        "content": "Elena owns the Café launch rollout.",
+        "entity_ids": [],
+        "id": "mem_portable_interop_3",
+        "importance": 5,
+        "kind": "observation",
+        "layer": "event",
+        "occurred_at": null,
+        "occurrences": 1,
+        "provenance": {
+          "fixture": true,
+          "receipt_id": "evt_portable_interop_3",
+          "source_sha256": "39460a5f83ebba5b04ce8c65c21a26982b0902b5022bf514d678c89eace954ef"
+        },
+        "raw_excerpt": "Elena owns the Café launch rollout.",
+        "recorded_at": "2026-07-10T00:03:00+00:00",
+        "sector": "work",
+        "source": "note",
+        "source_type": "note",
+        "source_url": "note://portable-interop/3",
+        "status": "active",
+        "summary": "Café launch rollout owner is Elena.",
+        "superseded_at": null,
+        "superseded_by": null,
+        "topics": [
+          "Café",
+          "launch",
+          "Elena",
+          "owner"
+        ],
+        "trust_score": 1.0,
+        "updated_at": "2026-07-10T00:03:00+00:00",
+        "user_id": "portable-vector-user",
+        "valid_from": null,
+        "valid_to": null
+      }
+    ],
+    "stats": {
+      "memory_count": 3,
+      "quality_score": 1.0
+    },
+    "tasks": [],
+    "user_id": "portable-vector-user"
+  },
+  "payload_bytes": "eyJjYXB0dXJlcyI6W10sImVkZ2VzIjpbXSwiZW50aXRpZXMiOltdLCJpbXBvcnRzIjpbXSwibWVtb3JpZXMiOlt7ImF1dGhvcl9jbGFzcyI6InVzZXIiLCJhdXRob3JfcHJpbmNpcGFsX2lkIjoicG9ydGFibGUtdmVjdG9yLXVzZXIiLCJjYXB0dXJlZF9hdCI6IjIwMjYtMDctMTBUMDA6MDE6MDArMDA6MDAiLCJjb25maWRlbmNlIjoiY29uZmlybWVkIiwiY29udGVudCI6IkNhZlx1MDBlOSBsYXVuY2ggZGF0YWJhc2UgZGVjaXNpb246IHVzZSBQb3N0Z3JlU1FMLiIsImVudGl0eV9pZHMiOltdLCJpZCI6Im1lbV9wb3J0YWJsZV9pbnRlcm9wXzEiLCJpbXBvcnRhbmNlIjo1LCJraW5kIjoiZGVjaXNpb24iLCJsYXllciI6ImRlY2lzaW9uIiwib2NjdXJyZWRfYXQiOm51bGwsIm9jY3VycmVuY2VzIjoxLCJwcm92ZW5hbmNlIjp7ImZpeHR1cmUiOnRydWUsInJlY2VpcHRfaWQiOiJldnRfcG9ydGFibGVfaW50ZXJvcF8xIiwic291cmNlX3NoYTI1NiI6ImFjNjUyOWIwYTdkY2MzMmM5MGRjZjkyZjEyOTU0YjQzYmVmODA0YmNiMjI1ZGNmYWQzOGU1ZDk5YjM5ZDYxMjIifSwicmF3X2V4Y2VycHQiOiJDYWZcdTAwZTkgbGF1bmNoIGRhdGFiYXNlIGRlY2lzaW9uOiB1c2UgUG9zdGdyZVNRTC4iLCJyZWNvcmRlZF9hdCI6IjIwMjYtMDctMTBUMDA6MDE6MDArMDA6MDAiLCJzZWN0b3IiOiJ3b3JrIiwic291cmNlIjoibm90ZSIsInNvdXJjZV90eXBlIjoibm90ZSIsInNvdXJjZV91cmwiOiJub3RlOi8vcG9ydGFibGUtaW50ZXJvcC8xIiwic3RhdHVzIjoiYWN0aXZlIiwic3VtbWFyeSI6IkNhZlx1MDBlOSBsYXVuY2ggdXNlcyBQb3N0Z3JlU1FMLiIsInN1cGVyc2VkZWRfYXQiOm51bGwsInN1cGVyc2VkZWRfYnkiOm51bGwsInRvcGljcyI6WyJDYWZcdTAwZTkiLCJsYXVuY2giLCJQb3N0Z3JlU1FMIiwiZGF0YWJhc2UiXSwidHJ1c3Rfc2NvcmUiOjEuMCwidXBkYXRlZF9hdCI6IjIwMjYtMDctMTBUMDA6MDE6MDArMDA6MDAiLCJ1c2VyX2lkIjoicG9ydGFibGUtdmVjdG9yLXVzZXIiLCJ2YWxpZF9mcm9tIjpudWxsLCJ2YWxpZF90byI6bnVsbH0seyJhdXRob3JfY2xhc3MiOiJ1c2VyIiwiYXV0aG9yX3ByaW5jaXBhbF9pZCI6InBvcnRhYmxlLXZlY3Rvci11c2VyIiwiY2FwdHVyZWRfYXQiOiIyMDI2LTA3LTEwVDAwOjAyOjAwKzAwOjAwIiwiY29uZmlkZW5jZSI6ImNvbmZpcm1lZCIsImNvbnRlbnQiOiJDYWZcdTAwZTkgbGF1bmNoIGRhdGUgaXMgT2N0b2JlciAxNC4iLCJlbnRpdHlfaWRzIjpbXSwiaWQiOiJtZW1fcG9ydGFibGVfaW50ZXJvcF8yIiwiaW1wb3J0YW5jZSI6NSwia2luZCI6Im9ic2VydmF0aW9uIiwibGF5ZXIiOiJldmVudCIsIm9jY3VycmVkX2F0IjpudWxsLCJvY2N1cnJlbmNlcyI6MSwicHJvdmVuYW5jZSI6eyJmaXh0dXJlIjp0cnVlLCJyZWNlaXB0X2lkIjoiZXZ0X3BvcnRhYmxlX2ludGVyb3BfMiIsInNvdXJjZV9zaGEyNTYiOiJkODJmMzdiNTdiM2RmMzM5NDUxM2RhNjBiOTE0ZjNkZGJiM2VkNjE4ZjViY2ZhMTFjMjBlZTAxNjE3OGYyMzQxIn0sInJhd19leGNlcnB0IjoiQ2FmXHUwMGU5IGxhdW5jaCBkYXRlIGlzIE9jdG9iZXIgMTQuIiwicmVjb3JkZWRfYXQiOiIyMDI2LTA3LTEwVDAwOjAyOjAwKzAwOjAwIiwic2VjdG9yIjoid29yayIsInNvdXJjZSI6Im5vdGUiLCJzb3VyY2VfdHlwZSI6Im5vdGUiLCJzb3VyY2VfdXJsIjoibm90ZTovL3BvcnRhYmxlLWludGVyb3AvMiIsInN0YXR1cyI6ImFjdGl2ZSIsInN1bW1hcnkiOiJDYWZcdTAwZTkgbGF1bmNoIGlzIHNjaGVkdWxlZCBmb3IgT2N0b2JlciAxNC4iLCJzdXBlcnNlZGVkX2F0IjpudWxsLCJzdXBlcnNlZGVkX2J5IjpudWxsLCJ0b3BpY3MiOlsiQ2FmXHUwMGU5IiwibGF1bmNoIiwiT2N0b2JlciAxNCIsInNjaGVkdWxlIl0sInRydXN0X3Njb3JlIjoxLjAsInVwZGF0ZWRfYXQiOiIyMDI2LTA3LTEwVDAwOjAyOjAwKzAwOjAwIiwidXNlcl9pZCI6InBvcnRhYmxlLXZlY3Rvci11c2VyIiwidmFsaWRfZnJvbSI6bnVsbCwidmFsaWRfdG8iOm51bGx9LHsiYXV0aG9yX2NsYXNzIjoidXNlciIsImF1dGhvcl9wcmluY2lwYWxfaWQiOiJwb3J0YWJsZS12ZWN0b3ItdXNlciIsImNhcHR1cmVkX2F0IjoiMjAyNi0wNy0xMFQwMDowMzowMCswMDowMCIsImNvbmZpZGVuY2UiOiJjb25maXJtZWQiLCJjb250ZW50IjoiRWxlbmEgb3ducyB0aGUgQ2FmXHUwMGU5IGxhdW5jaCByb2xsb3V0LiIsImVudGl0eV9pZHMiOltdLCJpZCI6Im1lbV9wb3J0YWJsZV9pbnRlcm9wXzMiLCJpbXBvcnRhbmNlIjo1LCJraW5kIjoib2JzZXJ2YXRpb24iLCJsYXllciI6ImV2ZW50Iiwib2NjdXJyZWRfYXQiOm51bGwsIm9jY3VycmVuY2VzIjoxLCJwcm92ZW5hbmNlIjp7ImZpeHR1cmUiOnRydWUsInJlY2VpcHRfaWQiOiJldnRfcG9ydGFibGVfaW50ZXJvcF8zIiwic291cmNlX3NoYTI1NiI6IjM5NDYwYTVmODNlYmJhNWIwNGNlOGM2NWMyMWEyNjk4MmIwOTAyYjUwMjJiZjUxNGQ2NzhjODllYWNlOTU0ZWYifSwicmF3X2V4Y2VycHQiOiJFbGVuYSBvd25zIHRoZSBDYWZcdTAwZTkgbGF1bmNoIHJvbGxvdXQuIiwicmVjb3JkZWRfYXQiOiIyMDI2LTA3LTEwVDAwOjAzOjAwKzAwOjAwIiwic2VjdG9yIjoid29yayIsInNvdXJjZSI6Im5vdGUiLCJzb3VyY2VfdHlwZSI6Im5vdGUiLCJzb3VyY2VfdXJsIjoibm90ZTovL3BvcnRhYmxlLWludGVyb3AvMyIsInN0YXR1cyI6ImFjdGl2ZSIsInN1bW1hcnkiOiJDYWZcdTAwZTkgbGF1bmNoIHJvbGxvdXQgb3duZXIgaXMgRWxlbmEuIiwic3VwZXJzZWRlZF9hdCI6bnVsbCwic3VwZXJzZWRlZF9ieSI6bnVsbCwidG9waWNzIjpbIkNhZlx1MDBlOSIsImxhdW5jaCIsIkVsZW5hIiwib3duZXIiXSwidHJ1c3Rfc2NvcmUiOjEuMCwidXBkYXRlZF9hdCI6IjIwMjYtMDctMTBUMDA6MDM6MDArMDA6MDAiLCJ1c2VyX2lkIjoicG9ydGFibGUtdmVjdG9yLXVzZXIiLCJ2YWxpZF9mcm9tIjpudWxsLCJ2YWxpZF90byI6bnVsbH1dLCJzdGF0cyI6eyJtZW1vcnlfY291bnQiOjMsInF1YWxpdHlfc2NvcmUiOjEuMH0sInRhc2tzIjpbXSwidXNlcl9pZCI6InBvcnRhYmxlLXZlY3Rvci11c2VyIn0",
+  "protocol": {
+    "capabilities": [
+      "signed-export",
+      "signer-pinning",
+      "tenant-rebound-import",
+      "belief-timeline-preservation"
+    ],
+    "chain_algorithm": "sha256-colon-fold-v1",
+    "key_id_algorithm": "sha256-raw-ed25519-public-key",
+    "name": "cortex-portable-memory",
+    "payload_digest_algorithm": "sha256",
+    "payload_encoding": "base64url-json-utf8",
+    "proof_digest_algorithm": "sha256",
+    "proof_format": "cortex-integrity-fingerprint-chain-v2",
+    "signature_algorithm": "ed25519",
+    "signature_format": "cortex-portable-memory-signature-v2",
+    "version": 2
+  },
+  "signature": {
+    "algorithm": "ed25519",
+    "key_id": "56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c",
+    "public_key": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+    "value": "PkFz0GRYU2DhcExklj06ka2JdXFRBjT1rLpmEd7xoHub790BcO7GPN-VonvAVWdbJTgVpQffSIRkvoGs3WTYDw"
+  }
+}

@@ -35,6 +35,9 @@ export interface PortableMemoryVerification {
   protocolVersion: number | null;
   signingKeyId: string | null;
   expectedSigningKeyId: string | null;
+  sourceUserId: string | null;
+  chainHead: string | null;
+  payloadSha256: string | null;
   payload: PortableMemoryPayload | null;
   checks: {
     protocol: boolean;
@@ -575,6 +578,9 @@ export function verifyPortableMemoryBundle(
       protocolVersion: PROTOCOL_VERSION,
       signingKeyId,
       expectedSigningKeyId: expected,
+      sourceUserId: verified ? (fields.manifest.user_id as string) : null,
+      chainHead: verified ? (fields.manifest.chain_head as string) : null,
+      payloadSha256: verified ? manifestPayloadHash : null,
       payload: verified ? payload : null,
       checks,
       error: verified ? null : "one or more portable-memory v2 checks failed",
@@ -586,6 +592,9 @@ export function verifyPortableMemoryBundle(
       protocolVersion: null,
       signingKeyId,
       expectedSigningKeyId: expected,
+      sourceUserId: null,
+      chainHead: null,
+      payloadSha256: null,
       payload: null,
       checks,
       error: error instanceof Error ? error.message : String(error),

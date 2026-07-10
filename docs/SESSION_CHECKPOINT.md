@@ -1,5 +1,14 @@
 # Session checkpoint — 2026-07-10
 
+## M8 portable memory interoperability
+
+- Published portable-memory protocol v2 and the `@cortex/openclaw-context` reference adapter are committed in `181fa18`.
+- M8 stage 3 adds a deterministic N=3 Python-signed vector with a non-empty continuity commitment.
+- Python import -> MCP recall preserves all three source ids and `portable_lineage` fields: signer, source tenant, source chain head, payload digest, and signer pin status.
+- OpenClaw offline recall exposes all three memory ids/source references plus verified bundle signer id, source-tenant SHA-256 binding, continuity head, and payload SHA-256. The raw tenant remains verifier API data and is not inserted into the prompt.
+- A defined 11-case TypeScript tamper corpus is rejected 11/11; strict bundle mode fails closed on modified memory.
+- Focused validation: backend portable-memory module `14 passed + 13 subtests`; OpenClaw adapter `8 passed`.
+
 ## M6 calibrated metacognition and MemoryTruth v4
 
 - Backend milestone committed as `70c8d86`.

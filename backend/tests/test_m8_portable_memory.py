@@ -150,6 +150,51 @@ class PortableMemoryProtocolTests(unittest.TestCase):
             )["verified"]
         )
 
+    def test_n3_cross_agent_vector_imports_and_recalls_with_portable_provenance(self) -> None:
+        vector_path = (
+            Path(__file__).resolve().parents[2]
+            / "spec"
+            / "portable-memory"
+            / "v2"
+            / "test-vectors"
+            / "cortex-python-n3.json"
+        )
+        bundle = json.loads(vector_path.read_text(encoding="utf-8"))
+        key_id = bundle["signature"]["key_id"]
+        imported = self.target.import_portable_bundle(
+            self.target_user,
+            bundle,
+            expected_signing_key_id=key_id,
+        )
+        self.assertEqual(imported["memories_inserted"], 3)
+        self.assertTrue(imported["published_protocol"])
+
+        recall = mcp_tools.call_tool(
+            self.target,
+            self.target_user,
+            "search_memory",
+            {"query": "Café launch", "top_k": 10},
+            token_scopes=["read"],
+        )
+        results = recall["results"]
+        self.assertEqual(len(results), 3)
+        self.assertEqual(
+            {item["id"] for item in results},
+            set(imported["memory_id_map"].values()),
+        )
+        expected_source_ids = set(imported["memory_id_map"])
+        recalled_source_ids = set()
+        for item in results:
+            self.assertTrue(str(item["source_url"]).startswith("note://portable-interop/"))
+            lineage = item["provenance"]["portable_lineage"][-1]
+            self.assertEqual(lineage["signing_key_id"], key_id)
+            self.assertEqual(lineage["source_user_id"], bundle["manifest"]["user_id"])
+            self.assertEqual(lineage["source_chain_head"], bundle["manifest"]["chain_head"])
+            self.assertEqual(lineage["payload_sha256"], bundle["manifest"]["payload_sha256"])
+            self.assertTrue(lineage["signer_pinned"])
+            recalled_source_ids.add(lineage["source_memory_id"])
+        self.assertEqual(recalled_source_ids, expected_source_ids)
+
     def test_published_verifier_rejects_invalid_unicode_and_excessive_records(self) -> None:
         self._seed(1)
         bundle = self.source.export_portable_bundle(self.source_user)

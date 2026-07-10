@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import plugin, {
@@ -11,6 +13,12 @@ import plugin, {
 const fixtureUrl = new URL("../../../spec/portable-memory/v2/test-vectors/cortex-python.json", import.meta.url);
 const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
 const signingKeyId = fixture.signature.key_id;
+const interopFixtureUrl = new URL(
+  "../../../spec/portable-memory/v2/test-vectors/cortex-python-n3.json",
+  import.meta.url,
+);
+const interopFixture = JSON.parse(await readFile(interopFixtureUrl, "utf8"));
+const interopSigningKeyId = interopFixture.signature.key_id;
 
 function liveConfig(overrides = {}) {
   return {
@@ -36,6 +44,9 @@ test("TypeScript independently verifies the Python portable-memory vector", () =
   const result = verifyPortableMemoryBundle(fixture, signingKeyId);
   assert.equal(result.verified, true);
   assert.equal(result.protocolVersion, 2);
+  assert.equal(result.sourceUserId, fixture.manifest.user_id);
+  assert.equal(result.chainHead, fixture.manifest.chain_head);
+  assert.equal(result.payloadSha256, fixture.manifest.payload_sha256);
   assert.equal(result.payload.memories[0].id, "mem_portable_vector_1");
 
   const withoutConvenience = structuredClone(fixture);
@@ -96,6 +107,57 @@ test("TypeScript independently verifies the Python portable-memory vector", () =
   const invalidUnicodeResult = verifyPortableMemoryBundle(invalidUnicode, signingKeyId);
   assert.equal(invalidUnicodeResult.verified, false);
   assert.match(invalidUnicodeResult.error, /invalid Unicode/);
+});
+
+test("portable verifier rejects the complete signed-field tamper corpus", () => {
+  const variants = [];
+  const add = (name, mutate) => {
+    const candidate = structuredClone(interopFixture);
+    mutate(candidate);
+    variants.push([name, candidate]);
+  };
+  add("outer version", (bundle) => {
+    bundle.cortex_bundle_version = "v2";
+  });
+  add("protocol algorithm", (bundle) => {
+    bundle.protocol.payload_digest_algorithm = "sha512";
+  });
+  add("convenience payload", (bundle) => {
+    bundle.payload.memories[0].content = "tampered";
+  });
+  add("authoritative payload bytes", (bundle) => {
+    bundle.payload_bytes = `${bundle.payload_bytes[0] === "A" ? "B" : "A"}${bundle.payload_bytes.slice(1)}`;
+  });
+  add("payload digest", (bundle) => {
+    bundle.manifest.payload_sha256 = "0".repeat(64);
+  });
+  add("record count", (bundle) => {
+    bundle.manifest.record_counts.memories += 1;
+  });
+  add("source tenant", (bundle) => {
+    bundle.manifest.user_id = "other-tenant";
+  });
+  add("continuity proof", (bundle) => {
+    bundle.integrity_proof.event_fingerprints[0] = "0".repeat(64);
+  });
+  add("proof digest", (bundle) => {
+    bundle.manifest.proof_sha256 = "0".repeat(64);
+  });
+  add("public key", (bundle) => {
+    bundle.signature.public_key = `${bundle.signature.public_key[0] === "A" ? "B" : "A"}${bundle.signature.public_key.slice(1)}`;
+  });
+  add("signature", (bundle) => {
+    bundle.signature.value = `${bundle.signature.value[0] === "A" ? "B" : "A"}${bundle.signature.value.slice(1)}`;
+  });
+
+  let rejected = 0;
+  for (const [name, candidate] of variants) {
+    const verdict = verifyPortableMemoryBundle(candidate, interopSigningKeyId);
+    assert.equal(verdict.verified, false, `${name} tamper must be rejected`);
+    rejected += 1;
+  }
+  assert.equal(rejected, variants.length);
+  assert.equal(variants.length, 11);
 });
 
 test("plugin registers a contextEngine and injects cited live Cortex context", async () => {
@@ -183,6 +245,74 @@ test("bundle mode verifies the signer before offline recall", async () => {
   assert.match(assembled.systemPromptAddition, /PostgreSQL/);
   assert.match(assembled.systemPromptAddition, new RegExp(signingKeyId));
   assert.match(assembled.systemPromptAddition, /mem_portable_vector_1/);
+});
+
+test("N=3 Python export recalls every memory with intact bundle and record provenance", async () => {
+  const verification = verifyPortableMemoryBundle(interopFixture, interopSigningKeyId);
+  assert.equal(verification.verified, true);
+  assert.equal(verification.payload.memories.length, 3);
+  for (const memory of verification.payload.memories) {
+    assert.equal(typeof memory.provenance.receipt_id, "string");
+    assert.match(memory.provenance.source_sha256, /^[0-9a-f]{64}$/);
+    assert.equal(memory.author_class, "user");
+    assert.equal(memory.trust_score, 1);
+  }
+
+  const engine = createCortexContextEngine(
+    liveConfig({
+      mode: "bundle",
+      bundlePath: decodeURIComponent(interopFixtureUrl.pathname),
+      expectedSigningKeyId: interopSigningKeyId,
+    }),
+  );
+  const assembled = await engine.assemble({
+    sessionId: "offline-n3-session",
+    messages: [{ role: "user", content: "Summarize the Café launch" }],
+  });
+  const addition = assembled.systemPromptAddition;
+  assert.equal(typeof addition, "string");
+  assert.match(addition, new RegExp(interopSigningKeyId));
+  const sourceUserIdSha256 = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(interopFixture.manifest.user_id),
+  );
+  assert.match(addition, new RegExp(Buffer.from(sourceUserIdSha256).toString("hex")));
+  assert.doesNotMatch(addition, new RegExp(interopFixture.manifest.user_id));
+  assert.match(addition, new RegExp(interopFixture.manifest.chain_head));
+  assert.match(addition, new RegExp(interopFixture.manifest.payload_sha256));
+  for (const memory of interopFixture.payload.memories) {
+    assert.match(addition, new RegExp(memory.id));
+    assert.match(addition, new RegExp(memory.summary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(addition, new RegExp(memory.source_url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});
+
+test("tampered offline bundles fail closed in strict mode", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cortex-portable-tamper-"));
+  try {
+    const bundlePath = join(directory, "tampered.json");
+    const tampered = structuredClone(interopFixture);
+    tampered.payload.memories[0].content = "tampered after signing";
+    await writeFile(bundlePath, JSON.stringify(tampered), "utf8");
+    const strict = createCortexContextEngine(
+      liveConfig({
+        mode: "bundle",
+        bundlePath,
+        expectedSigningKeyId: interopSigningKeyId,
+        failOpen: false,
+      }),
+    );
+    await assert.rejects(
+      () =>
+        strict.assemble({
+          sessionId: "strict-tamper",
+          messages: [{ role: "user", content: "Summarize the Café launch" }],
+        }),
+      /convenience payload does not match payload bytes/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("adapter fails open by default, supports strict mode, and protects bearer tokens", async () => {
