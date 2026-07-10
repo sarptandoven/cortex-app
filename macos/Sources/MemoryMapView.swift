@@ -198,6 +198,14 @@ struct MemoryMapView: View {
     }
 
     private func drawNodes(in context: inout GraphicsContext, size: CGSize, layout: MemoryMapLayout, matched: Set<String>?) {
+        // Label budget: on a dense graph (hundreds of nodes) labeling every "large"
+        // node painted an unreadable wall of overlapping text. Only the most
+        // prominent nodes carry a label, AND labels that would overlap an
+        // already-placed label are skipped (hubs cluster at the center, so even
+        // 12 labels collide without collision checks). Hover/selection always label.
+        let labeledIDs = layout.topLabelNodeIDs
+        var occupiedLabelRects: [CGRect] = []
+        // Draw circles first so no label ever sits under a later circle.
         for node in state.graphNodes {
             guard let point = layout.position(of: node.id) else { continue }
             let radius = layout.radius(of: node)
@@ -228,22 +236,45 @@ struct MemoryMapView: View {
             let baseOpacity: Double = isSelected ? 1.0 : (isDimmed ? 0.18 : 0.85)
             context.fill(circle, with: .color(fill.opacity(baseOpacity)))
             context.stroke(circle, with: .color(CortexDesign.panelBackground), lineWidth: 1)
+        }
 
-            // Label the larger / selected / hovered nodes so the map stays uncluttered. A dimmed
-            // (filtered-out) node drops its label so the matches read clearly.
-            if (radius >= 7 || isSelected || isHovered) && !isDimmed {
-                let text = Text(node.label)
-                    .font(CortexDesign.Typography.caption)
-                    .foregroundColor(isSelected ? CortexDesign.ink : CortexDesign.inkSecondary)
-                let resolved = context.resolve(text)
-                let textSize = resolved.measure(in: CGSize(width: 120, height: 40))
-                var textX = point.x + radius + 4
-                if textX + textSize.width > size.width - 4 {
-                    textX = point.x - radius - 4 - textSize.width
-                }
-                let textPoint = CGPoint(x: textX, y: point.y - textSize.height / 2)
-                context.draw(resolved, in: CGRect(origin: textPoint, size: textSize))
+        // Labels second, most prominent first, greedily skipping collisions.
+        let labelCandidates = state.graphNodes
+            .filter { node in
+                let isSelected = node.id == selectedNodeID
+                let isHovered = node.id == hoveredNodeID
+                let isDimmed = matched != nil && !matched!.contains(node.id)
+                return (labeledIDs.contains(node.id) || isSelected || isHovered) && !isDimmed
             }
+            .sorted { lhs, rhs in
+                // Selection/hover win outright, then bigger nodes first.
+                let lhsPriority = (lhs.id == selectedNodeID || lhs.id == hoveredNodeID) ? CGFloat.greatestFiniteMagnitude : layout.radius(of: lhs)
+                let rhsPriority = (rhs.id == selectedNodeID || rhs.id == hoveredNodeID) ? CGFloat.greatestFiniteMagnitude : layout.radius(of: rhs)
+                return lhsPriority > rhsPriority
+            }
+        for node in labelCandidates {
+            guard let point = layout.position(of: node.id) else { continue }
+            let radius = layout.radius(of: node)
+            let isSelected = node.id == selectedNodeID
+            let text = Text(node.label)
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(isSelected ? CortexDesign.ink : CortexDesign.inkSecondary)
+            let resolved = context.resolve(text)
+            let textSize = resolved.measure(in: CGSize(width: 120, height: 40))
+            var textX = point.x + radius + 4
+            if textX + textSize.width > size.width - 4 {
+                textX = point.x - radius - 4 - textSize.width
+            }
+            let textPoint = CGPoint(x: textX, y: point.y - textSize.height / 2)
+            let labelRect = CGRect(origin: textPoint, size: textSize).insetBy(dx: -3, dy: -2)
+            // A label that would overlap an already-placed one is dropped (except the
+            // selected node's, which always shows) — fewer, readable labels beat many
+            // colliding ones. The node itself stays visible and hoverable.
+            if !isSelected && occupiedLabelRects.contains(where: { $0.intersects(labelRect) }) {
+                continue
+            }
+            occupiedLabelRects.append(labelRect)
+            context.draw(resolved, in: CGRect(origin: textPoint, size: textSize))
         }
     }
 
@@ -501,6 +532,13 @@ private struct MemoryMapLayout {
     }
 
     func position(of id: String) -> CGPoint? { positions[id] }
+
+    /// The node ids that deserve an always-on label: the handful with the largest
+    /// radii (hubs and top entities). 12 labels is the most a map this size can
+    /// carry before neighbors start colliding.
+    var topLabelNodeIDs: Set<String> {
+        Set(radii.sorted { $0.value > $1.value }.prefix(12).map(\.key))
+    }
 
     func radius(of node: GraphNode) -> CGFloat { radii[node.id] ?? 5 }
 
