@@ -1031,6 +1031,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                             str(body.get("prediction_id") or "")[:120],
                             str(body.get("outcome") or "")[:20],
                             actual=str(body.get("actual") or "")[:500],
+                            answerability=str(body.get("answerability") or "")[:20] or None,
                         )
                     )
                 except (TypeError, ValueError) as exc:
@@ -2152,6 +2153,14 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/twin/scorecard":
                 self._send_json(
                     store.get_twin_scorecard(
+                        user_id,
+                        days=_int_param(params, "days", 90, 1, 365),
+                    )
+                )
+                return
+            if method == "GET" and path == "/v1/twin/calibration":
+                self._send_json(
+                    store.get_twin_calibration(
                         user_id,
                         days=_int_param(params, "days", 90, 1, 365),
                     )

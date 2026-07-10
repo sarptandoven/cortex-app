@@ -10949,9 +10949,30 @@ class CortexStore:
             answer_status = "cited"
         else:
             answer_status = "no_cited_evidence"
+        confidence, confidence_detail = self._answer_metacognition(
+            user_id,
+            query,
+            cited_results,
+            conflicts=conflicts,
+            evidence=evidence,
+        )
+        known_unknown = confidence < self._METACOGNITION_THRESHOLD
+        knowledge_gap = None
+        if known_unknown:
+            knowledge_gap = {
+                "reason": answer_status,
+                "missing_fields": list(evidence.get("missing_fields") or []),
+                "suggested_action": (
+                    "Capture or approve the missing fact so Cortex can answer it from cited memory next time."
+                ),
+            }
         return {
             "query": query,
             "status": answer_status,
+            "confidence": confidence,
+            "known_unknown": known_unknown,
+            "confidence_detail": confidence_detail,
+            "knowledge_gap": knowledge_gap,
             "filters": _retrieval_filter_payload(source=source, source_account_id=source_account_id, metadata_filters=metadata_filters, as_of=as_of),
             "answer": answer,
             "citations": citations,
@@ -20411,6 +20432,11 @@ class CortexStore:
     # ------------------------------------------------------------------
 
     _TWIN_EVIDENCE_LAYERS = ("preference", "style", "negative", "decision")
+    # M6: answerability confidence below this floor is an explicit known-unknown.
+    # This is deliberately a stable product contract, not a per-request magic number.
+    _METACOGNITION_THRESHOLD = 0.6
+    _METACOGNITION_BIN_COUNT = 5
+    _METACOGNITION_MIN_BIN_SAMPLES = 5
     # A verdict needs at least one cited evidence item; anything less abstains.
     _TWIN_MIN_EVIDENCE = 1
     # User vetoes (negative layer) outweigh same-trust preferences: a single "never do X"
@@ -20447,6 +20473,153 @@ class CortexStore:
         content_words = set(re.findall(r"[a-z0-9]+", str(item.get("content") or "").casefold()))
         content_words |= set(re.findall(r"[a-z0-9]+", str(item.get("summary") or "").casefold()))
         return any(self._twin_terms_match(term, word) for term in terms for word in content_words)
+
+    @staticmethod
+    def _metacognition_datetime(value: Any) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _metacognition_recency(self, items: list[dict[str, Any]]) -> float:
+        if not items:
+            return 0.0
+        now = datetime.now(timezone.utc)
+        scores: list[float] = []
+        for item in items:
+            occurred = self._metacognition_datetime(item.get("occurred_at") or item.get("captured_at"))
+            if occurred is None:
+                scores.append(0.5)
+                continue
+            age_days = max(0.0, (now - occurred).total_seconds() / 86_400.0)
+            # Ten-year decay horizon: recency is useful evidence, but an old durable preference
+            # must not be treated as absent merely because it is old.
+            scores.append(1.0 / (1.0 + age_days / 3650.0))
+        return round(sum(scores) / len(scores), 4)
+
+    def _metacognition_coverage(self, terms: list[str], items: list[dict[str, Any]]) -> float:
+        if not terms or not items:
+            return 0.0
+        words: set[str] = set()
+        for item in items:
+            words.update(re.findall(r"[a-z0-9]+", str(item.get("content") or "").casefold()))
+            words.update(re.findall(r"[a-z0-9]+", str(item.get("summary") or "").casefold()))
+        matched = sum(1 for term in terms if any(self._twin_terms_match(term, word) for word in words))
+        return round(matched / len(terms), 4)
+
+    @staticmethod
+    def _bounded_confidence(value: float) -> float:
+        return round(max(0.0, min(1.0, float(value))), 4)
+
+    def _confidence_or_default(self, value: Any, default: float | None = None) -> float | None:
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return default
+        try:
+            return self._bounded_confidence(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+    def _raw_metacognition_confidence(self, components: dict[str, float]) -> float:
+        return self._bounded_confidence(
+            0.40 * components["coverage"]
+            + 0.25 * components["agreement"]
+            + 0.25 * components["trust"]
+            + 0.10 * components["recency"]
+        )
+
+    def _prediction_answerable_target(self, prediction: dict[str, Any]) -> int | None:
+        """Return explicit answerability ground truth; never infer it from correctness.
+
+        A well-supported answer can still be wrong, and a lucky guess can be correct despite
+        absent evidence. M6 therefore keeps the two labels orthogonal: ``outcome`` measures
+        prediction correctness while ``answerability`` measures whether memory held enough
+        evidence to answer at all.
+        """
+        answerability = str(prediction.get("answerability") or "").strip().lower()
+        if answerability == "answerable":
+            return 1
+        if answerability == "unknown":
+            return 0
+        return None
+
+    def _calibrate_metacognition_confidence(self, user_id: str, raw_confidence: float) -> tuple[float, str, int]:
+        """Empirically calibrate one raw score from the user's own graded twin history.
+
+        A bin needs five outcomes before it can move a score. Until then the estimator is
+        honest about using the deterministic heuristic. Once mature, a Beta(1,1)-smoothed
+        empirical answerability rate is blended in, with bounded weight so one bin never
+        erases the current request's evidence.
+        """
+        raw = self._bounded_confidence(raw_confidence)
+        bin_index = min(self._METACOGNITION_BIN_COUNT - 1, int(raw * self._METACOGNITION_BIN_COUNT))
+        samples: list[int] = []
+        for prediction in self._twin_prediction_records(user_id, days=365):
+            prior_raw = prediction.get("raw_confidence")
+            if not isinstance(prior_raw, (int, float)) or isinstance(prior_raw, bool):
+                continue
+            prior = self._bounded_confidence(float(prior_raw))
+            prior_bin = min(self._METACOGNITION_BIN_COUNT - 1, int(prior * self._METACOGNITION_BIN_COUNT))
+            target = self._prediction_answerable_target(prediction)
+            if prior_bin == bin_index and target is not None:
+                samples.append(target)
+        count = len(samples)
+        if count < self._METACOGNITION_MIN_BIN_SAMPLES:
+            return raw, "heuristic_v1", count
+        empirical = (sum(samples) + 1.0) / (count + 2.0)
+        empirical_weight = min(0.75, count / (count + 10.0))
+        calibrated = self._bounded_confidence(raw * (1.0 - empirical_weight) + empirical * empirical_weight)
+        return calibrated, "empirical_bin_v1", count
+
+    def _answer_metacognition(
+        self,
+        user_id: str,
+        query: str,
+        cited_results: list[dict[str, Any]],
+        *,
+        conflicts: list[dict[str, Any]],
+        evidence: dict[str, Any],
+    ) -> tuple[float, dict[str, Any]]:
+        if not cited_results:
+            components = {"coverage": 0.0, "agreement": 0.0, "trust": 0.0, "recency": 0.0}
+            return 0.0, {
+                "method": "heuristic_v1",
+                "raw_confidence": 0.0,
+                "threshold": self._METACOGNITION_THRESHOLD,
+                "calibration_samples": 0,
+                "components": components,
+            }
+        else:
+            terms = self._lexical_fallback_terms(query, limit=20)
+            trust = sum(
+                normalize_trust_score(item.get("trust_score"), item.get("author_class"))
+                for item in cited_results
+            ) / len(cited_results)
+            components = {
+                "coverage": self._metacognition_coverage(terms, cited_results),
+                "agreement": 0.0 if conflicts else 1.0,
+                "trust": round(trust, 4),
+                "recency": self._metacognition_recency(cited_results),
+            }
+            raw = self._raw_metacognition_confidence(components)
+            if conflicts or evidence.get("status") == "low_confidence":
+                raw = min(raw, self._METACOGNITION_THRESHOLD - 0.05)
+        # General Ask and would_i have different tasks and score distributions. Until Ask has
+        # its own outcome ledger, applying twin calibration here would be cross-task leakage.
+        # Keep Ask honest and deterministic with the request-local heuristic only.
+        _ = user_id
+        return raw, {
+            "method": "heuristic_v1",
+            "raw_confidence": raw,
+            "threshold": self._METACOGNITION_THRESHOLD,
+            "calibration_samples": 0,
+            "components": components,
+        }
 
     def _twin_evidence_item(self, item: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -20523,24 +20696,64 @@ class CortexStore:
         evidence_count = len(supporting) + len(opposing)
 
         if evidence_count < self._TWIN_MIN_EVIDENCE:
-            verdict = "insufficient_evidence"
+            tentative_verdict = "insufficient_evidence"
         elif support_weight > oppose_weight * 1.25:
-            verdict = "likely_yes"
+            tentative_verdict = "likely_yes"
         elif oppose_weight > support_weight * 1.25:
-            verdict = "likely_no"
+            tentative_verdict = "likely_no"
         else:
-            verdict = "mixed"
+            tentative_verdict = "mixed"
+
+        evidence_items = [*supporting, *opposing]
+        total_weight = support_weight + oppose_weight
+        components = {
+            "coverage": self._metacognition_coverage(terms, evidence_items),
+            "agreement": round(abs(support_weight - oppose_weight) / total_weight, 4) if total_weight else 0.0,
+            "trust": round(
+                sum(normalize_trust_score(i.get("trust_score"), i.get("author_class")) for i in evidence_items)
+                / len(evidence_items),
+                4,
+            ) if evidence_items else 0.0,
+            "recency": self._metacognition_recency(evidence_items),
+        }
+        raw_confidence = self._raw_metacognition_confidence(components) if evidence_items else 0.0
+        if evidence_items:
+            confidence, confidence_method, calibration_samples = self._calibrate_metacognition_confidence(
+                user_id, raw_confidence
+            )
+        else:
+            confidence, confidence_method, calibration_samples = 0.0, "heuristic_v1", 0
+        known_unknown = evidence_count < self._TWIN_MIN_EVIDENCE or confidence < self._METACOGNITION_THRESHOLD
+        verdict = "insufficient_evidence" if known_unknown else tentative_verdict
+        confidence_detail = {
+            "method": confidence_method,
+            "raw_confidence": raw_confidence,
+            "threshold": self._METACOGNITION_THRESHOLD,
+            "calibration_samples": calibration_samples,
+            "components": components,
+        }
 
         prediction_id = stable_id("twin_", f"{user_id}:{now_iso()}:{text[:200]}:{uuid.uuid4().hex}")
         result = {
             "prediction_id": prediction_id,
             "question": text[:500],
             "verdict": verdict,
+            "confidence": confidence,
+            "known_unknown": known_unknown,
+            "confidence_detail": confidence_detail,
+            "knowledge_gap": (
+                {
+                    "reason": "insufficient_evidence",
+                    "suggested_action": "Capture the missing preference or decision so Cortex only needs to ask once.",
+                }
+                if known_unknown
+                else None
+            ),
             "rationale": (
                 f"{len(supporting)} supporting item(s) (trust weight {support_weight}) vs "
                 f"{len(opposing)} opposing item(s) (trust weight {oppose_weight})."
-                if verdict != "insufficient_evidence"
-                else "Not enough cited evidence in memory to predict; say so instead of inventing."
+                if not known_unknown
+                else "Cited evidence did not clear the calibrated answerability threshold; abstain instead of inventing."
             ),
             "supporting": [self._twin_evidence_item(i) for i in supporting[:bounded]],
             "opposing": [self._twin_evidence_item(i) for i in opposing[:bounded]],
@@ -20554,6 +20767,12 @@ class CortexStore:
         metadata = {
             "question": text[:500],
             "verdict": verdict,
+            "confidence": confidence,
+            "raw_confidence": raw_confidence,
+            "known_unknown": known_unknown,
+            "confidence_threshold": self._METACOGNITION_THRESHOLD,
+            "confidence_method": confidence_method,
+            "confidence_components": components,
             "evidence_count": evidence_count,
             "support_weight": support_weight,
             "oppose_weight": oppose_weight,
@@ -20605,15 +20824,32 @@ class CortexStore:
             "generated_at": now_iso(),
         }
 
-    def grade_twin_prediction(self, user_id: str, prediction_id: str, outcome: str, *, actual: str = "") -> dict[str, Any]:
-        """Phase 5.4 accuracy loop: record how a twin prediction turned out. Grades accrue to
-        get_twin_scorecard — accuracy over time is the twin's headline metric."""
+    def grade_twin_prediction(
+        self,
+        user_id: str,
+        prediction_id: str,
+        outcome: str,
+        *,
+        actual: str = "",
+        answerability: str | None = None,
+    ) -> dict[str, Any]:
+        """Record correctness and, independently, whether memory could answer.
+
+        ``outcome`` preserves the Phase 5 correct/incorrect/unclear accuracy loop.
+        ``answerability`` is the M6 calibration label: answerable/unknown/unclear. It is
+        optional for backward compatibility, but ECE and abstention metrics only use explicit
+        answerability labels because correctness is not a valid proxy for evidence coverage.
+        """
         pid = str(prediction_id or "").strip()
         if not pid:
             raise ValueError("prediction_id is required")
         verdict = str(outcome or "").strip().lower()
         if verdict not in {"correct", "incorrect", "unclear"}:
             raise ValueError("outcome must be one of: correct, incorrect, unclear")
+        knowledge = str(answerability or "").strip().lower()
+        if knowledge not in {"", "answerable", "unknown", "unclear"}:
+            raise ValueError("answerability must be one of: answerable, unknown, unclear")
+        knowledge_label = knowledge or None
         with connect(self.db_path) as conn:
             row = conn.execute(
                 "SELECT metadata_json FROM memory_events WHERE user_id = ? AND object_id = ? AND object_type = 'twin' AND event_type = 'twin_prediction'",
@@ -20630,6 +20866,7 @@ class CortexStore:
                 "twin_prediction_graded",
                 {
                     "outcome": verdict,
+                    "answerability": knowledge_label,
                     "actual": str(actual or "").strip()[:500] or None,
                     "predicted_verdict": prediction_meta.get("verdict"),
                     "question": prediction_meta.get("question"),
@@ -20638,13 +20875,13 @@ class CortexStore:
         return {
             "prediction_id": pid,
             "outcome": verdict,
+            "answerability": knowledge_label,
             "predicted_verdict": prediction_meta.get("verdict"),
             "graded_at": event["created_at"],
         }
 
-    def get_twin_scorecard(self, user_id: str, *, days: int = 90) -> dict[str, Any]:
-        """Read-model over twin_prediction / twin_prediction_graded events: prediction volume,
-        verdict mix, graded accuracy, and the ungraded backlog (the review surface's queue)."""
+    def _twin_prediction_records(self, user_id: str, *, days: int = 90) -> list[dict[str, Any]]:
+        """Fold the append-only twin event log to one current row per prediction."""
         window_days = max(1, min(int(days), 365))
         with connect(self.db_path) as conn:
             rows = conn.execute(
@@ -20660,18 +20897,191 @@ class CortexStore:
         predictions: dict[str, dict[str, Any]] = {}
         for row in rows:
             metadata = self._json_or_empty(row["metadata_json"])
-            pid = str(row["object_id"])
+            prediction_id = str(row["object_id"])
             if row["event_type"] == "twin_prediction":
-                predictions[pid] = {
-                    "prediction_id": pid,
+                confidence = self._confidence_or_default(metadata.get("confidence"))
+                raw_confidence = self._confidence_or_default(metadata.get("raw_confidence"), confidence)
+                verdict = str(metadata.get("verdict") or "unknown")
+                predictions[prediction_id] = {
+                    "prediction_id": prediction_id,
                     "question": metadata.get("question"),
-                    "verdict": metadata.get("verdict"),
+                    "verdict": verdict,
+                    "confidence": confidence,
+                    "raw_confidence": raw_confidence,
+                    "known_unknown": bool(
+                        metadata.get("known_unknown", verdict == "insufficient_evidence")
+                    ),
+                    "confidence_threshold": self._confidence_or_default(
+                        metadata.get("confidence_threshold"), self._METACOGNITION_THRESHOLD
+                    ),
+                    "confidence_method": metadata.get("confidence_method"),
                     "predicted_at": row["created_at"],
                     "outcome": None,
+                    "answerability": None,
+                    "graded_at": None,
                 }
-            elif row["event_type"] == "twin_prediction_graded" and pid in predictions:
-                predictions[pid]["outcome"] = metadata.get("outcome")
-        items = list(predictions.values())
+            elif row["event_type"] == "twin_prediction_graded" and prediction_id in predictions:
+                predictions[prediction_id]["outcome"] = metadata.get("outcome")
+                predictions[prediction_id]["answerability"] = metadata.get("answerability")
+                predictions[prediction_id]["graded_at"] = row["created_at"]
+        return list(predictions.values())
+
+    def get_twin_calibration(
+        self,
+        user_id: str,
+        *,
+        days: int = 90,
+        _records: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """M6 read-model: answerability ECE, abstention quality, and confident-wrong rate.
+
+        ``confidence`` estimates whether Cortex has enough memory to answer. Calibration and
+        abstention metrics use only the explicit answerability label; prediction correctness
+        remains a separate signal used by accuracy and confident-wrong rate.
+        """
+        window_days = max(1, min(int(days), 365))
+        records = _records if _records is not None else self._twin_prediction_records(user_id, days=window_days)
+        outcome_graded = [record for record in records if record.get("outcome") in {"correct", "incorrect"}]
+        labeled = [
+            record
+            for record in records
+            if isinstance(record.get("confidence"), (int, float))
+            and self._prediction_answerable_target(record) is not None
+        ]
+
+        bin_rows: list[dict[str, Any]] = []
+        weighted_error = 0.0
+        brier_total = 0.0
+        for index in range(self._METACOGNITION_BIN_COUNT):
+            lower = index / self._METACOGNITION_BIN_COUNT
+            upper = (index + 1) / self._METACOGNITION_BIN_COUNT
+            members = [
+                record
+                for record in labeled
+                if min(
+                    self._METACOGNITION_BIN_COUNT - 1,
+                    int(float(record["confidence"]) * self._METACOGNITION_BIN_COUNT),
+                )
+                == index
+            ]
+            answerable_values = [self._prediction_answerable_target(record) for record in members]
+            answerable_values = [value for value in answerable_values if value is not None]
+            average_confidence = (
+                sum(float(record["confidence"]) for record in members) / len(members)
+                if members
+                else None
+            )
+            empirical_answerability = (
+                sum(answerable_values) / len(answerable_values) if answerable_values else None
+            )
+            absolute_error = (
+                abs(average_confidence - empirical_answerability)
+                if average_confidence is not None and empirical_answerability is not None
+                else None
+            )
+            if absolute_error is not None and labeled:
+                weighted_error += absolute_error * (len(members) / len(labeled))
+            bin_rows.append(
+                {
+                    "index": index,
+                    "lower": round(lower, 2),
+                    "upper": round(upper, 2),
+                    "count": len(members),
+                    "average_confidence": round(average_confidence, 4) if average_confidence is not None else None,
+                    "empirical_answerability": round(empirical_answerability, 4) if empirical_answerability is not None else None,
+                    "absolute_error": round(absolute_error, 4) if absolute_error is not None else None,
+                }
+            )
+
+        for record in labeled:
+            target = self._prediction_answerable_target(record)
+            if target is not None:
+                brier_total += (float(record["confidence"]) - target) ** 2
+
+        abstained = [record for record in labeled if record.get("known_unknown")]
+        answered_labeled = [record for record in labeled if not record.get("known_unknown")]
+        # Positive class = genuinely unknown, so a correct abstention is TP.
+        true_positive = sum(1 for record in abstained if self._prediction_answerable_target(record) == 0)
+        false_positive = sum(1 for record in abstained if self._prediction_answerable_target(record) == 1)
+        false_negative = sum(1 for record in answered_labeled if self._prediction_answerable_target(record) == 0)
+        precision_denominator = true_positive + false_positive
+        recall_denominator = true_positive + false_negative
+
+        high_confidence_answered = [
+            record
+            for record in outcome_graded
+            if not record.get("known_unknown")
+            and isinstance(record.get("confidence"), (int, float))
+            and float(record["confidence"]) >= float(record.get("confidence_threshold") or self._METACOGNITION_THRESHOLD)
+        ]
+        confident_wrong = sum(1 for record in high_confidence_answered if record["outcome"] == "incorrect")
+        ungraded_abstentions = [
+            {
+                "prediction_id": record["prediction_id"],
+                "question": record.get("question"),
+                "confidence": record.get("confidence"),
+                "predicted_at": record.get("predicted_at"),
+            }
+            for record in records
+            if record.get("outcome") is None and record.get("known_unknown")
+        ][:20]
+        unlabeled_answerability = [
+            {
+                "prediction_id": record["prediction_id"],
+                "question": record.get("question"),
+                "verdict": record.get("verdict"),
+                "confidence": record.get("confidence"),
+                "outcome": record.get("outcome"),
+                "predicted_at": record.get("predicted_at"),
+            }
+            for record in records
+            if self._prediction_answerable_target(record) is None
+        ][:20]
+        answered_all = [record for record in records if not record.get("known_unknown")]
+
+        return {
+            "window_days": window_days,
+            "threshold": self._METACOGNITION_THRESHOLD,
+            "graded_samples": len(labeled),
+            "outcome_graded_samples": len(outcome_graded),
+            "legacy_unlabeled_samples": sum(
+                1
+                for record in outcome_graded
+                if self._prediction_answerable_target(record) is None
+            ),
+            "expected_calibration_error": round(weighted_error, 4) if labeled else None,
+            "brier_score": round(brier_total / len(labeled), 4) if labeled else None,
+            "bins": bin_rows,
+            "abstention": {
+                "graded": len(abstained),
+                "true_positive": true_positive,
+                "false_positive": false_positive,
+                "false_negative": false_negative,
+                "precision": round(true_positive / precision_denominator, 4) if precision_denominator else None,
+                "recall": round(true_positive / recall_denominator, 4) if recall_denominator else None,
+            },
+            "confident_wrong": {
+                "count": confident_wrong,
+                "high_confidence_answered": len(high_confidence_answered),
+                "rate": round(confident_wrong / len(high_confidence_answered), 4) if high_confidence_answered else None,
+            },
+            "coverage": round(len(answered_all) / len(records), 4) if records else None,
+            "ungraded_abstentions": ungraded_abstentions,
+            "unlabeled_answerability": unlabeled_answerability,
+            "caveats": [
+                "ECE, Brier score, and abstention metrics cover only explicit answerable/unknown labels.",
+                "Correctness and answerability are separate: a supported answer can be wrong and an unsupported guess can be right.",
+                "legacy_unlabeled_samples reports pre-M6 correctness grades that cannot honestly be used as answerability labels.",
+                "Grade items in ungraded_abstentions to measure abstention precision and recall.",
+                f"Empirical bin calibration activates only after {self._METACOGNITION_MIN_BIN_SAMPLES} outcomes in that bin.",
+            ],
+        }
+
+    def get_twin_scorecard(self, user_id: str, *, days: int = 90) -> dict[str, Any]:
+        """Read-model over twin_prediction / twin_prediction_graded events: prediction volume,
+        verdict mix, graded accuracy, and the ungraded backlog (the review surface's queue)."""
+        window_days = max(1, min(int(days), 365))
+        items = self._twin_prediction_records(user_id, days=window_days)
         graded = [p for p in items if p["outcome"] in {"correct", "incorrect"}]
         correct = sum(1 for p in graded if p["outcome"] == "correct")
         verdict_mix: dict[str, int] = {}
@@ -20686,6 +21096,7 @@ class CortexStore:
             "graded": len(graded),
             "accuracy": round(correct / len(graded), 4) if graded else None,
             "ungraded": [p for p in items if p["outcome"] is None and p["verdict"] != "insufficient_evidence"][:20],
+            "calibration": self.get_twin_calibration(user_id, days=window_days, _records=items),
             "caveats": [
                 "Accuracy covers only predictions the user has graded.",
                 "insufficient_evidence verdicts are excluded from the grading queue.",

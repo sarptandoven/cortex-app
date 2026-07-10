@@ -1077,13 +1077,22 @@ TOOLS = [
     },
     {
         "name": "grade_twin_prediction",
-        "description": "Record how a would_i prediction turned out (correct, incorrect, or unclear) once the real decision is known. Grades accrue to the twin scorecard — accuracy over time is the twin's headline metric.",
+        "description": (
+            "Record how a would_i prediction turned out. outcome (correct/incorrect/unclear) "
+            "measures prediction accuracy; answerability (answerable/unknown/unclear) separately "
+            "labels whether Cortex had enough memory evidence for calibration."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "prediction_id": {"type": "string", "description": "The twin_... id returned by would_i."},
                 "outcome": {"type": "string", "enum": ["correct", "incorrect", "unclear"]},
                 "actual": {"type": "string", "description": "Optional: what the user actually decided."},
+                "answerability": {
+                    "type": "string",
+                    "enum": ["answerable", "unknown", "unclear"],
+                    "description": "Optional M6 label: did memory contain enough evidence to answer? Independent of correctness.",
+                },
             },
             "required": ["prediction_id", "outcome"],
         },
@@ -1091,6 +1100,20 @@ TOOLS = [
     {
         "name": "get_twin_scorecard",
         "description": "Return the twin's prediction accuracy scorecard: prediction volume, verdict mix, graded accuracy, and the ungraded backlog awaiting user grading. Read-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "default": 90, "minimum": 1, "maximum": 365},
+            },
+        },
+    },
+    {
+        "name": "get_twin_calibration",
+        "description": (
+            "Return M6 calibrated-metacognition metrics from graded twin predictions: expected "
+            "calibration error (ECE), Brier score, abstention precision/recall, coverage, and the "
+            "confident-wrong rate. Read-only and honest when no outcomes exist."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1227,6 +1250,7 @@ READ_TOOLS = {
     "would_i",
     "draft_as_me",
     "get_twin_scorecard",
+    "get_twin_calibration",
     "get_proactive_alerts",
     "get_open_questions",
     "list_memory_topics",
@@ -1389,6 +1413,7 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "draft_as_me": "Draft As Me (Voice Pack)",
     "grade_twin_prediction": "Grade Twin Prediction",
     "get_twin_scorecard": "Twin Accuracy Scorecard",
+    "get_twin_calibration": "Twin Calibration Scorecard",
     "get_proactive_alerts": "Proactive Alerts",
     "resolve_proactive_alert": "Resolve Proactive Alert",
     "write_obsidian_pages": "Write Obsidian Pages",
@@ -1443,6 +1468,10 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "type": "object",
         "properties": {
             "status": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "known_unknown": {"type": "boolean"},
+            "confidence_detail": {"type": "object", "additionalProperties": True},
+            "knowledge_gap": {"type": ["object", "null"], "additionalProperties": True},
             "answer": {"type": "string"},
             "citations": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
         },
@@ -2985,10 +3014,14 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             _text_arg(args, "prediction_id", "", max_chars=120),
             _text_arg(args, "outcome", "", max_chars=20),
             actual=_text_arg(args, "actual", "", max_chars=500),
+            answerability=_text_arg(args, "answerability", "", max_chars=20) or None,
         )
         return store.agent_payload(user_id, result)
     if name == "get_twin_scorecard":
         result = store.get_twin_scorecard(user_id, days=_bounded_int_arg(args, "days", 90, maximum=365))
+        return store.agent_payload(user_id, result)
+    if name == "get_twin_calibration":
+        result = store.get_twin_calibration(user_id, days=_bounded_int_arg(args, "days", 90, maximum=365))
         return store.agent_payload(user_id, result)
     if name == "get_proactive_alerts":
         status = str(args.get("status") or "delivered").strip().lower()

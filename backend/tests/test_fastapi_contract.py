@@ -527,9 +527,52 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("cited", payload["answer"])
         self.assertTrue(payload["citations"])
         self.assertTrue(payload["results"])
+        self.assertFalse(payload["known_unknown"])
+        self.assertGreaterEqual(payload["confidence"], payload["confidence_detail"]["threshold"])
+        self.assertIsNone(payload["knowledge_gap"])
         self.assertTrue(payload["citations"][0]["source_url"].startswith("local-file://ask-source.md?path_hash="))
         self.assertTrue(payload["results"][0]["source_url"].startswith("local-file://ask-source.md?path_hash="))
         self.assertIn("Ask citation contract", payload["citations"][0]["excerpt"])
+
+    def test_twin_calibration_endpoint_is_first_class_and_honest_without_grades(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "m6-calibration-contract"}
+
+        response = self.client.get("/v1/twin/calibration", params={"days": 30}, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["window_days"], 30)
+        self.assertEqual(payload["graded_samples"], 0)
+        self.assertIsNone(payload["expected_calibration_error"])
+        self.assertIsNone(payload["abstention"]["precision"])
+        self.assertIsNone(payload["confident_wrong"]["rate"])
+
+    def test_twin_grade_keeps_correctness_and_answerability_separate(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "m6-grade-contract"}
+        prediction = self.client.post(
+            "/v1/twin/would-i",
+            json={"question": "Would I buy a yacht this summer?"},
+            headers=headers,
+        )
+        self.assertEqual(prediction.status_code, 200)
+        self.assertTrue(prediction.json()["known_unknown"])
+
+        graded = self.client.post(
+            "/v1/twin/grade",
+            json={
+                "prediction_id": prediction.json()["prediction_id"],
+                "outcome": "correct",
+                "answerability": "unknown",
+            },
+            headers=headers,
+        )
+
+        self.assertEqual(graded.status_code, 200)
+        self.assertEqual(graded.json()["outcome"], "correct")
+        self.assertEqual(graded.json()["answerability"], "unknown")
+        calibration = self.client.get("/v1/twin/calibration", headers=headers)
+        self.assertEqual(calibration.status_code, 200)
+        self.assertEqual(calibration.json()["graded_samples"], 1)
 
     def test_ask_endpoint_prefers_source_backed_citations_over_uncited_matches(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "ask-source-backed-contract"}

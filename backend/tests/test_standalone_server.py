@@ -79,6 +79,8 @@ class FakeStore:
         self.write_obsidian_pages_calls: list[tuple[str, str | None, int]] = []
         self.sync_agent_sessions_calls: list[tuple] = []
         self.source_reputation_calls: list[tuple] = []
+        self.twin_calibration_calls: list[tuple[str, int]] = []
+        self.twin_grade_calls: list[dict] = []
         self.integrity_digest_calls: list[str] = []
         self.verify_integrity_calls: list[tuple] = []
         self.export_manifest_calls: list[str] = []
@@ -181,6 +183,11 @@ class FakeStore:
         }
         return {
             "query": query,
+            "status": "cited",
+            "confidence": 0.91,
+            "known_unknown": False,
+            "confidence_detail": {"method": "heuristic_v1", "threshold": 0.6},
+            "knowledge_gap": None,
             "answer": "Cortex found 1 cited memory for this question:\n[1] Layer-aware result (/tmp/source.md)",
             "citations": [
                 {
@@ -331,6 +338,40 @@ class FakeStore:
             "recommendations": [{"source": "slack", "recommendation": "promote"}],
             "caveats": [],
         }
+
+    def get_twin_calibration(self, user_id: str, *, days: int = 90) -> dict:
+        self.twin_calibration_calls.append((user_id, days))
+        return {
+            "window_days": days,
+            "threshold": 0.6,
+            "graded_samples": 0,
+            "expected_calibration_error": None,
+            "brier_score": None,
+            "bins": [],
+            "abstention": {"precision": None, "recall": None},
+            "confident_wrong": {"count": 0, "rate": None},
+            "coverage": None,
+            "caveats": [],
+        }
+
+    def grade_twin_prediction(
+        self,
+        user_id: str,
+        prediction_id: str,
+        outcome: str,
+        *,
+        actual: str = "",
+        answerability: str | None = None,
+    ) -> dict:
+        call = {
+            "user_id": user_id,
+            "prediction_id": prediction_id,
+            "outcome": outcome,
+            "actual": actual,
+            "answerability": answerability,
+        }
+        self.twin_grade_calls.append(call)
+        return call
 
     def integrity_digest(self, user_id: str) -> dict:
         self.integrity_digest_calls.append(user_id)
@@ -2799,9 +2840,37 @@ class StandaloneServerTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertIn("cited memory", payload["answer"])
+        self.assertEqual(payload["confidence"], 0.91)
+        self.assertFalse(payload["known_unknown"])
         self.assertEqual(payload["citations"][0]["source_url"], "/tmp/source.md")
         self.assertEqual(self.fake_store.answer_calls[-1]["query"], "voice")
         self.assertEqual(self.fake_store.answer_calls[-1]["limit"], 2)
+
+    def test_twin_calibration_route_forwards_to_store(self) -> None:
+        with self.get("/v1/twin/calibration?days=30") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["window_days"], 30)
+        self.assertIsNone(payload["expected_calibration_error"])
+        self.assertEqual(self.fake_store.twin_calibration_calls[-1], ("local", 30))
+
+    def test_twin_grade_route_forwards_answerability_separately(self) -> None:
+        with self.post_json(
+            "/v1/twin/grade",
+            {
+                "prediction_id": "twin_fixture",
+                "outcome": "incorrect",
+                "answerability": "answerable",
+                "actual": "the evidence existed but the verdict was wrong",
+            },
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["outcome"], "incorrect")
+        self.assertEqual(payload["answerability"], "answerable")
+        self.assertEqual(self.fake_store.twin_grade_calls[-1]["answerability"], "answerable")
 
     def test_ask_route_forwards_as_of_validity_filter_to_store(self) -> None:
         with self.get("/v1/ask?query=voice&as_of=2019-12-31&limit=2") as response:

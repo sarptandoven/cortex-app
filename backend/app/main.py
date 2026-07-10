@@ -1912,7 +1912,13 @@ def twin_draft_as_me(payload: DraftAsMeRequest, user_id: str = Depends(auth)) ->
 
 @app.post("/v1/twin/grade")
 def twin_grade(payload: GradeTwinPredictionRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    return store.grade_twin_prediction(user_id, payload.prediction_id, payload.outcome, actual=payload.actual)
+    return store.grade_twin_prediction(
+        user_id,
+        payload.prediction_id,
+        payload.outcome,
+        actual=payload.actual,
+        answerability=payload.answerability,
+    )
 
 
 @app.get("/v1/twin/scorecard")
@@ -1921,6 +1927,14 @@ def twin_scorecard(
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
     return store.get_twin_scorecard(user_id, days=days)
+
+
+@app.get("/v1/twin/calibration")
+def twin_calibration(
+    days: int = Query(default=90, ge=1, le=365),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.get_twin_calibration(user_id, days=days)
 
 
 @app.get("/v1/alerts")

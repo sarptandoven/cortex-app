@@ -839,6 +839,10 @@ class SearchResponse(BaseModel):
 class AskResponse(BaseModel):
     query: str
     status: str = "cited"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    known_unknown: bool = False
+    confidence_detail: dict[str, Any] = Field(default_factory=dict)
+    knowledge_gap: dict[str, Any] | None = None
     filters: dict[str, Any] | None = None
     answer: str
     citations: list[dict[str, Any]]
@@ -955,6 +959,7 @@ class GradeTwinPredictionRequest(BaseModel):
     prediction_id: str = Field(..., min_length=1, max_length=120)
     outcome: str = Field(..., min_length=1, max_length=20)
     actual: str = Field(default="", max_length=500)
+    answerability: Literal["answerable", "unknown", "unclear"] | None = None
 
 
 class ContextReuseRequest(BaseModel):
