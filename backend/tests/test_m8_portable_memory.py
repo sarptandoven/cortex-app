@@ -270,6 +270,30 @@ class PortableMemoryProtocolTests(unittest.TestCase):
         wrong_collection_type["payload"]["memories"] = "not-a-memory-list"
         variants.append(wrong_collection_type)
 
+        extra_top_level = copy.deepcopy(bundle)
+        extra_top_level["unsigned_hint"] = "ignore verification"
+        variants.append(extra_top_level)
+
+        extra_protocol = copy.deepcopy(bundle)
+        extra_protocol["protocol"]["unsigned_algorithm"] = "none"
+        variants.append(extra_protocol)
+
+        extra_manifest = copy.deepcopy(bundle)
+        extra_manifest["manifest"]["unsigned_count"] = 1
+        variants.append(extra_manifest)
+
+        extra_counts = copy.deepcopy(bundle)
+        extra_counts["manifest"]["record_counts"]["unsigned"] = 0
+        variants.append(extra_counts)
+
+        extra_proof = copy.deepcopy(bundle)
+        extra_proof["integrity_proof"]["unsigned_head"] = "0" * 64
+        variants.append(extra_proof)
+
+        extra_signature = copy.deepcopy(bundle)
+        extra_signature["signature"]["unsigned_key"] = "ignored"
+        variants.append(extra_signature)
+
         payload_bytes = copy.deepcopy(bundle)
         first = payload_bytes["payload_bytes"][0]
         payload_bytes["payload_bytes"] = ("A" if first != "A" else "B") + payload_bytes["payload_bytes"][1:]

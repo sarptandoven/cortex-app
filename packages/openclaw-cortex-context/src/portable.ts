@@ -72,6 +72,21 @@ const HEX_64 = /^[0-9a-f]{64}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
+function assertExactKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+  label: string,
+): void {
+  const allowed = new Set([...required, ...optional]);
+  if (
+    required.some((key) => !Object.prototype.hasOwnProperty.call(value, key)) ||
+    Object.keys(value).some((key) => !allowed.has(key))
+  ) {
+    throw new Error(`${label} fields are malformed`);
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -321,6 +336,12 @@ function integrityLink(previous: string, fingerprint: string): string {
 }
 
 function proofBytes(proof: Record<string, unknown>): Buffer {
+  assertExactKeys(
+    proof,
+    ["chain_version", "genesis", "event_count", "event_fingerprints", "chain_head"],
+    [],
+    "integrity proof",
+  );
   if (proof.chain_version !== CHAIN_VERSION || proof.genesis !== CHAIN_GENESIS) {
     throw new Error("unsupported integrity chain");
   }
@@ -356,6 +377,12 @@ function assertProtocol(bundle: Record<string, unknown>): {
   proof: Record<string, unknown>;
   signature: Record<string, unknown>;
 } {
+  assertExactKeys(
+    bundle,
+    ["cortex_bundle_version", "protocol", "manifest", "payload_bytes", "integrity_proof", "signature"],
+    ["payload", "how_to_verify"],
+    "bundle",
+  );
   if (bundle.cortex_bundle_version !== OUTER_VERSION) throw new Error("unsupported outer bundle version");
   const protocol = bundle.protocol;
   const manifest = bundle.manifest;
@@ -364,6 +391,48 @@ function assertProtocol(bundle: Record<string, unknown>): {
   if (!isRecord(protocol) || !isRecord(manifest) || !isRecord(proof) || !isRecord(signature)) {
     throw new Error("bundle requires protocol, manifest, integrity_proof, and signature objects");
   }
+  assertExactKeys(
+    protocol,
+    [
+      "name",
+      "version",
+      "signature_format",
+      "signature_algorithm",
+      "key_id_algorithm",
+      "payload_encoding",
+      "payload_digest_algorithm",
+      "proof_format",
+      "proof_digest_algorithm",
+      "chain_algorithm",
+    ],
+    ["capabilities"],
+    "protocol",
+  );
+  if (
+    protocol.capabilities !== undefined &&
+    (!Array.isArray(protocol.capabilities) ||
+      protocol.capabilities.some((value) => typeof value !== "string") ||
+      new Set(protocol.capabilities).size !== protocol.capabilities.length)
+  ) {
+    throw new Error("protocol capabilities are malformed");
+  }
+  assertExactKeys(
+    manifest,
+    [
+      "user_id",
+      "chain_version",
+      "chain_head",
+      "event_count",
+      "payload_sha256",
+      "payload_bytes",
+      "proof_sha256",
+      "signing_key_id",
+      "record_counts",
+    ],
+    ["generated_at"],
+    "manifest",
+  );
+  assertExactKeys(signature, ["algorithm", "key_id", "public_key", "value"], [], "signature");
   const expected: Record<string, unknown> = {
     name: PROTOCOL_NAME,
     version: PROTOCOL_VERSION,
@@ -402,6 +471,7 @@ function signatureBytes(fields: ReturnType<typeof assertProtocol>): Buffer {
   if (manifest.signing_key_id !== signingKeyId) throw new Error("signing key ids do not match");
   if (!isRecord(manifest.record_counts)) throw new Error("manifest.record_counts is malformed");
   const recordCounts = manifest.record_counts;
+  assertExactKeys(recordCounts, COLLECTIONS, [], "manifest.record_counts");
   const counts = Object.fromEntries(
     COLLECTIONS.map((name) => [name, uint(recordCounts[name], `record count ${name}`)]),
   ) as Record<(typeof COLLECTIONS)[number], number>;
@@ -505,7 +575,7 @@ export function verifyPortableMemoryBundle(
       protocolVersion: PROTOCOL_VERSION,
       signingKeyId,
       expectedSigningKeyId: expected,
-      payload,
+      payload: verified ? payload : null,
       checks,
       error: verified ? null : "one or more portable-memory v2 checks failed",
     };
@@ -516,7 +586,7 @@ export function verifyPortableMemoryBundle(
       protocolVersion: null,
       signingKeyId,
       expectedSigningKeyId: expected,
-      payload,
+      payload: null,
       checks,
       error: error instanceof Error ? error.message : String(error),
     };

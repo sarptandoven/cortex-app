@@ -21487,6 +21487,15 @@ class CortexStore:
     def _portable_v2_proof_bytes(cls, proof: dict[str, Any]) -> bytes:
         if not isinstance(proof, dict):
             raise ValueError("Portable bundle integrity proof is malformed.")
+        proof_keys = {
+            "chain_version",
+            "genesis",
+            "event_count",
+            "event_fingerprints",
+            "chain_head",
+        }
+        if set(proof) != proof_keys:
+            raise ValueError("Portable bundle integrity proof fields are malformed.")
         chain_version = proof.get("chain_version")
         genesis = proof.get("genesis")
         chain_head = proof.get("chain_head")
@@ -21526,6 +21535,25 @@ class CortexStore:
         signature = bundle.get("signature") if isinstance(bundle.get("signature"), dict) else {}
         if not isinstance(protocol, dict) or not isinstance(manifest, dict):
             raise ValueError("Portable bundle protocol or manifest is malformed.")
+        allowed_bundle_keys = {
+            "cortex_bundle_version",
+            "protocol",
+            "manifest",
+            "payload_bytes",
+            "payload",
+            "integrity_proof",
+            "signature",
+            "how_to_verify",
+        }
+        required_bundle_keys = {
+            "cortex_bundle_version",
+            "protocol",
+            "manifest",
+            "payload_bytes",
+            "integrity_proof",
+        }
+        if not required_bundle_keys.issubset(bundle) or not set(bundle).issubset(allowed_bundle_keys):
+            raise ValueError("Portable bundle top-level fields are malformed.")
         expected_protocol = {
             "name": cls.PORTABLE_MEMORY_PROTOCOL,
             "version": cls.PORTABLE_MEMORY_VERSION,
@@ -21538,10 +21566,44 @@ class CortexStore:
             "proof_digest_algorithm": "sha256",
             "chain_algorithm": cls.PORTABLE_MEMORY_CHAIN_ALGORITHM,
         }
+        allowed_protocol_keys = {*expected_protocol, "capabilities"}
+        if not set(expected_protocol).issubset(protocol) or not set(protocol).issubset(
+            allowed_protocol_keys
+        ):
+            raise ValueError("Portable bundle protocol fields are malformed.")
+        if "capabilities" in protocol and (
+            not isinstance(protocol["capabilities"], list)
+            or not all(isinstance(value, str) for value in protocol["capabilities"])
+            or len(set(protocol["capabilities"])) != len(protocol["capabilities"])
+        ):
+            raise ValueError("Portable bundle protocol capabilities are malformed.")
         if bundle.get("cortex_bundle_version") != cls.PORTABLE_MEMORY_OUTER_VERSION:
             raise ValueError("Portable bundle outer version is unsupported.")
         if any(protocol.get(key) != value for key, value in expected_protocol.items()):
             raise ValueError("Portable bundle protocol algorithms are unsupported.")
+
+        manifest_keys = {
+            "generated_at",
+            "user_id",
+            "chain_version",
+            "chain_head",
+            "event_count",
+            "payload_sha256",
+            "payload_bytes",
+            "proof_sha256",
+            "signing_key_id",
+            "record_counts",
+        }
+        required_manifest_keys = manifest_keys - {"generated_at"}
+        if not required_manifest_keys.issubset(manifest) or not set(manifest).issubset(manifest_keys):
+            raise ValueError("Portable bundle manifest fields are malformed.")
+        if "signature" in bundle and set(signature) != {
+            "algorithm",
+            "key_id",
+            "public_key",
+            "value",
+        }:
+            raise ValueError("Portable bundle signature fields are malformed.")
 
         def lower_hex(key: str) -> str:
             value = manifest.get(key)
@@ -21573,6 +21635,8 @@ class CortexStore:
         if not isinstance(counts, dict):
             raise ValueError("Portable bundle record counts are malformed.")
         count_names = ("captures", "memories", "tasks", "entities", "edges", "imports")
+        if set(counts) != set(count_names):
+            raise ValueError("Portable bundle record count fields are malformed.")
         normalized_counts = {
             name: cls._portable_uint(counts.get(name), label=f"record count {name}")
             for name in count_names

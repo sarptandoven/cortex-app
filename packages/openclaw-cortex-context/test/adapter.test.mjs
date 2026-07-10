@@ -45,6 +45,7 @@ test("TypeScript independently verifies the Python portable-memory vector", () =
   const wrongPin = verifyPortableMemoryBundle(fixture, "0".repeat(64));
   assert.equal(wrongPin.verified, false);
   assert.equal(wrongPin.checks.signer, false);
+  assert.equal(wrongPin.payload, null);
 
   const payloadTamper = structuredClone(fixture);
   payloadTamper.payload.memories[0].content = "tampered";
@@ -57,6 +58,28 @@ test("TypeScript independently verifies the Python portable-memory vector", () =
   const proofTamper = structuredClone(fixture);
   proofTamper.integrity_proof.chain_head = "0".repeat(64);
   assert.equal(verifyPortableMemoryBundle(proofTamper, signingKeyId).verified, false);
+
+  const signatureTamper = structuredClone(fixture);
+  const signatureLast = signatureTamper.signature.value.at(-1);
+  signatureTamper.signature.value = `${signatureTamper.signature.value.slice(0, -1)}${signatureLast === "A" ? "B" : "A"}`;
+  const signatureResult = verifyPortableMemoryBundle(signatureTamper, signingKeyId);
+  assert.equal(signatureResult.verified, false);
+  assert.equal(signatureResult.payload, null);
+
+  for (const [label, mutate] of [
+    ["top-level", (bundle) => { bundle.unsigned_hint = "ignore verification"; }],
+    ["protocol", (bundle) => { bundle.protocol.unsigned_algorithm = "none"; }],
+    ["manifest", (bundle) => { bundle.manifest.unsigned_count = 1; }],
+    ["counts", (bundle) => { bundle.manifest.record_counts.unsigned = 0; }],
+    ["proof", (bundle) => { bundle.integrity_proof.unsigned_head = "0".repeat(64); }],
+    ["signature", (bundle) => { bundle.signature.unsigned_key = "ignored"; }],
+  ]) {
+    const withUnsignedExtra = structuredClone(fixture);
+    mutate(withUnsignedExtra);
+    const extraResult = verifyPortableMemoryBundle(withUnsignedExtra, signingKeyId);
+    assert.equal(extraResult.verified, false, label);
+    assert.equal(extraResult.payload, null, label);
+  }
 
   const excessiveRecords = structuredClone(fixture);
   const decoded = JSON.parse(Buffer.from(excessiveRecords.payload_bytes, "base64url").toString("utf8"));
