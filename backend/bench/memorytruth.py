@@ -263,11 +263,15 @@ def generate_scenario(
     associative_combos = [(a, n) for a in _ADJECTIVES for n in _NOUNS]
     associative_rng.shuffle(associative_combos)
     for index in range(max(0, associative_n)):
-        person_adj, _ = associative_combos[index * 4]
+        # The person name consumes the FULL (adjective, noun) combo so it is unique
+        # by construction: combos never repeat, while bare adjectives can (seed 42
+        # produced two "Dana Flint" chains that merged through the shared person
+        # entity and broke the two-hop-only property).
+        person_adj, person_noun = associative_combos[index * 4]
         project_adj, project_noun = associative_combos[index * 4 + 1]
         program_adj, program_noun = associative_combos[index * 4 + 2]
         isolated_adj, isolated_noun = associative_combos[index * 4 + 3]
-        person = f"Dana {person_adj.title()}"
+        person = f"Dana {person_adj.title()}{person_noun.title()}"
         project = f"{project_adj.title()} {project_noun.title()}"
         program = f"{program_adj.title()} {program_noun.title()}"
         isolated = f"{isolated_adj.title()} {isolated_noun.title()}"
@@ -1924,7 +1928,15 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
         associative_metrics["ppr_hits"] += int(ppr_hit)
         associative_metrics["ppr_reject_leaks"] += int(reject_leaked)
 
-        ppr_items = mode_payloads["ppr"] if isinstance(mode_payloads["ppr"], list) else []
+        ppr_payload = mode_payloads["ppr"]
+        if isinstance(ppr_payload, dict):
+            # search_memory returns {query, ..., results: [...]}; the relationship
+            # metadata lives on each result item.
+            ppr_items = ppr_payload.get("results") or []
+        elif isinstance(ppr_payload, list):
+            ppr_items = ppr_payload
+        else:
+            ppr_items = []
         target_items = [
             item
             for item in ppr_items
