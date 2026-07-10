@@ -112,6 +112,24 @@ Hand-calculated tests pin ECE, Brier, bin boundaries at `0.0/0.2/0.6/1.0`, abste
 
 Per `docs/MEMORY_MOONSHOTS.md`, the next recommended higher-ceiling bet after M6 is **M5: poison-proof shared memory**, unless the user redirects. Preserve MemoryTruth v4 as the scoreboard and build attacks first, defenses second.
 
+## Release gates cleared (2026-07-10, cow session)
+
+- **Bundle gate for build 23: PASSED.** `python3 scripts/bundle_bench.py` boots the
+  standalone server FROM the built .app (.pyc backend, embedded-3.12 framework
+  interpreter, same env the Swift supervisor sets) and runs MemoryTruth over live
+  HTTP, one fresh server+vault per seed. Seeds 7/21/42/99/1234 all hold every
+  category at 1.0 against the shipped artifact. Encoded gotcha: bundle .pyc is
+  3.12-compiled, so the harness must use the framework python, not PATH python3.
+- **OpenClaw attachment Option A: PROVEN** (zero Cortex code). An MCP client over
+  `scripts/cortex_mcp_stdio.py` -> bundle server `/mcp` completed the full agent
+  loop: initialize -> tools/list -> remember_this -> ask_memory (cited, slug
+  found) -> get_context (slug found) -> honest abstention on an unseeded topic.
+  Option B (TypeScript contextEngine plugin) now has a working baseline to beat.
+- **UI quality shipped** (`b0615c1` + `956bfe3`): window sizing fixed
+  (NSHostingController sizingOptions), machine-artifact extraction gate, live
+  vault swept (216 junk captures archived with backup), named source status,
+  stale-footer clearing. Suite on that tree: 1689 passed + 389 subtests.
+
 ## Start the next session with
 
 "Continue cortex-app on branch `mass-scale-app-redesign`. Read `docs/RESUME_CHECKPOINT.md` and `docs/MEMORY_MOONSHOTS.md`. M1, M3, M2, and M6 are shipped. M6 separates answerability from correctness, exposes exact-cohort ECE/Brier/abstention metrics across MCP and both HTTP servers, and MemoryTruth v4 independently grades seven categories with all reference seeds at 1.0. Start M5 poison-proof shared memory next, using adversarial attacks as the spec and keeping all v4 floors green."
