@@ -4671,6 +4671,31 @@ final class AppState: ObservableObject {
 
     // MARK: - Purge by source
 
+    /// Approve EVERY pending review item in one decision (optionally just one source's) — the fix
+    /// for the 99+ backlog that the 10-at-a-time batch could never clear. Returns the number
+    /// approved, or nil on failure. Refreshes the review surfaces + stats on success.
+    @discardableResult
+    func approveAllCaptures(source: String? = nil) async -> Int? {
+        do {
+            var body: [String: Any] = [:]
+            if let source, !source.isEmpty { body["source"] = source }
+            let data = try await request(path: "/v1/captures/approve-all", method: "POST", body: body)
+            let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let approved = payload?["approved"] as? Int ?? 0
+            await loadReview()
+            await loadInbox()
+            await loadStats()
+            await refreshAfterCapture()
+            status = approved > 0
+                ? "Approved \(approved) memor\(approved == 1 ? "y" : "ies")."
+                : "Nothing waiting for review."
+            return approved
+        } catch {
+            status = CortexRecoveryText.failureStatus("Approve all", error: error)
+            return nil
+        }
+    }
+
     /// Load per-source memory tallies (GET /v1/sources/stats). Best-effort: on any failure the prior
     /// value is left untouched so the purge UI never flickers to "empty" on a transient timeout.
     func loadSourceStats() async {
@@ -7127,9 +7152,15 @@ final class AppState: ObservableObject {
 
     func integrationState(for integration: AIIntegration) -> AIIntegrationState {
         if DistributionMode.isAppStore {
+            // Mirror refreshIntegrationStates()'s MAS branch: the sandbox can't read another app's
+            // config file to verify a paste, so the honest signal is whether the user copied this
+            // tool's setup config. Hardcoding configured:false here (while refresh sets it from the
+            // copied signal) left copied tools "not connected" forever and made the Connect-an-app
+            // wizard's test/Finish gate unreachable on MAS.
+            let copied = AppState.appStoreCopiedIntegrationIDs().contains(integration.id)
             return AIIntegrationState(
                 appInstalled: integrationAppearsInstalled(integration),
-                configured: false,
+                configured: copied,
                 configExists: false,
                 needsRepair: false,
                 configuredPaths: [],

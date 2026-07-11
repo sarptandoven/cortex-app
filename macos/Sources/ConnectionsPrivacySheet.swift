@@ -2133,6 +2133,9 @@ private struct ConnectionsAIToolsSection: View {
     @State private var testResults: [String: ConnectionTestResult] = [:]
     /// Memory-pack preview disclosure state for the browser-assistant row.
     @State private var packPreviewExpanded = false
+    /// Presents the guided "Connect an app" wizard (pick → connect → verify → done). Additive
+    /// front door over the per-tool tiles below — the same catalog, primitives, and honesty gates.
+    @State private var showConnectWizard = false
 
     private var connectedCount: Int {
         state.integrations.filter { state.integrationState(for: $0).configured }.count
@@ -2157,6 +2160,8 @@ private struct ConnectionsAIToolsSection: View {
                 detail: "Optional. Connected apps read reviewed memory with citations."
             )
             .help("Claude Desktop and other MCP apps can read reviewed memory with citations. ChatGPT or Claude web chats should be imported as exports until direct browser memory support ships.")
+
+            connectWizardEntry
 
             HStack(alignment: .center, spacing: 14) {
                 ZStack {
@@ -2229,6 +2234,51 @@ private struct ConnectionsAIToolsSection: View {
                 }
             }
         }
+        .sheet(isPresented: $showConnectWizard) {
+            ConnectAppWizard(state: state)
+        }
+    }
+
+    /// The guided "Connect an app" front door: one wax-red primary that opens the step-by-step
+    /// wizard (pick → connect → verify → done). Additive over the per-tool tiles below — it does
+    /// not replace them, it's just the easier entry point for a non-technical user.
+    private var connectWizardEntry: some View {
+        HStack(alignment: .center, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(CortexDesign.accent.opacity(0.13))
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+            }
+            .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Guided setup".uppercased())
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
+                Text("Connect an AI app in a few steps")
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
+                Text("Pick a tool, copy its connection, and verify it works — no config files to hunt for.")
+                    .font(.callout)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .primary, size: .large) {
+                showConnectWizard = true
+            }
+            .help("Opens a step-by-step wizard: pick a tool, copy its connection, and test that it can reach your memory.")
+        }
+        .padding(14)
+        .background(connectionsPanelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.accent.opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     /// The browser extension + universal API paths, previously reachable ONLY from the menu-bar
@@ -2476,6 +2526,578 @@ private struct ConnectionsAIToolsSection: View {
     private func memoryPackExcerpt(_ text: String) -> String {
         guard text.count > 600 else { return text }
         return String(text.prefix(600)) + "…"
+    }
+}
+
+// MARK: - Connect an app wizard
+//
+// A guided front door for wiring Cortex memory into an external AI tool in four clear steps:
+// pick tool → connect → verify → done. It is ADDITIVE over the per-tool tiles in
+// ConnectionsAIToolsSection — same catalog (AIIntegrationCatalog via `state.integrations`), same
+// primitives (mcpConfigJSON / copyMCPConfig+markIntegrationConfigCopied / connectIntegration /
+// testToolConnection), same honesty gates. No new backend endpoints, no parallel config system.
+
+/// The four wizard steps. `.pick` has no selected tool yet; the rest all operate on the tool the
+/// user chose in `.pick`.
+private enum ConnectAppWizardStep: Int, CaseIterable {
+    case pick, connect, verify, done
+
+    var index: Int { rawValue }
+    static var count: Int { allCases.count }
+}
+
+/// Self-contained sheet: pick a tool, copy its ready-to-paste connection, test that the tool can
+/// reach Cortex, then a success confirmation. Dismissable at every step; Back/Next navigation with
+/// a 1..4 of 4 progress affordance. Honesty invariant: step 4 is only reachable after the copy+mark
+/// step (which drives connected-state) AND, where a real probe exists, a passing `testToolConnection`.
+struct ConnectAppWizard: View {
+    @ObservedObject var state: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var step: ConnectAppWizardStep = .pick
+    @State private var selected: AIIntegration?
+    /// True once the user copied the config / command / pack for the selected tool (drives
+    /// connected-state on MAS via markIntegrationConfigCopied, called inside copyMCPConfig).
+    @State private var didCopy = false
+    /// The most recent `testToolConnection` result for the selected tool. nil = not tested yet.
+    @State private var testResult: ConnectionTestResult?
+    @State private var isTesting = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    progressBar
+                    stepContent
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            footer
+        }
+        .frame(minWidth: 560, minHeight: 560)
+        .background(connectionsSheetBackground)
+    }
+
+    // MARK: Chrome
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(CortexDesign.accentSoft)
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+            }
+            .frame(width: 46, height: 46)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Connect an AI app")
+                    .font(CortexDesign.Typography.display(20))
+                    .foregroundColor(CortexDesign.ink)
+                Text(headerSubtitle)
+                    .font(CortexDesign.Typography.body)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            CortexIconButton(systemImage: "xmark", role: .ghost, size: .large, help: "Close") {
+                dismiss()
+            }
+            .accessibilityLabel("Close Connect an AI app")
+        }
+        .padding(20)
+        .background(connectionsSheetBackground)
+    }
+
+    private var headerSubtitle: String {
+        switch step {
+        case .pick: return "Pick the tool you want to give access to your reviewed memory."
+        case .connect: return selected.map { "Add Cortex to \($0.name)." } ?? "Add Cortex to your tool."
+        case .verify: return selected.map { "Check that \($0.name) can reach your memory." } ?? "Check the connection."
+        case .done: return "You're set — your memory is available where you work."
+        }
+    }
+
+    /// The 1..4 of 4 affordance: a filled pip per completed/current step, a hairline pill per
+    /// upcoming one, plus a plain "Step N of 4" label for screen readers and small windows.
+    private var progressBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                ForEach(ConnectAppWizardStep.allCases, id: \.self) { s in
+                    Capsule()
+                        .fill(s.index <= step.index ? CortexDesign.accent : CortexDesign.hairline)
+                        .frame(height: 4)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            Text("Step \(step.index + 1) of \(ConnectAppWizardStep.count) · \(stepTitle)")
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.6)
+                .foregroundColor(CortexDesign.inkFaint)
+        }
+    }
+
+    private var stepTitle: String {
+        switch step {
+        case .pick: return "Pick a tool"
+        case .connect: return "Connect"
+        case .verify: return "Verify"
+        case .done: return "Done"
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            if step != .pick && step != .done {
+                CortexButton(title: "Back", systemImage: "chevron.left", role: .ghost, size: .large) {
+                    goBack()
+                }
+            }
+            Spacer(minLength: 0)
+            footerPrimary
+        }
+        .padding(16)
+        .background(connectionsSheetBackground)
+    }
+
+    /// Exactly one primary per step. On `.connect` and `.verify` the forward move is disabled until
+    /// the honest precondition is met (copied / test passed), so the user can never skip to "Done"
+    /// without actually connecting.
+    @ViewBuilder
+    private var footerPrimary: some View {
+        switch step {
+        case .pick:
+            CortexButton(title: "Continue", systemImage: "arrow.right", role: .primary, size: .large) {
+                withAnimation(.easeInOut(duration: 0.2)) { step = .connect }
+            }
+            .disabled(selected == nil)
+        case .connect:
+            CortexButton(title: "Next: verify", systemImage: "arrow.right", role: .primary, size: .large) {
+                withAnimation(.easeInOut(duration: 0.2)) { step = .verify }
+            }
+            .disabled(!didCopy)
+            .help(didCopy ? "" : "Copy the connection first.")
+        case .verify:
+            CortexButton(title: "Finish", systemImage: "checkmark", role: .primary, size: .large) {
+                withAnimation(.easeInOut(duration: 0.2)) { step = .done }
+            }
+            .disabled(!(testResult?.ok ?? false))
+            .help((testResult?.ok ?? false) ? "" : "Run the test and pass it first.")
+        case .done:
+            CortexButton(title: "Close", role: .primary, size: .large) {
+                dismiss()
+            }
+        }
+    }
+
+    // MARK: Step body
+
+    @ViewBuilder
+    private var stepContent: some View {
+        switch step {
+        case .pick: pickStep
+        case .connect: connectStep
+        case .verify: verifyStep
+        case .done: doneStep
+        }
+    }
+
+    // Step 1 — Pick tool: the same catalog the tiles use, grouped by category. Each card shows
+    // icon + name + the tool's own one-line summary ("what you'll be able to do").
+    private var pickStep: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ForEach(IntegrationCategory.allCases, id: \.self) { category in
+                let tools = state.integrations.filter { $0.category == category }
+                if !tools.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(category.rawValue.uppercased())
+                            .font(CortexDesign.Typography.stamp)
+                            .kerning(0.8)
+                            .foregroundColor(CortexDesign.inkFaint)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 10)], spacing: 10) {
+                            ForEach(tools) { tool in
+                                toolPickCard(tool)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func toolPickCard(_ tool: AIIntegration) -> some View {
+        let isSelected = selected?.id == tool.id
+        return Button {
+            selectTool(tool)
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: tool.systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(isSelected ? CortexDesign.accent : CortexDesign.inkSecondary)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(tool.name)
+                        .font(.callout)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.ink)
+                    Text(tool.summary)
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 0)
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(CortexDesign.accent)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CortexDesign.cardBackground)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? CortexDesign.accent : CortexDesign.hairline, lineWidth: isSelected ? 1.5 : 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // Step 2 — Connect: the tool's real connection path (mcpConfig / cliCommand / memoryPack /
+    // httpAPI), with one big primary that reuses the existing per-kind copy action and, for the
+    // config path, marks the tool connected via markIntegrationConfigCopied.
+    @ViewBuilder
+    private var connectStep: some View {
+        if let tool = selected {
+            VStack(alignment: .leading, spacing: 16) {
+                selectedToolBanner(tool)
+
+                switch tool.connectionKind {
+                case .mcpConfig:
+                    mcpConnectBody(tool)
+                case .cliCommand:
+                    commandConnectBody(tool)
+                case .memoryPack:
+                    memoryPackConnectBody(tool)
+                case .httpAPI:
+                    httpAPIConnectBody(tool)
+                }
+
+                privacyNote
+            }
+        }
+    }
+
+    /// The MCP config path. On DMG we offer the one-click file merge (installIntegration via
+    /// connectIntegration) AND the copy path; on MAS the sandbox can't write other apps' files, so
+    /// only the copy+paste path is honest (and copyMCPConfig records the connected-state signal).
+    private func mcpConnectBody(_ tool: AIIntegration) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            configPreview
+            pasteInstructions(configPasteSteps(tool))
+            HStack(spacing: 10) {
+                CortexButton(title: "Copy config", systemImage: "doc.on.doc", role: .primary, size: .large) {
+                    state.copyMCPConfig(for: tool)
+                    didCopy = true
+                }
+                if tool.supportsInstall && !DistributionMode.isAppStore {
+                    CortexButton(title: "Connect automatically", systemImage: "link.circle", role: .secondary, size: .large) {
+                        state.connectIntegration(tool)
+                        didCopy = true
+                    }
+                    .help("Writes the Cortex server into \(tool.name)'s config file for you (a backup is saved first).")
+                }
+                Spacer(minLength: 0)
+            }
+            copiedConfirmation
+        }
+    }
+
+    /// CLI tools register MCP from their own terminal command; copyCLICommand builds the exact
+    /// line (with this tool's scoped token) and puts it on the clipboard.
+    private func commandConnectBody(_ tool: AIIntegration) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            pasteInstructions([
+                "Copy the connection command below.",
+                "Paste it into a terminal and press Return.",
+                tool.restartHint
+            ])
+            CortexButton(title: "Copy command", systemImage: "terminal", role: .primary, size: .large) {
+                state.copyCLICommand(for: tool)
+                didCopy = true
+            }
+            copiedConfirmation
+        }
+    }
+
+    /// Browser assistants can't run tools; copyMemoryPack puts a cited, reviewed pack on the
+    /// clipboard (and opens the site) to paste at the start of a chat.
+    private func memoryPackConnectBody(_ tool: AIIntegration) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            pasteInstructions([
+                "Copy your reviewed memory pack.",
+                "Open \(tool.name) and start a new chat.",
+                tool.restartHint
+            ])
+            HStack(spacing: 10) {
+                CortexButton(title: "Copy memory pack", systemImage: "doc.on.clipboard", role: .primary, size: .large) {
+                    state.copyMemoryPack(for: tool, openSite: true)
+                    didCopy = true
+                }
+                CortexButton(title: "Connect extension", systemImage: "puzzlepiece.extension", role: .secondary, size: .large) {
+                    state.pairBrowserExtension()
+                    didCopy = true
+                }
+                .help("For a one-click browser path, pair the Cortex extension instead of pasting a pack each time.")
+                Spacer(minLength: 0)
+            }
+            copiedConfirmation
+        }
+    }
+
+    /// Self-hosted/local stacks call tools over HTTP; copyHTTPAPIDetails copies base URL + scoped
+    /// token + schema endpoints.
+    private func httpAPIConnectBody(_ tool: AIIntegration) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            pasteInstructions([
+                "Copy the local API details (base URL, token, endpoints).",
+                "Add them where \(tool.name) accepts a local tool or OpenAI-compatible API.",
+                tool.restartHint
+            ])
+            CortexButton(title: "Copy API details", systemImage: "curlybraces", role: .primary, size: .large) {
+                state.copyHTTPAPIDetails(for: tool)
+                didCopy = true
+            }
+            copiedConfirmation
+        }
+    }
+
+    /// Redacted config preview — byte-for-byte the copied shape with the token replaced, straight
+    /// from the same builder Copy uses (mcpConfigJSON → mcpServerDefinition). Never a hand literal.
+    private var configPreview: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Configuration")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(CortexDesign.inkSecondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(state.mcpConfigJSON(for: selected, redactToken: true))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(CortexDesign.ink)
+                    .textSelection(.enabled)
+                    .padding(12)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.quietBackground))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
+        }
+    }
+
+    /// Concrete, tool-specific paste steps for the MCP config path, built from the tool's own
+    /// setupHint / config targets / restartHint rather than a divergent hardcoded script.
+    private func configPasteSteps(_ tool: AIIntegration) -> [String] {
+        if DistributionMode.isAppStore || tool.configTargets.isEmpty {
+            return [
+                "Copy the configuration below.",
+                "Open \(tool.name)'s MCP settings and paste it into the mcpServers block, then save.",
+                tool.restartHint
+            ]
+        }
+        let target = tool.configTargets[0]
+        return [
+            "Copy the configuration below.",
+            "Paste it into \(tool.name)'s config (\(target.url.path)) inside the mcpServers block, then save.",
+            tool.restartHint
+        ]
+    }
+
+    private func pasteInstructions(_ steps: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                HStack(alignment: .top, spacing: 8) {
+                    Text("\(index + 1)")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(CortexDesign.panelBackground)
+                        .frame(width: 20, height: 20)
+                        .background(Circle().fill(CortexDesign.accent))
+                    Text(step)
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var copiedConfirmation: some View {
+        if didCopy {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(CortexDesign.sealMoss)
+                Text("Copied — paste it, then continue to verify.")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+            }
+        }
+    }
+
+    private var privacyNote: some View {
+        HStack(alignment: .top, spacing: 7) {
+            Circle()
+                .fill(CortexDesign.sealMoss)
+                .frame(width: 7, height: 7)
+                .padding(.top, 3)
+            Text("The token stays on this Mac and only reaches the app you paste it into. Memory stays local.")
+                .font(.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // Step 3 — Verify: the honest probe. testToolConnection refuses to report success for an
+    // mcpConfig tool whose config isn't configured yet, and always confirms Cortex is serving
+    // tools. A failure shows the actionable message and a retry.
+    @ViewBuilder
+    private var verifyStep: some View {
+        if let tool = selected {
+            VStack(alignment: .leading, spacing: 16) {
+                selectedToolBanner(tool)
+
+                Text("Run the test to confirm \(tool.name) can reach your reviewed memory.")
+                    .font(.callout)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let result = testResult {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: result.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(result.ok ? CortexDesign.sealMoss : CortexDesign.gold)
+                        Text(result.message)
+                            .font(.callout)
+                            .foregroundColor(result.ok ? CortexDesign.ink : CortexDesign.accent)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill((result.ok ? CortexDesign.sealMoss : CortexDesign.gold).opacity(0.1)))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
+                }
+
+                HStack(spacing: 10) {
+                    if isTesting {
+                        ProgressView().scaleEffect(0.8).frame(minHeight: 44)
+                    } else {
+                        CortexButton(
+                            title: testResult == nil ? "Test connection" : (testResult?.ok == true ? "Test again" : "Retry test"),
+                            systemImage: "checklist",
+                            role: .primary,
+                            size: .large
+                        ) {
+                            runTest(tool)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    // Step 4 — Done: success confirmation + a concrete "what you can now do" line + a way to
+    // connect another tool or close.
+    @ViewBuilder
+    private var doneStep: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundColor(CortexDesign.sealMoss)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(selected.map { "\($0.name) is connected" } ?? "Connected")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.ink)
+                    Text(selected?.setupHint ?? "Your reviewed memory is now available to this app.")
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.sealMoss.opacity(0.1)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
+
+            CortexButton(title: "Connect another app", systemImage: "plus", role: .secondary, size: .large) {
+                resetForAnother()
+            }
+        }
+    }
+
+    // MARK: Shared bits
+
+    private func selectedToolBanner(_ tool: AIIntegration) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: tool.systemImage)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(CortexDesign.accent)
+                .frame(width: 24)
+            Text(tool.name)
+                .font(.title3)
+                .fontWeight(.semibold)
+                .foregroundColor(CortexDesign.ink)
+            Spacer(minLength: 0)
+        }
+    }
+
+    // MARK: Actions
+
+    private func selectTool(_ tool: AIIntegration) {
+        selected = tool
+        // Fresh selection resets the per-tool progress so we never carry a stale copied/tested
+        // state onto a different tool.
+        didCopy = false
+        testResult = nil
+    }
+
+    private func goBack() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            switch step {
+            case .connect: step = .pick
+            case .verify: step = .connect
+            default: break
+            }
+        }
+    }
+
+    private func runTest(_ tool: AIIntegration) {
+        isTesting = true
+        Task {
+            let result = await state.testToolConnection(tool)
+            testResult = result
+            isTesting = false
+        }
+    }
+
+    private func resetForAnother() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            selected = nil
+            didCopy = false
+            testResult = nil
+            step = .pick
+        }
     }
 }
 

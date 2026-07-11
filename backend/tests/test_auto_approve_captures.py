@@ -103,6 +103,34 @@ class AutoApproveCaptureTests(unittest.TestCase):
         )
         self.assertEqual(self._review_status(cap["capture_id"]), "pending")
 
+    def test_approve_all_clears_the_whole_backlog_in_one_call(self) -> None:
+        """Regression for the 99+ review backlog: approve_all_captures approves EVERY pending
+        capture (not just a 10-item page) and makes them retrievable, while leaving nothing
+        pending. This is the one-decision escape from the 10-at-a-time batch cap."""
+        pending_ids = [
+            self._save(f"Pending memory number {i} about topic alpha.", auto_approve=False)
+            for i in range(15)
+        ]
+        self.assertTrue(all(self._review_status(cid) == "pending" for cid in pending_ids))
+
+        result = self.store.approve_all_captures(self.user_id)
+        self.assertEqual(result["approved"], 15)
+        self.assertIsNone(result["source"])
+        self.assertTrue(all(self._review_status(cid) == "approved" for cid in pending_ids))
+        run_worker_tick(self.store, [self.user_id], limit_per_user=100)
+        self.assertGreaterEqual(len(self.store.search(self.user_id, "topic alpha", limit=20)), 1)
+
+    def test_approve_all_can_scope_to_one_source(self) -> None:
+        """approve_all_captures(source=...) approves only that source's pending captures,
+        matching case-insensitively, and leaves other sources still pending."""
+        keep = self._save("Note from vault A.", auto_approve=False, source="obsidian")
+        other = self._save("Note from a chat export.", auto_approve=False, source="chatgpt")
+
+        result = self.store.approve_all_captures(self.user_id, source="OBSIDIAN")
+        self.assertEqual(result["approved"], 1)
+        self.assertEqual(self._review_status(keep), "approved")
+        self.assertEqual(self._review_status(other), "pending")
+
     def test_mcp_remember_this_honours_auto_approve(self) -> None:
         """Regression: the MCP remember_this tool (agent-written manual captures) auto-approves
         when the flag is on, so agent-saved memories are immediately retrievable."""

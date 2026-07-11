@@ -2326,6 +2326,13 @@ def activity_feed(
     return {"events": events, "cursor": cursor}
 
 
+@app.post("/v1/captures/approve-all")
+def approve_all_captures(payload: dict[str, Any] | None = None, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Clear the whole review backlog (optionally one source's) in one decision."""
+    source = str((payload or {}).get("source") or "") or None
+    return store.approve_all_captures(user_id, source=source)
+
+
 @app.post("/v1/captures/{capture_id}/approve")
 def approve_capture(capture_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
     approved = store.approve_capture(user_id, capture_id)

@@ -12059,6 +12059,17 @@ class CortexStore:
             """,
             (current_id, timestamp, effective_at, timestamp, user_id, stale_id),
         )
+        # Live ticker: the "Cortex kept itself current" moment — a newer belief replaced an
+        # older one. This is exactly the organizing work users never saw happening.
+        self._emit_activity(
+            user_id,
+            "memory",
+            "updated",
+            title=(str(current_memory.get("summary") or current_memory.get("content") or "")).strip()[:160],
+            detail="replaced an earlier memory",
+            source=str(current_memory.get("source") or ""),
+            object_id=current_id,
+        )
         # Supersession lowers derived trust (Phase 3); rescore the stale row now so packs
         # and the ledger agree without waiting for the nightly job.
         stale_row = conn.execute(
@@ -15080,6 +15091,60 @@ class CortexStore:
             if not deleted:
                 return False
         return True
+
+    def approve_all_captures(self, user_id: str, *, source: str | None = None) -> dict[str, Any]:
+        """Approve EVERY pending capture in one action (optionally only one source's). The review
+        queue previously offered only 10-at-a-time batches, so a big connector sync left users
+        clicking through a 99+ backlog — this clears it in one decision. Archived captures are
+        never touched. Emits the same per-capture 'approved' audit events the single approve does
+        (the source-reputation read-model aggregates them), plus one live-activity summary."""
+        normalized_source = str(source or "").strip()
+        timestamp = now_iso()
+        approved_ids: list[str] = []
+        with connect(self.db_path) as conn:
+            if normalized_source:
+                rows = conn.execute(
+                    "SELECT id, source, source_account_id FROM captures "
+                    "WHERE user_id = ? AND review_status = 'pending' AND LOWER(source) = LOWER(?)",
+                    (user_id, normalized_source),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, source, source_account_id FROM captures "
+                    "WHERE user_id = ? AND review_status = 'pending'",
+                    (user_id,),
+                ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "UPDATE captures SET review_status = 'approved', approved_at = ?, archived_at = NULL "
+                    "WHERE user_id = ? AND id = ?",
+                    (timestamp, user_id, row["id"]),
+                )
+                self._event(conn, user_id, row["id"], "capture", "approved", {
+                    "source": row["source"],
+                    "source_account_id": row["source_account_id"],
+                    "bulk": True,
+                })
+                approved_ids.append(row["id"])
+        # Vault mirrors patched outside the transaction (file I/O; best-effort per capture).
+        for capture_id in approved_ids:
+            try:
+                self.vault.patch_capture(capture_id, {
+                    "review_status": "approved", "approved_at": timestamp, "archived_at": None,
+                })
+            except Exception:
+                pass
+        if approved_ids:
+            self._emit_activity(
+                user_id,
+                "review",
+                "approved",
+                title=f"Approved {len(approved_ids)} memor{'y' if len(approved_ids) == 1 else 'ies'}",
+                detail=normalized_source and f"from {normalized_source}" or "everything waiting for review",
+                source=normalized_source,
+                count=len(approved_ids),
+            )
+        return {"approved": len(approved_ids), "source": normalized_source or None}
 
     def approve_capture(self, user_id: str, capture_id: str) -> bool:
         timestamp = now_iso()

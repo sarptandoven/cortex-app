@@ -2162,6 +2162,15 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/sources/stats":
                 self._send_json({"results": store.source_memory_stats(user_id)})
                 return
+            if method == "POST" and path == "/v1/captures/approve-all":
+                # Clear the whole review backlog (optionally one source's) in one decision — the
+                # UI's 10-at-a-time batch made a 99+ queue unmanageable.
+                body = self._json_body()
+                self._send_json(store.approve_all_captures(
+                    user_id,
+                    source=str(body.get("source") or "") or None,
+                ))
+                return
             if method == "DELETE" and path.startswith("/v1/sources/") and path.endswith("/memories"):
                 source = unquote(path.removeprefix("/v1/sources/").removesuffix("/memories").strip("/"))
                 try:

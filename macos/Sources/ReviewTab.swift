@@ -381,6 +381,8 @@ struct ReviewInboxSection: View {
 
     private static let pageSize = 10
     @State private var visibleLimit = ReviewInboxSection.pageSize
+    @State private var confirmApproveAll = false
+    @State private var approveAllInFlight = false
 
     // Sections earn their space only when they actually compress work: a backlog
     // bigger than one page, grouped into more than one section.
@@ -405,12 +407,38 @@ struct ReviewInboxSection: View {
                     // approveCaptures caps the batch at 10 server-side, so approve exactly that
                     // slice and label the button with the true count — no promising more than we act on.
                     let approveBatch = Array(visibleCaptures.prefix(10))
+                    if approveAllInFlight {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    if totalPendingCount > approveBatch.count {
+                        // The power action for the 99+ backlog the 10-at-a-time batch can't clear.
+                        // Secondary on purpose: "Approve N shown" keeps the wax-red primary because
+                        // it only approves what the user has actually looked at.
+                        CortexButton(title: "Approve all \(totalPendingCount)", systemImage: "checkmark.seal.fill", role: .secondary, size: .large) {
+                            confirmApproveAll = true
+                        }
+                        .disabled(approveAllInFlight || !state.inFlightCaptureIds.isEmpty)
+                        .help("Approve every pending item, including \(totalPendingCount - approveBatch.count) not shown here")
+                    }
                     CortexButton(title: "Approve \(approveBatch.count) shown", systemImage: "checkmark.seal", role: .primary, size: .large) {
                         state.approveCaptures(approveBatch)
                     }
-                    .disabled(!state.inFlightCaptureIds.isEmpty)
+                    .disabled(approveAllInFlight || !state.inFlightCaptureIds.isEmpty)
                     .help("Approve the \(approveBatch.count) items shown at the top")
                 }
+            }
+            .confirmationDialog(
+                "Approve all \(totalPendingCount) items?",
+                isPresented: $confirmApproveAll,
+                titleVisibility: .visible
+            ) {
+                Button("Approve all") {
+                    approveAll(source: nil)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Everything waiting for review becomes usable memory. You can still archive or forget individual memories later.")
             }
 
             if captures.isEmpty {
@@ -428,6 +456,12 @@ struct ReviewInboxSection: View {
                             actionError: state.captureActionErrors[capture.id],
                             approve: { state.approveCapture(capture) },
                             archive: { state.archiveCapture(capture) },
+                            // The card's raw source string is the one value the backend matches
+                            // exactly, so per-source approve-all hangs off the card — offered only
+                            // when the source actually repeats in the queue.
+                            approveAllFromSource: pendingSourceCounts[capture.source, default: 0] > 1
+                                ? { approveAll(source: capture.source) }
+                                : nil,
                             isTopItem: capture.id == visibleCaptures.first?.id
                         )
                         .transition(.asymmetric(
@@ -458,6 +492,30 @@ struct ReviewInboxSection: View {
 
     private var visibleCount: Int {
         visibleCaptures.count
+    }
+
+    /// The whole backlog, not the loaded page: the inbox request caps at 30 items, so a 99+ queue
+    /// is only visible through the review stats. Never report fewer than what's already on screen.
+    private var totalPendingCount: Int {
+        max(state.review?.stats.pending_captures ?? 0, captures.count)
+    }
+
+    /// How many loaded captures share each raw source string — gates the per-source approve-all so
+    /// it only appears where it approves more than the card it's invoked from.
+    private var pendingSourceCounts: [String: Int] {
+        captures.reduce(into: [:]) { counts, capture in
+            guard !capture.source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            counts[capture.source, default: 0] += 1
+        }
+    }
+
+    private func approveAll(source: String?) {
+        guard !approveAllInFlight else { return }
+        approveAllInFlight = true
+        Task {
+            await state.approveAllCaptures(source: source)
+            approveAllInFlight = false
+        }
     }
 
     private var emptyDetail: String {
@@ -642,6 +700,9 @@ struct ReviewQueueCaptureCard: View {
     var actionError: String? = nil
     let approve: () -> Void
     let archive: () -> Void
+    /// Present only when this capture's source repeats in the queue: approves EVERY pending item
+    /// from the same source, not just this card.
+    var approveAllFromSource: (() -> Void)? = nil
     var isTopItem: Bool = false
     @State private var confirmArchive = false
     @State private var isHovered = false
@@ -730,7 +791,8 @@ struct ReviewQueueCaptureCard: View {
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.15)) { isHovered = hovering }
         }
-        // Right-click mirrors the two card actions (menu items are system-styled by design).
+        // Right-click mirrors the two card actions (menu items are system-styled by design),
+        // plus the per-source bulk approve when the source repeats in the queue.
         .contextMenu {
             Button {
                 approve()
@@ -741,6 +803,15 @@ struct ReviewQueueCaptureCard: View {
                 requestArchive()
             } label: {
                 Label("Archive", systemImage: "archivebox")
+            }
+            if let approveAllFromSource {
+                Divider()
+                Button {
+                    approveAllFromSource()
+                } label: {
+                    Label("Approve all from \(sourceDisplayName)", systemImage: "checkmark.seal.fill")
+                }
+                .disabled(isInFlight)
             }
         }
     }
@@ -755,6 +826,14 @@ struct ReviewQueueCaptureCard: View {
 
     private var title: String {
         cortexCaptureTitle(capture)
+    }
+
+    /// Menu-friendly name for the capture's source: a cleaned filename for path-like sources,
+    /// otherwise the catalog display name — never a raw path or URL in a menu item.
+    private var sourceDisplayName: String {
+        let source = capture.source.trimmingCharacters(in: .whitespacesAndNewlines)
+        if MemoryText.isPathLike(source), let name = MemoryText.filename(source) { return name }
+        return SourceDisplayName.label(source)
     }
 
     private var cleanedSummary: String? {

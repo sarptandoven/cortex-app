@@ -190,8 +190,35 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         self.assertIn("Approve useful items, archive noise", source)
         self.assertIn('Label("Approve", systemImage: "checkmark.seal")', source)
         self.assertIn('Label("Archive", systemImage: "archivebox")', source)
-        self.assertNotIn("Approve all", source)
+        # A bulk "Approve all N" clears the 99+ backlog the 10-at-a-time batch can't reach, but it
+        # stays SECONDARY — "Approve N shown" keeps the single wax-red primary on the surface.
+        self.assertIn('title: "Approve all \\(totalPendingCount)", systemImage: "checkmark.seal.fill", role: .secondary', source)
+        self.assertIn('title: "Approve \\(approveBatch.count) shown", systemImage: "checkmark.seal", role: .primary', source)
+        self.assertNotIn('title: "Approve all \\(totalPendingCount)", systemImage: "checkmark.seal.fill", role: .primary', source)
         self.assertNotIn("Archive all", source)
+
+    def test_mas_integration_state_honours_copied_config_signal(self) -> None:
+        """Regression: on Mac App Store builds the sandbox can't read another app's config file to
+        verify a paste, so both the cached refresh AND the direct accessor must report a tool as
+        configured when the user copied its setup config. A prior version hardcoded configured:false
+        in integrationState(for:) (while refreshIntegrationStates set it from the copied signal),
+        which left copied MAS tools "not connected" forever and made the Connect-an-app wizard's
+        test/Finish gate unreachable. Pin that both MAS branches read the copied signal."""
+        source = CORTEX_APP.read_text(encoding="utf-8")
+
+        # Both the refresh path and the direct accessor derive `configured` from the copied signal.
+        self.assertEqual(source.count("configured: copied"), 2)
+        # The direct accessor must consult the copied-config set inside its App Store branch, not
+        # return a hardcoded false.
+        accessor = re.search(
+            r"func integrationState\(for integration: AIIntegration\).*?\n    \}",
+            source,
+            re.S,
+        )
+        self.assertIsNotNone(accessor)
+        accessor_body = accessor.group(0)
+        self.assertIn("appStoreCopiedIntegrationIDs()", accessor_body)
+        self.assertNotIn("configured: false", accessor_body)
 
     def test_home_source_status_reflects_attention_and_due_sync(self) -> None:
         source = (ROOT / "macos" / "Sources" / "ModelTab.swift").read_text(encoding="utf-8")

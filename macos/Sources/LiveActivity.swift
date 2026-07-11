@@ -904,6 +904,8 @@ struct LiveActivityTicker: View {
         case "memory":  return "sparkles"
         case "import":  return "arrow.down.doc"
         case "source":  return "trash"
+        case "graph":   return "circle.hexagongrid.fill"
+        case "review":  return "checkmark.seal.fill"
         default:        return "brain.head.profile"
         }
     }
