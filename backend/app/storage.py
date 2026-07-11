@@ -8991,6 +8991,17 @@ class CortexStore:
                     updated_at=started_at,
                 )
 
+        if records:
+            self._emit_activity(
+                user_id,
+                "import",
+                "started",
+                title=f"Importing from {source_hint or 'your files'}",
+                detail=f"{len(records)} item{'s' if len(records) != 1 else ''} found",
+                source=str(source_hint or ""),
+                object_id=import_id,
+                count=len(records),
+            )
         capture_ids: list[str] = []
         base_identity_aliases = self.settings(user_id).get("identity_aliases")
         source_accounts = self.list_source_accounts(user_id)
@@ -9152,6 +9163,19 @@ class CortexStore:
                     "capture_count": len(capture_ids),
                 },
             )
+        self._emit_activity(
+            user_id,
+            "import",
+            "completed",
+            title=f"Finished importing from {source_hint or 'your files'}",
+            detail=(
+                f"{saved} saved" if processing == "sync" else f"{queued} queued for distillation"
+            )
+            + (f", {skipped} skipped" if skipped else ""),
+            source=str(source_hint or ""),
+            object_id=import_id,
+            count=saved if processing == "sync" else queued,
+        )
         return {
             "import_id": import_id,
             "status": status,
@@ -9167,6 +9191,146 @@ class CortexStore:
             "sources": source_summary,
             "records": record_results[:100],
             "errors": errors,
+        }
+
+    def source_memory_stats(self, user_id: str) -> list[dict[str, Any]]:
+        """Active memories grouped by their originating source string, with counts + recency.
+
+        Powers the "manage / purge stored data by source" surface: each bucket is a real
+        ``memories.source`` value the user can inspect and — if a source imported junk — delete
+        wholesale via purge_source_memories(). No alias guessing: what you see is what gets purged."""
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT LOWER(source) AS source,
+                       COUNT(*) AS count,
+                       MAX(captured_at) AS last_captured_at
+                FROM memories
+                WHERE user_id = ? AND status = 'active'
+                GROUP BY LOWER(source)
+                ORDER BY count DESC, source ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        # Group case-insensitively so a bucket's displayed count is EXACTLY what a purge of that
+        # bucket removes (purge_source_memories matches LOWER(source) = LOWER(?)). If stats grouped
+        # case-sensitively, two case-variant buckets ("iCloud"/"ICLOUD") would show separate counts
+        # yet a single purge would wipe both — over-deleting beyond what the user saw.
+        return [
+            {
+                "source": row["source"] or "",
+                "count": int(row["count"] or 0),
+                "last_captured_at": row["last_captured_at"],
+            }
+            for row in rows
+        ]
+
+    def purge_source_memories(self, user_id: str, source: str) -> dict[str, Any]:
+        """Permanently delete EVERYTHING that originates from a given source: its memories, the
+        captures they came from, derived tasks, graph edges, vault mirror files (with tombstones),
+        and search + vector index rows. Irreversible — this is the "one source imported garbage,
+        wipe it all" control.
+
+        Matching is case-insensitive on the SQL side (LOWER(source) = LOWER(?)) for BOTH captures
+        and memories, i.e. exactly the case-folded buckets source_memory_stats() surfaces. Deletion
+        goes one capture at a time through the shared durable primitive _delete_capture_in_conn, so
+        (a) each object gets a vault tombstone — a later vault rebuild can't resurrect purged data —
+        and (b) there is never an oversized IN(...) clause, so wiping a huge bad import (tens of
+        thousands of rows) can't trip SQLite's bound-variable limit."""
+        normalized = str(source or "").strip()
+        if not normalized:
+            raise ValueError("source is required")
+        timestamp = now_iso()
+        capture_ids: list[str] = []
+        memory_ids: list[str] = []
+        task_ids: list[str] = []
+        edge_ids: list[str] = []
+        orphan_memory_ids: list[str] = []
+        with connect(self.db_path) as conn:
+            capture_ids = [
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM captures WHERE user_id = ? AND LOWER(source) = LOWER(?)",
+                    (user_id, normalized),
+                ).fetchall()
+            ]
+            for capture_id in sorted(set(capture_ids)):
+                result = self._delete_capture_in_conn(
+                    conn,
+                    user_id,
+                    capture_id,
+                    timestamp=timestamp,
+                    reason="source_purged",
+                    event_metadata={"source": normalized},
+                )
+                if result:
+                    memory_ids.extend(result["memory_ids"])
+                    task_ids.extend(result["task_ids"])
+                    edge_ids.extend(result["edge_ids"])
+            # Source-only stragglers: memories that still carry this source after their siblings
+            # were swept (e.g. a memory whose own source was overridden to differ from its capture's).
+            # After the capture loop these are simply the memories left matching the source.
+            orphan_memory_ids = [
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM memories WHERE user_id = ? AND LOWER(source) = LOWER(?)",
+                    (user_id, normalized),
+                ).fetchall()
+            ]
+            if capture_ids or orphan_memory_ids:
+                self._event(
+                    conn,
+                    user_id,
+                    normalized,
+                    "source",
+                    "purged",
+                    {
+                        "source": normalized,
+                        "memory_count": len(memory_ids) + len(orphan_memory_ids),
+                        "capture_count": len(capture_ids),
+                        "task_count": len(task_ids),
+                        "edge_count": len(edge_ids),
+                    },
+                )
+        # Straggler memories are deleted durably one at a time (each writes its own tombstone).
+        # Rare and few, so a per-memory transaction is fine and never hits the variable ceiling.
+        for memory_id in orphan_memory_ids:
+            try:
+                if self.delete_memory(user_id, memory_id):
+                    memory_ids.append(memory_id)
+            except Exception:
+                pass
+        total_memories = len(memory_ids)
+        if not (capture_ids or total_memories):
+            return {
+                "deleted": False,
+                "source": normalized,
+                "memory_count": 0,
+                "capture_count": 0,
+                "task_count": 0,
+                "edge_count": 0,
+            }
+        # Sweep any dangling fts/relation/graph-edge rows so the readiness gate stays green.
+        try:
+            self.prune_orphans(user_id)
+        except Exception:
+            pass
+        self._emit_activity(
+            user_id,
+            "source",
+            "purged",
+            title=f"Deleted all data from {normalized}",
+            detail=f"{total_memories} memor{'y' if total_memories == 1 else 'ies'} removed",
+            source=normalized,
+            count=total_memories,
+        )
+        return {
+            "deleted": True,
+            "source": normalized,
+            "memory_count": total_memories,
+            "capture_count": len(capture_ids),
+            "task_count": len(task_ids),
+            "edge_count": len(edge_ids),
         }
 
     def get_job(self, user_id: str, job_id: str) -> dict[str, Any] | None:
@@ -26364,6 +26528,24 @@ class CortexStore:
             reason="memory_saved",
         )
         memory["belief_receipt_event_id"] = receipt["id"]
+        if not receipt.get("deduplicated"):
+            # Live ticker: surface each memory the instant it lands (covers sync imports, async
+            # job-draining, and direct captures — every write funnels through here). Dedup hits
+            # are skipped so re-ingesting an export doesn't spam the feed with no-op "learned"s.
+            # This fires INSIDE the write transaction: if that transaction later rolls back, a
+            # single phantom "learned" line may have flashed in the ticker. That is acceptable —
+            # the activity feed is explicitly ephemeral/best-effort (see activity.py), never an
+            # authoritative record, and the next poll simply moves on. The durable audit trail is
+            # the memory_events row written via _record_belief_snapshot_event, which IS transactional.
+            self._emit_activity(
+                user_id,
+                "memory",
+                "learned",
+                title=(memory.get("summary") or memory.get("content") or "").strip()[:160],
+                detail=str(memory.get("kind") or ""),
+                source=str(source or ""),
+                object_id=memory_id,
+            )
         if existing_memory is not None and not receipt.get("deduplicated"):
             # Same-id edits are new transaction-time versions, not retcons at the original time.
             memory["recorded_at"] = receipt["created_at"]
@@ -29518,6 +29700,19 @@ class CortexStore:
             (edge_id, user_id, source_id, target_id, kind, weight, evidence_id, created_at),
         )
         return {"id": edge_id, "user_id": user_id, "source_id": source_id, "target_id": target_id, "kind": kind, "weight": weight, "evidence_id": evidence_id, "created_at": created_at}
+
+    def _emit_activity(self, user_id: str, kind: str, action: str, **kwargs: Any) -> None:
+        """Best-effort publish to the in-process live-activity feed (the app's live ticker).
+
+        This is purely cosmetic telemetry (see activity.py): it must never raise into a hot
+        write path, so every failure is swallowed. It is NOT the durable memory_events audit
+        log — that is written separately via _event()."""
+        try:
+            from .activity import activity_hub
+
+            activity_hub.publish(user_id, kind, action, **kwargs)
+        except Exception:
+            pass
 
     def _event(
         self,

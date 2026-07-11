@@ -76,6 +76,7 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var sourceAuditExpanded = false
     @State private var recoveryToolsExpanded = false
     @State private var developerDetailsExpanded = false
+    @State private var storedDataExpanded = false
 
     private var primaryActiveSourceAccounts: [SourceAccountItem] {
         state.activeSourceAccounts.filter { account in
@@ -258,6 +259,29 @@ private struct ConnectionsPrivacyOverview: View {
             .background(connectionsPanelBackground)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
             .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            // Manage stored data sits with the trust/permissions controls: once memory exists,
+            // removing all of it from a single source is a first-class privacy action, one card
+            // below "AI tools & permissions" and above the softer activity metrics.
+            DisclosureGroup(isExpanded: $storedDataExpanded) {
+                ConnectionsStoredDataSection(state: state)
+                    .padding(.top, 10)
+            } label: {
+                ConnectionsDisclosureLabel(
+                    systemImage: "tray.full",
+                    title: "Manage stored data",
+                    detail: "See what each source has saved, and delete it by source in one step"
+                )
+            }
+            .padding(14)
+            .background(connectionsPanelBackground)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .onChange(of: storedDataExpanded) { expanded in
+                if expanded {
+                    Task { await state.loadSourceStats() }
+                }
+            }
 
             DisclosureGroup(isExpanded: $activityMetricsExpanded) {
                 ConnectionsToolUsageSection(state: state)
@@ -1467,20 +1491,29 @@ private struct ConnectorTokenSetupSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if let setup, !setup.setupSteps.isEmpty {
+                    if let setup, !setup.setupSteps.isEmpty || setup.helpURL != nil {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("How to connect")
                                 .font(.caption)
                                 .fontWeight(.semibold)
                                 .foregroundColor(CortexDesign.inkSecondary)
-                            // Every backend step renders (Slack sends more than three), and the
-                            // help link sits with step 1 so the first action is obvious.
-                            GuidedStepWalkthrough(steps: setup.setupSteps) { index in
-                                if index == 0, let url = setup.helpURL {
-                                    Link(destination: url) {
-                                        Label("Open setup help", systemImage: "arrow.up.right.square")
-                                            .font(.caption)
-                                    }
+                            // Every backend step renders (Slack sends more than three) as a
+                            // numbered checklist so "what token? where from?" is answered right
+                            // above the credential field.
+                            if !setup.setupSteps.isEmpty {
+                                GuidedStepWalkthrough(steps: setup.setupSteps) { _ in
+                                    EmptyView()
+                                }
+                            }
+                            // Persistent "Open setup page" link whenever the backend supplies one —
+                            // it stays put instead of riding along a single auto-advancing step, so
+                            // the "where do I get this?" jump is always one click away.
+                            if let url = setup.helpURL {
+                                Link(destination: url) {
+                                    Label("Open setup page", systemImage: "arrow.up.right.square")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(CortexDesign.accent)
                                 }
                             }
                         }
@@ -1999,6 +2032,10 @@ private enum NotesConnectionHealth: Equatable {
 
 private struct ConnectionsAIToolsSection: View {
     @ObservedObject var state: AppState
+    /// Local "Test connection" results, keyed by integration id. Set from testToolConnection.
+    @State private var testResults: [String: ConnectionTestResult] = [:]
+    /// Memory-pack preview disclosure state for the browser-assistant row.
+    @State private var packPreviewExpanded = false
 
     private var connectedCount: Int {
         state.integrations.filter { state.integrationState(for: $0).configured }.count
@@ -2102,29 +2139,78 @@ private struct ConnectionsAIToolsSection: View {
             if !connectedIntegrations.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(connectedIntegrations.prefix(3)) { integration in
-                        HStack(spacing: 10) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(CortexDesign.sealMoss)
-                                .frame(width: 24)
-                            Text(integration.name)
-                                .font(.callout)
-                                .fontWeight(.medium)
-                                .foregroundColor(CortexDesign.ink)
-                            Spacer(minLength: 0)
-                            Text("Enabled")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(CortexDesign.sealMoss)
-                        }
-                        .padding(.vertical, 10)
-                        .padding(.trailing, 10)
-                        .padding(.leading, 25)
-                        .background(CortexDesign.cardBackground)
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .archiveSpine(CortexDesign.accent)
+                        connectedIntegrationRow(integration)
                     }
                 }
             }
+        }
+    }
+
+    /// A connected-tool row with an inline "Test" button. Testing confirms the tool can actually
+    /// reach Cortex memory (not just that a config file exists), and shows the result in place:
+    /// a moss check + message on success, an amber warning + message on failure.
+    @ViewBuilder
+    private func connectedIntegrationRow(_ integration: AIIntegration) -> some View {
+        let result = testResults[integration.id]
+        let isTesting = state.testingConnectionID == integration.id
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(CortexDesign.sealMoss)
+                    .frame(width: 24)
+                Text(integration.name)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                    .foregroundColor(CortexDesign.ink)
+                Spacer(minLength: 8)
+                if isTesting {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                        .frame(minWidth: 78, minHeight: 30)
+                } else {
+                    Button {
+                        runTest(integration)
+                    } label: {
+                        Label("Test", systemImage: "checklist")
+                            .font(.system(size: 12, weight: .medium))
+                            .frame(minWidth: 78, minHeight: 30)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(state.testingConnectionID != nil)
+                    .help("Check that \(integration.name) can reach your reviewed memory.")
+                }
+                Text("Enabled")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(CortexDesign.sealMoss)
+            }
+
+            if let result {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: result.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(result.ok ? CortexDesign.sealMoss : CortexDesign.gold)
+                    Text(result.message)
+                        .font(.caption)
+                        .foregroundColor(result.ok ? CortexDesign.inkSecondary : CortexDesign.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 34)
+            }
+        }
+        .padding(.vertical, 10)
+        .padding(.trailing, 10)
+        .padding(.leading, 25)
+        .background(CortexDesign.cardBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .archiveSpine(CortexDesign.accent)
+    }
+
+    private func runTest(_ integration: AIIntegration) {
+        Task {
+            let result = await state.testToolConnection(integration)
+            testResults[integration.id] = result
         }
     }
 
@@ -2161,50 +2247,111 @@ private struct ConnectionsAIToolsSection: View {
     }
 
     /// The ChatGPT / Claude-web path, given equal footing with MCP installs: one tap builds a
-    /// cited memory pack from the same context engine and opens the site. This is how browser
-    /// assistants actually use Cortex data today.
+    /// cited memory pack from the same context engine and opens the site. Preview shows exactly
+    /// what will land on the clipboard before you copy it. This is how browser assistants actually
+    /// use Cortex data today.
     private var browserAssistantRow: some View {
-        HStack(alignment: .center, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(CortexDesign.accent.opacity(0.13))
-                Image(systemName: "doc.on.clipboard")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundColor(CortexDesign.accent)
-            }
-            .frame(width: 56, height: 56)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(CortexDesign.accent.opacity(0.13))
+                    Image(systemName: "doc.on.clipboard")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(CortexDesign.accent)
+                }
+                .frame(width: 56, height: 56)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("ChatGPT, Claude web & other chats".uppercased())
-                    .font(CortexDesign.Typography.stamp)
-                    .kerning(0.8)
-                    .foregroundColor(CortexDesign.inkFaint)
-                Text("Copy a memory pack")
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundColor(CortexDesign.ink)
-                Text("Puts your reviewed, cited memory on the clipboard — paste it at the start of any chat.")
-                    .font(.callout)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("ChatGPT, Claude web & other chats".uppercased())
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
+                    Text("Copy a memory pack")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Puts your reviewed, cited memory on the clipboard — paste it at the start of any chat.")
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Button {
+                    state.copyMemoryPack()
+                } label: {
+                    Label("Copy memory pack", systemImage: "doc.on.clipboard")
+                        .frame(minWidth: 138, minHeight: 46)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .help("Builds a cited pack of your approved memory and copies it for ChatGPT, Claude web, Gemini, or any other assistant.")
             }
 
-            Spacer(minLength: 8)
-
-            Button {
-                state.copyMemoryPack()
-            } label: {
-                Label("Copy memory pack", systemImage: "doc.on.clipboard")
-                    .frame(minWidth: 138, minHeight: 46)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .help("Builds a cited pack of your approved memory and copies it for ChatGPT, Claude web, Gemini, or any other assistant.")
+            memoryPackPreview
         }
         .padding(14)
         .background(connectionsPanelBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// A lightweight preview of the memory pack: "N memories ready · M characters" plus an
+    /// expandable, read-only, monospaced excerpt of the first ~600 characters so the user sees
+    /// exactly what they'll paste before copying it.
+    @ViewBuilder
+    private var memoryPackPreview: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Button {
+                    Task { await state.loadMemoryPackPreview() }
+                } label: {
+                    Label(state.memoryPackPreview == nil ? "Preview" : "Refresh preview", systemImage: "eye")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(minWidth: 96, minHeight: 30)
+                }
+                .buttonStyle(.bordered)
+                .help("See exactly what Cortex will copy before you paste it into a chat.")
+
+                if let preview = state.memoryPackPreview {
+                    Text("\(preview.itemCount) memor\(preview.itemCount == 1 ? "y" : "ies") ready · \(preview.characterCount) characters")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if let preview = state.memoryPackPreview {
+                DisclosureGroup(isExpanded: $packPreviewExpanded) {
+                    ScrollView {
+                        Text(memoryPackExcerpt(preview.text))
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(CortexDesign.ink)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    }
+                    .frame(maxHeight: 180)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.quietBackground))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
+                    .padding(.top, 6)
+                } label: {
+                    Text(packPreviewExpanded ? "Hide preview" : "Show what will be copied")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                }
+            }
+        }
+    }
+
+    /// First ~600 characters of the pack, with an ellipsis when there's more. Kept read-only —
+    /// this is a preview, not an editor.
+    private func memoryPackExcerpt(_ text: String) -> String {
+        guard text.count > 600 else { return text }
+        return String(text.prefix(600)) + "…"
     }
 }
 
@@ -2515,6 +2662,193 @@ private struct ConnectionsMCPAccessSection: View {
     private func shortDate(_ value: String) -> String {
         String(value.prefix(10))
     }
+}
+
+/// "Manage stored data" — everything Cortex has learned, grouped by the source it came from,
+/// with a one-step destructive purge per source. Backed by the AppState source-stats contract
+/// (loadSourceStats / purgeSource / purgingSource). Loads its stats on appear so opening the
+/// card is enough to see current counts.
+private struct ConnectionsStoredDataSection: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Everything Cortex has learned, grouped by where it came from. If a source added junk, remove all of it in one step.")
+                .font(.callout)
+                .foregroundColor(CortexDesign.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if state.sourceStats.isEmpty {
+                QuietState(
+                    title: "Nothing stored yet",
+                    detail: "Connect a source or import to build your memory.",
+                    systemImage: "tray"
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(state.sourceStats) { stat in
+                        ConnectionsStoredDataRow(state: state, stat: stat)
+                    }
+                }
+            }
+        }
+        .task {
+            await state.loadSourceStats()
+        }
+    }
+}
+
+/// One source's stored-data row: humanized name, memory count, a relative "last added",
+/// and a destructive "Delete all…" that confirms before purging. While this source is being
+/// purged the button is replaced by a spinner and disabled.
+private struct ConnectionsStoredDataRow: View {
+    @ObservedObject var state: AppState
+    let stat: SourceMemoryStat
+    @State private var confirmDelete = false
+
+    private var isPurging: Bool {
+        state.purgingSource == stat.source
+    }
+
+    private var displayName: String {
+        humanizeSourceName(stat.source)
+    }
+
+    private var countLabel: String {
+        "\(stat.count) memor\(stat.count == 1 ? "y" : "ies")"
+    }
+
+    private var lastAddedLabel: String? {
+        relativeCapturedLabel(stat.last_captured_at)
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(CortexDesign.accent.opacity(0.12))
+                Image(systemName: "archivebox.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+            }
+            .frame(width: 44, height: 44)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(displayName)
+                    .font(.headline)
+                    .foregroundColor(CortexDesign.ink)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(countLabel)
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                    if let lastAddedLabel {
+                        Text("·")
+                            .font(.caption)
+                            .foregroundColor(CortexDesign.inkFaint)
+                        Text("last added \(lastAddedLabel)")
+                            .font(.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                    }
+                }
+            }
+
+            Spacer(minLength: 12)
+
+            if isPurging {
+                ProgressView()
+                    .scaleEffect(0.8)
+                    .frame(minWidth: 118, minHeight: 42)
+            } else {
+                Button(role: .destructive) {
+                    confirmDelete = true
+                } label: {
+                    Label("Delete all…", systemImage: "trash")
+                        .frame(minWidth: 118, minHeight: 42)
+                }
+                .buttonStyle(.bordered)
+                .tint(CortexDesign.accent)
+                .foregroundColor(CortexDesign.accent)
+                .disabled(state.purgingSource != nil)
+                .help("Permanently delete every memory that came from \(displayName).")
+                .confirmationDialog(
+                    "Delete all data from \(displayName)?",
+                    isPresented: $confirmDelete,
+                    titleVisibility: .visible
+                ) {
+                    Button("Delete all", role: .destructive) {
+                        Task { await state.purgeSource(stat.source) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This permanently removes \(stat.count) memor\(stat.count == 1 ? "y" : "ies") (and everything derived from them). This can't be undone.")
+                }
+            }
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 14)
+        .background(CortexDesign.cardBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// Best-effort Title Case for a raw source key, with a few well-known brands spelled the way
+/// people expect ("chatgpt" → "ChatGPT"). Anything unknown falls back to Title Case of the
+/// slug (dashes/underscores become spaces), and truly empty strings stay as a quiet placeholder.
+private func humanizeSourceName(_ raw: String) -> String {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "Unknown source" }
+    let known: [String: String] = [
+        "chatgpt": "ChatGPT",
+        "openai": "OpenAI",
+        "claude": "Claude",
+        "github": "GitHub",
+        "google-drive": "Google Drive",
+        "gmail": "Gmail",
+        "outlook": "Outlook",
+        "notion": "Notion",
+        "slack": "Slack",
+        "obsidian": "Obsidian",
+        "zotero": "Zotero",
+        "readwise": "Readwise",
+        "raindrop": "Raindrop",
+        "linear": "Linear",
+        "jira": "Jira",
+        "calendar": "Calendar"
+    ]
+    if let mapped = known[trimmed.lowercased()] {
+        return mapped
+    }
+    return trimmed
+        .replacingOccurrences(of: "-", with: " ")
+        .replacingOccurrences(of: "_", with: " ")
+        .split(separator: " ")
+        .map { word -> String in
+            guard let first = word.first else { return String(word) }
+            return first.uppercased() + word.dropFirst()
+        }
+        .joined(separator: " ")
+}
+
+/// A gentle relative "last added" label from a backend timestamp string. Parses ISO-8601 first
+/// (with and without fractional seconds); if that fails it falls back to the file's existing
+/// prefix-10 date shortening so a non-ISO value still reads sensibly. Returns nil for empty input.
+private func relativeCapturedLabel(_ value: String?) -> String? {
+    guard let raw = value?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+        return nil
+    }
+    let isoWithFractional = ISO8601DateFormatter()
+    isoWithFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let isoPlain = ISO8601DateFormatter()
+    isoPlain.formatOptions = [.withInternetDateTime]
+    if let date = isoWithFractional.date(from: raw) ?? isoPlain.date(from: raw) {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+    // Non-ISO string — show a trimmed date the way the rest of this sheet does.
+    return String(raw.prefix(10))
 }
 
 private struct ConnectionsTrustTile: View {

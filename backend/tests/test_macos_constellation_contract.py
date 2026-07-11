@@ -86,9 +86,14 @@ class ConstellationConnectionsContractTests(unittest.TestCase):
 
     def test_selection_enters_focus_mode(self) -> None:
         # Selected node's edges bright, everything else receded — the "see connections" fix.
-        self.assertIn("selectedNeighborIDs", self.source)
+        # A node's direct neighbors drive the focus lens; the same computation now also powers
+        # the Obsidian-style hover-highlight (hover a node -> its neighborhood lights up).
+        self.assertIn("directNeighbors", self.source)
         self.assertIn("nodeEmphasis", self.source)
-        self.assertIn("CortexDesign.accent.opacity(0.85)", self.source)
+        self.assertIn("edgeIsHighlighted", self.source)
+        # Selection reads full-strength accent edges (a hover-only focus is a touch softer).
+        self.assertIn("CortexDesign.accent.opacity(strength)", self.source)
+        self.assertIn("selectedNodeID != nil ? 0.85", self.source)
 
     def test_detail_panel_names_every_map_connection(self) -> None:
         # Non-entity nodes must not leave highlighted edges unexplained.

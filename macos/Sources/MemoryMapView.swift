@@ -50,8 +50,31 @@ struct MemoryMapView: View {
     @State private var panOffset: CGSize = .zero
     /// Live pinch multiplier while the gesture is active.
     @GestureState private var gestureZoom: CGFloat = 1.0
-    /// Live drag translation while the gesture is active.
-    @GestureState private var gesturePan: CGSize = .zero
+
+    // MARK: Drag — Obsidian-style: press on a node to move it, press on empty space to pan.
+
+    /// The mutable working copy of node positions (canvas space) the Canvas actually draws. Seeded
+    /// from the memoized layout whenever the layout identity changes, then mutated live while a node
+    /// is being dragged. Never fed back into the deterministic layout/cache.
+    @State private var workingPositions: [String: CGPoint] = [:]
+    /// The layout identity `workingPositions` was seeded from; a mismatch triggers a reseed.
+    @State private var seededLayoutKey: UInt64 = 0
+    /// What the in-flight drag is doing: dragging a node (by id) or panning the camera. Decided on
+    /// the first drag change by hit-testing the drag's start location; nil when no drag is active.
+    @State private var activeDrag: DragMode? = nil
+
+    private enum DragMode: Equatable {
+        /// Dragging a node, identified by id.
+        case node(id: String)
+        /// Panning the camera; carries the committed pan offset captured at drag start.
+        case pan(base: CGSize)
+    }
+
+    /// The id of the node currently being dragged, if any (nil when panning or idle).
+    private var draggedNodeID: String? {
+        if case .node(let id) = activeDrag { return id }
+        return nil
+    }
 
     /// Legend spotlight: dims everything outside one community (or one type in the fallback
     /// type legend). Tapping the active chip again clears it.
@@ -151,12 +174,13 @@ struct MemoryMapView: View {
         return Set(mapNodes.filter { $0.label.lowercased().contains(query) }.map(\.id))
     }
 
-    /// Direct neighbors of the selected node, straight from the edge list — the set that stays
-    /// bright in focus mode.
-    private var selectedNeighborIDs: Set<String> {
-        guard let id = selectedNodeID else { return [] }
+    /// Direct neighbors of a node, straight from a precomputed edge list — the set that stays bright
+    /// in focus mode (selection) or hover highlight. Takes the edges so the caller can compute the
+    /// (potentially projected) `mapEdges` once per render and reuse it for both lenses.
+    private func directNeighbors(of id: String?, in edges: [GraphEdge]) -> Set<String> {
+        guard let id else { return [] }
         var out: Set<String> = []
-        for edge in mapEdges where edge.source_id == id || edge.target_id == id {
+        for edge in edges where edge.source_id == id || edge.target_id == id {
             out.insert(edge.source_id == id ? edge.target_id : edge.source_id)
         }
         return out
@@ -283,7 +307,9 @@ struct MemoryMapView: View {
     }
 
     private var effectiveOffset: CGSize {
-        CGSize(width: panOffset.width + gesturePan.width, height: panOffset.height + gesturePan.height)
+        // Pan is committed directly to `panOffset` during a pan drag (see the drag gesture), so no
+        // separate live-gesture term is needed here.
+        panOffset
     }
 
     /// layout space → screen space, zoom anchored at the canvas center.
@@ -309,6 +335,99 @@ struct MemoryMapView: View {
         }
     }
 
+    // MARK: Position resolution — the Canvas reads the mutable working copy, falling back to the
+    // canonical layout so the very first render (before seeding) and any missing node still draw.
+
+    private func resolvedPosition(of id: String, layout: MemoryMapLayout) -> CGPoint? {
+        workingPositions[id] ?? layout.position(of: id)
+    }
+
+    /// Hit-test a layout-space point against the CURRENT (possibly dragged) positions. Mirrors
+    /// `MemoryMapLayout.nearestNode` but reads the working copy so a dragged node stays grabbable.
+    private func nearestNode(to point: CGPoint, tolerance: CGFloat, layout: MemoryMapLayout, nodes: [GraphNode]) -> GraphNode? {
+        var best: (node: GraphNode, distance: CGFloat)?
+        for node in nodes {
+            guard let np = resolvedPosition(of: node.id, layout: layout) else { continue }
+            let dx = np.x - point.x
+            let dy = np.y - point.y
+            let distance = (dx * dx + dy * dy).squareRoot()
+            let hitRadius = layout.radius(of: node) + tolerance
+            guard distance <= hitRadius else { continue }
+            if best == nil || distance < best!.distance {
+                best = (node, distance)
+            }
+        }
+        return best?.node
+    }
+
+    /// Seed / reseed the mutable working positions from the canonical layout when its identity
+    /// changes (new graph data or canvas size). Called from `.onChange`/`.onAppear`, never during
+    /// a draw, so it never mutates state mid-render.
+    private func syncWorkingPositions(to layout: MemoryMapLayout) {
+        guard layout.identityKey != seededLayoutKey || workingPositions.isEmpty else { return }
+        workingPositions = layout.allPositions()
+        seededLayoutKey = layout.identityKey
+        activeDrag = nil
+    }
+
+    // MARK: Drag handling — node-drag vs camera-pan, decided once at drag start.
+
+    private func handleDragChanged(_ value: DragGesture.Value, size: CGSize, layout: MemoryMapLayout) {
+        // Ensure the working copy is seeded (first interaction might precede an onAppear reseed).
+        if workingPositions.isEmpty { syncWorkingPositions(to: layout) }
+
+        // First change of this drag: decide node-drag vs pan by hit-testing the start location.
+        if activeDrag == nil {
+            let startLayout = layoutPoint(value.startLocation, in: size)
+            if let hit = nearestNode(to: startLayout, tolerance: 10 / effectiveZoom, layout: layout, nodes: mapNodes) {
+                activeDrag = .node(id: hit.id)
+                hoveredNodeID = hit.id
+                NSCursor.closedHand.set()
+            } else {
+                activeDrag = .pan(base: panOffset)
+            }
+        }
+
+        switch activeDrag {
+        case .node(let id):
+            // Pin the dragged node under the pointer, in layout/canvas space. Guard against NaN.
+            let p = layoutPoint(value.location, in: size)
+            guard p.x.isFinite, p.y.isFinite else { return }
+            workingPositions[id] = p
+        case .pan(let base):
+            panOffset = CGSize(width: base.width + value.translation.width,
+                               height: base.height + value.translation.height)
+        case .none:
+            break
+        }
+    }
+
+    private func handleDragEnded(_ value: DragGesture.Value, size: CGSize, layout: MemoryMapLayout) {
+        switch activeDrag {
+        case .node(let id):
+            // Final pinned position, then a short settle so neighbors ease into place around it.
+            let p = layoutPoint(value.location, in: size)
+            if p.x.isFinite, p.y.isFinite { workingPositions[id] = p }
+            let settled = layout.settle(
+                current: workingPositions,
+                edges: mapEdges,
+                pinned: id,
+                size: size,
+                iterations: 20
+            )
+            withAnimation(.easeOut(duration: 0.25)) {
+                workingPositions = settled
+            }
+            NSCursor.pointingHand.set()
+        case .pan:
+            // Pan was committed live to `panOffset` in `handleDragChanged`; nothing to finalize.
+            break
+        case .none:
+            break
+        }
+        activeDrag = nil
+    }
+
     private func stepZoom(_ factor: CGFloat) {
         withAnimation(.easeInOut(duration: 0.15)) {
             zoomScale = min(Self.maxZoom, max(Self.minZoom, zoomScale * factor))
@@ -322,17 +441,21 @@ struct MemoryMapView: View {
                 edges: mapEdges,
                 size: geo.size
             )
+            // Compute the (potentially projected) edge list ONCE per render, and derive both the
+            // selected- and hovered-neighbor sets from it, so nothing recomputes it per node.
+            let edges = mapEdges
             let matched = matchedNodeIDs
-            let neighborIDs = selectedNeighborIDs
+            let neighborIDs = directNeighbors(of: selectedNodeID, in: edges)
+            let hoverNeighbors = directNeighbors(of: hoveredNodeID, in: edges)
             ZStack(alignment: .bottomTrailing) {
                 Canvas { context, size in
-                    drawEdges(in: &context, size: size, layout: layout, matched: matched, neighborIDs: neighborIDs)
-                    drawNodes(in: &context, size: size, layout: layout, matched: matched, neighborIDs: neighborIDs)
+                    drawEdges(in: &context, size: size, layout: layout, edges: edges, matched: matched)
+                    drawNodes(in: &context, size: size, layout: layout, matched: matched, neighborIDs: neighborIDs, hoverNeighbors: hoverNeighbors)
                 }
                 .contentShape(Rectangle())
                 .onTapGesture { location in
                     let p = layoutPoint(location, in: geo.size)
-                    if let hit = layout.nearestNode(to: p, tolerance: 12 / effectiveZoom) {
+                    if let hit = nearestNode(to: p, tolerance: 12 / effectiveZoom, layout: layout, nodes: mapNodes) {
                         if selectedNodeID == hit.id {
                             selectedNodeID = nil
                             neighborhood = nil
@@ -347,23 +470,26 @@ struct MemoryMapView: View {
                 .onContinuousHover { phase in
                     switch phase {
                     case .active(let point):
+                        // Don't retarget the hover while a node is being dragged (the pointer is
+                        // "carrying" that node); leave the dragged node highlighted.
+                        if case .node = activeDrag { return }
                         let p = layoutPoint(point, in: geo.size)
-                        hoveredNodeID = layout.nearestNode(to: p, tolerance: 12 / effectiveZoom)?.id
+                        let hit = nearestNode(to: p, tolerance: 12 / effectiveZoom, layout: layout, nodes: mapNodes)
+                        hoveredNodeID = hit?.id
+                        // A pointing hand over a grabbable node, arrow over empty space.
+                        if hit != nil { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
                     case .ended:
                         hoveredNodeID = nil
+                        NSCursor.arrow.set()
                     }
                 }
-                // Pan (drag) + pinch zoom run simultaneously; taps still land because the drag
-                // needs 3pt of travel before it claims the gesture.
+                // One drag gesture handles BOTH node-drag and camera-pan: the first change hit-tests
+                // the start location to decide which. Pinch zoom runs simultaneously. Taps still land
+                // because the drag needs 3pt of travel before it claims the gesture.
                 .gesture(
                     DragGesture(minimumDistance: 3)
-                        .updating($gesturePan) { value, pan, _ in
-                            pan = value.translation
-                        }
-                        .onEnded { value in
-                            panOffset.width += value.translation.width
-                            panOffset.height += value.translation.height
-                        }
+                        .onChanged { value in handleDragChanged(value, size: geo.size, layout: layout) }
+                        .onEnded { value in handleDragEnded(value, size: geo.size, layout: layout) }
                         .simultaneously(
                             with: MagnificationGesture()
                                 .updating($gestureZoom) { value, zoom, _ in
@@ -378,6 +504,8 @@ struct MemoryMapView: View {
                 cameraControls
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            .onAppear { syncWorkingPositions(to: layout) }
+            .onChange(of: layout.identityKey) { _ in syncWorkingPositions(to: layout) }
         }
         .frame(height: canvasHeight)
         .background(CortexDesign.panelBackground)
@@ -432,32 +560,56 @@ struct MemoryMapView: View {
 
     // MARK: Emphasis — one place decides how bright each node/edge is.
 
-    /// Node emphasis combines every active lens: focus mode (selection), search filter, and the
-    /// legend spotlight. 1.0 = full, lower = receded. Focus mode wins because it is the most
-    /// explicit user intent.
-    private func nodeEmphasis(_ node: GraphNode, matched: Set<String>?, neighborIDs: Set<String>) -> Double {
+    /// Node emphasis combines every active lens: focus mode (selection), hover highlight, search
+    /// filter, and the legend spotlight. 1.0 = full, lower = receded. Selection wins (most explicit
+    /// intent); hover is the next-strongest lens so pointing at a node lights up its neighborhood
+    /// even without a click. Both are draw-time only — they never move a node. `neighborIDs` /
+    /// `hoverNeighbors` are precomputed once per render by the caller.
+    private func nodeEmphasis(_ node: GraphNode, matched: Set<String>?, neighborIDs: Set<String>, hoverNeighbors: Set<String>) -> Double {
         if let selectedID = selectedNodeID {
             if node.id == selectedID { return 1.0 }
-            return neighborIDs.contains(node.id) ? 0.95 : 0.15
+            if neighborIDs.contains(node.id) { return 0.95 }
+            // Even in focus mode, a hovered node + its neighbors stay legible rather than fully dim.
+            if node.id == hoveredNodeID || hoverNeighbors.contains(node.id) { return 0.6 }
+            return 0.15
+        }
+        if let hoveredID = hoveredNodeID {
+            if node.id == hoveredID { return 1.0 }
+            return hoverNeighbors.contains(node.id) ? 0.95 : 0.16
         }
         if let matched, !matched.contains(node.id) { return 0.18 }
         if let spotlight, !spotlight.contains(node) { return 0.18 }
         return 0.85
     }
 
-    private func drawEdges(in context: inout GraphicsContext, size: CGSize, layout: MemoryMapLayout, matched: Set<String>?, neighborIDs: Set<String>) {
+    /// Whether an edge should render as "highlighted" (bright) under the current lenses: it touches
+    /// the selected node, or (when nothing is selected) it touches the hovered node.
+    private func edgeIsHighlighted(_ edge: GraphEdge) -> Bool {
+        if let selectedID = selectedNodeID {
+            return edge.source_id == selectedID || edge.target_id == selectedID
+        }
+        if let hoveredID = hoveredNodeID {
+            return edge.source_id == hoveredID || edge.target_id == hoveredID
+        }
+        return false
+    }
+
+    private func drawEdges(in context: inout GraphicsContext, size: CGSize, layout: MemoryMapLayout, edges: [GraphEdge], matched: Set<String>?) {
+        // A "focus lens" is active when a node is selected OR (with nothing selected) hovered:
+        // its incident edges draw bright on top, everything else recedes.
+        let focusActive = selectedNodeID != nil || hoveredNodeID != nil
         // Draw ordinary ties first, bridges (cross-community "surprising connections") next, and
-        // the selected node's edges last and brightest, so the focused connections always sit on top.
-        let ordered = mapEdges.sorted { lhs, rhs in
+        // the focused node's edges last and brightest, so the focused connections always sit on top.
+        let ordered = edges.sorted { lhs, rhs in
             func rank(_ e: GraphEdge) -> Int {
-                if let id = selectedNodeID, e.source_id == id || e.target_id == id { return 2 }
+                if edgeIsHighlighted(e) { return 2 }
                 return e.is_bridge == true ? 1 : 0
             }
             return rank(lhs) < rank(rhs)
         }
         for edge in ordered {
-            guard let la = layout.position(of: edge.source_id),
-                  let lb = layout.position(of: edge.target_id) else { continue }
+            guard let la = resolvedPosition(of: edge.source_id, layout: layout),
+                  let lb = resolvedPosition(of: edge.target_id, layout: layout) else { continue }
             let a = screenPoint(la, in: size)
             let b = screenPoint(lb, in: size)
             // Skip edges entirely outside the visible canvas (zoomed in).
@@ -468,11 +620,13 @@ struct MemoryMapView: View {
             path.addLine(to: b)
 
             let weight = edge.weight ?? 0.5
-            if let selectedID = selectedNodeID {
-                // Focus mode: incident edges bright in accent, the rest nearly gone.
-                if edge.source_id == selectedID || edge.target_id == selectedID {
+            if focusActive {
+                // Focus mode: incident edges bright in accent, the rest nearly gone. Selection reads
+                // full-strength accent; a hover-only focus is a touch softer so it feels like a preview.
+                if edgeIsHighlighted(edge) {
                     let lineWidth = 1.4 + CGFloat(max(0, min(1, weight))) * 1.6
-                    context.stroke(path, with: .color(CortexDesign.accent.opacity(0.85)), lineWidth: lineWidth)
+                    let strength: Double = selectedNodeID != nil ? 0.85 : 0.7
+                    context.stroke(path, with: .color(CortexDesign.accent.opacity(strength)), lineWidth: lineWidth)
                 } else {
                     context.stroke(path, with: .color(CortexDesign.ink.opacity(0.05)), lineWidth: 0.8)
                 }
@@ -494,18 +648,13 @@ struct MemoryMapView: View {
         }
     }
 
-    private func drawNodes(in context: inout GraphicsContext, size: CGSize, layout: MemoryMapLayout, matched: Set<String>?, neighborIDs: Set<String>) {
-        // Label budget grows with zoom: at fit-zoom only the most prominent nodes carry a label
-        // (overlap-checked), zoomed in every visible node can be read. Hover/selection/neighbors
-        // always label. Labels keep constant on-screen size — they never scale with the map.
-        let budget = max(12, Int(14 * effectiveZoom))
-        let labeledIDs = layout.topLabelNodeIDs(budget: budget)
-        var occupiedLabelRects: [CGRect] = []
+    private func drawNodes(in context: inout GraphicsContext, size: CGSize, layout: MemoryMapLayout, matched: Set<String>?, neighborIDs: Set<String>, hoverNeighbors: Set<String>) {
         let visibleRect = CGRect(origin: .zero, size: size).insetBy(dx: -20, dy: -20)
 
-        // Draw circles first so no label ever sits under a later circle.
+        // Draw circles first so no label ever sits under a later circle. Positions come from the
+        // mutable working copy (so a dragged node follows the pointer), falling back to the layout.
         for node in mapNodes {
-            guard let lp = layout.position(of: node.id) else { continue }
+            guard let lp = resolvedPosition(of: node.id, layout: layout) else { continue }
             let point = screenPoint(lp, in: size)
             guard visibleRect.contains(point) else { continue }
             // Node size grows gently with zoom (sqrt) so zooming in separates clusters without
@@ -513,43 +662,80 @@ struct MemoryMapView: View {
             let radius = layout.radius(of: node) * max(1, effectiveZoom.squareRoot())
             let isSelected = node.id == selectedNodeID
             let isHovered = node.id == hoveredNodeID
-            let emphasis = nodeEmphasis(node, matched: matched, neighborIDs: neighborIDs)
+            let isDragged = draggedNodeID == node.id
+            let emphasis = nodeEmphasis(node, matched: matched, neighborIDs: neighborIDs, hoverNeighbors: hoverNeighbors)
             let fill = MemoryMapView.color(for: node)
 
             let rect = CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
             let circle = Path(ellipseIn: rect)
 
-            if isSelected || isHovered {
-                let haloRadius = radius + (isSelected ? 6 : 3)
+            if isSelected || isHovered || isDragged {
+                let haloRadius = radius + (isSelected || isDragged ? 6 : 3)
                 let haloRect = CGRect(x: point.x - haloRadius, y: point.y - haloRadius, width: haloRadius * 2, height: haloRadius * 2)
-                context.fill(Path(ellipseIn: haloRect), with: .color(fill.opacity(isSelected ? 0.22 : 0.14)))
+                context.fill(Path(ellipseIn: haloRect), with: .color(fill.opacity(isSelected || isDragged ? 0.22 : 0.14)))
             }
 
-            context.fill(circle, with: .color(fill.opacity(isSelected ? 1.0 : emphasis)))
+            let fullBright = isSelected || isHovered || isDragged
+            context.fill(circle, with: .color(fill.opacity(fullBright ? 1.0 : emphasis)))
             context.stroke(circle, with: .color(CortexDesign.panelBackground), lineWidth: 1)
         }
 
-        // Labels second, most prominent first, greedily skipping collisions.
-        let labelCandidates = mapNodes
-            .filter { node in
-                let isSelected = node.id == selectedNodeID
-                let isHovered = node.id == hoveredNodeID
-                let isNeighbor = selectedNodeID != nil && neighborIDs.contains(node.id)
-                let emphasis = nodeEmphasis(node, matched: matched, neighborIDs: neighborIDs)
-                guard emphasis > 0.3 else { return false }
-                return labeledIDs.contains(node.id) || isSelected || isHovered || isNeighbor
-            }
-            .sorted { lhs, rhs in
-                // Selection/hover win outright, then neighbors of the selection, then bigger nodes.
-                func priority(_ node: GraphNode) -> CGFloat {
-                    if node.id == selectedNodeID || node.id == hoveredNodeID { return .greatestFiniteMagnitude }
-                    if selectedNodeID != nil && neighborIDs.contains(node.id) { return 100_000 + layout.radius(of: node) }
-                    return layout.radius(of: node)
+        drawLabels(in: &context, size: size, layout: layout, matched: matched, neighborIDs: neighborIDs, hoverNeighbors: hoverNeighbors, visibleRect: visibleRect)
+    }
+
+    /// Labels with a smooth zoom fade instead of a hard budget cutoff. A node's label opacity ramps
+    /// with both zoom and the node's prominence (hubs fade in first), and hovered/selected/neighbor
+    /// nodes always render at full strength. Overlapping labels are still greedily dropped, most
+    /// prominent first, so the map never turns into a wall of text.
+    private func drawLabels(in context: inout GraphicsContext, size: CGSize, layout: MemoryMapLayout, matched: Set<String>?, neighborIDs: Set<String>, hoverNeighbors: Set<String>, visibleRect: CGRect) {
+        // Radius range across the currently-drawn nodes, for a normalized prominence per node.
+        var maxRadius: CGFloat = 1
+        for node in mapNodes { maxRadius = max(maxRadius, layout.radius(of: node)) }
+
+        // A node is "always labeled" when it is the current focus/context, regardless of zoom.
+        func isPinnedLabel(_ node: GraphNode) -> Bool {
+            if node.id == selectedNodeID || node.id == hoveredNodeID { return true }
+            if node.is_hub == true { return true }
+            if selectedNodeID != nil && neighborIDs.contains(node.id) { return true }
+            if hoveredNodeID != nil && hoverNeighbors.contains(node.id) { return true }
+            return false
+        }
+
+        // Label opacity for a node: 1 for pinned labels; otherwise a ramp of zoom × prominence so
+        // labels fade in gradually as you zoom and as nodes get more prominent.
+        func labelOpacity(_ node: GraphNode) -> Double {
+            if isPinnedLabel(node) { return 1 }
+            let prominence = Double(layout.radius(of: node) / maxRadius) // 0...1
+            // Zoom term: nothing extra at fit, ramping to full by ~2.2× zoom.
+            let zoomTerm = Double(max(0, min(1, (effectiveZoom - 0.9) / 1.3)))
+            let raw = zoomTerm * (0.35 + prominence * 0.65) + prominence * 0.25
+            return max(0, min(1, raw))
+        }
+
+        var occupiedLabelRects: [CGRect] = []
+
+        // Most prominent / most focused first, so they win the greedy overlap check.
+        let ordered = mapNodes.sorted { lhs, rhs in
+            func priority(_ node: GraphNode) -> CGFloat {
+                if node.id == selectedNodeID || node.id == hoveredNodeID { return .greatestFiniteMagnitude }
+                if (selectedNodeID != nil && neighborIDs.contains(node.id)) ||
+                   (hoveredNodeID != nil && hoverNeighbors.contains(node.id)) {
+                    return 100_000 + layout.radius(of: node)
                 }
-                return priority(lhs) > priority(rhs)
+                return layout.radius(of: node)
             }
-        for node in labelCandidates {
-            guard let lp = layout.position(of: node.id) else { continue }
+            return priority(lhs) > priority(rhs)
+        }
+
+        for node in ordered {
+            let baseOpacity = labelOpacity(node)
+            guard baseOpacity > 0.06 else { continue }
+            // Never label a node the active lens has fully dimmed (search/spotlight/focus).
+            let emphasis = nodeEmphasis(node, matched: matched, neighborIDs: neighborIDs, hoverNeighbors: hoverNeighbors)
+            let isFocus = node.id == selectedNodeID || node.id == hoveredNodeID
+            guard isFocus || emphasis > 0.3 else { continue }
+
+            guard let lp = resolvedPosition(of: node.id, layout: layout) else { continue }
             let point = screenPoint(lp, in: size)
             guard visibleRect.contains(point) else { continue }
             let radius = layout.radius(of: node) * max(1, effectiveZoom.squareRoot())
@@ -557,9 +743,10 @@ struct MemoryMapView: View {
             // Whole-sentence labels (memories/tasks) are display-truncated; the detail panel
             // shows the full text on selection.
             let displayLabel = node.label.count > 42 ? String(node.label.prefix(40)) + "…" : node.label
+            let baseColor = isSelected ? CortexDesign.ink : CortexDesign.inkSecondary
             let text = Text(displayLabel)
                 .font(CortexDesign.Typography.caption)
-                .foregroundColor(isSelected ? CortexDesign.ink : CortexDesign.inkSecondary)
+                .foregroundColor(baseColor.opacity(baseOpacity))
             let resolved = context.resolve(text)
             let textSize = resolved.measure(in: CGSize(width: 140, height: 40))
             var textX = point.x + radius + 4
@@ -568,10 +755,9 @@ struct MemoryMapView: View {
             }
             let textPoint = CGPoint(x: textX, y: point.y - textSize.height / 2)
             let labelRect = CGRect(origin: textPoint, size: textSize).insetBy(dx: -3, dy: -2)
-            // A label that would overlap an already-placed one is dropped (except the
-            // selected node's, which always shows) — fewer, readable labels beat many
-            // colliding ones. The node itself stays visible and hoverable.
-            if !isSelected && occupiedLabelRects.contains(where: { $0.intersects(labelRect) }) {
+            // A label that would overlap an already-placed one is dropped (except the focus
+            // node's, which always shows) — fewer, readable labels beat many colliding ones.
+            if !isFocus && occupiedLabelRects.contains(where: { $0.intersects(labelRect) }) {
                 continue
             }
             occupiedLabelRects.append(labelRect)
@@ -952,6 +1138,10 @@ struct MemoryMapLayout {
     private var positions: [String: CGPoint] = [:]
     private var radii: [String: CGFloat] = [:]
     private let nodesByID: [String: GraphNode]
+    /// Deterministic identity of the (nodes, edges, size) this layout was computed for. The view
+    /// uses it to know when to (re)seed its mutable drag working-copy of the positions — it must
+    /// NOT change on hover/zoom/pan, only when the underlying graph or canvas size changes.
+    private(set) var identityKey: UInt64 = 0
 
     // MARK: Memoized entry point
 
@@ -961,7 +1151,9 @@ struct MemoryMapLayout {
     private static var cachedLayout: MemoryMapLayout?
     private static let cacheLock = NSLock()
 
-    static func layout(nodes: [GraphNode], edges: [GraphEdge], size: CGSize) -> MemoryMapLayout {
+    /// The deterministic cache/identity key for a given input. Shared by the memoization check and
+    /// the layout's own `identityKey`, so both always agree.
+    static func signature(nodes: [GraphNode], edges: [GraphEdge], size: CGSize) -> UInt64 {
         var hash: UInt64 = 0xcbf29ce484222325
         func mix(_ string: String) {
             for byte in string.utf8 {
@@ -972,16 +1164,27 @@ struct MemoryMapLayout {
         for node in nodes {
             mix(node.id)
             mix(String(node.importance ?? 0))
+            // The seed clusters by community and the sizing/centre-pull reads centrality, so a
+            // re-analysis that keeps the same node ids but re-partitions the graph MUST invalidate
+            // the memoized layout — otherwise the map keeps a stale arrangement after re-clustering.
+            mix(String(node.community ?? -1))
+            mix(String(node.centrality ?? 0))
         }
         for edge in edges { mix(edge.id) }
         mix("\(Int(size.width))x\(Int(size.height))")
+        return hash
+    }
+
+    static func layout(nodes: [GraphNode], edges: [GraphEdge], size: CGSize) -> MemoryMapLayout {
+        let hash = signature(nodes: nodes, edges: edges, size: size)
 
         cacheLock.lock()
         defer { cacheLock.unlock() }
         if let cached = cachedLayout, cachedKey == hash {
             return cached
         }
-        let fresh = MemoryMapLayout(nodes: nodes, edges: edges, size: size)
+        var fresh = MemoryMapLayout(nodes: nodes, edges: edges, size: size)
+        fresh.identityKey = hash
         cachedKey = hash
         cachedLayout = fresh
         return fresh
@@ -1010,7 +1213,25 @@ struct MemoryMapLayout {
             return max(0, min(1, (CGFloat(node.importance ?? 1) / maxImportance) * 0.6))
         }
 
-        // --- Seed: deterministic radial scatter from the id hash. ---
+        // --- Degree per node (Obsidian sizes nodes by connection count). Counted from the edge
+        // list against the laid-out node set, then normalized so the busiest node reads as 1. ---
+        var degree = [CGFloat](repeating: 0, count: count)
+        for edge in edges {
+            if let a = indexByID[edge.source_id] { degree[a] += 1 }
+            if let b = indexByID[edge.target_id] { degree[b] += 1 }
+        }
+        let maxDegree = max(1, degree.max() ?? 1)
+
+        // --- Community anchors: give each distinct community a stable angle around the canvas so
+        // the seed already reads as separated clusters (the sim then only has to refine). Nodes
+        // with no community fan out on the outer ring by id-hash. ---
+        let distinctCommunities = Array(Set(ordered.compactMap { $0.community })).sorted()
+        var communityAnchorAngle: [Int: CGFloat] = [:]
+        for (i, c) in distinctCommunities.enumerated() {
+            communityAnchorAngle[c] = (CGFloat(i) / CGFloat(max(distinctCommunities.count, 1))) * 2 * .pi
+        }
+
+        // --- Seed: community-aware deterministic scatter from the id hash. ---
         let world = CGSize(width: max(size.width, 320), height: max(size.height, 320))
         let center = CGPoint(x: world.width / 2, y: world.height / 2)
         let seedRadius = min(world.width, world.height) / 2 - 24
@@ -1023,29 +1244,41 @@ struct MemoryMapLayout {
             let p = prominence(node)
             prom[index] = p
             community[index] = node.community
-            let baseAngle = (CGFloat(index) / CGFloat(count)) * 2 * .pi
-            let jitter = (CGFloat(seed % 1000) / 1000.0 - 0.5) * (2 * .pi / CGFloat(max(count, 1)))
-            let angle = baseAngle + jitter
-            let ringJitter = CGFloat((seed / 1000) % 1000) / 1000.0
-            let distance = seedRadius * (0.25 + ((1 - p) * 0.6 + ringJitter * 0.4) * 0.75)
-            x[index] = center.x + cos(angle) * distance
-            y[index] = center.y + sin(angle) * distance
+            let hashAngle = CGFloat(seed % 10_000) / 10_000.0 * 2 * .pi
+            let ringJitter = CGFloat((seed / 10_000) % 1000) / 1000.0
+            if let c = node.community, let anchor = communityAnchorAngle[c] {
+                // Cluster nodes seed in a wedge around their community's anchor angle, on a mid ring.
+                let spread = ( (CGFloat(seed % 1000) / 1000.0) - 0.5 ) * 0.9
+                let angle = anchor + spread
+                let distance = seedRadius * (0.35 + (1 - p) * 0.35 + ringJitter * 0.2)
+                x[index] = center.x + cos(angle) * distance
+                y[index] = center.y + sin(angle) * distance
+            } else {
+                // Communityless nodes (raw memories/tasks) fan the outer ring by hash so they don't
+                // crowd the entity clusters.
+                let distance = seedRadius * (0.6 + (1 - p) * 0.3 + ringJitter * 0.1)
+                x[index] = center.x + cos(hashAngle) * distance
+                y[index] = center.y + sin(hashAngle) * distance
+            }
         }
 
         // Edge springs between laid-out endpoints; stronger edges want shorter links.
+        // Softened relative to the classic tuning so clusters breathe instead of collapsing to a knot.
         struct Spring { let a: Int; let b: Int; let length: CGFloat; let strength: CGFloat }
         var springs: [Spring] = []
         springs.reserveCapacity(edges.count)
         for edge in edges.sorted(by: { $0.id < $1.id }) {
             guard let a = indexByID[edge.source_id], let b = indexByID[edge.target_id], a != b else { continue }
             let weight = CGFloat(max(0, min(1, edge.weight ?? 0.5)))
-            springs.append(Spring(a: a, b: b, length: 120 - weight * 60, strength: 0.02 + weight * 0.03))
+            springs.append(Spring(a: a, b: b, length: 120 - weight * 60, strength: 0.015 + weight * 0.02))
         }
 
         // --- Simulate: fixed iterations, cooling displacement cap, spatial-grid repulsion. ---
+        // Repulsion is boosted (~1.75× the classic 1_500) over a wider radius so communities
+        // visibly separate the way Obsidian's default graph does, instead of packing into a ball.
         let iterations = 90
-        let repulsionRadius: CGFloat = 96
-        let repulsionStrength: CGFloat = 1_500
+        let repulsionRadius: CGFloat = 120
+        let repulsionStrength: CGFloat = 2_600
         let cell = repulsionRadius
         for iteration in 0..<iterations {
             let temperature = 1 - CGFloat(iteration) / CGFloat(iterations)
@@ -1105,8 +1338,10 @@ struct MemoryMapLayout {
             }
             for i in 0..<count {
                 if let c = community[i], let acc = centroids[c], acc.n > 1 {
-                    fx[i] += (acc.x / acc.n - x[i]) * 0.02
-                    fy[i] += (acc.y / acc.n - y[i]) * 0.02
+                    // Softened cluster pull (was 0.02) so members gather without collapsing onto
+                    // the centroid — the clusters keep some internal air.
+                    fx[i] += (acc.x / acc.n - x[i]) * 0.012
+                    fy[i] += (acc.y / acc.n - y[i]) * 0.012
                 }
                 // Weak centering gravity; prominent nodes feel more of it, so hubs settle centrally.
                 let gravity = 0.004 + prom[i] * 0.012
@@ -1125,10 +1360,18 @@ struct MemoryMapLayout {
         }
 
         // --- Radii (before overlap relaxation, which needs them). ---
-        var radius = [CGFloat](repeating: 5, count: count)
+        // Obsidian-style sizing: a node's size reads its connectedness. Blend graph prominence
+        // (centrality/importance) with normalized degree so a well-connected hub is clearly large
+        // and a leaf clearly small, mapped onto a fixed min/max so the range is legible.
+        let minRadius: CGFloat = 4.5
+        let maxRadius: CGFloat = 20
+        var radius = [CGFloat](repeating: minRadius, count: count)
         for (index, node) in ordered.enumerated() {
-            radius[index] = 5 + prom[index] * 9
-            if node.is_hub == true { radius[index] = max(radius[index], 13) }
+            let degreeNorm = (degree[index] / maxDegree).squareRoot() // sqrt so the busiest node isn't the only big one
+            // Weight prominence and degree evenly; both are 0...1.
+            let weight = max(0, min(1, prom[index] * 0.55 + degreeNorm * 0.45))
+            radius[index] = minRadius + weight * (maxRadius - minRadius)
+            if node.is_hub == true { radius[index] = max(radius[index], 14) }
         }
 
         // --- Overlap relaxation: push apart touching circles (deterministic sweep). ---
@@ -1193,6 +1436,122 @@ struct MemoryMapLayout {
     }
 
     func position(of id: String) -> CGPoint? { positions[id] }
+
+    /// The full canonical position map, in canvas space. The view seeds its mutable drag
+    /// working-copy from this whenever the layout identity changes.
+    func allPositions() -> [String: CGPoint] { positions }
+
+    /// A short runtime relaxation used after a node drag: springs, light repulsion and overlap
+    /// separation ease the dragged node's neighbors into place while the dragged node stays pinned.
+    /// Pure and deterministic given its inputs; it does NOT touch the memoized layout or the cache,
+    /// and it operates directly in canvas space on the working positions the view hands it.
+    ///
+    /// `pinned` is held fixed. Positions absent from `current` fall back to the canonical layout.
+    /// Returns a new position map (or the input unchanged if there is nothing to do). Guards against
+    /// NaN/inf so a drag can never corrupt the map.
+    func settle(current: [String: CGPoint], edges: [GraphEdge], pinned: String, size: CGSize, iterations: Int = 20) -> [String: CGPoint] {
+        // Stable node ordering for determinism.
+        let ids = nodesByID.keys.sorted()
+        guard !ids.isEmpty, size.width > 0, size.height > 0 else { return current }
+        var indexByID: [String: Int] = [:]
+        for (i, id) in ids.enumerated() { indexByID[id] = i }
+        let count = ids.count
+
+        func sanitize(_ p: CGPoint, fallback: CGPoint) -> CGPoint {
+            if p.x.isFinite && p.y.isFinite { return p }
+            return fallback
+        }
+
+        var x = [CGFloat](repeating: 0, count: count)
+        var y = [CGFloat](repeating: 0, count: count)
+        var rad = [CGFloat](repeating: 5, count: count)
+        for (i, id) in ids.enumerated() {
+            let fallback = positions[id] ?? CGPoint(x: size.width / 2, y: size.height / 2)
+            let p = sanitize(current[id] ?? fallback, fallback: fallback)
+            x[i] = p.x; y[i] = p.y
+            rad[i] = radii[id] ?? 5
+        }
+        guard let pinnedIndex = indexByID[pinned] else { return current }
+        // Minimum center-to-center gap per pair, so the settle also separates overlapping circles.
+        func minGap(_ i: Int, _ j: Int) -> CGFloat { rad[i] + rad[j] + 3 }
+
+        struct Spring { let a: Int; let b: Int; let length: CGFloat; let strength: CGFloat }
+        var springs: [Spring] = []
+        for edge in edges.sorted(by: { $0.id < $1.id }) {
+            guard let a = indexByID[edge.source_id], let b = indexByID[edge.target_id], a != b else { continue }
+            let weight = CGFloat(max(0, min(1, edge.weight ?? 0.5)))
+            springs.append(Spring(a: a, b: b, length: 120 - weight * 60, strength: 0.015 + weight * 0.02))
+        }
+
+        let repulsionRadius: CGFloat = 120
+        let repulsionStrength: CGFloat = 2_600
+        let cell = repulsionRadius
+        for _ in 0..<max(0, iterations) {
+            var fx = [CGFloat](repeating: 0, count: count)
+            var fy = [CGFloat](repeating: 0, count: count)
+
+            var grid: [Int64: [Int]] = [:]
+            for i in 0..<count {
+                grid[MemoryMapLayout.gridKey(x[i], y[i], cell: cell), default: []].append(i)
+            }
+            for i in 0..<count {
+                let cx = Int64((x[i] / cell).rounded(.down))
+                let cy = Int64((y[i] / cell).rounded(.down))
+                for dx in -1...1 {
+                    for dy in -1...1 {
+                        guard let bucket = grid[(cx + Int64(dx)) &* 73_856_093 ^ (cy + Int64(dy)) &* 19_349_663] else { continue }
+                        for j in bucket where j != i {
+                            let ddx = x[i] - x[j]
+                            let ddy = y[i] - y[j]
+                            let distSq = max(ddx * ddx + ddy * ddy, 4)
+                            guard distSq < repulsionRadius * repulsionRadius else { continue }
+                            var force = repulsionStrength / distSq
+                            let dist = distSq.squareRoot()
+                            // Extra push when circles actually overlap, so a settle also separates
+                            // touching nodes (a lightweight stand-in for a full overlap sweep).
+                            let gap = minGap(i, j)
+                            if dist < gap { force += (gap - dist) * 0.6 }
+                            fx[i] += (ddx / dist) * force
+                            fy[i] += (ddy / dist) * force
+                        }
+                    }
+                }
+            }
+
+            for spring in springs {
+                let ddx = x[spring.b] - x[spring.a]
+                let ddy = y[spring.b] - y[spring.a]
+                let dist = max((ddx * ddx + ddy * ddy).squareRoot(), 0.5)
+                let stretch = dist - spring.length
+                let force = stretch * spring.strength
+                let ux = ddx / dist
+                let uy = ddy / dist
+                fx[spring.a] += ux * force
+                fy[spring.a] += uy * force
+                fx[spring.b] -= ux * force
+                fy[spring.b] -= uy * force
+            }
+
+            for i in 0..<count where i != pinnedIndex {
+                let mag = (fx[i] * fx[i] + fy[i] * fy[i]).squareRoot()
+                guard mag.isFinite, mag > 0.01 else { continue }
+                let step = min(mag, 12)
+                let nx = x[i] + (fx[i] / mag) * step
+                let ny = y[i] + (fy[i] / mag) * step
+                if nx.isFinite && ny.isFinite {
+                    // Keep inside a generous margin of the canvas so a settle can't fling a node away.
+                    x[i] = min(max(nx, -size.width), size.width * 2)
+                    y[i] = min(max(ny, -size.height), size.height * 2)
+                }
+            }
+        }
+
+        var out = current
+        for (i, id) in ids.enumerated() {
+            out[id] = CGPoint(x: x[i], y: y[i])
+        }
+        return out
+    }
 
     /// The node ids that deserve an always-on label: the `budget` nodes with the largest radii
     /// (hubs and top entities). The caller grows the budget with zoom, because a zoomed-in map

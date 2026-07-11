@@ -625,6 +625,21 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         params = parse_qs(parsed.query)
+        if path == "/v1/activity":
+            # The live-activity long-poll parks a worker thread for up to a few seconds waiting
+            # for the next event, so it must NOT hold one of the (only 8) concurrency slots — a
+            # burst import could otherwise starve real requests. It is a cheap condition-variable
+            # wait, safe to run outside the overload gate, but still per-token rate-limited.
+            if not REQUEST_GUARDS.allow_request(self._rate_limit_identity()):
+                self.close_connection = True
+                self._send_json(
+                    {"detail": "Too many requests; slow down and retry."},
+                    status=HTTPStatus.TOO_MANY_REQUESTS,
+                    retry_after=1,
+                )
+                return
+            self._dispatch(method, path, params)
+            return
         if path == "/mcp" or path.startswith("/v1/"):
             # A rejected request's body is never read, so close the connection to avoid a
             # keep-alive protocol desync from leftover unread bytes (as for _RequestTooLarge).
@@ -2113,6 +2128,31 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_json({"detail": "Job not found"}, status=HTTPStatus.NOT_FOUND)
                 else:
                     self._send_json(job)
+                return
+            if method == "GET" and path == "/v1/activity":
+                # Live ticker: return events newer than `since`, blocking up to `wait` seconds for
+                # the next one so each memory surfaces the instant it lands (bounded long-poll — no
+                # SSE, no held slot). Empty result + the current cursor is a valid heartbeat.
+                from .activity import activity_hub
+
+                since = _int_param(params, "since", 0, 0, 1 << 62)
+                wait_seconds = _int_param(params, "wait", 0, 0, 8)
+                events = activity_hub.wait_since(since, user_id=user_id, timeout=float(wait_seconds))
+                # Advance the cursor ONLY past events actually returned. Jumping to latest_seq() on
+                # the empty branch would skip any event published in the window between wait_since()
+                # timing out and that read — the client would never see it (its next `since` is past it).
+                cursor = events[-1]["seq"] if events else since
+                self._send_json({"events": events, "cursor": cursor})
+                return
+            if method == "GET" and path == "/v1/sources/stats":
+                self._send_json({"results": store.source_memory_stats(user_id)})
+                return
+            if method == "DELETE" and path.startswith("/v1/sources/") and path.endswith("/memories"):
+                source = unquote(path.removeprefix("/v1/sources/").removesuffix("/memories").strip("/"))
+                try:
+                    self._send_json(store.purge_source_memories(user_id, source))
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
 
             if method == "GET" and path == "/v1/recent":

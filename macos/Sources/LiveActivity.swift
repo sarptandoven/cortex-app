@@ -723,3 +723,208 @@ private struct RippleView: View {
         .allowsHitTesting(false)
     }
 }
+
+// MARK: - P6: Live activity ticker
+
+/// A small, floating "what's happening right now" card. Unlike the coordinator-driven ambient
+/// surfaces above (P1–P5, which the AppDelegate samples via a snapshot), the ticker binds directly
+/// to `AppState` and reacts to its published activity feed — it's a pure SwiftUI overlay the parent
+/// mounts with `.allowsHitTesting(false)`, so it stays declarative and needs no panel/coordinator.
+///
+/// Idle-hiding: it renders only while the backend is actively working (`state.activityBusy`) OR an
+/// event landed within the last few seconds. Recency is gauged locally — we stamp a `Date` whenever
+/// the tail event's `seq` changes — so it never depends on parsing `ActivityEvent.ts`'s wire format.
+/// At true idle it collapses to `EmptyView()` and disappears cleanly. Each new event swaps the
+/// headline via a keyed transition so you literally SEE memories streaming past, one replacing the
+/// last, with the prior one or two lingering faintly behind it.
+struct LiveActivityTicker: View {
+    @ObservedObject var state: AppState
+
+    /// When the tail event last changed (drives recency-based visibility, independent of `ts`).
+    @State private var lastEventAt: Date?
+    /// The last tail `seq` we reacted to — so `.onChange` fires exactly once per genuinely new event.
+    @State private var lastSeq: Int?
+    /// Local ticking clock: re-evaluates recency so the card fades out on its own a few seconds after
+    /// the final event, even if no further `@Published` change arrives to re-render.
+    @State private var now = Date()
+
+    /// How long the card lingers after the most recent event once the backend is no longer busy.
+    private static let lingerWindow: TimeInterval = 3.5
+    private static let cardWidth: CGFloat = 320
+
+    init(state: AppState) { self.state = state }
+
+    // The most-recent event (feed is most-recent LAST); nil when nothing has happened yet.
+    private var latest: ActivityEvent? { state.recentActivity.last }
+
+    /// The 1–2 events immediately before the headline, most-recent first — the faint fading stack.
+    private var trailing: [ActivityEvent] {
+        let feed = state.recentActivity
+        guard feed.count > 1 else { return [] }
+        // Take up to two events before the last, then reverse so index 0 is the nearest-to-headline.
+        return Array(feed.dropLast().suffix(2).reversed())
+    }
+
+    /// Recent event still within the linger window (computed against the local `now` clock).
+    private var withinLinger: Bool {
+        guard let at = lastEventAt else { return false }
+        return now.timeIntervalSince(at) < Self.lingerWindow
+    }
+
+    /// Show while the backend is working or an event is still recent — and only if we actually have
+    /// something to show. Everything else collapses to nothing.
+    private var isShowing: Bool {
+        latest != nil && (state.activityBusy || withinLinger)
+    }
+
+    var body: some View {
+        ZStack {
+            if isShowing, let latest {
+                card(latest)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .allowsHitTesting(false)
+        .animation(.easeInOut(duration: 0.28), value: isShowing)
+        // Swap the whole card identity on each new event → the keyed transition below plays and the
+        // previous headline visibly gives way to the new one.
+        .animation(.easeInOut(duration: 0.28), value: latest?.seq)
+        // Stamp recency whenever a genuinely new tail event arrives (also seeds on first appearance).
+        .onChange(of: latest?.seq) { seq in
+            guard seq != lastSeq else { return }
+            lastSeq = seq
+            if seq != nil { lastEventAt = Date() }
+        }
+        .onAppear {
+            lastSeq = latest?.seq
+            if latest != nil { lastEventAt = Date() }
+        }
+        // A slow local heartbeat so the linger window can expire and fade the card without any further
+        // upstream change. Cheap: it only nudges a Date; the body is trivial when idle.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                now = Date()
+            }
+        }
+    }
+
+    // MARK: card
+
+    private func card(_ latest: ActivityEvent) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            // The faint fading stack: the previous event(s), dimmer the further back they are, so you
+            // can see memories streaming by without ever exceeding ~3 lines total.
+            ForEach(Array(trailing.enumerated()), id: \.element.seq) { index, event in
+                Text(event.title)
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkFaint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .opacity(index == 0 ? 0.5 : 0.28)
+                    .transition(.opacity)
+            }
+
+            headline(latest)
+                // Keyed on seq so each new event gets a fresh identity → the swap transition plays,
+                // gently replacing the prior headline rather than mutating it in place.
+                .id(latest.seq)
+                .transition(
+                    .asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .opacity
+                    )
+                )
+        }
+        .frame(width: Self.cardWidth, alignment: .leading)
+        .padding(.horizontal, CortexDesign.Space.md)
+        .padding(.vertical, CortexDesign.Space.sm + 1)
+        .background(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.lg, style: .continuous)
+                .fill(CortexDesign.panelBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: CortexDesign.Radius.lg, style: .continuous)
+                        .strokeBorder(CortexDesign.softBorder, lineWidth: 1)
+                )
+                .shadow(color: CortexDesign.ink.opacity(0.16), radius: 14, x: 0, y: 5)
+        )
+        .padding(.bottom, 14)
+    }
+
+    private func headline(_ event: ActivityEvent) -> some View {
+        HStack(alignment: .center, spacing: CortexDesign.Space.sm) {
+            ZStack {
+                Circle()
+                    .fill(CortexDesign.goldSoft)
+                    .frame(width: 30, height: 30)
+                Image(systemName: iconName(for: event.kind))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(CortexDesign.gold)
+            }
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(event.title)
+                    .font(CortexDesign.Typography.body.weight(.semibold))
+                    .foregroundColor(CortexDesign.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let secondary = secondaryLine(for: event) {
+                    Text(secondary)
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+
+            Spacer(minLength: CortexDesign.Space.xs)
+
+            LivePulse()
+        }
+    }
+
+    /// A subtle secondary line from `detail` and/or `source` — omitted entirely when both are empty
+    /// (never fabricate a line). `detail` leads; `source` is appended as a faint catalog-style tail.
+    private func secondaryLine(for event: ActivityEvent) -> String? {
+        let detail = event.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = event.source.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch (detail.isEmpty, source.isEmpty) {
+        case (false, false): return "\(detail) · \(source)"
+        case (false, true):  return detail
+        case (true, false):  return source
+        case (true, true):   return nil
+        }
+    }
+
+    /// Leading icon by event `kind`. Falls back to the memory glyph for unknown kinds so a new
+    /// backend event type never renders a blank/`questionmark` slot.
+    private func iconName(for kind: String) -> String {
+        switch kind {
+        case "memory":  return "sparkles"
+        case "import":  return "arrow.down.doc"
+        case "source":  return "trash"
+        default:        return "brain.head.profile"
+        }
+    }
+}
+
+/// A tiny "live" indicator — a soft gold dot that breathes while on screen. Its `repeatForever`
+/// animation is safe to leave running: this view only exists inside the ticker's `if isShowing`
+/// branch, so it (and the animation) are torn down the instant the card hides.
+private struct LivePulse: View {
+    @State private var pulsing = false
+
+    var body: some View {
+        Circle()
+            .fill(CortexDesign.gold)
+            .frame(width: 6, height: 6)
+            .scaleEffect(pulsing ? 1.0 : 0.6)
+            .opacity(pulsing ? 1.0 : 0.4)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                    pulsing = true
+                }
+            }
+    }
+}

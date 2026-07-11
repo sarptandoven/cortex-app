@@ -846,6 +846,21 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {"capture_id": {"type": "string"}}, "required": ["capture_id"]},
     },
     {
+        "name": "delete_source_memories",
+        "description": (
+            "Permanently purge ALL memories that originate from a given source (e.g. 'chatgpt', "
+            "'gmail', 'github') — plus their captures, derived tasks, graph edges, search/vector "
+            "index rows, and vault files. Irreversible; use when a source imported bad data. Call "
+            "list_memory_sources first to see the exact source names and how many memories each holds."
+        ),
+        "inputSchema": {"type": "object", "properties": {"source": {"type": "string", "description": "The source string to purge, exactly as returned by list_memory_sources."}}, "required": ["source"]},
+    },
+    {
+        "name": "list_memory_sources",
+        "description": "List the sources memories came from, each with a count and most-recent capture time. Use to decide what to purge with delete_source_memories.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "get_trust_summary",
         "description": "Return Cortex trust settings, risk flags, source counts, and recent agent activity.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -1339,6 +1354,7 @@ MCP_TOOL_SURFACES: dict[str, frozenset[str]] = {
 READ_TOOLS = {
     "use_cortex",
     "get_context",
+    "list_memory_sources",
     # Continuity reads: finding/resuming a session pulls only agent-authored episodes.
     "resume_agent_session",
     "list_agent_sessions",
@@ -1441,6 +1457,7 @@ WRITE_TOOLS = {
     "archive_memory_capture",
     "forget_memory",
     "delete_memory_capture",
+    "delete_source_memories",
 }
 EXPORT_TOOLS = {
     "export_memory",
@@ -1469,7 +1486,7 @@ MAINTENANCE_TOOLS = {
     "revoke_shared_principal",
 }
 SCOPED_MCP_MAINTENANCE_REVIEW_TOOLS = {"approve_memory_capture", "archive_memory_capture"}
-DESTRUCTIVE_TOOLS = {"forget_memory", "delete_memory_capture", "delete_memory_backups", "restore_latest_memory_backup", "delete_all_user_data"}
+DESTRUCTIVE_TOOLS = {"forget_memory", "delete_memory_capture", "delete_source_memories", "delete_memory_backups", "restore_latest_memory_backup", "delete_all_user_data"}
 DIRECT_CONNECTOR_SYNC_TOOLS = {
     "sync_agent_sessions",
     "sync_github",
@@ -3372,6 +3389,10 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         return {"deleted": store.delete_memory(user_id, args["id"])}
     if name == "delete_memory_capture":
         return {"deleted": store.delete_capture(user_id, args["capture_id"])}
+    if name == "list_memory_sources":
+        return {"sources": store.source_memory_stats(user_id)}
+    if name == "delete_source_memories":
+        return store.purge_source_memories(user_id, _text_arg(args, "source", max_chars=200))
     if name == "get_trust_summary":
         return store.trust_summary(user_id)
     if name == "get_audit_log":

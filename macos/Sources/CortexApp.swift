@@ -2247,6 +2247,55 @@ struct GraphEdge: Codable, Identifiable, Hashable {
     let is_bridge: Bool?  // cross-community "surprising connection"
 }
 
+// MARK: - Live activity + purge-by-source + connection-test models
+//
+// One event from the long-poll activity feed (GET /v1/activity). The backend emits one per memory
+// as it lands (kind "memory"/"learned"), plus import lifecycle and source-purge notices. `seq` is a
+// monotonic per-server cursor value, which also makes it a stable Identifiable id for the ticker.
+struct ActivityEvent: Codable, Identifiable, Hashable {
+    let seq: Int
+    let ts: String
+    let kind: String
+    let action: String
+    let title: String
+    let detail: String
+    let source: String
+    var id: Int { seq }
+}
+
+// A per-source memory tally for the "purge by source" surface (GET /v1/sources/stats).
+struct SourceMemoryStat: Codable, Identifiable, Hashable {
+    let source: String
+    let count: Int
+    let last_captured_at: String?
+    var id: String { source }
+}
+
+// A cached preview of the "memory pack" users paste into ChatGPT/Claude (GET /v1/context-pack).
+struct MemoryPackPreview: Equatable { let text: String; let itemCount: Int; let characterCount: Int }
+
+// The outcome of a one-shot "Test connection" probe for an AI integration.
+struct ConnectionTestResult: Equatable { let ok: Bool; let message: String }
+
+// Decode wrappers for the endpoints above. Kept private to the file — only AppState decodes them.
+private struct ActivityFeedResponse: Codable {
+    let events: [ActivityEvent]
+    let cursor: Int
+}
+
+private struct SourceStatsResponse: Codable {
+    let results: [SourceMemoryStat]
+}
+
+private struct PurgeSourceResponse: Codable {
+    let deleted: Bool
+    let source: String
+    let memory_count: Int
+    let capture_count: Int
+    let task_count: Int
+    let edge_count: Int
+}
+
 enum DistributionMode {
     static var isAppStore: Bool {
         (Bundle.main.object(forInfoDictionaryKey: "CortexDistributionMode") as? String) == "app-store"
@@ -3361,6 +3410,37 @@ final class AppState: ObservableObject {
     /// is fine for a flourish.
     @Published private(set) var lastLearnedCount: Int = 0
 
+    // MARK: Live activity stream (bottom ticker)
+    //
+    // A long-poll of GET /v1/activity feeds a rolling window of the most recent events (memories as
+    // they land, imports, purges). The LiveActivityTicker (LiveActivity.swift) binds to these and
+    // auto-hides when idle. `recentActivity` is ordered most-recent LAST and capped at 60. This is a
+    // separate channel from the notch/HUD flourishes — see startActivityStream for why we never call
+    // announceLearned from here (it would double-fire the notch + push-nudge with importFromPath).
+    @Published private(set) var recentActivity: [ActivityEvent] = []   // most-recent LAST, cap 60
+    @Published private(set) var activityBusy: Bool = false             // backend actively working right now
+    private var activityCursor: Int = 0
+    private var activityStreamTask: Task<Void, Never>? = nil
+    private var lastRippleStamp: Date = .distantPast
+    // Wall-clock stamp of the newest event we've seen. `activityBusy` is derived from it each tick
+    // (busy = < 4s since the last event) so the ticker fades out on its own a few seconds after work
+    // stops, without needing a separate timer.
+    private var lastActivityEventStamp: Date = .distantPast
+
+    // MARK: Purge-by-source
+    //
+    // Per-source memory tallies (GET /v1/sources/stats) and the source currently being purged (drives
+    // a per-row spinner + disabled state in the UI).
+    @Published private(set) var sourceStats: [SourceMemoryStat] = []
+    @Published private(set) var purgingSource: String? = nil
+
+    // MARK: Connections: memory-pack preview + connection test
+    //
+    // A cached preview of the pasteable memory pack, and the id of the integration whose "Test
+    // connection" probe is in flight (drives a per-row spinner).
+    @Published private(set) var memoryPackPreview: MemoryPackPreview? = nil
+    @Published private(set) var testingConnectionID: String? = nil
+
     private static func loadQuickCaptureKeybind() -> KeyCombo? {
         guard let data = UserDefaults.standard.data(forKey: quickCaptureKeybindDefaultsKey) else { return nil }
         return try? JSONDecoder().decode(KeyCombo.self, from: data)
@@ -3778,6 +3858,7 @@ final class AppState: ObservableObject {
         startConnectedSourceAutoSync()
         startPushSync()
         startSyncProgressPolling()
+        startActivityStream()
         activateQuickCaptureIfEnabled()
         presentOnboardingIfNeeded()
         // Fire a one-time "proof of life" notch so a new user actually sees the notch channel work
@@ -4515,6 +4596,174 @@ final class AppState: ObservableObject {
                 try? await Task.sleep(nanoseconds: active ? 1_200_000_000 : 4_000_000_000)
             }
         }
+    }
+
+    // MARK: - Live activity stream (bottom ticker)
+
+    /// Start (idempotently) the long-poll of GET /v1/activity that feeds the bottom Live Activity
+    /// ticker. Each request BLOCKS up to `wait=5` seconds for the next event, so the loop stays cheap
+    /// while idle and reacts instantly while memories land. New events are appended (most-recent LAST,
+    /// capped at 60) and drive the existing memory-ripple via a COALESCED `lastLearnedAt` bump so a
+    /// 100-memory burst pulses a few times per second instead of a hundred. We deliberately NEVER call
+    /// `announceLearned` from here: that shows a notch + push-nudge and would double-fire with the
+    /// import path. On any error we back off ~2s and continue rather than hammer a cold engine.
+    func startActivityStream() {
+        guard activityStreamTask == nil else { return }
+        activityStreamTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do {
+                    let since = self.activityCursor
+                    let data = try await self.request(
+                        path: "/v1/activity?since=\(since)&wait=5",
+                        method: "GET"
+                    )
+                    if Task.isCancelled { return }
+                    let response = try JSONDecoder().decode(ActivityFeedResponse.self, from: data)
+                    self.ingestActivity(response)
+                } catch {
+                    if Task.isCancelled { return }
+                    // A dropped/offline engine stops delivering events, so `activityBusy` would stay
+                    // stuck at its last value and pin the ticker card visible forever. Decay it on the
+                    // error path too, using the same "no event in the last 4s" rule as ingestActivity.
+                    if Date().timeIntervalSince(self.lastActivityEventStamp) >= 4 { self.activityBusy = false }
+                    // Don't hammer a cold/offline engine — back off, then re-poll.
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+            }
+        }
+    }
+
+    /// Fold one long-poll response into the rolling window. Runs on the main actor (called only from
+    /// the @MainActor stream task). Advances the cursor, appends new events (cap 60), recomputes the
+    /// derived `activityBusy`, and drives the ripple for any freshly-learned memories.
+    private func ingestActivity(_ response: ActivityFeedResponse) {
+        activityCursor = response.cursor
+        if !response.events.isEmpty {
+            recentActivity.append(contentsOf: response.events)
+            if recentActivity.count > 60 {
+                recentActivity.removeFirst(recentActivity.count - 60)
+            }
+            lastActivityEventStamp = Date()
+            // Any memory that just landed drives the EXISTING ripple. Coalesce so a big burst pulses
+            // ~3x/sec (one bump per >0.35s window), not once per memory.
+            let learnedArrived = response.events.contains { $0.kind == "memory" && $0.action == "learned" }
+            if learnedArrived, Date().timeIntervalSince(lastRippleStamp) > 0.35 {
+                lastRippleStamp = Date()
+                lastLearnedAt = Date()
+            }
+        }
+        // Busy = we saw an event within the last 4s. Derived (not a timer) so the ticker fades on its
+        // own on the next idle long-poll return.
+        activityBusy = Date().timeIntervalSince(lastActivityEventStamp) < 4
+    }
+
+    /// Stop the activity stream (sign-out / teardown). Cancels the loop and clears the busy flag.
+    func stopActivityStream() {
+        activityStreamTask?.cancel()
+        activityStreamTask = nil
+        activityBusy = false
+    }
+
+    // MARK: - Purge by source
+
+    /// Load per-source memory tallies (GET /v1/sources/stats). Best-effort: on any failure the prior
+    /// value is left untouched so the purge UI never flickers to "empty" on a transient timeout.
+    func loadSourceStats() async {
+        if let data = try? await request(path: "/v1/sources/stats", method: "GET"),
+           let response = try? JSONDecoder().decode(SourceStatsResponse.self, from: data) {
+            sourceStats = response.results
+        }
+    }
+
+    /// Purge every memory captured from a given source (DELETE /v1/sources/<source>/memories). Sets a
+    /// per-row spinner via `purgingSource`, then on success refreshes the source tallies AND the Home
+    /// memory count (loadStats) and recent list (loadRecent) so the whole app reflects the removal.
+    /// Returns the number of memories deleted, or nil on failure (with a short human status set).
+    @discardableResult
+    func purgeSource(_ source: String) async -> Int? {
+        purgingSource = source
+        let encoded = source.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? source
+        do {
+            let data = try await request(
+                path: "/v1/sources/\(encoded)/memories",
+                method: "DELETE"
+            )
+            let response = try JSONDecoder().decode(PurgeSourceResponse.self, from: data)
+            purgingSource = nil
+            await loadSourceStats()
+            // Refresh the same Home surfaces every other mutation refreshes so the memory count and
+            // recent list drop immediately (loadStats also refreshes memory-quality).
+            await loadStats()
+            await loadRecent()
+            return response.memory_count
+        } catch {
+            purgingSource = nil
+            status = CortexRecoveryText.failureStatus("Removing \(SourceDisplayName.label(source)) memories", error: error)
+            return nil
+        }
+    }
+
+    // MARK: - Connections: memory-pack preview + connection test
+
+    /// Load a preview of the pasteable "memory pack" (GET /v1/context-pack). The body is Markdown, not
+    /// JSON. The item count is the number of cited memory bullets ("- [" entries) — NOT the "## "
+    /// section headings, which are a near-constant handful regardless of how much memory exists. Stores
+    /// the full text so the Connections sheet can show a live preview. Best-effort.
+    func loadMemoryPackPreview() async {
+        guard let data = try? await request(path: "/v1/context-pack?limit=16", method: "GET"),
+              let text = String(data: data, encoding: .utf8) else { return }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let count = lines.filter { $0.hasPrefix("- [") }.count
+        memoryPackPreview = MemoryPackPreview(text: text, itemCount: count, characterCount: text.count)
+    }
+
+    /// One-shot "Test connection" probe for an AI integration. Sets `testingConnectionID` (cleared in
+    /// a defer) so the row can spin. For memory-pack tools we confirm the context pack is non-empty;
+    /// for the tool-calling paths we confirm the tools schema is reachable and report the tool count.
+    /// Any thrown error becomes a friendly, actionable failure message.
+    func testToolConnection(_ integration: AIIntegration) async -> ConnectionTestResult {
+        testingConnectionID = integration.id
+        defer { testingConnectionID = nil }
+        do {
+            switch integration.connectionKind {
+            case .memoryPack:
+                let data = try await request(path: "/v1/context-pack?limit=8", method: "GET")
+                let text = String(data: data, encoding: .utf8) ?? ""
+                // The pack is ALWAYS a non-empty scaffold, so a blank-string check never fires. "Empty"
+                // really means "no cited memories inside it": no "- [" bullet, or the explicit
+                // "No active memories" placeholder the context engine emits when it has nothing.
+                let hasMemoryBullet = text.contains("\n- [") || text.hasPrefix("- [")
+                if !hasMemoryBullet || text.contains("No active memories") {
+                    return ConnectionTestResult(ok: false, message: "No memory to share yet — add a source first")
+                }
+                return ConnectionTestResult(ok: true, message: "Memory pack ready — your memory is reachable")
+            case .mcpConfig, .cliCommand, .httpAPI:
+                let data = try await request(path: "/v1/tools/schema?format=openai", method: "GET")
+                let count = Self.toolSchemaCount(data)
+                return ConnectionTestResult(ok: true, message: "Connected — \(count) Cortex tools available")
+            }
+        } catch {
+            // Connection-shaped failures (offline/timeout engine) get the friendly, actionable line;
+            // a genuine HTTP/status error surfaces its (trimmed) message so the user has something to
+            // act on rather than a misleading "is the app running?".
+            let generic = "Couldn't reach Cortex — is the app running?"
+            if isRetriableConnectionError(error) {
+                return ConnectionTestResult(ok: false, message: generic)
+            }
+            let detail = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            return ConnectionTestResult(ok: false, message: detail.isEmpty ? generic : detail)
+        }
+    }
+
+    /// Count the function objects in a /v1/tools/schema?format=openai payload without decoding each of
+    /// the ~103 heterogeneous tool objects — we only need the count.
+    private static func toolSchemaCount(_ data: Data) -> Int {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let schema = obj["schema"] as? [Any] else {
+            return 0
+        }
+        return schema.count
     }
 
     func loadMemoryQuality() async {
@@ -7976,6 +8225,14 @@ struct CortexView: View {
                     .accessibilityHidden(state.selectedTab != .ask)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // The bottom Live Activity ticker floats above the tab content (self-hiding when idle).
+            // As an overlay it never shifts the tab layout, and hit-testing is off so it can't steal
+            // clicks from the content beneath it.
+            .overlay(alignment: .bottom) {
+                LiveActivityTicker(state: state)
+                    .padding(.bottom, 12)
+                    .allowsHitTesting(false)
+            }
             footer
         }
         .background(CortexDesign.appBackground)

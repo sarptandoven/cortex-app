@@ -2292,6 +2292,40 @@ def forget_memory(memory_id: str, user_id: str = Depends(auth)) -> dict[str, Any
     return {"deleted": True}
 
 
+@app.get("/v1/sources/stats")
+def source_stats(user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Active memories grouped by source, with counts — powers the purge-by-source surface."""
+    return {"results": store.source_memory_stats(user_id)}
+
+
+@app.delete("/v1/sources/{source}/memories")
+def purge_source(source: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Permanently delete every memory (and its captures/tasks/edges/vault files) from a source."""
+    try:
+        return store.purge_source_memories(user_id, source)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/v1/activity")
+def activity_feed(
+    since: int = Query(default=0, ge=0),
+    wait: int = Query(default=0, ge=0, le=8),  # accepted for API parity; the hosted mirror does not block
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    """Live activity feed. The hosted mirror is intentionally a NON-BLOCKING short poll (it ignores
+    `wait`): a long-poll here would park one of the shared anyio threadpool workers for up to `wait`
+    seconds, and a burst of clients could starve the pool that every sync endpoint depends on. The
+    local-first standalone server — which the macOS app actually long-polls for its live ticker —
+    parks a dedicated per-connection thread instead, so it keeps the true long-poll. Cursor only
+    advances past events actually returned (never to latest_seq()), so no event is skipped."""
+    from .activity import activity_hub
+
+    events = activity_hub.since(since, user_id=user_id)
+    cursor = events[-1]["seq"] if events else since
+    return {"events": events, "cursor": cursor}
+
+
 @app.post("/v1/captures/{capture_id}/approve")
 def approve_capture(capture_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
     approved = store.approve_capture(user_id, capture_id)
