@@ -180,8 +180,19 @@ struct OnboardingView: View {
     /// Finishing runs a brief celebration, then hands off to `AppState.finishOnboarding()`, which
     /// posts `.cortexOnboardingCompleted` when the setup loop is genuinely complete and otherwise
     /// closes the walkthrough gracefully for the session.
+    ///
+    /// The "Your Archive is ready" celebration is gated on `state.canCompleteOnboarding` — the same
+    /// flag `finishOnboarding()` uses to decide whether setup actually completes. Without a connected
+    /// source setup can't complete, so we must NOT claim success: instead we route the user back to
+    /// the Add-Memory step with a short nudge. The "Explore with sample notes" path connects a real
+    /// source (satisfying `.firstSource`), so it still completes honestly and does celebrate.
     private func finishTapped() {
         guard !celebrating else { return }
+        guard state.canCompleteOnboarding else {
+            state.status = "One more step — connect a source to finish."
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { step = .addMemory }
+            return
+        }
         withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) { celebrating = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.15) {
             state.finishOnboarding()
@@ -727,10 +738,26 @@ private struct OnboardingQuickCaptureStep: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// Flipping the toggle on with no shortcut yet recorded would register no hotkey — the feature
+    /// would read as "on" while doing nothing. Seed the shared ⌥⌘C default (`KeyCombo.defaultCapture`,
+    /// the same combo the celebration copy and Settings use) the moment it turns on so quick capture
+    /// is immediately functional; the recorder below still lets the user rebind it.
+    private var enabledBinding: Binding<Bool> {
+        Binding(
+            get: { state.quickCaptureEnabled },
+            set: { newValue in
+                if newValue, state.quickCaptureKeybind == nil {
+                    state.quickCaptureKeybind = KeyCombo.defaultCapture
+                }
+                state.quickCaptureEnabled = newValue
+            }
+        )
+    }
+
     /// Direct-download build: a live opt-in toggle + a keybind recorder, bound to AppState.
     private var enableCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Toggle(isOn: $state.quickCaptureEnabled) {
+            Toggle(isOn: enabledBinding) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Enable quick capture")
                         .font(.system(size: 14, weight: .semibold))

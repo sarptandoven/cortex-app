@@ -513,8 +513,31 @@ private struct ConnectionsDirectSourcesSection: View {
         wiredConnectors.filter { isManaged($0) || !isUnconfiguredOAuth($0) }
     }
 
-    private var hasHiddenOAuthConnectors: Bool {
-        wiredConnectors.contains { !isManaged($0) && isUnconfiguredOAuth($0) }
+    /// The unconfigured-OAuth connectors that are genuinely hidden from the library — those with
+    /// no token fallback to fall through to. Notion (managed OAuth advertised but client id empty,
+    /// plus a durable integration token) is NOT here: it browses as a token connector instead.
+    private var hiddenOAuthConnectors: [SourceConnectorCatalogItem] {
+        wiredConnectors.filter { !isManaged($0) && isUnconfiguredOAuth($0) }
+    }
+
+    /// Names exactly the connectors actually hidden this build — no more hardcoded "Email and
+    /// Drive" that silently dropped Notion/Outlook. Points people at file/export import instead.
+    private var hiddenOAuthFootnote: String? {
+        let names = hiddenOAuthConnectors
+            .map(\.name)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        guard !names.isEmpty else { return nil }
+        let list: String
+        switch names.count {
+        case 1:
+            list = names[0]
+        case 2:
+            list = "\(names[0]) and \(names[1])"
+        default:
+            list = names.dropLast().joined(separator: ", ") + ", and \(names[names.count - 1])"
+        }
+        let verb = names.count == 1 ? "isn't" : "aren't"
+        return "\(list) \(verb) available for direct sign-in in this build yet — import them via file/export import."
     }
 
     // Library search + category grouping (VSCode-extensions style: searchable, sectioned list of
@@ -628,8 +651,8 @@ private struct ConnectionsDirectSourcesSection: View {
                 }
             }
 
-            if hasHiddenOAuthConnectors {
-                Text("Email and Drive connect via export import for now.")
+            if let hiddenOAuthFootnote {
+                Text(hiddenOAuthFootnote)
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkFaint)
             }
@@ -658,10 +681,20 @@ private struct ConnectionsDirectSourcesSection: View {
             || state.hasStoredDirectConnectorConfig(connector)
     }
 
-    /// Managed-OAuth connector whose provider sign-in has no credentials in this build.
+    /// Managed-OAuth connector whose provider sign-in has no credentials in this build AND that
+    /// has no durable token fallback to fall through to. Notion advertises managed OAuth whose
+    /// client id ships empty, but it also carries an integration-token setup — so it is NOT
+    /// "unconfigured" here: it browses and connects via the token sheet like Slack/Linear.
     private func isUnconfiguredOAuth(_ connector: SourceConnectorCatalogItem) -> Bool {
         connector.connectionSetup?.supportsManagedOAuth == true
             && !state.managedOAuthIsConfigured(connector)
+            && !hasUsableTokenFallback(connector)
+    }
+
+    /// A connector reachable via a pasted integration token even when managed OAuth isn't wired up
+    /// in this build — it advertises credential fields (e.g. Notion's internal integration token).
+    private func hasUsableTokenFallback(_ connector: SourceConnectorCatalogItem) -> Bool {
+        !(connector.connectionSetup?.credential_fields.isEmpty ?? true)
     }
 
     private func libraryAction(_ connector: SourceConnectorCatalogItem) {
@@ -674,7 +707,16 @@ private struct ConnectionsDirectSourcesSection: View {
         if connector.connectionSetup?.supportsManagedOAuth == true {
             if state.managedOAuthIsConfigured(connector) {
                 state.startManagedOAuthConnector(connector)
+                return
             }
+            // Managed OAuth is advertised but not wired up in this build. If the connector also
+            // ships a durable integration-token setup (Notion), don't dead-end — fall through to
+            // the token sheet, the same path token-only connectors use. Only stop here when there
+            // is genuinely nothing to connect with.
+            if !hasUsableTokenFallback(connector) {
+                return
+            }
+            selectedTokenConnector = connector
             return
         }
         switch connector.id {
@@ -1028,8 +1070,19 @@ private struct ConnectionsDirectSourceRow: View {
         state.connectorOAuthStartingIDs.contains(connector.id)
     }
 
-    private var hasManagedOAuth: Bool {
+    /// A connector that advertises managed OAuth we can't use in this build (client id ships
+    /// empty) but that also carries a durable integration-token setup (Notion). When true, this
+    /// row behaves as a plain token connector — the OAuth "Coming soon" gating never applies and
+    /// the connect button opens the token sheet — matching the library tile's fallback route.
+    private var usesTokenFallback: Bool {
         connector.connectionSetup?.supportsManagedOAuth == true
+            && !connected
+            && !state.managedOAuthIsConfigured(connector)
+            && !(connector.connectionSetup?.credential_fields.isEmpty ?? true)
+    }
+
+    private var hasManagedOAuth: Bool {
+        connector.connectionSetup?.supportsManagedOAuth == true && !usesTokenFallback
     }
 
     private var managedOAuthConfigured: Bool {
@@ -2136,6 +2189,8 @@ private struct ConnectionsAIToolsSection: View {
 
             browserAssistantRow
 
+            universalReachRow
+
             if !connectedIntegrations.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(connectedIntegrations.prefix(3)) { integration in
@@ -2144,6 +2199,63 @@ private struct ConnectionsAIToolsSection: View {
                 }
             }
         }
+    }
+
+    /// The browser extension + universal API paths, previously reachable ONLY from the menu-bar
+    /// right-click menu — invisible to anyone who never right-clicks the status item. Surfacing
+    /// them here puts every "use Cortex anywhere" path on the same screen as MCP + memory packs.
+    private var universalReachRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(CortexDesign.sealMoss.opacity(0.13))
+                Image(systemName: "puzzlepiece.extension")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundColor(CortexDesign.sealMoss)
+            }
+            .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Browser extension & any other app".uppercased())
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
+                Text("Use your memory anywhere")
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
+                Text("Pair the browser extension for one-click context on chat sites, or copy API details for SDKs and self-hosted tools.")
+                    .font(.callout)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 8) {
+                Button {
+                    state.pairBrowserExtension()
+                } label: {
+                    Label("Connect extension", systemImage: "puzzlepiece.extension")
+                        .frame(minWidth: 150, minHeight: 30)
+                }
+                .buttonStyle(.bordered)
+                .help("Mints a read-only pairing token and copies it for the Cortex browser extension.")
+
+                Button {
+                    state.copyUniversalAPIConnectionInfo()
+                } label: {
+                    Label("Copy API details", systemImage: "curlybraces")
+                        .frame(minWidth: 150, minHeight: 30)
+                }
+                .buttonStyle(.bordered)
+                .help("Copies the base URL, token, and tool-schema endpoints for SDKs and any function-calling app.")
+            }
+        }
+        .padding(14)
+        .background(connectionsPanelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     /// A connected-tool row with an inline "Test" button. Testing confirms the tool can actually
@@ -2369,21 +2481,14 @@ private struct ConnectionsGuidedMCPSetup: View {
         "Quit and reopen the app — Cortex memory tools appear once it restarts."
     ]
 
-    /// Redacted preview of the connection JSON — the real token is copied, never shown. Kept
-    /// deliberately close to the canonical shape so what the user sees matches what they paste.
+    /// Redacted preview of the connection JSON — the real token is copied, never shown. Rendered
+    /// from the SAME builder the Copy button uses (`mcpConfigJSON`, which funnels through
+    /// `mcpServerDefinition`), just with the token redacted, so what the user sees is byte-for-byte
+    /// the real (redacted) shape. Never a hand-written literal: when the App Store branch of
+    /// `mcpServerDefinition` changes shape (e.g. type:http / url / headers), this preview inherits
+    /// it automatically.
     private var previewConfig: String {
-        """
-        {
-          "mcpServers" : {
-            "cortex" : {
-              "env" : {
-                "CORTEX_API_KEY" : "<copied with the button below>",
-                "CORTEX_BASE_URL" : "\(state.endpoint)"
-              }
-            }
-          }
-        }
-        """
+        state.mcpConfigJSON(redactToken: true)
     }
 
     var body: some View {

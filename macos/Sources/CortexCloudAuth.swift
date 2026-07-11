@@ -1,6 +1,7 @@
 import AppKit
 import AuthenticationServices
 import Foundation
+import ObjectiveC
 import Security
 import SwiftUI
 
@@ -39,6 +40,21 @@ struct CortexCloudAppPollResponse: Codable {
     let account: CortexCloudAccount?
 }
 
+/// One social sign-in provider the HOSTED backend actually has configured (from GET
+/// /v1/auth/providers). We render a real "Continue with X" button only for providers the server
+/// returns, so the sign-in surface never shows a dead button for a provider that isn't wired.
+struct CloudAuthProvider: Codable, Identifiable, Hashable {
+    let provider: String        // "google", "github", "apple"
+    let kind: String
+    let display_name: String
+    var button_order: Int?
+    var id: String { provider }
+}
+
+struct CloudAuthProvidersResponse: Codable {
+    let results: [CloudAuthProvider]
+}
+
 enum CortexCloudAuthError: LocalizedError {
     case invalidHostedURL
     case badResponse
@@ -70,6 +86,13 @@ enum CortexCloudAuthError: LocalizedError {
             return "No Cortex Cloud session is stored. Sign in again."
         }
     }
+}
+
+/// Reference box so a `Task` value can be held by an `objc` associated object (which requires a
+/// class instance). Used only to back `AppState.cloudBrowserSignInTask` from this extension file.
+private final class CortexTaskBox {
+    let task: Task<Void, Never>
+    init(task: Task<Void, Never>) { self.task = task }
 }
 
 extension AppState {
@@ -150,6 +173,27 @@ extension AppState {
         return AppState.storedCloudRefreshToken() != nil
     }
 
+    // MARK: Cancellable browser sign-in task
+
+    /// Handle to the in-flight browser sign-in poll so it can be cancelled (see
+    /// `cancelCloudBrowserSignIn()`). Stored via an associated object because AppState's sign-in/cloud
+    /// surface lives in this extension file and Swift extensions cannot add stored properties; the
+    /// Task is boxed in a class so it can ride `objc_setAssociatedObject`. Only ever touched on the
+    /// main actor (AppState is @MainActor), so the raw pointer access is safe here.
+    var cloudBrowserSignInTask: Task<Void, Never>? {
+        get { (objc_getAssociatedObject(self, &AppState.cloudBrowserSignInTaskKey) as? CortexTaskBox)?.task }
+        set {
+            objc_setAssociatedObject(
+                self,
+                &AppState.cloudBrowserSignInTaskKey,
+                newValue.map { CortexTaskBox(task: $0) },
+                .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            )
+        }
+    }
+
+    private static var cloudBrowserSignInTaskKey: UInt8 = 0
+
     // MARK: Host classification
 
     static func hostIsRemote(_ endpoint: String) -> Bool {
@@ -199,12 +243,54 @@ extension AppState {
         Task { await performCloudSignUp(hostedURL: hostedURL, email: email, password: password, displayName: displayName) }
     }
 
-    func signInToCloudWithBrowser(hostedURL: String) {
+    /// Start a browser-handoff sign-in. When `provider` is set (e.g. "github", "google"), it is
+    /// threaded onto the hosted login URL as a hint so the web page can jump straight to that
+    /// provider; a nil/blank provider opens the generic account login page (all providers + email).
+    ///
+    /// The started poll can run for up to 5 minutes and locks the whole sign-in surface, so the Task
+    /// is stored (`cloudBrowserSignInTask`) and can be cancelled via `cancelCloudBrowserSignIn()`.
+    func signInToCloudWithBrowser(hostedURL: String, provider: String = "") {
         guard isCloudAuthAvailable else {
             cloudAuthMessage = AppState.cloudAuthUnavailableMessage
             return
         }
-        Task { await performCloudBrowserSignIn(hostedURL: hostedURL) }
+        cloudBrowserSignInTask?.cancel()
+        cloudBrowserSignInTask = Task { [weak self] in
+            await self?.performCloudBrowserSignIn(hostedURL: hostedURL, provider: provider)
+            self?.cloudBrowserSignInTask = nil
+        }
+    }
+
+    /// Cancel an in-flight browser/GitHub/Google sign-in so a user who abandons the browser flow is
+    /// not stranded behind the (up-to-5-minute) poll with the whole sign-in surface disabled. The poll
+    /// loop's `Task.sleep` is cancellation-aware, so cancelling breaks it promptly on its next tick.
+    func cancelCloudBrowserSignIn() {
+        cloudBrowserSignInTask?.cancel()
+        cloudBrowserSignInTask = nil
+        cloudAuthBusy = false
+        cloudAuthMessage = "Sign-in cancelled."
+    }
+
+    /// Fetch the social sign-in providers the hosted backend actually has configured. Best-effort:
+    /// on any failure `cloudAuthProviders` is left as-is (the sign-in surface falls back to the
+    /// generic browser + email/password paths). Never shows a dead per-provider button.
+    func loadCloudAuthProviders(hostedURL: String) {
+        guard isCloudAuthAvailable else { return }
+        guard let base = AppState.normalizedHostedBase(hostedURL)
+            ?? AppState.normalizedHostedBase(AppState.defaultHostedURL),
+              let url = URL(string: base + "/v1/auth/providers") else { return }
+        Task { @MainActor in
+            do {
+                var req = URLRequest(url: url)
+                req.timeoutInterval = 15
+                let (data, response) = try await URLSession.shared.data(for: req)
+                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return }
+                let decoded = try JSONDecoder().decode(CloudAuthProvidersResponse.self, from: data)
+                self.cloudAuthProviders = decoded.results.sorted { ($0.button_order ?? 999) < ($1.button_order ?? 999) }
+            } catch {
+                // best-effort; leave providers unchanged
+            }
+        }
     }
 
     /// Native Sign in with Apple. The ASAuthorization credential carries an id_token that we POST to
@@ -324,7 +410,7 @@ extension AppState {
 
     // MARK: Browser (Google/GitHub) sign-in — same poll pattern as waitForManagedOAuthCompletion
 
-    private func performCloudBrowserSignIn(hostedURL: String) async {
+    private func performCloudBrowserSignIn(hostedURL: String, provider: String = "") async {
         guard let base = AppState.normalizedHostedBase(hostedURL) else {
             cloudAuthMessage = CortexCloudAuthError.invalidHostedURL.localizedDescription
             return
@@ -335,9 +421,17 @@ extension AppState {
         do {
             let startData = try await cloudPost(base: base, path: "/v1/auth/app/start", body: [:])
             let started = try JSONDecoder().decode(CortexCloudAppStartResponse.self, from: startData)
+            // Thread the chosen provider onto the login URL (same host as the server-provided
+            // browser_url) so the web page can jump straight to that provider's OAuth.
+            var openURLString = started.browser_url
+            let providerHint = provider.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !providerHint.isEmpty,
+               let encoded = providerHint.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+                openURLString += (openURLString.contains("?") ? "&" : "?") + "provider=" + encoded
+            }
             // The server fully controls browser_url; only ever hand an http(s) URL to the OS opener
             // so a malicious/MITM response can't launch a file://, custom-scheme, or app URL.
-            guard let browserURL = URL(string: started.browser_url),
+            guard let browserURL = URL(string: openURLString),
                   let scheme = browserURL.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
                 throw CortexCloudAuthError.badResponse
             }
@@ -355,7 +449,8 @@ extension AppState {
                 do {
                     try await Task.sleep(nanoseconds: delay)
                 } catch {
-                    cloudAuthMessage = "Browser sign-in cancelled."
+                    // Cancelled (e.g. via cancelCloudBrowserSignIn()). That canceller owns the
+                    // user-facing message, so just unwind — don't overwrite it here.
                     return
                 }
                 delay = min(delay + 1_000_000_000, 5 * 1_000_000_000)
@@ -447,7 +542,7 @@ extension AppState {
             if !password.isEmpty { body["password"] = password }  // not trimmed: passwords may hold spaces
             _ = try await cloudPost(base: base, path: "/v1/auth/account", body: body, bearer: cloudAccessToken, method: "DELETE")
             resetToLocalDefaults()
-            cloudAuthMessage = "Your account and all its data were permanently deleted."
+            cloudAuthMessage = "Your Cortex Cloud account and its synced copy were permanently deleted. Your memory on this Mac stays local — use \"Delete All Local Data\" to erase it from this device."
         } catch {
             cloudAuthMessage = CortexCloudAuth.describe(error)
         }
@@ -639,12 +734,24 @@ struct CortexCloudSection: View {
         return true
     }
 
+    /// Mirrors CortexPushSync's (private) `canPushSync`: signed in, a sync target is recorded, and no
+    /// sign-in wall is up. When false while signed in, push-sync can never run (e.g. the refresh token
+    /// persisted but `cloudSyncBaseURL` is empty), so the idle copy would falsely reassure the user.
+    private var canActuallyPushSync: Bool {
+        state.isSignedIn && !state.cloudSyncBaseURL.isEmpty && !state.requiresSignIn
+    }
+
     /// Live background-sync status (Phase 2): the memory is on this Mac and syncs to the account.
     @ViewBuilder private var pushSyncStatusView: some View {
         switch state.pushSyncState {
         case .idle:
-            Label("Your memory stays on this Mac and syncs to your account.", systemImage: "icloud")
-                .font(.caption).foregroundColor(.secondary)
+            if canActuallyPushSync {
+                Label("Your memory stays on this Mac and syncs to your account.", systemImage: "icloud")
+                    .font(.caption).foregroundColor(.secondary)
+            } else {
+                Label("Sync is unavailable — sign in again to reconnect your account.", systemImage: "exclamationmark.icloud")
+                    .font(.caption).foregroundColor(.orange)
+            }
         case .syncing:
             Label(state.pushPendingCount > 0 ? "Syncing… \(state.pushPendingCount) pending" : "Syncing…",
                   systemImage: "arrow.triangle.2.circlepath")
@@ -705,6 +812,11 @@ struct CortexCloudSection: View {
             if email.isEmpty {
                 email = state.cloudAccountEmail
             }
+            // Discover which social providers the backend actually offers, so the sign-in surface
+            // renders a real labeled button per provider (and never a dead one).
+            if state.isCloudAuthAvailable && !isSignedIn {
+                state.loadCloudAuthProviders(hostedURL: resolvedHostedURL)
+            }
         }
     }
 
@@ -731,7 +843,7 @@ struct CortexCloudSection: View {
             // the user permanently delete their account and data from within the app.
             if showDeleteConfirm {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("This permanently deletes your account and all of its memory. This cannot be undone.")
+                    Text("This permanently deletes your Cortex Cloud account and its synced copy from the server. This cannot be undone. Your memory on this Mac stays local — to erase it from this device, use \"Delete All Local Data\" in the data settings.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -767,52 +879,63 @@ struct CortexCloudSection: View {
 
     private var signInForm: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Sign in with Apple — native (ASAuthorization). Required by App Store Guideline 4.8
-            // whenever other social sign-ins are offered, and the best macOS experience.
-            SignInWithAppleButton(.signIn) { request in
-                request.requestedScopes = [.fullName, .email]
-            } onCompletion: { result in
-                switch result {
-                case .success(let auth):
-                    if let cred = auth.credential as? ASAuthorizationAppleIDCredential {
-                        state.signInWithApple(
-                            hostedURL: resolvedHostedURL,
-                            idToken: cred.identityToken,
-                            fullName: cred.fullName,
-                            email: cred.email
-                        )
-                    }
-                case .failure(let error):
-                    // A user-initiated cancel is not an error worth surfacing.
-                    if (error as? ASAuthorizationError)?.code != .canceled {
-                        state.cloudAuthMessage = "Apple sign-in failed. Use browser sign-in or email/password if this beta is not signed for Apple Sign In. \(error.localizedDescription)"
+            // Sign in with Apple — native (ASAuthorization). Shown ONLY when this build is actually
+            // signed with the Apple Sign In entitlement AND the hosted backend has Apple configured.
+            // Otherwise a native button could only open the OS sheet and then fail, so we hide it
+            // rather than present a dead, disabled control. (Guideline 4.8: native SIWA when usable.)
+            if canUseNativeAppleSignIn && backendOffersApple {
+                SignInWithAppleButton(.signIn) { request in
+                    request.requestedScopes = [.fullName, .email]
+                } onCompletion: { result in
+                    switch result {
+                    case .success(let auth):
+                        if let cred = auth.credential as? ASAuthorizationAppleIDCredential {
+                            state.signInWithApple(
+                                hostedURL: resolvedHostedURL,
+                                idToken: cred.identityToken,
+                                fullName: cred.fullName,
+                                email: cred.email
+                            )
+                        }
+                    case .failure(let error):
+                        // A user-initiated cancel is not an error worth surfacing.
+                        if (error as? ASAuthorizationError)?.code != .canceled {
+                            state.cloudAuthMessage = "Apple sign-in failed. \(error.localizedDescription)"
+                        }
                     }
                 }
-            }
-            .signInWithAppleButtonStyle(.black)
-            .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
-            .disabled(state.cloudAuthBusy || !canUseNativeAppleSignIn)
-
-            if !canUseNativeAppleSignIn {
-                Text("Apple sign-in is available in signed builds. This beta is not signed for Apple Sign In, so use browser sign-in or email/password below.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                .signInWithAppleButtonStyle(.black)
+                .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
+                .disabled(state.cloudAuthBusy)
             }
 
-            Button {
-                state.signInToCloudWithBrowser(hostedURL: resolvedHostedURL)
-            } label: {
-                Label("Continue in browser", systemImage: "globe")
-                    .frame(maxWidth: .infinity, minHeight: 44)
+            // A real, labeled button per social provider the hosted backend actually offers
+            // (e.g. "Sign in with GitHub", "Continue with Google"). Each opens the browser sign-in
+            // handoff pre-pointed at that provider; the app polls the session out (no token in a URL).
+            // This replaces the old single generic "Continue in browser" that hid GitHub/Google.
+            ForEach(browserProviders) { provider in
+                Button {
+                    state.signInToCloudWithBrowser(hostedURL: resolvedHostedURL, provider: provider.provider)
+                } label: {
+                    Label(providerButtonLabel(provider), systemImage: providerButtonIcon(provider))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .controlSize(.large)
+                .disabled(state.cloudAuthBusy)
             }
-            .controlSize(.large)
-            .disabled(state.cloudAuthBusy)
 
-            Text("Browser sign-in opens the hosted account page for Google/GitHub. If a provider reports redirect_uri is not associated, use email/password while that hosted OAuth app is corrected.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            // Fallback: a generic browser sign-in when provider discovery hasn't loaded yet or the
+            // backend advertises no social providers (email-only). Kept so there is always a path.
+            if browserProviders.isEmpty {
+                Button {
+                    state.signInToCloudWithBrowser(hostedURL: resolvedHostedURL)
+                } label: {
+                    Label("Continue in browser", systemImage: "globe")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .controlSize(.large)
+                .disabled(state.cloudAuthBusy)
+            }
 
             HStack(spacing: 8) {
                 VStack { Divider() }
@@ -842,6 +965,11 @@ struct CortexCloudSection: View {
                 .disabled(credentialsIncomplete)
                 if state.cloudAuthBusy {
                     ProgressView().scaleEffect(0.6)
+                    // A started browser/social sign-in polls for up to 5 minutes and disables this
+                    // whole surface; give the user an escape hatch so they are never stranded.
+                    Button("Cancel") {
+                        state.cancelCloudBrowserSignIn()
+                    }
                 }
                 Spacer()
             }
@@ -864,6 +992,33 @@ struct CortexCloudSection: View {
     private var resolvedHostedURL: String {
         let trimmed = hostedURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? Self.defaultHostedURL : trimmed
+    }
+
+    /// Whether the hosted backend advertises Apple as a configured provider (from /v1/auth/providers).
+    private var backendOffersApple: Bool {
+        state.cloudAuthProviders.contains { $0.provider.lowercased() == "apple" }
+    }
+
+    /// The configured social providers reached via the browser handoff (everything except Apple,
+    /// which has its own native button when usable).
+    private var browserProviders: [CloudAuthProvider] {
+        state.cloudAuthProviders.filter { $0.provider.lowercased() != "apple" }
+    }
+
+    private func providerButtonLabel(_ provider: CloudAuthProvider) -> String {
+        switch provider.provider.lowercased() {
+        case "github": return "Sign in with GitHub"
+        case "google": return "Continue with Google"
+        default: return "Continue with \(provider.display_name)"
+        }
+    }
+
+    private func providerButtonIcon(_ provider: CloudAuthProvider) -> String {
+        switch provider.provider.lowercased() {
+        case "github": return "chevron.left.forwardslash.chevron.right"
+        case "google": return "globe"
+        default: return "arrow.up.forward.app"
+        }
     }
 
     /// Email sign-in / create-account need an email + password (the hosted URL now defaults).

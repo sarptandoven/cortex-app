@@ -509,42 +509,60 @@ struct HomeHeroSection: View {
         state.hasConnectedObsidianVault && obsidianConnector != nil
     }
 
-    private var title: String {
+    // The hero's headline, primary button, and its tap action are all driven off this
+    // ONE ordered value so they can never disagree. The order is the priority: when two
+    // states are true at once (e.g. new memory to review AND a sync is due), the earlier
+    // case wins for the title, the button, and the action alike — review-first, because
+    // approving what's already captured comes before pulling more in.
+    private enum HeroState {
+        case starting          // backend not ready, no sync running
+        case gettingReady      // backend not ready, sync visibly running
+        case needsAttention
+        case review            // pending captures to approve
+        case dueSync           // connected sources due for a refresh
+        case connectEmpty      // a source was chosen but has no usable content
+        case connect           // no active source yet
+        case ask               // has memory, nothing else pending
+        case syncing           // a source is actively syncing
+        case connected         // a source is connected and idle
+        case syncNotes         // connected source we can re-sync on demand
+        case viewNotes         // fallback: open connections
+    }
+
+    private var heroState: HeroState {
         if !state.isLocalServiceReady {
             // While a sync is visibly running (the progress beam is on screen), the
             // engine IS working — "Cortex is starting" next to a live 16,032/16,049
             // progress bar reads as a contradiction and invites a pointless click on
             // "Start Cortex". Say what is actually happening instead.
-            if state.syncProgress?.active == true {
-                return "Getting your memory ready"
-            }
-            return "\(DistributionMode.appDisplayName) is starting"
+            return state.syncProgress?.active == true ? .gettingReady : .starting
         }
-        if needsAttentionSources > 0 {
-            return "Check your source connection"
+        if needsAttentionSources > 0 { return .needsAttention }
+        if pendingCount > 0 { return .review }
+        if dueSyncSources > 0 { return .dueSync }
+        if activeSources == 0 {
+            return hasEmptySource ? .connectEmpty : .connect
         }
-        if pendingCount > 0 {
-            return "Review new memory"
+        if hasMemory { return .ask }
+        if syncingSources > 0 { return .syncing }
+        if activeSources > 0 { return .connected }
+        return canSyncSource ? .syncNotes : .viewNotes
+    }
+
+    private var title: String {
+        switch heroState {
+        case .gettingReady: return "Getting your memory ready"
+        case .starting: return "\(DistributionMode.appDisplayName) is starting"
+        case .needsAttention: return "Check your source connection"
+        case .review: return "Review new memory"
+        case .dueSync: return "Refresh connected memory"
+        case .connectEmpty: return "Choose a source with content"
+        case .connect: return "Connect your notes"
+        case .ask: return "Ask about your memory"
+        case .syncing: return "Your source is syncing"
+        case .connected: return "Your source is connected"
+        case .syncNotes, .viewNotes: return "Connect your notes"
         }
-        if dueSyncSources > 0 {
-            return "Refresh connected memory"
-        }
-        if hasMemory {
-            return "Ask about your memory"
-        }
-        if syncingSources > 0 {
-            return "Your source is syncing"
-        }
-        if activeSources > 0 {
-            return "Your source is connected"
-        }
-        if hasEmptySource {
-            return "Choose a source with content"
-        }
-        if state.connectedAIIntegrationCount > 0 {
-            return "Connect your notes"
-        }
-        return "Connect your notes"
     }
 
     // Only problem and first-run states carry an explanation line; healthy states
@@ -594,27 +612,33 @@ struct HomeHeroSection: View {
     }
 
     private var actionTitle: String {
-        if !state.isLocalServiceReady {
-            return state.syncProgress?.active == true ? "Review memory" : "Start Cortex"
+        switch heroState {
+        case .gettingReady: return "Review memory"
+        case .starting: return "Start Cortex"
+        case .needsAttention: return "Open Connections"
+        case .review: return "Review memory"
+        case .dueSync: return "Sync now"
+        case .connectEmpty: return "Choose notes"
+        case .connect: return "Connect notes"
+        case .ask: return "Ask a question"
+        case .syncing, .connected, .syncNotes: return canSyncSource ? "Sync notes" : "View notes"
+        case .viewNotes: return "View notes"
         }
-        if needsAttentionSources > 0 { return "Open Connections" }
-        if dueSyncSources > 0 { return "Sync now" }
-        if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Connect notes" }
-        if pendingCount > 0 { return "Review memory" }
-        if hasMemory { return "Ask a question" }
-        return canSyncSource ? "Sync notes" : "View notes"
     }
 
     private var actionIcon: String {
-        if !state.isLocalServiceReady {
-            return state.syncProgress?.active == true ? "checklist" : "power"
+        switch heroState {
+        case .gettingReady: return "checklist"
+        case .starting: return "power"
+        case .needsAttention: return "exclamationmark.circle"
+        case .review: return "checklist"
+        case .dueSync: return "arrow.triangle.2.circlepath"
+        case .connectEmpty: return "folder.badge.questionmark"
+        case .connect: return "folder.badge.plus"
+        case .ask: return "magnifyingglass"
+        case .syncing, .connected, .syncNotes: return canSyncSource ? "arrow.triangle.2.circlepath" : "info.circle"
+        case .viewNotes: return "info.circle"
         }
-        if needsAttentionSources > 0 { return "exclamationmark.circle" }
-        if dueSyncSources > 0 { return "arrow.triangle.2.circlepath" }
-        if activeSources == 0 { return hasEmptySource ? "folder.badge.questionmark" : "folder.badge.plus" }
-        if pendingCount > 0 { return "checklist" }
-        if hasMemory { return "magnifyingglass" }
-        return canSyncSource ? "arrow.triangle.2.circlepath" : "info.circle"
     }
 
     var body: some View {
@@ -714,34 +738,33 @@ struct HomeHeroSection: View {
     }
 
     private func runNextAction() {
-        if !state.isLocalServiceReady {
-            if state.syncProgress?.active == true {
-                state.selectedTab = .review
-                return
-            }
+        switch heroState {
+        case .gettingReady:
+            state.selectedTab = .review
+        case .starting:
             Task {
                 await state.ensureBackend()
                 await state.loadDiagnostics()
                 await state.loadReview()
                 await state.loadStats()
             }
-        } else if needsAttentionSources > 0 {
+        case .needsAttention:
             state.openConnectionsPrivacy(statusMessage: "Check source connection")
-        } else if dueSyncSources > 0 {
+        case .dueSync:
             state.openConnectionsPrivacy(statusMessage: "Sync connected sources")
-        } else if activeSources == 0 {
+        case .connect, .connectEmpty:
             if let connector = obsidianConnector {
                 state.connectLocalNotesFolder(connector, chooseNew: hasEmptySource)
             } else {
                 state.openConnectionsPrivacy(statusMessage: "Connect notes")
             }
-        } else if pendingCount > 0 {
+        case .review:
             state.selectedTab = .review
             state.status = "Review memory"
-        } else if hasMemory {
+        case .ask:
             state.selectedTab = .ask
             state.status = "Ask \(DistributionMode.appDisplayName)"
-        } else {
+        case .syncing, .connected, .syncNotes, .viewNotes:
             if canSyncSource, let connector = obsidianConnector {
                 state.connectLocalNotesFolder(connector)
             } else {

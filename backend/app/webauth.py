@@ -43,7 +43,7 @@ import html
 from typing import Any, Callable
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
 # Route-scoped CSP: relaxed enough for external JS + fetch to the same origin
 # and a single inline <style> block, but far tighter than "unsafe-eval"/remote
@@ -1000,6 +1000,24 @@ def register_web_account_routes(
         # alphabet) before interpolating into the href.
         raw_flow = (request.query_params.get("app_flow") or "")[:120]
         app_flow = raw_flow if raw_flow and raw_flow.replace("_", "").isalnum() else ""
+        # One-hop provider handoff: the desktop app's "Sign in with GitHub" / "Continue with Google"
+        # button opens /account/login?app_flow=...&provider=<p>. When <p> is a CONFIGURED provider,
+        # bind this browser to the flow (df_af cookie) and redirect straight to that provider's OAuth,
+        # so the user lands on GitHub/Google directly instead of a second button page. Only providers
+        # present in the configured list are honored, so this can never be an open redirect.
+        raw_provider = (request.query_params.get("provider") or "")[:40].lower()
+        provider_hint = raw_provider if raw_provider and raw_provider.replace("_", "").replace("-", "").isalnum() else ""
+        configured_provider_names = {str(p.get("provider") or "").lower() for p in providers}
+        if app_flow and provider_hint and provider_hint in configured_provider_names:
+            redirect = RedirectResponse(
+                f"/v1/auth/oauth/{provider_hint}/start?app_flow={app_flow}", status_code=302
+            )
+            if app_flow_cookie is not None:
+                redirect.set_cookie(
+                    "df_af", app_flow_cookie(app_flow),
+                    max_age=900, httponly=True, samesite="lax", secure=True, path="/",
+                )
+            return redirect
         buttons = _provider_buttons_html(providers, app_flow=app_flow)
         resp = _html_response(_page("Sign in · Doppl", _login_body(buttons), "app.js"))
         # Bind THIS browser to the desktop app-login poll flow: set a signed cookie that the OAuth

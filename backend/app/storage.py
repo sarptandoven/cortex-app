@@ -8805,8 +8805,12 @@ class CortexStore:
         after = max(0, int(after_seq))
         with connect(self.db_path) as conn:
             rows = conn.execute(
+                # NEVER push a capture the user REJECTED (archived) in Review to the cloud — that
+                # would sync raw content the user explicitly chose to forget, violating the privacy
+                # promise. Archived rows are skipped; the rowid cursor still advances past them.
                 "SELECT rowid AS seq, id, source, source_url, title, raw_text, captured_at "
-                "FROM captures WHERE user_id = ? AND rowid > ? ORDER BY rowid ASC LIMIT ?",
+                "FROM captures WHERE user_id = ? AND rowid > ? AND review_status != 'archived' "
+                "ORDER BY rowid ASC LIMIT ?",
                 (user_id, after, limit + 1),
             ).fetchall()
         has_more = len(rows) > limit
@@ -10035,6 +10039,7 @@ class CortexStore:
                     granular_source_url=import_id is not None or source_account_snapshot is not None,
                     source_account=source_account_snapshot,
                     external_id=normalized_external_id,
+                    usable=(review_status == "approved"),
                     author_principal=principal,
                 )
                 memories.append(memory)
@@ -10102,6 +10107,27 @@ class CortexStore:
             for index, left in enumerate(entity_ids):
                 for right in entity_ids[index + 1:]:
                     edges.append(self._edge(conn, user_id, left, right, "co_occurs", capture_id, captured_at, weight=0.5))
+
+            # Live ticker: surface the ORGANIZING work, not just the raw memories. When a capture
+            # links two or more people/projects/topics, show that connection forming in the
+            # Constellation — one summary event per capture, and only when a real connection formed,
+            # so the graph-building magic is visible without spamming the feed.
+            if len(entities) >= 2:
+                connected_names = [str(entity.get("name") or "").strip() for entity in entities]
+                connected_names = [name for name in connected_names if name][:3]
+                if len(connected_names) >= 2:
+                    shown = " · ".join(connected_names)
+                    extra = len(entities) - len(connected_names)
+                    if extra > 0:
+                        shown += f" +{extra} more"
+                    self._emit_activity(
+                        user_id,
+                        "graph",
+                        "connected",
+                        title=f"Connected {shown}",
+                        detail="in your Constellation",
+                        source=str(source or ""),
+                    )
 
             embedding_state = self._capture_embedding_status(conn, user_id, capture_id)
             conn.execute(
@@ -26256,6 +26282,7 @@ class CortexStore:
         source_account: dict[str, Any] | None = None,
         external_id: str | None = None,
         author_principal: dict[str, Any] | None = None,
+        usable: bool = True,
     ) -> dict[str, Any]:
         base_memory_id = str(record["id"])
         memory_id = base_memory_id
@@ -26532,20 +26559,27 @@ class CortexStore:
             # Live ticker: surface each memory the instant it lands (covers sync imports, async
             # job-draining, and direct captures — every write funnels through here). Dedup hits
             # are skipped so re-ingesting an export doesn't spam the feed with no-op "learned"s.
-            # This fires INSIDE the write transaction: if that transaction later rolls back, a
-            # single phantom "learned" line may have flashed in the ticker. That is acceptable —
-            # the activity feed is explicitly ephemeral/best-effort (see activity.py), never an
-            # authoritative record, and the next poll simply moves on. The durable audit trail is
-            # the memory_events row written via _record_belief_snapshot_event, which IS transactional.
-            self._emit_activity(
-                user_id,
-                "memory",
-                "learned",
-                title=(memory.get("summary") or memory.get("content") or "").strip()[:160],
-                detail=str(memory.get("kind") or ""),
-                source=str(source or ""),
-                object_id=memory_id,
-            )
+            # HONESTY: only call it "learned" when the memory is actually USABLE (its capture is
+            # approved / from a trusted source). A memory from a pending connector capture is gated
+            # out of retrieval until the user approves it in Review, so celebrating it as "learned"
+            # would lie — it emits a distinct "queued for review" event instead.
+            # This fires INSIDE the write transaction: if that transaction later rolls back, a single
+            # phantom line may have flashed in the ticker. That is acceptable — the activity feed is
+            # explicitly ephemeral/best-effort (see activity.py), never authoritative. The durable
+            # audit trail is the memory_events row written via _record_belief_snapshot_event.
+            title = (memory.get("summary") or memory.get("content") or "").strip()[:160]
+            if usable:
+                self._emit_activity(
+                    user_id, "memory", "learned",
+                    title=title, detail=str(memory.get("kind") or ""),
+                    source=str(source or ""), object_id=memory_id,
+                )
+            else:
+                self._emit_activity(
+                    user_id, "memory", "queued",
+                    title=title, detail="waiting for your review",
+                    source=str(source or ""), object_id=memory_id,
+                )
         if existing_memory is not None and not receipt.get("deduplicated"):
             # Same-id edits are new transaction-time versions, not retcons at the original time.
             memory["recorded_at"] = receipt["created_at"]

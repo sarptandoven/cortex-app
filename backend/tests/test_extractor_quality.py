@@ -505,9 +505,11 @@ class LargeCaptureExtractionTests(unittest.TestCase):
         covered = _milestones_covered(data["records"])
         self.assertEqual(len(covered), count)
 
-    def test_conversation_capture_keeps_focused_base_cap(self) -> None:
-        # Conversational captures keep the focused base budget: gating is turn-sensitive and
-        # large multi-turn exports are meant to be chunked upstream, not exploded here.
+    def test_conversation_capture_scales_past_the_base_cap(self) -> None:
+        # A long conversation pasted DIRECTLY into the capture box is a single un-chunked unit
+        # (only imports chunk multi-turn exports upstream). The old fixed base cap silently
+        # discarded everything past the top 40 candidates — a confirmed data-loss defect — so
+        # conversational captures now scale with content too, bounded by the safety ceiling.
         turns = []
         for i in range(1, 61):
             turns.append(
@@ -515,20 +517,19 @@ class LargeCaptureExtractionTests(unittest.TestCase):
             )
             turns.append(f"assistant: Understood, I will build feature {i} for you soon.")
         data = extract_local("--- Messages ---\n" + "\n".join(turns), "chatgpt")
-        self.assertLessEqual(len(data["records"]), extractor.BASE_EXTRACTION_CANDIDATE_LIMIT)
-        # With 60 distinct user turns the cap is genuinely engaged (not incidentally under it).
-        self.assertEqual(len(data["records"]), extractor.BASE_EXTRACTION_CANDIDATE_LIMIT)
+        # With 60 distinct user turns, the records must NOT be truncated to the base cap.
+        self.assertGreater(len(data["records"]), extractor.BASE_EXTRACTION_CANDIDATE_LIMIT)
+        self.assertLessEqual(len(data["records"]), extractor.MAX_EXTRACTION_CANDIDATE_LIMIT)
 
     def test_extraction_candidate_limit_policy(self) -> None:
         base = extractor.BASE_EXTRACTION_CANDIDATE_LIMIT
         ceiling = extractor.MAX_EXTRACTION_CANDIDATE_LIMIT
-        # Conversational: always the base budget regardless of size.
-        self.assertEqual(extractor._extraction_candidate_limit(5, True), base)
-        self.assertEqual(extractor._extraction_candidate_limit(5000, True), base)
-        # Flat: never below base, scales with content, clamped to the safety ceiling.
-        self.assertEqual(extractor._extraction_candidate_limit(5, False), base)
-        self.assertEqual(extractor._extraction_candidate_limit(base + 160, False), base + 160)
-        self.assertEqual(extractor._extraction_candidate_limit(ceiling + 500, False), ceiling)
+        # Both shapes: never below base, scale with content, clamped to the safety ceiling.
+        # (A fixed conversational cap silently dropped candidates from big pasted conversations.)
+        for has_known_turns in (True, False):
+            self.assertEqual(extractor._extraction_candidate_limit(5, has_known_turns), base)
+            self.assertEqual(extractor._extraction_candidate_limit(base + 160, has_known_turns), base + 160)
+            self.assertEqual(extractor._extraction_candidate_limit(ceiling + 500, has_known_turns), ceiling)
 
 
 class ClaudeWindowedExtractionTests(unittest.TestCase):

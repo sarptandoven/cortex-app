@@ -170,6 +170,32 @@ class WebAccountAuthEnabledTests(unittest.TestCase):
         self.assertIn('/v1/auth/oauth/github/start"', plain)
         self.assertNotIn("start?app_flow=", plain)
 
+    def test_provider_one_hop_redirects_configured_provider(self) -> None:
+        # The desktop app's "Sign in with GitHub" button opens
+        # /account/login?app_flow=...&provider=github. A CONFIGURED provider one-hops: a 302 straight
+        # to that provider's OAuth start (with app_flow), and the df_af binding cookie is set on the
+        # redirect so the flow-fixation guard still passes.
+        start = self.client.post("/v1/auth/app/start", json={})
+        flow_id = start.json()["flow_id"]
+        resp = self.client.get(
+            f"/account/login?app_flow={flow_id}&provider=github", follow_redirects=False
+        )
+        self.assertEqual(resp.status_code, 302, resp.text)
+        self.assertEqual(resp.headers["location"], f"/v1/auth/oauth/github/start?app_flow={flow_id}")
+        self.assertIn("df_af", resp.headers.get("set-cookie", ""))
+
+    def test_provider_one_hop_ignores_unknown_or_unbound_provider(self) -> None:
+        # An UNKNOWN provider (open-redirect guard) or a provider without an app_flow must NOT
+        # redirect — the normal login page renders instead.
+        start = self.client.post("/v1/auth/app/start", json={})
+        flow_id = start.json()["flow_id"]
+        bogus = self.client.get(
+            f"/account/login?app_flow={flow_id}&provider=evilcorp", follow_redirects=False
+        )
+        self.assertEqual(bogus.status_code, 200, "unknown provider must not redirect")
+        no_flow = self.client.get("/account/login?provider=github", follow_redirects=False)
+        self.assertEqual(no_flow.status_code, 200, "provider without app_flow must not redirect")
+
     def test_app_login_flow_binding_cookie_prevents_login_csrf(self) -> None:
         # SECURITY (login-CSRF / flow fixation): the OAuth start must only attach app_flow to the
         # authenticating account when the caller holds the signed df_af cookie the /account/login page

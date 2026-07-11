@@ -410,16 +410,19 @@ struct ReviewInboxSection: View {
                 }
                 Spacer()
                 if visibleCount > 3 {
+                    // approveCaptures caps the batch at 10 server-side, so approve exactly that
+                    // slice and label the button with the true count — no promising more than we act on.
+                    let approveBatch = Array(visibleCaptures.prefix(10))
                     Button {
-                        state.approveCaptures(visibleCaptures)
+                        state.approveCaptures(approveBatch)
                     } label: {
-                        Label("Approve \(visibleCount) shown", systemImage: "checkmark.seal")
+                        Label("Approve \(approveBatch.count) shown", systemImage: "checkmark.seal")
                             .frame(minHeight: 40)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                     .disabled(!state.inFlightCaptureIds.isEmpty)
-                    .help("Approve every item shown below")
+                    .help("Approve the \(approveBatch.count) items shown at the top")
                 }
             }
 

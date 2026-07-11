@@ -1479,14 +1479,48 @@ class CortexVault:
                     with archive.open(info) as source, target.open("wb") as destination:
                         shutil.copyfileobj(source, destination)
 
-                for directory in RESTORE_DIRECTORIES:
-                    target = self.root / directory
-                    shutil.rmtree(target, ignore_errors=True)
-                    source = tmp_root / directory
-                    if source.exists():
-                        shutil.copytree(source, target)
-                    else:
-                        target.mkdir(parents=True, exist_ok=True)
+                # Rollback-safe swap (never leave the user's vault half-restored). The old code
+                # rmtree'd each LIVE directory and THEN copytree'd the restored copy in — a mid-copy
+                # failure (disk full, permission, corrupt member) destroyed the live data with no
+                # recovery. Instead: (1) stage every restored dir INSIDE the vault (same filesystem,
+                # so the swaps below are atomic renames that can't fail cross-device); (2) only once
+                # ALL stages succeed, rename live->`.old` then staged->live; (3) delete `.old` at the
+                # very end. Any failure before the swaps leaves the live vault untouched; a failure
+                # during the swaps rolls the completed ones back.
+                staged: dict[str, Path] = {}
+                swapped_old: dict[str, Path] = {}
+                try:
+                    for directory in RESTORE_DIRECTORIES:
+                        source = tmp_root / directory
+                        staging = self.root / f".restore-new-{directory}"
+                        shutil.rmtree(staging, ignore_errors=True)
+                        if source.exists():
+                            shutil.copytree(source, staging)
+                        else:
+                            staging.mkdir(parents=True, exist_ok=True)
+                        staged[directory] = staging
+                    for directory, staging in staged.items():
+                        target = self.root / directory
+                        if target.exists():
+                            old = self.root / f".restore-old-{directory}"
+                            shutil.rmtree(old, ignore_errors=True)
+                            os.replace(target, old)
+                            swapped_old[directory] = old
+                        os.replace(staging, target)
+                    for old in swapped_old.values():
+                        shutil.rmtree(old, ignore_errors=True)
+                except Exception:
+                    # Roll back any completed swaps so the live vault is not left partially restored.
+                    for directory, old in swapped_old.items():
+                        target = self.root / directory
+                        try:
+                            shutil.rmtree(target, ignore_errors=True)
+                            os.replace(old, target)
+                        except OSError:
+                            pass
+                    for staging in staged.values():
+                        shutil.rmtree(staging, ignore_errors=True)
+                    raise
 
                 for file_name in RESTORE_ROOT_FILES:
                     source = tmp_root / file_name

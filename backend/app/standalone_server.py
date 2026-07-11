@@ -36,15 +36,25 @@ from .storage import BACKEND_VERSION
 
 settings = load_settings()
 store = StoreRegistry.from_settings(settings)
-store.ensure_vault_backfilled(settings.default_user_id)
+# Startup migrations/backfills are best-effort: a non-fatal error on a damaged vault (a DB hiccup
+# in _backfill_memory_markdown, a stray file) must NOT prevent the server from binding its port and
+# serving — otherwise the app is stuck forever on "Cortex is starting" with no way to self-heal.
+# The readiness gate (/ready) still catches genuine corruption; these just must not crash boot.
+try:
+    store.ensure_vault_backfilled(settings.default_user_id)
+except Exception as exc:  # pragma: no cover - defensive startup guard
+    print(f"cortex: vault backfill skipped ({type(exc).__name__}: {exc})", flush=True)
 if settings.mcp_api_key:
-    store.ensure_mcp_token(
-        settings.default_user_id,
-        settings.mcp_api_key,
-        label="Local MCP integrations",
-        scopes=settings.mcp_api_key_scopes or None,
-        token_id="tok_local_mcp",
-    )
+    try:
+        store.ensure_mcp_token(
+            settings.default_user_id,
+            settings.mcp_api_key,
+            label="Local MCP integrations",
+            scopes=settings.mcp_api_key_scopes or None,
+            token_id="tok_local_mcp",
+        )
+    except Exception as exc:  # pragma: no cover - defensive startup guard
+        print(f"cortex: local MCP token setup skipped ({type(exc).__name__}: {exc})", flush=True)
 
 
 def _cors_origins() -> set[str]:
@@ -574,6 +584,11 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
 
 class CortexRequestHandler(BaseHTTPRequestHandler):
     server_version = "CortexStandalone/0.1"
+    # Socket read timeout (seconds). Without it a client that declares a Content-Length but sends
+    # fewer bytes would block the handler thread forever in rfile.read() while holding one of the
+    # (default 8) concurrency-gate slots — 8 such stalls wedge the whole server. 30s sits safely
+    # above the /v1/activity long-poll ceiling (8s) so real long-polls are unaffected.
+    timeout = 30
 
     def do_OPTIONS(self) -> None:
         self._send_bytes(b"", status=HTTPStatus.NO_CONTENT)

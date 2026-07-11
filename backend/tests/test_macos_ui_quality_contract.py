@@ -55,13 +55,20 @@ class MacOSSignInQualityContractTests(unittest.TestCase):
         self.assertIn("ScrollView", source)
 
     def test_native_apple_button_is_full_width_and_entitlement_gated(self) -> None:
+        # The Apple button renders ONLY when it can actually work: the build carries the
+        # applesignin entitlement AND the hosted backend advertises apple as a configured
+        # provider. (The old shape always rendered it and merely .disabled() it — a dead
+        # button on ad-hoc builds, a confirmed audit defect.)
         source = CORTEX_CLOUD_AUTH.read_text(encoding="utf-8")
 
         self.assertIn("hasAppleSignInEntitlement", source)
         self.assertIn("com.apple.developer.applesignin", source)
         self.assertIn(".frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)", source)
-        self.assertIn("!canUseNativeAppleSignIn", source)
-        self.assertIn("not signed for Apple Sign In", source)
+        self.assertIn("canUseNativeAppleSignIn && backendOffersApple", source)
+        # Provider-aware sign-in: a real labeled button per configured provider (never a
+        # dead one), discovered from GET /v1/auth/providers.
+        self.assertIn("loadCloudAuthProviders", source)
+        self.assertIn("Sign in with GitHub", source)
 
 
 class MacOSDisplayTextQualityContractTests(unittest.TestCase):

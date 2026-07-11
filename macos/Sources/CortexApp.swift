@@ -3265,6 +3265,10 @@ final class AppState: ObservableObject {
     var pushSyncInFlight = false
     @Published var cloudAuthBusy: Bool = false
     @Published var cloudAuthMessage: String = ""
+    /// Social sign-in providers the hosted backend actually has configured (GET /v1/auth/providers).
+    /// The sign-in surface renders a real "Continue with X" button only for these, so it never shows
+    /// a dead button for an unconfigured provider.
+    @Published var cloudAuthProviders: [CloudAuthProvider] = []
     @Published var importHistory: [SourceImportHistoryItem] = []
     @Published var sourceConnectorCatalog: [SourceConnectorCatalogItem] = []
     @Published var sourceReadinessReport: SourceReadinessResponse?
@@ -4692,10 +4696,15 @@ final class AppState: ObservableObject {
             let response = try JSONDecoder().decode(PurgeSourceResponse.self, from: data)
             purgingSource = nil
             await loadSourceStats()
-            // Refresh the same Home surfaces every other mutation refreshes so the memory count and
-            // recent list drop immediately (loadStats also refreshes memory-quality).
+            // Refresh EVERY surface that showed the purged source's data so the whole app reflects
+            // the removal immediately (matching the approve/archive refresh set): the Home memory
+            // count + recent list, the Constellation graph, the source-readiness/connections view,
+            // and the Review inbox.
             await loadStats()
             await loadRecent()
+            await loadGraph()
+            await loadSourceConnectivity()
+            await loadReview()
             return response.memory_count
         } catch {
             purgingSource = nil
@@ -4738,10 +4747,28 @@ final class AppState: ObservableObject {
                     return ConnectionTestResult(ok: false, message: "No memory to share yet — add a source first")
                 }
                 return ConnectionTestResult(ok: true, message: "Memory pack ready — your memory is reachable")
-            case .mcpConfig, .cliCommand, .httpAPI:
+            case .mcpConfig:
+                // Honest per-tool test: a generic self-ping used to report "Connected" even when
+                // THIS tool's config was missing or unverified. Check the integration's own state
+                // first, then confirm Cortex is serving tools.
+                let state = integrationState(for: integration)
+                guard state.configured else {
+                    return ConnectionTestResult(
+                        ok: false,
+                        message: state.needsRepair
+                            ? "\(integration.name) config needs repair — use Connect to fix it"
+                            : "\(integration.name) isn't set up yet — use Connect / copy the config first"
+                    )
+                }
                 let data = try await request(path: "/v1/tools/schema?format=openai", method: "GET")
                 let count = Self.toolSchemaCount(data)
-                return ConnectionTestResult(ok: true, message: "Connected — \(count) Cortex tools available")
+                return ConnectionTestResult(ok: true, message: "\(integration.name) config verified — \(count) Cortex tools available")
+            case .cliCommand, .httpAPI:
+                // These live outside any file we can inspect (a CLI registration / another app's
+                // settings), so the test verifies Cortex's side and says exactly that.
+                let data = try await request(path: "/v1/tools/schema?format=openai", method: "GET")
+                let count = Self.toolSchemaCount(data)
+                return ConnectionTestResult(ok: true, message: "Cortex is reachable — \(count) tools available to \(integration.name)")
             }
         } catch {
             // Connection-shaped failures (offline/timeout engine) get the friendly, actionable line;
@@ -4811,14 +4838,29 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// "That's right" — the user confirmed the insight. Optimistically hide the card and
-    /// remember the confirmation so this exact insight doesn't nag again. No network round
-    /// trip is required for the UI to feel instant.
+    /// "That's right" — the user confirmed the insight. Optimistically hide the card (instant UI),
+    /// then record the confirmation as a real, user-authored capture so an explicit "it knows me"
+    /// actually STRENGTHENS the memory (the audit found this button was functionally identical to
+    /// "Not quite" — pure dismissal, no signal). The capture routes through the normal extraction +
+    /// dedup/occurrence machinery, so a confirmed claim gains a first-person, highest-authority
+    /// restatement citing the same fact. Best-effort: a network failure never blocks the dismissal.
     func confirmMirrorInsight() {
         guard let insight = mirrorInsight else { return }
         rememberMirrorDismissal(insight.dismissKey)
         mirrorInsight = nil
         status = "Thanks — noted."
+        let claim = insight.headline.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !claim.isEmpty else { return }
+        Task { [weak self] in
+            _ = try? await self?.request(
+                path: "/v1/captures",
+                method: "POST",
+                body: [
+                    "content": "I confirmed this about myself: \(claim)",
+                    "source": "mirror-confirmation",
+                ]
+            )
+        }
     }
 
     /// "Not quite" — the user rejected the insight. Optimistically hide the card and
@@ -5314,7 +5356,7 @@ final class AppState: ObservableObject {
             await loadTrust()
             await refreshAfterCapture()
 
-            announceLearned(count: synced.saved + synced.queued)
+            announceLearned(count: synced.saved)  // celebrate only distilled memories, never queued/pending ones
             status = importSummary(synced, sourceName: "Sample notes")
         } catch {
             status = CortexRecoveryText.failureStatus("Sample notes", error: error)
@@ -5398,10 +5440,12 @@ final class AppState: ObservableObject {
             // caps each call at max_records) so the FULL export imports across calls, and cap the
             // loop so a pathological file can't loop forever.
             var added = 0
+            var learnedNow = 0  // memories actually distilled THIS pass (async imports queue, so ~0)
             var skipped = 0
             var offset = 0
             var pages = 0
-            let maxPages = 40   // 40 × 2000 = up to 80k conversations, then stop (safety bound)
+            var moreRemaining = false
+            let maxPages = 200  // 200 × 2000 = up to 400k conversations, then stop (safety bound)
             while pages < maxPages {
                 pages += 1
                 let data = try await request(
@@ -5412,10 +5456,15 @@ final class AppState: ObservableObject {
                 )
                 let result = try JSONDecoder().decode(SourceImportResultLite.self, from: data)
                 added += result.saved + result.queued
+                learnedNow += result.saved
                 skipped += result.skipped
                 status = added > 0 ? "Importing your chats… \(added) so far" : "Importing your chats…"
                 guard result.has_more == true, let next = result.next_offset, next > offset else { break }
                 offset = next
+                // If we're about to exit only because we hit the page cap (not because the export
+                // ran out), remember that so we can tell the user there's more rather than dropping
+                // it silently. Re-running the import continues from the start (dedup skips what's in).
+                if pages >= maxPages { moreRemaining = true }
             }
             if added > 0 {
                 firstSourceAdded = true
@@ -5433,10 +5482,17 @@ final class AppState: ObservableObject {
             detectedExportSummary = nil
             if added > 0 {
                 importSucceeded = true
-                announceLearned(count: added)
-                // The conversations are captured and queued; the bottom HUD now shows the background
-                // extraction/embedding draining to completion (driven by the job-progress poll).
-                status = "Imported \(added) conversation\(added == 1 ? "" : "s"). Building your memory in the background…"
+                // Only CELEBRATE what was actually distilled (learnedNow). Async imports queue the
+                // conversations and distill them in the background, so celebrating saved+queued as
+                // "Learned N new memories" would lie — nothing is learned yet. The per-memory "learned"
+                // ripple/HUD fire honestly from the live activity stream as the jobs drain.
+                if learnedNow > 0 { announceLearned(count: learnedNow) }
+                if moreRemaining {
+                    // Never drop the rest silently: this export is larger than one import pass.
+                    status = "Imported \(added) conversations — this export is very large. Run Import again to add the rest (already-imported items are skipped)."
+                } else {
+                    status = "Imported \(added) conversation\(added == 1 ? "" : "s"). Building your memory in the background…"
+                }
             } else if skipped > 0 {
                 status = "Already imported — nothing new to add."
             } else {
@@ -6050,21 +6106,30 @@ final class AppState: ObservableObject {
         if !repositories.isEmpty {
             payload["repositories"] = repositories
         }
-        await syncDirectConnector(connector, payload: payload, rememberPayload: true)
+        let syncSucceeded = await syncDirectConnector(connector, payload: payload, rememberPayload: true)
 
-        if githubDeviceFlow?.id == promptID {
-            githubDeviceFlow?.phase = .done
-            githubDeviceFlow?.message = repositories.isEmpty
-                ? "Signed in. Cortex is building your memory."
-                : "Signed in. Importing \(repositories.count) repositor\(repositories.count == 1 ? "y" : "ies")."
-            // Let the success state show briefly, then dismiss the sheet if it's still ours.
-            let doneID = promptID
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 2_600_000_000)
-                await MainActor.run {
-                    if self?.githubDeviceFlow?.id == doneID {
-                        self?.githubDeviceFlow = nil
-                    }
+        guard githubDeviceFlow?.id == promptID else { return }
+        if !syncSucceeded {
+            // Don't claim success when the first sync actually failed. The most common cause is an
+            // account with no repositories (the backend requires at least one), or a transient repo
+            // discovery/permission/network error — either way, report it honestly instead of a false
+            // "connected" state with nothing imported.
+            failGitHubDeviceFlow(connector, promptID: promptID, message: repositories.isEmpty
+                ? "Signed in, but no repositories were found to import. Add a repository to your account, then click Sign in with GitHub again."
+                : "Signed in, but importing your GitHub activity failed. Click Sign in with GitHub to try again.")
+            return
+        }
+        githubDeviceFlow?.phase = .done
+        githubDeviceFlow?.message = repositories.isEmpty
+            ? "Signed in. Cortex is building your memory."
+            : "Signed in. Importing \(repositories.count) repositor\(repositories.count == 1 ? "y" : "ies")."
+        // Let the success state show briefly, then dismiss the sheet if it's still ours.
+        let doneID = promptID
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_600_000_000)
+            await MainActor.run {
+                if self?.githubDeviceFlow?.id == doneID {
+                    self?.githubDeviceFlow = nil
                 }
             }
         }
@@ -6156,18 +6221,19 @@ final class AppState: ObservableObject {
         }
     }
 
-    func syncDirectConnector(_ connector: SourceConnectorCatalogItem, payload: [String: Any], rememberPayload: Bool = false, automatic: Bool = false) async {
+    @discardableResult
+    func syncDirectConnector(_ connector: SourceConnectorCatalogItem, payload: [String: Any], rememberPayload: Bool = false, automatic: Bool = false) async -> Bool {
         guard isDirectConnectorSyncWired(connector) else {
             if !automatic {
                 status = "\(connector.name) is not wired for direct sync yet"
             }
-            return
+            return false
         }
         guard !connectorSyncingIDs.contains(connector.id) else {
             if !automatic {
                 status = "\(connector.name) sync is already running"
             }
-            return
+            return false
         }
 
         connectorSyncingIDs.insert(connector.id)
@@ -6222,12 +6288,14 @@ final class AppState: ObservableObject {
             if !automatic {
                 status = message
             }
+            return true
         } catch {
             let message = CortexRecoveryText.failureStatus("\(connector.name) sync", error: error)
             connectorLastMessages[connector.id] = message
             if !automatic {
                 status = message
             }
+            return false
         }
     }
 
@@ -6686,7 +6754,7 @@ final class AppState: ObservableObject {
             await loadTrust()
             await refreshAfterCapture()
 
-            announceLearned(count: synced.saved + synced.queued)
+            announceLearned(count: synced.saved)  // celebrate only distilled memories, never queued/pending ones
             if synced.saved > 0 || synced.queued > 0 {
                 let bridge = pluginInstalled ? " Cortex bridge installed." : ""
                 status = importSummary(synced, sourceName: connector.name) + bridge
@@ -6824,7 +6892,31 @@ final class AppState: ObservableObject {
         let text = mcpConfigJSON(for: integration)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+        if let integration = integration {
+            markIntegrationConfigCopied(integration)
+        }
         status = integration.map { "\($0.name) connection details copied" } ?? "Connection details copied"
+    }
+
+    // MARK: App Store connected-state tracking
+    //
+    // The sandbox can't read other apps' config files, so the MAS build can never VERIFY a config
+    // the user pasted. Without any signal, integrationState hardcoded configured:false forever —
+    // the user pastes a working config and the UI still says "not connected" (a confirmed audit
+    // defect). Track the honest signal we DO have: "the user copied this tool's setup config".
+    private static let appStoreCopiedIntegrationsKey = "appStoreIntegrationConfigCopied.v1"
+
+    private static func appStoreCopiedIntegrationIDs() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: appStoreCopiedIntegrationsKey) ?? [])
+    }
+
+    func markIntegrationConfigCopied(_ integration: AIIntegration) {
+        guard DistributionMode.isAppStore else { return }
+        var ids = AppState.appStoreCopiedIntegrationIDs()
+        guard !ids.contains(integration.id) else { return }
+        ids.insert(integration.id)
+        UserDefaults.standard.set(Array(ids).sorted(), forKey: AppState.appStoreCopiedIntegrationsKey)
+        refreshIntegrationStates()
     }
 
     /// One entry point for "make this tool work": dispatches on the integration's real
@@ -6997,9 +7089,14 @@ final class AppState: ObservableObject {
             let paths = integration.configTargets.map { $0.url.path }
             let installed = integrationAppearsInstalled(integration)
             if DistributionMode.isAppStore {
+                // The sandbox can't read other apps' config files to VERIFY a paste, so the MAS
+                // build uses the honest signal it has: the user copied this tool's setup config
+                // (markIntegrationConfigCopied). Without this, a MAS user who successfully wired a
+                // tool still saw "not connected" forever.
+                let copied = AppState.appStoreCopiedIntegrationIDs().contains(integration.id)
                 next[integration.id] = AIIntegrationState(
                     appInstalled: installed,
-                    configured: false,
+                    configured: copied,
                     configExists: false,
                     needsRepair: false,
                     configuredPaths: [],
@@ -7103,9 +7200,14 @@ final class AppState: ObservableObject {
         // this URL with the token; the user wires it up themselves. (The stdio bridge + one-click
         // setup live only in the Developer-ID/DMG build, below.)
         if DistributionMode.isAppStore {
+            // Point the streamable-HTTP MCP server at the REAL JSON-RPC endpoint (POST /mcp) — the
+            // old "/v1/tools" was not a route at all (the tool API is /v1/tools/schema + /v1/tools/call),
+            // so every pasted config 404'd. Clients that speak streamable-HTTP MCP connect here; the
+            // guided setup steers stdio-only clients (Claude Desktop) to the HTTP tool API instead
+            // (copyHTTPAPIDetails), which is the honest App-Store-safe path.
             return [
                 "type": "http",
-                "url": "\(endpoint)/v1/tools",
+                "url": "\(endpoint)/mcp",
                 "headers": ["Authorization": "Bearer \(token)"]
             ]
         }
@@ -7132,7 +7234,7 @@ final class AppState: ObservableObject {
         ]
     }
 
-    private func mcpConfigJSON(for integration: AIIntegration? = nil, redactToken: Bool = false) -> String {
+    func mcpConfigJSON(for integration: AIIntegration? = nil, redactToken: Bool = false) -> String {
         let config: [String: Any] = [
             "mcpServers": [
                 "cortex": mcpServerDefinition(for: integration, redactToken: redactToken)
@@ -7785,6 +7887,11 @@ final class AppState: ObservableObject {
                 } else {
                     status = "Restored latest backup"
                 }
+                // A restore rebuilds the captures table with FRESH rowids, but the push-sync cursor
+                // is a persisted rowid — left as-is, the feed can return empty and show "Synced ✓"
+                // while restored captures were never re-reconciled against the cloud. Reset it so
+                // sync re-scans from 0 (safe: hosted ingest is idempotent by client_capture_id).
+                clearPushSyncState()
                 await loadSettings()
                 await loadInbox()
                 await loadRecent()
@@ -8467,7 +8574,13 @@ struct IntegrationCenterView: View {
                 connectedCount: connectedCount,
                 detectedCount: detectedCount,
                 connectDetected: {
-                    state.installDetectedIntegrations()
+                    if DistributionMode.isAppStore {
+                        // The sandbox can't write other apps' configs — route the hero's primary
+                        // action to the honest copy-config path instead of a button that errors.
+                        state.copyMCPConfig()
+                    } else {
+                        state.installDetectedIntegrations()
+                    }
                 },
                 refresh: {
                     state.refreshIntegrationStates()
@@ -8622,6 +8735,11 @@ struct IntegrationCompactHero: View {
         connectedCount == 0 && detectedCount == 0
     }
 
+    // The sandboxed App Store build cannot write other apps' config files, so "Connect" there
+    // routes to the copy-config path — the button and copy must say so instead of promising an
+    // automatic connect that immediately errors (a confirmed audit defect).
+    private var isAppStore: Bool { DistributionMode.isAppStore }
+
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
             ZStack {
@@ -8647,7 +8765,7 @@ struct IntegrationCompactHero: View {
                 Button {
                     connectDetected()
                 } label: {
-                    Label("Connect", systemImage: "link.circle")
+                    Label(isAppStore ? "Copy setup config" : "Connect", systemImage: isAppStore ? "doc.on.doc" : "link.circle")
                         .frame(minWidth: 110, minHeight: 46)
                 }
                 .buttonStyle(.borderedProminent)
@@ -8689,7 +8807,9 @@ struct IntegrationCompactHero: View {
 
     private var detail: String {
         if needsConnection {
-            return "Cortex can connect detected local AI tools automatically."
+            return isAppStore
+                ? "Copy the setup config and paste it into your AI app — this version can't write other apps' settings."
+                : "Cortex can connect detected local AI tools automatically."
         }
         if connectedCount > 0 {
             return "Approved memory is available to connected AI tools."

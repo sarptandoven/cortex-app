@@ -329,14 +329,13 @@ Use stable IDs and keep each memory atomic. Return JSON only.""" + alias_instruc
 def _extraction_candidate_limit(memory_candidate_count: int, has_known_turns: bool) -> int:
     """How many prioritized candidates one capture keeps as memories.
 
-    Conversational captures keep the focused base budget (each turn-set is meant to yield a
-    bounded memory set, its personal-memory gating is turn-sensitive, and large multi-turn
-    exports are chunked upstream). Flat free-form captures have no chunk boundaries, so we
-    scale the budget with the content — up to MAX_EXTRACTION_CANDIDATE_LIMIT — instead of
-    silently dropping everything past the base cap.
+    Both shapes scale with the content up to MAX_EXTRACTION_CANDIDATE_LIMIT instead of silently
+    dropping everything past a fixed cap. Conversational captures USUALLY arrive pre-chunked
+    (imports chunk multi-turn exports upstream) so they rarely exceed the base budget — but a
+    long conversation pasted directly into the capture box is a single un-chunked unit, and a
+    hard base cap silently discarded everything past the top 40 candidates (a confirmed
+    data-loss defect). The prioritizer still orders by value; the ceiling still bounds work.
     """
-    if has_known_turns:
-        return BASE_EXTRACTION_CANDIDATE_LIMIT
     return max(
         BASE_EXTRACTION_CANDIDATE_LIMIT,
         min(memory_candidate_count, MAX_EXTRACTION_CANDIDATE_LIMIT),
