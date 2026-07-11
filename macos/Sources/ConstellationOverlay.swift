@@ -136,7 +136,7 @@ private struct ConstellationOverlayView: View {
 
             if model.visible {
                 card
-                    .frame(maxWidth: 900, maxHeight: 720)
+                    .frame(maxWidth: 1280, maxHeight: .infinity)
                     .padding(40)
                     .transition(
                         .asymmetric(
@@ -157,7 +157,7 @@ private struct ConstellationOverlayView: View {
                     Text("Your Constellation")
                         .font(CortexDesign.Typography.title)
                         .foregroundColor(CortexDesign.ink)
-                    Text("The people, projects and topics Cortex has connected — tap a point to explore.")
+                    Text("The people, projects and topics Cortex has connected — zoom, pan, and tap a point to see its connections.")
                         .font(CortexDesign.Typography.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                 }
@@ -175,7 +175,11 @@ private struct ConstellationOverlayView: View {
             }
 
             // The same interactive map as Home, shown large, with node drill wired to Ask.
-            MemoryMapView(state: state, canvasHeight: 520, onExplore: onExplore)
+            GeometryReader { geo in
+                ScrollView(.vertical, showsIndicators: false) {
+                    MemoryMapView(state: state, canvasHeight: max(480, geo.size.height - 40), onExplore: onExplore)
+                }
+            }
         }
         .padding(CortexDesign.Space.lg)
         .background(

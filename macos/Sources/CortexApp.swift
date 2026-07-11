@@ -1852,6 +1852,22 @@ enum IntegrationCategory: String, CaseIterable, Hashable {
     case local = "Local and team stacks"
 }
 
+/// How a tool actually connects to Cortex — every integration gets a REAL action, not a
+/// "reference" dead end:
+/// - `mcpConfig`: Cortex writes/merges the tool's local MCP config file (one-click).
+/// - `cliCommand`: the tool registers MCP servers from its own CLI; Cortex builds the exact
+///   command (with this tool's scoped token) for the user to paste into a terminal.
+/// - `memoryPack`: browser assistants with no local config; Cortex copies a cited, token-budgeted
+///   memory pack to paste into the chat (and can open the site).
+/// - `httpAPI`: self-hosted/local stacks that call tools over HTTP; Cortex copies base URL +
+///   scoped token + schema endpoints.
+enum IntegrationConnectionKind: Hashable {
+    case mcpConfig
+    case cliCommand
+    case memoryPack
+    case httpAPI
+}
+
 enum IntegrationRoot: Hashable {
     case home
     case applicationSupport
@@ -1893,6 +1909,12 @@ struct AIIntegration: Identifiable, Hashable {
     let requiresExistingConfigTarget: Bool
     let setupHint: String
     let browserURL: String?
+    /// The real connection path for this tool (see IntegrationConnectionKind). Defaults to
+    /// `.mcpConfig` when the tool has a local config file Cortex can write.
+    let connectionKind: IntegrationConnectionKind
+    /// For `.cliCommand` tools: the command template. `{CONFIG}` is replaced with the single-line
+    /// server JSON, `{TOKEN}` with the tool's scoped token, `{BASE_URL}` with the local endpoint.
+    let cliCommandTemplate: String?
 
     init(
         id: String,
@@ -1905,7 +1927,9 @@ struct AIIntegration: Identifiable, Hashable {
         configTargets: [IntegrationConfigTarget],
         requiresExistingConfigTarget: Bool = false,
         setupHint: String,
-        browserURL: String?
+        browserURL: String?,
+        connectionKind: IntegrationConnectionKind? = nil,
+        cliCommandTemplate: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -1918,6 +1942,8 @@ struct AIIntegration: Identifiable, Hashable {
         self.requiresExistingConfigTarget = requiresExistingConfigTarget
         self.setupHint = setupHint
         self.browserURL = browserURL
+        self.connectionKind = connectionKind ?? (configTargets.isEmpty ? .memoryPack : .mcpConfig)
+        self.cliCommandTemplate = cliCommandTemplate
     }
 
     var supportsInstall: Bool {
@@ -2014,11 +2040,13 @@ enum AIIntegrationCatalog {
             category: .developer,
             systemImage: "rectangle.connected.to.line.below",
             summary: "Connect Cortex to VS Code user or workspace AI tools.",
-            restartHint: "Add the fallback connection details to VS Code, then reload the window.",
+            restartHint: "Run the command in a terminal, then reload the VS Code window.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [],
-            setupHint: "Use fallback connection details only if VS Code asks for them.",
-            browserURL: "https://code.visualstudio.com"
+            setupHint: "VS Code registers MCP servers with `code --add-mcp`; Cortex builds the exact command.",
+            browserURL: "https://code.visualstudio.com",
+            connectionKind: .cliCommand,
+            cliCommandTemplate: "code --add-mcp '{\"name\":\"cortex\",{CONFIG_FIELDS}}'"
         ),
         AIIntegration(
             id: "claude-code",
@@ -2030,43 +2058,51 @@ enum AIIntegrationCatalog {
             bundleIdentifiers: [],
             configTargets: [],
             setupHint: "Use the connection command to connect Cortex to Claude Code.",
-            browserURL: "https://docs.anthropic.com"
+            browserURL: "https://docs.anthropic.com",
+            connectionKind: .cliCommand,
+            cliCommandTemplate: "claude mcp add-json cortex '{CONFIG}'"
         ),
         AIIntegration(
             id: "chatgpt",
             name: "ChatGPT",
             category: .browser,
             systemImage: "message.badge",
-            summary: "Browser reference while direct tool connections mature.",
-            restartHint: "Open ChatGPT when you want to work alongside Cortex.",
-            bundleIdentifiers: [],
+            summary: "Copy a cited memory pack into any ChatGPT chat, and import exported chats back as sources.",
+            restartHint: "Paste the memory pack at the start of a ChatGPT chat.",
+            bundleIdentifiers: ["com.openai.chat"],
             configTargets: [],
-            setupHint: "Use direct local tool or API access where available; browser chat is not the primary memory path.",
-            browserURL: "https://chatgpt.com"
+            setupHint: "ChatGPT web cannot read local memory directly yet. Copy a memory pack into the chat, and import exported chats back into Cortex.",
+            browserURL: "https://chatgpt.com",
+            connectionKind: .memoryPack
         ),
         AIIntegration(
             id: "claude-web",
             name: "Claude Web",
             category: .browser,
             systemImage: "sparkle.magnifyingglass",
-            summary: "Browser reference while direct tool access remains the primary path.",
-            restartHint: "Open Claude when you want to work alongside Cortex.",
+            summary: "Copy a cited memory pack into a Claude web chat — or use Claude Desktop for the live connection.",
+            restartHint: "Paste the memory pack at the start of a Claude chat.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use Claude Desktop or another local tool client for connected Cortex memory.",
-            browserURL: "https://claude.ai"
+            setupHint: "Claude Desktop connects live. On the web, copy a memory pack into the chat instead.",
+            browserURL: "https://claude.ai",
+            connectionKind: .memoryPack
         ),
         AIIntegration(
             id: "gemini",
             name: "Gemini",
             category: .browser,
             systemImage: "diamond",
-            summary: "Browser reference while direct connectors are planned.",
-            restartHint: "Open Gemini or AI Studio when you want to work alongside Cortex.",
+            summary: "Copy a cited memory pack into Gemini — the Gemini CLI can also connect over MCP.",
+            restartHint: "Paste the memory pack at the start of a Gemini chat.",
             bundleIdentifiers: [],
-            configTargets: [],
-            setupHint: "Use direct connectors when available; browser chat is not the primary memory path.",
-            browserURL: "https://gemini.google.com"
+            configTargets: [
+                IntegrationConfigTarget(label: "Gemini CLI settings", root: .home, relativePath: ".gemini/settings.json")
+            ],
+            requiresExistingConfigTarget: true,
+            setupHint: "Gemini web uses memory packs. The Gemini CLI connects directly once its settings file exists.",
+            browserURL: "https://gemini.google.com",
+            connectionKind: .memoryPack
         ),
         AIIntegration(
             id: "perplexity",
@@ -2138,7 +2174,8 @@ enum AIIntegrationCatalog {
             bundleIdentifiers: ["com.lmstudio.lmstudio"],
             configTargets: [],
             setupHint: "Use Cortex's local API or tool bridge with local model agents that support tools.",
-            browserURL: "https://lmstudio.ai"
+            browserURL: "https://lmstudio.ai",
+            connectionKind: .httpAPI
         ),
         AIIntegration(
             id: "open-webui",
@@ -2150,7 +2187,8 @@ enum AIIntegrationCatalog {
             bundleIdentifiers: [],
             configTargets: [],
             setupHint: "Configure Open WebUI or its pipelines to call Cortex on localhost.",
-            browserURL: "https://openwebui.com"
+            browserURL: "https://openwebui.com",
+            connectionKind: .httpAPI
         ),
         AIIntegration(
             id: "librechat",
@@ -2162,7 +2200,8 @@ enum AIIntegrationCatalog {
             bundleIdentifiers: [],
             configTargets: [],
             setupHint: "Use Cortex as a local memory source for LibreChat where custom tools are enabled.",
-            browserURL: "https://www.librechat.ai"
+            browserURL: "https://www.librechat.ai",
+            connectionKind: .httpAPI
         ),
         AIIntegration(
             id: "anythingllm",
@@ -2174,7 +2213,8 @@ enum AIIntegrationCatalog {
             bundleIdentifiers: [],
             configTargets: [],
             setupHint: "Wire the local API into agent workflows instead of treating files as the primary memory path.",
-            browserURL: "https://anythingllm.com"
+            browserURL: "https://anythingllm.com",
+            connectionKind: .httpAPI
         ),
     ]
 }
@@ -6523,6 +6563,113 @@ final class AppState: ObservableObject {
         status = integration.map { "\($0.name) connection details copied" } ?? "Connection details copied"
     }
 
+    /// One entry point for "make this tool work": dispatches on the integration's real
+    /// connection path. mcpConfig tools install; cliCommand tools get their exact terminal
+    /// command copied; memoryPack tools get a cited context pack on the clipboard (and the
+    /// site opened); httpAPI tools get base URL + scoped token + schema endpoints.
+    func connectIntegration(_ integration: AIIntegration) {
+        switch integration.connectionKind {
+        case .mcpConfig:
+            installIntegration(integration)
+        case .cliCommand:
+            copyCLICommand(for: integration)
+        case .memoryPack:
+            copyMemoryPack(for: integration, openSite: true)
+        case .httpAPI:
+            copyHTTPAPIDetails(for: integration)
+        }
+    }
+
+    /// Builds and copies the exact terminal command that registers Cortex with a CLI-managed
+    /// tool (Claude Code, VS Code). The command embeds this tool's own scoped token.
+    func copyCLICommand(for integration: AIIntegration) {
+        guard let template = integration.cliCommandTemplate else {
+            copyMCPConfig(for: integration)
+            return
+        }
+        ensureUsableMCPAPIKey()
+        registerMCPTokenInBackground(for: integration)
+        let definition = mcpServerDefinition(for: integration)
+        let compact = (try? JSONSerialization.data(withJSONObject: definition, options: [.sortedKeys]))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        // {CONFIG_FIELDS}: the server object's fields without the outer braces, for templates
+        // that splice them into a larger object (VS Code's --add-mcp shape).
+        let fields = String(compact.dropFirst().dropLast())
+        let token = AppState.loadOrCreateMCPToken(for: integration.id)
+        let command = template
+            .replacingOccurrences(of: "{CONFIG_FIELDS}", with: fields)
+            .replacingOccurrences(of: "{CONFIG}", with: compact)
+            .replacingOccurrences(of: "{TOKEN}", with: token)
+            .replacingOccurrences(of: "{BASE_URL}", with: endpoint)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(command, forType: .string)
+        status = "\(integration.name) connect command copied — paste it into a terminal"
+    }
+
+    /// Copies a cited, review-gated memory pack for a browser assistant (ChatGPT, Claude web,
+    /// Gemini, ...) and optionally opens the site. The pack comes from the same context engine
+    /// MCP clients use (`/v1/context-pack`), so browser chats get real memory — with citations —
+    /// even though they cannot call tools. Records use in the product loop via the backend.
+    func copyMemoryPack(for integration: AIIntegration? = nil, query: String = "", openSite: Bool = false) {
+        let name = integration?.name ?? "your assistant"
+        Task {
+            do {
+                status = "Building memory pack..."
+                var path = "/v1/context-pack?limit=16"
+                if !query.isEmpty,
+                   let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+                    path += "&query=\(encoded)"
+                }
+                let data = try await request(path: path, method: "GET")
+                let pack = String(data: data, encoding: .utf8) ?? ""
+                guard !pack.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    status = "No approved memory to pack yet. Approve items in Review first."
+                    return
+                }
+                let handoff = """
+                Use this personal memory pack as high-priority context for our conversation. It was assembled from my private, reviewed memory. Cite it when you rely on it, ask focused follow-ups when context is missing, and never claim to know things beyond it.
+
+                \(pack)
+                """
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(handoff, forType: .string)
+                status = "Memory pack copied — paste it into \(name)"
+                if openSite, let urlString = integration?.browserURL, let url = URL(string: urlString) {
+                    NSWorkspace.shared.open(url)
+                }
+            } catch {
+                status = CortexRecoveryText.failureStatus("Memory pack", error: error)
+            }
+        }
+    }
+
+    /// Copies local HTTP tool-API connection details (base URL, this tool's scoped token, the
+    /// schema/call endpoints) for self-hosted stacks like Open WebUI or LibreChat.
+    func copyHTTPAPIDetails(for integration: AIIntegration) {
+        ensureUsableMCPAPIKey()
+        registerMCPTokenInBackground(for: integration)
+        let token = AppState.loadOrCreateMCPToken(for: integration.id)
+        let info = """
+        Cortex local memory API — \(integration.name)
+
+        Base URL:      \(endpoint)
+        Bearer token:  \(token)
+
+        Tool schemas (OpenAI / Anthropic / OpenAPI):
+          GET \(endpoint)/v1/tools/schema?format=openai
+
+        Call a tool:
+          POST \(endpoint)/v1/tools/call
+          {"name":"ask_memory","arguments":{"query":"..."}}
+
+        MCP endpoint (JSON-RPC over HTTP):
+          POST \(endpoint)/mcp
+        """
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(info, forType: .string)
+        status = "\(integration.name) API details copied"
+    }
+
     func copyIntegrationGuide(_ integration: AIIntegration) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(integrationGuide(for: integration), forType: .string)
@@ -7993,6 +8140,7 @@ struct CortexSignInWall: View {
 struct IntegrationCenterView: View {
     @ObservedObject var state: AppState
     let compact: Bool
+    @State private var allToolsExpanded = false
 
     private var connectedCount: Int {
         state.integrations.filter { state.integrationState(for: $0).configured }.count
@@ -8046,6 +8194,34 @@ struct IntegrationCenterView: View {
                         IntegrationCompactRow(state: state, integration: integration)
                     }
                 }
+            }
+            // The full tool library — every assistant gets its real action (install, terminal
+            // command, memory pack, or API details), so ChatGPT/Claude web/CLI users are not
+            // dead-ended just because their tool has no local config file.
+            DisclosureGroup(isExpanded: $allToolsExpanded) {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(IntegrationCategory.allCases, id: \.self) { category in
+                        let categoryIntegrations = integrations(in: category)
+                        if !categoryIntegrations.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(category.rawValue)
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(.secondary)
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 10)], spacing: 10) {
+                                    ForEach(categoryIntegrations) { integration in
+                                        IntegrationCard(state: state, integration: integration, compact: true)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 8)
+            } label: {
+                Label("All tools (\(state.integrations.count))", systemImage: "square.grid.2x2")
+                    .font(.callout)
+                    .fontWeight(.medium)
             }
         }
     }
@@ -8137,9 +8313,9 @@ struct IntegrationCenterView: View {
     }
 
     private func integrations(in category: IntegrationCategory) -> [AIIntegration] {
-        state.integrations.filter { integration in
-            integration.category == category && integration.supportsInstall
-        }
+        // Every tool gets a REAL action (install, CLI command, memory pack, or API details),
+        // so nothing is hidden behind a supportsInstall gate anymore.
+        state.integrations.filter { $0.category == category }
     }
 }
 
@@ -8341,7 +8517,7 @@ struct IntegrationCard: View {
                             .font(.headline)
                             .lineLimit(1)
                         Spacer(minLength: 6)
-                        IntegrationStatusBadge(state: integrationState, supportsInstall: integration.supportsInstall)
+                        IntegrationStatusBadge(state: integrationState, supportsInstall: integration.supportsInstall, connectionKind: integration.connectionKind)
                     }
                     Text(integration.summary)
                         .font(.caption)
@@ -8415,7 +8591,34 @@ struct IntegrationCard: View {
             }
             .frame(minHeight: 38)
         } else {
-            EmptyView()
+            // Non-config tools still act: CLI command / memory pack / API details.
+            Button {
+                state.connectIntegration(integration)
+            } label: {
+                Label(actionTitle, systemImage: actionIcon)
+                    .frame(maxWidth: .infinity, minHeight: 38)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+        }
+    }
+
+    /// The action verb for non-config connection paths.
+    private var actionTitle: String {
+        switch integration.connectionKind {
+        case .mcpConfig: return "Connect"
+        case .cliCommand: return "Copy connect command"
+        case .memoryPack: return "Copy memory pack"
+        case .httpAPI: return "Copy API details"
+        }
+    }
+
+    private var actionIcon: String {
+        switch integration.connectionKind {
+        case .mcpConfig: return "link.circle"
+        case .cliCommand: return "terminal"
+        case .memoryPack: return "doc.on.clipboard"
+        case .httpAPI: return "network"
         }
     }
 
@@ -8432,13 +8635,23 @@ struct IntegrationCard: View {
                 .controlSize(.large)
             } else {
                 Button {
-                    state.openIntegrationConfig(integration)
+                    state.connectIntegration(integration)
                 } label: {
-                    Label("Open", systemImage: "arrow.up.right.square")
+                    Label(actionTitle, systemImage: actionIcon)
                         .frame(minHeight: 40)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                if integration.connectionKind == .memoryPack, let browserURL = integration.browserURL, let url = URL(string: browserURL) {
+                    Button {
+                        NSWorkspace.shared.open(url)
+                    } label: {
+                        Label("Open site", systemImage: "arrow.up.right.square")
+                            .frame(minHeight: 40)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                }
             }
 
             Spacer(minLength: 0)
@@ -8462,7 +8675,16 @@ struct IntegrationCard: View {
             }
         }
         if !integration.supportsInstall {
-            return "Reference only. Direct connections will appear here when they are ready."
+            switch integration.connectionKind {
+            case .cliCommand:
+                return "Copies the exact terminal command that registers Cortex with this tool."
+            case .memoryPack:
+                return "Copies reviewed, cited memory to paste into the chat. Nothing syncs without you."
+            case .httpAPI:
+                return "Copies the local API address and a scoped token for this stack."
+            case .mcpConfig:
+                return integration.restartHint
+            }
         }
         if integrationState.needsRepair {
             return "Connection settings are present but need to be updated."
@@ -8474,6 +8696,7 @@ struct IntegrationCard: View {
 struct IntegrationStatusBadge: View {
     let state: AIIntegrationState
     let supportsInstall: Bool
+    var connectionKind: IntegrationConnectionKind = .mcpConfig
 
     var body: some View {
         Text(label)
@@ -8491,7 +8714,13 @@ struct IntegrationStatusBadge: View {
         if state.needsRepair { return "Repair" }
         if supportsInstall && state.appInstalled { return "Detected" }
         if supportsInstall && state.configExists { return "Config" }
-        return supportsInstall ? "Ready" : "Reference"
+        if supportsInstall { return "Ready" }
+        switch connectionKind {
+        case .cliCommand: return "Terminal"
+        case .memoryPack: return "Copy & paste"
+        case .httpAPI: return "Local API"
+        case .mcpConfig: return "Ready"
+        }
     }
 
     private var color: Color {
@@ -8499,7 +8728,7 @@ struct IntegrationStatusBadge: View {
         if state.needsRepair { return .orange }
         if state.appInstalled { return .accentColor }
         if state.configExists { return .orange }
-        return supportsInstall ? .secondary : .purple
+        return .secondary
     }
 }
 
@@ -9771,10 +10000,7 @@ struct AdvancedGraphSection: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
             }
-            GraphCanvas(nodes: state.graphNodes, edges: state.graphEdges)
-                .frame(height: 220)
-                .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+            MemoryMapView(state: state, canvasHeight: 260)
             Text("\(state.graphNodes.count) nodes · \(state.graphEdges.count) edges")
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -10468,61 +10694,6 @@ struct MemoryCard: View {
 
     private var citationLabel: String? {
         CitationDisplay.label(sourceURL: item.source_url)
-    }
-}
-
-struct GraphCanvas: View {
-    let nodes: [GraphNode]
-    let edges: [GraphEdge]
-
-    var body: some View {
-        Canvas { context, size in
-            let visible = Array(nodes.prefix(70))
-            guard !visible.isEmpty else {
-                context.draw(Text("No graph yet. Save a memory to create nodes."), at: CGPoint(x: size.width / 2, y: size.height / 2))
-                return
-            }
-            var positions: [String: CGPoint] = [:]
-            let center = CGPoint(x: size.width / 2, y: size.height / 2)
-            let radius = max(80, min(size.width, size.height) * 0.38)
-            for (index, node) in visible.enumerated() {
-                let angle = (Double(index) / Double(max(visible.count, 1))) * Double.pi * 2
-                let r = radius * (node.type == "source" ? 0.45 : 1.0)
-                positions[node.id] = CGPoint(
-                    x: center.x + CGFloat(Darwin.cos(angle)) * r,
-                    y: center.y + CGFloat(Darwin.sin(angle)) * r
-                )
-            }
-            for edge in edges.prefix(180) {
-                guard let a = positions[edge.source_id], let b = positions[edge.target_id] else { continue }
-                var path = Path()
-                path.move(to: a)
-                path.addLine(to: b)
-                context.stroke(path, with: .color(.secondary.opacity(0.22)), lineWidth: 1)
-            }
-            for node in visible {
-                guard let point = positions[node.id] else { continue }
-                let color = color(for: node.type)
-                let rect = CGRect(x: point.x - 7, y: point.y - 7, width: 14, height: 14)
-                context.fill(Path(ellipseIn: rect), with: .color(color))
-                if node.type == "person" || node.type == "project" || node.type == "source" {
-                    context.draw(Text(node.label.prefix(18)).font(.caption2).foregroundColor(.primary), at: CGPoint(x: point.x, y: point.y + 18))
-                }
-            }
-        }
-    }
-
-    private func color(for type: String) -> Color {
-        switch type {
-        case "person": return CortexDesign.accent
-        case "project": return CortexDesign.inkSecondary
-        case "decision": return CortexDesign.accent
-        case "style": return CortexDesign.inkSecondary
-        case "negative": return CortexDesign.gold
-        case "action", "question": return CortexDesign.gold
-        case "source": return CortexDesign.sealMoss
-        default: return CortexDesign.inkSecondary
-        }
     }
 }
 

@@ -2097,6 +2097,8 @@ private struct ConnectionsAIToolsSection: View {
                 ConnectionsGuidedMCPSetup(state: state)
             }
 
+            browserAssistantRow
+
             if !connectedIntegrations.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(connectedIntegrations.prefix(3)) { integration in
@@ -2156,6 +2158,53 @@ private struct ConnectionsAIToolsSection: View {
             return "Enable this only when you want reviewed memory available outside Cortex."
         }
         return "Use Copy tool config for Claude Desktop or any MCP-compatible app. ChatGPT web cannot read local memory directly yet; import exported chats as sources."
+    }
+
+    /// The ChatGPT / Claude-web path, given equal footing with MCP installs: one tap builds a
+    /// cited memory pack from the same context engine and opens the site. This is how browser
+    /// assistants actually use Cortex data today.
+    private var browserAssistantRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(CortexDesign.accent.opacity(0.13))
+                Image(systemName: "doc.on.clipboard")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+            }
+            .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("ChatGPT, Claude web & other chats".uppercased())
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
+                Text("Copy a memory pack")
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
+                Text("Puts your reviewed, cited memory on the clipboard — paste it at the start of any chat.")
+                    .font(.callout)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                state.copyMemoryPack()
+            } label: {
+                Label("Copy memory pack", systemImage: "doc.on.clipboard")
+                    .frame(minWidth: 138, minHeight: 46)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .help("Builds a cited pack of your approved memory and copies it for ChatGPT, Claude web, Gemini, or any other assistant.")
+        }
+        .padding(14)
+        .background(connectionsPanelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
