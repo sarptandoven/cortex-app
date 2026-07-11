@@ -20,6 +20,19 @@ There are exactly two callback paths. Register the correct one per provider — 
 
 Plain **`http://`** is correct and accepted for both — `127.0.0.1`/`localhost` are **loopback** addresses (per RFC 8252 and every provider's docs) and are exempt from the usual HTTPS-only redirect rules. Do not "upgrade" these to `https`.
 
+### Hosted account-login callbacks are separate
+
+The table above is for **source connectors** that redirect back to the local bundled server. The first-run **account login** page is hosted on the public API and uses different HTTPS callbacks. If GitHub shows "The redirect_uri is not associated with this application", the GitHub OAuth App was registered with the wrong account-login callback.
+
+Register these exact hosted account-login callbacks for the social sign-in buttons:
+
+| Provider | Exact hosted account callback |
+|---|---|
+| GitHub | `https://api.signindoppl.com/v1/auth/oauth/github/callback` |
+| Google | `https://api.signindoppl.com/v1/auth/oauth/google/callback` |
+
+These are also covered in `docs/FOUNDER_GO_LIVE.md`, but keep them here so connector OAuth and account OAuth do not get mixed up.
+
 ### Where the client IDs go (the app reads these)
 
 - **`CortexGoogleOAuthClientID`** — Info.plist key; Google Web-application client ID (public, PKCE).

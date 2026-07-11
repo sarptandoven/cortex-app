@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = ROOT / "macos" / "Sources"
 CORTEX_APP = SOURCES / "CortexApp.swift"
+CORTEX_CLOUD_AUTH = SOURCES / "CortexCloudAuth.swift"
 CITATION_DISPLAY = SOURCES / "CitationDisplay.swift"
 MODEL_TAB = SOURCES / "ModelTab.swift"
 REVIEW_TAB = SOURCES / "ReviewTab.swift"
@@ -42,6 +43,25 @@ class MacOSWindowQualityContractTests(unittest.TestCase):
         source = CORTEX_APP.read_text(encoding="utf-8")
         self.assertIn("panel.allowedContentTypes", source)
         self.assertNotIn("panel.allowedFileTypes", source)
+
+
+class MacOSSignInQualityContractTests(unittest.TestCase):
+    def test_required_sign_in_wall_teaches_sources_and_ai_tool_setup(self) -> None:
+        source = CORTEX_APP.read_text(encoding="utf-8")
+
+        self.assertIn("What happens after sign-in", source)
+        self.assertIn("Connect a memory source: local notes, ChatGPT/Claude export", source)
+        self.assertIn("Claude Desktop, ChatGPT", source)
+        self.assertIn("ScrollView", source)
+
+    def test_native_apple_button_is_full_width_and_entitlement_gated(self) -> None:
+        source = CORTEX_CLOUD_AUTH.read_text(encoding="utf-8")
+
+        self.assertIn("hasAppleSignInEntitlement", source)
+        self.assertIn("com.apple.developer.applesignin", source)
+        self.assertIn(".frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)", source)
+        self.assertIn("!canUseNativeAppleSignIn", source)
+        self.assertIn("not signed for Apple Sign In", source)
 
 
 class MacOSDisplayTextQualityContractTests(unittest.TestCase):

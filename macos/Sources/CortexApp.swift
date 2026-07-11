@@ -7939,33 +7939,54 @@ struct CortexSignInWall: View {
     var body: some View {
         ZStack {
             CortexDesign.appBackground.ignoresSafeArea()
-            VStack(spacing: 18) {
-                Spacer(minLength: 0)
-                Image(systemName: "brain.head.profile")
-                    .font(.system(size: 42, weight: .semibold))
-                    .foregroundColor(CortexDesign.accent)
-                Text("Sign in to Doppl")
-                    .font(.system(size: 26, weight: .bold, design: .serif))
-                    .foregroundColor(CortexDesign.ink)
-                Text("Create your account or sign in to build your memory and reach it across your devices and AI tools.")
-                    .font(.callout)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 440)
-                    .fixedSize(horizontal: false, vertical: true)
-                CortexCloudSection(state: state)
-                    .frame(maxWidth: 440)
-                    .padding(22)
-                    .background(CortexDesign.cardBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(CortexDesign.hairline))
-                Spacer(minLength: 0)
+            ScrollView {
+                VStack(spacing: 18) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 42, weight: .semibold))
+                        .foregroundColor(CortexDesign.accent)
+                    Text("Sign in to Doppl")
+                        .font(.system(size: 26, weight: .bold, design: .serif))
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Create your account or sign in. Cortex then walks you through connecting memory sources and using them in Claude Desktop, ChatGPT, and other AI tools.")
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 480)
+                        .fixedSize(horizontal: false, vertical: true)
+                    nextStepsCard
+                    CortexCloudSection(state: state)
+                        .frame(maxWidth: 480)
+                        .padding(22)
+                        .background(CortexDesign.cardBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(CortexDesign.hairline))
+                }
+                .padding(40)
+                .frame(maxWidth: .infinity)
             }
-            .padding(40)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .preferredColorScheme(.light)
         .accentColor(CortexDesign.accent)
+    }
+
+    private var nextStepsCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label("What happens after sign-in", systemImage: "map")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(CortexDesign.ink)
+            Text("1. Connect a memory source: local notes, ChatGPT/Claude export, or a service connector.")
+            Text("2. Review what Cortex learned so only approved memory is used.")
+            Text("3. Open Connections to wire Claude Desktop, ChatGPT exports, Cursor, or another AI tool.")
+        }
+        .font(.caption)
+        .foregroundColor(CortexDesign.inkSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(14)
+        .frame(maxWidth: 480, alignment: .leading)
+        .background(CortexDesign.panelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(CortexDesign.hairline))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -8059,7 +8080,7 @@ struct IntegrationCenterView: View {
             Text(compact ? "AI tools" : "AI access")
                 .font(compact ? .headline : .title3)
                 .fontWeight(.semibold)
-            Text(compact ? "Connect local AI tools so reviewed memory is available where you already work." : "Connect local tools so reviewed memory is available where you work. Advanced setup stays collapsed unless an app asks for it.")
+            Text(compact ? "Connect Claude Desktop, Cursor, and other local tools so reviewed memory is available where you work. For ChatGPT or Claude web, import exported chats as sources." : "Connect local tools so reviewed memory is available where you work. Claude Desktop can connect directly; ChatGPT and Claude web use exported chats until direct browser memory support ships.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

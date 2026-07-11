@@ -41,7 +41,7 @@ struct ConnectionsPrivacySheet: View {
                     Circle()
                         .fill(CortexDesign.sealMoss)
                         .frame(width: 7, height: 7)
-                    Text("Connect notes, keep memory local, and choose what AI tools can use.")
+                    Text("Connect notes or ChatGPT/Claude exports, keep memory local, then choose what Claude Desktop, ChatGPT, and other AI tools can use.")
                         .font(CortexDesign.Typography.body)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -70,7 +70,7 @@ private struct ConnectionsPrivacyOverview: View {
     @ObservedObject var state: AppState
     @State private var privacySettingsExpanded = false
     @State private var connectedExpanded = false
-    @State private var advancedExpanded = false
+    @State private var advancedExpanded = true
     @State private var activityMetricsExpanded = false
     @State private var advancedSourcesExpanded = false
     @State private var sourceAuditExpanded = false
@@ -241,25 +241,23 @@ private struct ConnectionsPrivacyOverview: View {
     /// clearly-named cards so users can find backups without wading through developer diagnostics.
     private func advancedControls(summary: TrustSummaryResponse) -> some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
-            if detectedAIToolCount > 0 || state.connectedAIIntegrationCount > 0 {
-                DisclosureGroup(isExpanded: $advancedExpanded) {
-                    VStack(alignment: .leading, spacing: 16) {
-                        ConnectionsAIToolsSection(state: state)
-                        ConnectionsMCPAccessSection(state: state)
-                    }
-                    .padding(.top, 10)
-                } label: {
-                    ConnectionsDisclosureLabel(
-                        systemImage: "wand.and.stars",
-                        title: "AI tools & permissions",
-                        detail: "Use your memory in Claude, Cursor & other AI apps"
-                    )
+            DisclosureGroup(isExpanded: $advancedExpanded) {
+                VStack(alignment: .leading, spacing: 16) {
+                    ConnectionsAIToolsSection(state: state)
+                    ConnectionsMCPAccessSection(state: state)
                 }
-                .padding(14)
-                .background(connectionsPanelBackground)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .padding(.top, 10)
+            } label: {
+                ConnectionsDisclosureLabel(
+                    systemImage: "wand.and.stars",
+                    title: "AI tools & permissions",
+                    detail: "Use your memory in Claude Desktop, ChatGPT, Cursor & other AI apps"
+                )
             }
+            .padding(14)
+            .background(connectionsPanelBackground)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
 
             DisclosureGroup(isExpanded: $activityMetricsExpanded) {
                 ConnectionsToolUsageSection(state: state)
@@ -2022,7 +2020,7 @@ private struct ConnectionsAIToolsSection: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "Use reviewed memory outside Cortex",
-                detail: "Optional. Ask in Cortex first, then enable this when another AI app should read reviewed memory."
+                detail: "Optional. Claude Desktop and other MCP apps can read reviewed memory with citations. ChatGPT or Claude web chats should be imported as exports until direct browser memory support ships."
             )
 
             HStack(alignment: .center, spacing: 14) {
@@ -2077,13 +2075,14 @@ private struct ConnectionsAIToolsSection: View {
                     .help("Copies the tool configuration to paste into your AI app's settings.")
                 } else {
                     Button {
-                        state.refreshIntegrationStates()
+                        state.copyMCPConfig()
                     } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                            .frame(minWidth: 108, minHeight: 46)
+                        Label("Copy tool config", systemImage: "doc.on.doc")
+                            .frame(minWidth: 132, minHeight: 46)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
+                    .help("Copies the Cortex MCP configuration to paste into Claude Desktop or another compatible tool.")
                 }
             }
             .padding(14)
@@ -2146,7 +2145,7 @@ private struct ConnectionsAIToolsSection: View {
         if !detectedConnectable.isEmpty {
             return "\(detectedConnectable.count) app\(detectedConnectable.count == 1 ? "" : "s") detected"
         }
-        return "No app needed"
+        return "Connect Claude Desktop or another tool"
     }
 
     private var statusDetail: String {
@@ -2156,7 +2155,7 @@ private struct ConnectionsAIToolsSection: View {
         if !detectedConnectable.isEmpty {
             return "Enable this only when you want reviewed memory available outside Cortex."
         }
-        return "Cortex works without another app. Ask uses reviewed memory with citations."
+        return "Use Copy tool config for Claude Desktop or any MCP-compatible app. ChatGPT web cannot read local memory directly yet; import exported chats as sources."
     }
 }
 

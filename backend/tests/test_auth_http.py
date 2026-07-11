@@ -33,6 +33,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 os.environ.setdefault("CORTEX_API_KEY", "test-token")
 
@@ -375,6 +376,20 @@ class EmailPasswordJourneyTests(AuthEnabledTestCase):
 
 
 class OAuthJourneyTests(AuthEnabledTestCase):
+    def test_github_oauth_start_uses_public_app_callback(self) -> None:
+        started = self.client.get("/v1/auth/oauth/github/start")
+        self.assertEqual(started.status_code, 200, started.text)
+
+        authorize_url = started.json()["authorize_url"]
+        parsed = urlparse(authorize_url)
+        params = parse_qs(parsed.query)
+        self.assertEqual(parsed.netloc, "github.com")
+        self.assertEqual(params.get("client_id"), ["github-client-id"])
+        self.assertEqual(
+            params.get("redirect_uri"),
+            ["http://127.0.0.1:8766/v1/auth/oauth/github/callback"],
+        )
+
     def test_auto_signup_then_login_via_google(self) -> None:
         fake = self._install_fake_google()
         providers = self.client.get("/v1/auth/providers")

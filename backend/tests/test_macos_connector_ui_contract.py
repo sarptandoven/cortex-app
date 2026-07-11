@@ -157,6 +157,16 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, display_text)
 
+    def test_connections_surface_keeps_ai_tool_setup_discoverable(self) -> None:
+        source = CONNECTIONS_SHEET.read_text(encoding="utf-8")
+
+        self.assertIn("@State private var advancedExpanded = true", source)
+        self.assertIn("AI tools & permissions", source)
+        self.assertIn("Use your memory in Claude Desktop, ChatGPT, Cursor & other AI apps", source)
+        self.assertIn("Copy tool config", source)
+        self.assertIn("ChatGPT web cannot read local memory directly yet", source)
+        self.assertNotIn("if detectedAIToolCount > 0 || state.connectedAIIntegrationCount > 0", source)
+
     def test_ask_surface_shows_memory_freshness_and_citation_confidence(self) -> None:
         source = (ROOT / "macos" / "Sources" / "AskTab.swift").read_text(encoding="utf-8")
 

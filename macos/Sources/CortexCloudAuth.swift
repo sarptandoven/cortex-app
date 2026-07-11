@@ -1,6 +1,7 @@
 import AppKit
 import AuthenticationServices
 import Foundation
+import Security
 import SwiftUI
 
 // MARK: - Cortex Cloud (hosted account) sign-in
@@ -599,6 +600,31 @@ struct CortexCloudSection: View {
 
     private var isSignedIn: Bool { state.isSignedIn }
 
+    private var canUseNativeAppleSignIn: Bool { Self.hasAppleSignInEntitlement() }
+
+    /// Native Sign in with Apple is only usable when the running app is signed with the Apple
+    /// Sign In entitlement. The local beta can be ad-hoc signed, which means the button would open
+    /// the OS sheet and then fail without an actionable explanation. Gate the control at runtime so
+    /// properly signed builds keep the native flow, while unsigned/ad-hoc betas point users at the
+    /// browser or email/password fallback instead.
+    private static func hasAppleSignInEntitlement() -> Bool {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(
+                  task,
+                  "com.apple.developer.applesignin" as CFString,
+                  nil
+              ) else {
+            return false
+        }
+        if let values = value as? [String] {
+            return !values.isEmpty
+        }
+        if let allowed = value as? Bool {
+            return allowed
+        }
+        return true
+    }
+
     /// Live background-sync status (Phase 2): the memory is on this Mac and syncs to the account.
     @ViewBuilder private var pushSyncStatusView: some View {
         switch state.pushSyncState {
@@ -639,7 +665,7 @@ struct CortexCloudSection: View {
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Sign in to a hosted Cortex account instead of pasting a raw token.")
+                Text("Sign in, then setup will help you connect memory sources and wire Cortex into Claude Desktop, ChatGPT, or other AI tools.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -745,22 +771,34 @@ struct CortexCloudSection: View {
                 case .failure(let error):
                     // A user-initiated cancel is not an error worth surfacing.
                     if (error as? ASAuthorizationError)?.code != .canceled {
-                        state.cloudAuthMessage = "Apple sign-in failed. \(error.localizedDescription)"
+                        state.cloudAuthMessage = "Apple sign-in failed. Use browser sign-in or email/password if this beta is not signed for Apple Sign In. \(error.localizedDescription)"
                     }
                 }
             }
             .signInWithAppleButtonStyle(.black)
-            .frame(height: 40)
-            .disabled(state.cloudAuthBusy)
+            .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
+            .disabled(state.cloudAuthBusy || !canUseNativeAppleSignIn)
+
+            if !canUseNativeAppleSignIn {
+                Text("Apple sign-in is available in signed builds. This beta is not signed for Apple Sign In, so use browser sign-in or email/password below.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Button {
                 state.signInToCloudWithBrowser(hostedURL: resolvedHostedURL)
             } label: {
-                Label("Continue with Google or GitHub", systemImage: "globe")
-                    .frame(maxWidth: .infinity)
+                Label("Continue in browser", systemImage: "globe")
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
             .controlSize(.large)
             .disabled(state.cloudAuthBusy)
+
+            Text("Browser sign-in opens the hosted account page for Google/GitHub. If a provider reports redirect_uri is not associated, use email/password while that hosted OAuth app is corrected.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 8) {
                 VStack { Divider() }
@@ -801,7 +839,7 @@ struct CortexCloudSection: View {
             }
             .font(.caption)
 
-            Text("Sign in to sync your memory to your account and reach it across your devices and AI tools.")
+            Text("After sign-in, Cortex opens setup: connect a source, review memory, then open Connections for Claude Desktop, ChatGPT exports, or other AI tools.")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
