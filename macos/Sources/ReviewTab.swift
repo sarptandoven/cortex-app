@@ -67,7 +67,7 @@ struct ReviewHeaderSection: View {
                     Text("Review")
                         .font(CortexDesign.Typography.display(22))
                         .foregroundColor(CortexDesign.ink)
-                    Text("Approve what Cortex should remember. Archive anything noisy or unclear.")
+                    Text("Approve what Cortex should remember. Archive the rest.")
                         .font(CortexDesign.Typography.body)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -137,10 +137,10 @@ struct ReviewSourceHealthStrip: View {
             return "A source needs attention. Already synced memory stays available."
         }
         if pendingCount > 0 {
-            return "Approve useful items, archive noise, and Cortex will use approved memory in Ask and connected AI tools."
+            return "Approve useful items, archive noise — approved memory powers Ask and your AI tools."
         }
         if !sources.isEmpty {
-            return "Cortex will place new synced memories here before they are used."
+            return "New synced memories land here first."
         }
         return "Connect notes or a source to start building reviewed memory."
     }
@@ -270,7 +270,7 @@ struct ReviewSectionsBoard: View {
                 Text("Review by section")
                     .font(CortexDesign.Typography.title)
                     .foregroundColor(CortexDesign.ink)
-                Text("\(state.reviewSectionsPendingTotal) items grouped into \(state.reviewSections.count) sections — approve or archive each in one decision.")
+                Text("\(state.reviewSectionsPendingTotal) items in \(state.reviewSections.count) sections — one decision each.")
                     .font(CortexDesign.Typography.body)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -352,22 +352,14 @@ struct ReviewSectionCard: View {
             if isInFlight {
                 ProgressView().controlSize(.small)
             }
-            Button {
+            CortexButton(title: "Archive", systemImage: "archivebox", role: .ghost) {
                 archive()
-            } label: {
-                Label("Archive", systemImage: "archivebox")
-                    .frame(minHeight: 34)
             }
-            .buttonStyle(.bordered)
             .disabled(isInFlight)
             .help("Archives the \(section.capture_count) items in this section")
-            Button {
+            CortexButton(title: "Approve", systemImage: "checkmark.seal", role: .primary) {
                 approve()
-            } label: {
-                Label("Approve", systemImage: "checkmark.seal")
-                    .frame(minHeight: 34)
             }
-            .buttonStyle(.borderedProminent)
             .disabled(isInFlight)
             .help("Approves the \(section.capture_count) items in this section")
         }
@@ -413,14 +405,9 @@ struct ReviewInboxSection: View {
                     // approveCaptures caps the batch at 10 server-side, so approve exactly that
                     // slice and label the button with the true count — no promising more than we act on.
                     let approveBatch = Array(visibleCaptures.prefix(10))
-                    Button {
+                    CortexButton(title: "Approve \(approveBatch.count) shown", systemImage: "checkmark.seal", role: .primary, size: .large) {
                         state.approveCaptures(approveBatch)
-                    } label: {
-                        Label("Approve \(approveBatch.count) shown", systemImage: "checkmark.seal")
-                            .frame(minHeight: 40)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
                     .disabled(!state.inFlightCaptureIds.isEmpty)
                     .help("Approve the \(approveBatch.count) items shown at the top")
                 }
@@ -450,14 +437,9 @@ struct ReviewInboxSection: View {
                     }
 
                     if captures.count > visibleCount {
-                        Button {
+                        CortexButton(title: "Show more (\(captures.count - visibleCount) remaining)", systemImage: "chevron.down", role: .ghost, size: .large, fullWidth: true) {
                             visibleLimit += Self.pageSize
-                        } label: {
-                            Label("Show more (\(captures.count - visibleCount) remaining)", systemImage: "chevron.down")
-                                .frame(maxWidth: .infinity, minHeight: 46)
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
                     }
                 }
                 .animation(.spring(response: 0.35, dampingFraction: 0.8), value: captures.map(\.id))
@@ -518,38 +500,28 @@ struct ReviewEmptyState: View {
 
             HStack(spacing: 10) {
                 if approvedMemoryCount > 0 {
-                    Button {
+                    CortexButton(title: "Ask a question", systemImage: "magnifyingglass", role: .primary, size: .large) {
                         state.selectedTab = .ask
                         state.status = "Ask \(DistributionMode.appDisplayName)"
-                    } label: {
-                        Label("Ask a question", systemImage: "magnifyingglass")
-                            .frame(minWidth: 150, minHeight: 46)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
                 } else if state.hasConnectedObsidianVault, let connector = obsidianConnector {
-                    Button {
+                    CortexButton(
+                        title: state.notesNeedContent ? "Choose notes" : "Sync notes",
+                        systemImage: state.notesNeedContent ? "folder.badge.questionmark" : "arrow.triangle.2.circlepath",
+                        role: .primary,
+                        size: .large
+                    ) {
                         state.connectLocalNotesFolder(connector, chooseNew: state.notesNeedContent)
-                    } label: {
-                        Label(state.notesNeedContent ? "Choose notes" : "Sync notes", systemImage: state.notesNeedContent ? "folder.badge.questionmark" : "arrow.triangle.2.circlepath")
-                            .frame(minWidth: 148, minHeight: 46)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
                     .disabled(state.isBusy)
                 } else {
-                    Button {
+                    CortexButton(title: "Connect notes", systemImage: "folder.badge.plus", role: .primary, size: .large) {
                         if let connector = obsidianConnector {
                             state.connectLocalNotesFolder(connector, chooseNew: state.notesNeedContent)
                         } else {
                             state.openConnectionsPrivacy(statusMessage: "Connect notes")
                         }
-                    } label: {
-                        Label("Connect notes", systemImage: "folder.badge.plus")
-                            .frame(minWidth: 172, minHeight: 46)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .center)
@@ -619,7 +591,7 @@ struct ReviewServiceStartingState: View {
         if needsAttention {
             return state.displayStatus
         }
-        return "Reconnecting to your local memory engine. This usually takes a moment."
+        return "Reconnecting to your local memory engine."
     }
 
     var body: some View {
@@ -645,7 +617,7 @@ struct ReviewServiceStartingState: View {
                 Spacer(minLength: 0)
             }
 
-            Button {
+            CortexButton(title: needsAttention ? "Try again" : "Reconnect", systemImage: "arrow.clockwise", role: .secondary, size: .large) {
                 Task {
                     await state.ensureBackend()
                     await state.loadDiagnostics()
@@ -653,12 +625,7 @@ struct ReviewServiceStartingState: View {
                     await state.loadReview()
                     await state.loadStats()
                 }
-            } label: {
-                Label(needsAttention ? "Try again" : "Reconnect", systemImage: "arrow.clockwise")
-                    .frame(minWidth: 140, minHeight: 44)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
             .disabled(state.backendRetryInProgress)
             .frame(maxWidth: .infinity, alignment: .center)
         }
@@ -703,7 +670,10 @@ struct ReviewQueueCaptureCard: View {
                         .font(CortexDesign.Typography.prose(14))
                         .foregroundColor(CortexDesign.ink)
                         .lineSpacing(3)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
                         .fixedSize(horizontal: false, vertical: true)
+                        .help(MemoryText.normalizedProse(capture.summary ?? summary))
                 }
             }
 
@@ -724,18 +694,9 @@ struct ReviewQueueCaptureCard: View {
                         .controlSize(.small)
                 }
                 Spacer()
-                Button {
-                    if archiveConfirmedOnce {
-                        archive()
-                    } else {
-                        confirmArchive = true
-                    }
-                } label: {
-                    Label("Archive", systemImage: "archivebox")
-                        .frame(minWidth: 132, minHeight: 48)
+                CortexButton(title: "Archive", systemImage: "archivebox", role: .ghost, size: .large) {
+                    requestArchive()
                 }
-                .controlSize(.large)
-                .buttonStyle(.bordered)
                 .disabled(isInFlight)
                 // Optional-shortcut overload (macOS 12.3+): only the top card answers ⌘⌫.
                 .keyboardShortcut(isTopItem ? KeyboardShortcut(.delete, modifiers: .command) : nil)
@@ -753,14 +714,9 @@ struct ReviewQueueCaptureCard: View {
                 } message: {
                     Text("Cortex won't remember archived items. Your original note stays in your source. We'll only ask this once.")
                 }
-                Button {
+                CortexButton(title: "Approve", systemImage: "checkmark.seal", role: .primary, size: .large) {
                     approve()
-                } label: {
-                    Label("Approve", systemImage: "checkmark.seal")
-                        .frame(minWidth: 150, minHeight: 48)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
                 .disabled(isInFlight)
                 .keyboardShortcut(isTopItem ? KeyboardShortcut(.return, modifiers: .command) : nil)
                 .help("Approve (⌘↩ approves the top item)")
@@ -773,6 +729,27 @@ struct ReviewQueueCaptureCard: View {
         .shadow(color: CortexDesign.ink.opacity(isHovered ? 0.07 : 0), radius: 10, y: 3)
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.15)) { isHovered = hovering }
+        }
+        // Right-click mirrors the two card actions (menu items are system-styled by design).
+        .contextMenu {
+            Button {
+                approve()
+            } label: {
+                Label("Approve", systemImage: "checkmark.seal")
+            }
+            Button {
+                requestArchive()
+            } label: {
+                Label("Archive", systemImage: "archivebox")
+            }
+        }
+    }
+
+    private func requestArchive() {
+        if archiveConfirmedOnce {
+            archive()
+        } else {
+            confirmArchive = true
         }
     }
 
@@ -799,6 +776,7 @@ struct ReviewQueueCaptureCard: View {
 
 struct ReviewQueuePreviewList: View {
     let capture: CaptureItem
+    @State private var showRest = false
 
     private var memories: [MemoryItem] {
         cortexDedupedMemories(capture.preview_memories ?? [], limit: 3)
@@ -808,8 +786,13 @@ struct ReviewQueuePreviewList: View {
         Array((capture.preview_tasks ?? []).prefix(2))
     }
 
+    /// The card shows ONE preview line at a glance; the rest tuck behind a disclosure.
+    private var previewTexts: [String] {
+        memories.map(\.content) + tasks.map(\.content)
+    }
+
     var body: some View {
-        if memories.isEmpty && tasks.isEmpty {
+        if previewTexts.isEmpty {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "hourglass")
                     .foregroundColor(CortexDesign.inkSecondary)
@@ -824,12 +807,23 @@ struct ReviewQueuePreviewList: View {
                     .kerning(0.8)
                     .foregroundColor(CortexDesign.inkFaint)
 
-                ForEach(memories) { memory in
-                    ReviewQueuePlainPreviewRow(text: memory.content)
+                if let first = previewTexts.first {
+                    ReviewQueuePlainPreviewRow(text: first)
                 }
 
-                ForEach(tasks) { task in
-                    ReviewQueuePlainPreviewRow(text: task.content)
+                if previewTexts.count > 1 {
+                    DisclosureGroup(isExpanded: $showRest) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(previewTexts.dropFirst().enumerated()), id: \.offset) { _, text in
+                                ReviewQueuePlainPreviewRow(text: text)
+                            }
+                        }
+                        .padding(.top, 6)
+                    } label: {
+                        Text("\(previewTexts.count - 1) more")
+                            .font(CortexDesign.Typography.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -849,7 +843,8 @@ struct ReviewQueuePlainPreviewRow: View {
                 .font(CortexDesign.Typography.prose(13.5))
                 .foregroundColor(CortexDesign.ink)
                 .lineSpacing(3)
-                .lineLimit(5)
+                .lineLimit(2)
+                .truncationMode(.tail)
                 .help(MemoryText.normalizedProse(text))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -949,17 +944,12 @@ struct ReviewCaptureCard: View {
                         .help(sourceDetail)
                 }
                 Spacer()
-                Button {
+                CortexButton(title: "Archive", systemImage: "archivebox", role: .ghost, size: .small) {
                     archive()
-                } label: {
-                    Label("Archive", systemImage: "archivebox")
                 }
-                Button {
+                CortexButton(title: "Approve", systemImage: "checkmark.seal", role: .primary, size: .small) {
                     approve()
-                } label: {
-                    Label("Approve", systemImage: "checkmark.seal")
                 }
-                .buttonStyle(.borderedProminent)
             }
         }
         // A pending index card: content clears the gold (unreviewed) margin rule.

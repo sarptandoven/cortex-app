@@ -41,24 +41,19 @@ struct ConnectionsPrivacySheet: View {
                     Circle()
                         .fill(CortexDesign.sealMoss)
                         .frame(width: 7, height: 7)
-                    Text("Connect notes or ChatGPT/Claude exports, keep memory local, then choose what Claude Desktop, ChatGPT, and other AI tools can use.")
+                    Text("Memory stays on this Mac — you choose what other AI apps can use.")
                         .font(CortexDesign.Typography.body)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
+                        .help("Connect notes or ChatGPT/Claude exports, keep memory local, then choose what Claude Desktop, ChatGPT, and other AI tools can use.")
                 }
             }
 
             Spacer(minLength: 0)
 
-            Button {
+            CortexIconButton(systemImage: "xmark", role: .ghost, size: .large, help: "Close") {
                 dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 40, height: 40)
             }
-            .buttonStyle(.borderless)
-            .help("Close")
             .accessibilityLabel("Close Connections & Privacy")
         }
         .padding(20)
@@ -68,9 +63,16 @@ struct ConnectionsPrivacySheet: View {
 
 private struct ConnectionsPrivacyOverview: View {
     @ObservedObject var state: AppState
+    // Group-level expansion. Four top-level groups: Sources + AI apps start open,
+    // Privacy & data + Advanced start closed. `advancedExpanded` is the AI-apps group
+    // (its declaration is pinned by the connector UI contract tests).
+    @State private var sourcesExpanded = true
+    @State private var advancedExpanded = true
+    @State private var privacyDataExpanded = false
+    @State private var advancedGroupExpanded = false
+    // Sub-disclosures — each at most ONE level deep inside its group.
     @State private var privacySettingsExpanded = false
     @State private var connectedExpanded = false
-    @State private var advancedExpanded = true
     @State private var activityMetricsExpanded = false
     @State private var advancedSourcesExpanded = false
     @State private var sourceAuditExpanded = false
@@ -108,14 +110,6 @@ private struct ConnectionsPrivacyOverview: View {
         }
     }
 
-    private var detectedAIToolCount: Int {
-        state.integrations.filter { integration in
-            guard integration.supportsInstall else { return false }
-            let integrationState = state.integrationState(for: integration)
-            return integrationState.appInstalled && !integrationState.configured
-        }.count
-    }
-
     /// Connector accounts beyond the primary notes source. Chat imports live in import
     /// history, not source accounts, so notes + chat import alone still counts as zero.
     private var extraConnectedSourceCount: Int {
@@ -124,24 +118,16 @@ private struct ConnectionsPrivacyOverview: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: CortexDesign.Space.xl) {
-                ConnectionsObsidianSection(state: state)
-                // The two easy paths in (notes folder, chat import) stay visible at top level, even
-                // on first run — a user who doesn't want the local notes folder needs a way to
-                // connect any other source to get past onboarding. Only the privacy/trust and
-                // advanced controls wait until at least one source is connected.
-                AIChatsImportCard(state: state)
-                otherSourceConnections
+            VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+                // The Sources group stays visible at top level, even on first run — a user who
+                // doesn't want the local notes folder needs a way to connect any other source to
+                // get past onboarding. The other three groups wait until a source is connected.
+                sourcesGroup
                 if !state.firstRunNeedsSource {
+                    aiAppsGroup
                     if let summary = state.trustSummary {
-                        ConnectionsPrivacyDefaultsSection(state: state, summary: summary)
-                        privacySettings(summary: summary)
-                        if notesHealth.isNeedsAttention
-                            || state.sourceAccounts.contains(where: { $0.disconnected_at == nil && $0.needsAttention }) {
-                            connectedNow
-                        }
-                        advancedControls(summary: summary)
-                            .padding(.top, CortexDesign.Space.md)
+                        privacyDataGroup(summary: summary)
+                        advancedGroup(summary: summary)
                     } else {
                         ConnectionsRetryState(
                             state: state,
@@ -176,6 +162,98 @@ private struct ConnectionsPrivacyOverview: View {
         }
     }
 
+    // MARK: Group 1 — Sources (notes, chat imports, connector library)
+
+    private var sourcesGroup: some View {
+        DisclosureGroup(isExpanded: $sourcesExpanded) {
+            VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+                ConnectionsObsidianSection(state: state)
+                AIChatsImportCard(state: state)
+                otherSourceConnections
+                if notesHealth.isNeedsAttention
+                    || state.sourceAccounts.contains(where: { $0.disconnected_at == nil && $0.needsAttention }) {
+                    connectedNow
+                }
+            }
+            .padding(.top, 12)
+        } label: {
+            ConnectionsDisclosureLabel(
+                systemImage: "tray.and.arrow.down",
+                title: "Sources",
+                detail: sourcesGroupDetail
+            )
+            .help("Notes, ChatGPT/Claude chat exports, and optional read-only connectors feed your memory.")
+        }
+        .connectionsGroupCard()
+    }
+
+    private var sourcesGroupDetail: String {
+        if notesHealth.isNeedsAttention {
+            return "A source needs attention"
+        }
+        return "\(connectedSourceCount) source\(connectedSourceCount == 1 ? "" : "s") connected — notes, chat imports, more"
+    }
+
+    // MARK: Group 2 — AI apps (MCP setup, memory packs, tool permissions)
+
+    private var aiAppsGroup: some View {
+        DisclosureGroup(isExpanded: $advancedExpanded) {
+            VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+                ConnectionsAIToolsSection(state: state)
+                ConnectionsMCPAccessSection(state: state)
+            }
+            .padding(.top, 12)
+        } label: {
+            ConnectionsDisclosureLabel(
+                systemImage: "wand.and.stars",
+                title: "AI apps",
+                detail: "Use your memory in Claude Desktop, ChatGPT, Cursor & other AI apps"
+            )
+        }
+        .connectionsGroupCard()
+    }
+
+    // MARK: Group 3 — Privacy & data (permissions, stored data, backups, export)
+
+    private func privacyDataGroup(summary: TrustSummaryResponse) -> some View {
+        DisclosureGroup(isExpanded: $privacyDataExpanded) {
+            VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+                ConnectionsPrivacyDefaultsSection(state: state, summary: summary)
+                privacySettings(summary: summary)
+                storedData
+                recoveryTools
+            }
+            .padding(.top, 12)
+        } label: {
+            ConnectionsDisclosureLabel(
+                systemImage: "lock.shield",
+                title: "Privacy & data",
+                detail: "Permissions, stored data, backups & export"
+            )
+        }
+        .connectionsGroupCard()
+    }
+
+    // MARK: Group 4 — Advanced (metrics, audit history, diagnostics)
+
+    private func advancedGroup(summary: TrustSummaryResponse) -> some View {
+        DisclosureGroup(isExpanded: $advancedGroupExpanded) {
+            VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+                activityMetrics
+                auditHistory(summary: summary)
+                developerDetails
+            }
+            .padding(.top, 12)
+        } label: {
+            ConnectionsDisclosureLabel(
+                systemImage: "wrench.and.screwdriver",
+                title: "Advanced",
+                detail: "Activity metrics, audit history, developer diagnostics"
+            )
+        }
+        .connectionsGroupCard()
+    }
+
     private var otherSourceConnections: some View {
         DisclosureGroup(isExpanded: $advancedSourcesExpanded) {
             ConnectionsDirectSourcesSection(state: state)
@@ -188,10 +266,7 @@ private struct ConnectionsPrivacyOverview: View {
             )
             .accessibilityLabel("Add more sources — Connections library")
         }
-        .padding(14)
-        .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .connectionsSubCard()
     }
 
     private var advancedSourceDisclosureDetail: String {
@@ -215,10 +290,7 @@ private struct ConnectionsPrivacyOverview: View {
                 detail: "Reviewed memory reads, new AI saves go to Review"
             )
         }
-        .padding(14)
-        .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .connectionsSubCard()
     }
 
     private var connectedNow: some View {
@@ -232,172 +304,172 @@ private struct ConnectionsPrivacyOverview: View {
                 detail: connectionStatusDetail
             )
         }
-        .padding(14)
-        .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .connectionsSubCard()
     }
 
-    /// Formerly one "Advanced" mega-disclosure nesting three levels deep. Split into flat,
-    /// clearly-named cards so users can find backups without wading through developer diagnostics.
-    private func advancedControls(summary: TrustSummaryResponse) -> some View {
-        VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
-            DisclosureGroup(isExpanded: $advancedExpanded) {
-                VStack(alignment: .leading, spacing: 16) {
-                    ConnectionsAIToolsSection(state: state)
-                    ConnectionsMCPAccessSection(state: state)
-                }
+    /// Manage stored data: once memory exists, removing all of it from a single source is a
+    /// first-class privacy action, so it lives in Privacy & data — not buried in diagnostics.
+    private var storedData: some View {
+        DisclosureGroup(isExpanded: $storedDataExpanded) {
+            ConnectionsStoredDataSection(state: state)
                 .padding(.top, 10)
-            } label: {
-                ConnectionsDisclosureLabel(
-                    systemImage: "wand.and.stars",
-                    title: "AI tools & permissions",
-                    detail: "Use your memory in Claude Desktop, ChatGPT, Cursor & other AI apps"
-                )
+        } label: {
+            ConnectionsDisclosureLabel(
+                systemImage: "tray.full",
+                title: "Manage stored data",
+                detail: "See what each source has saved, delete it by source in one step"
+            )
+        }
+        .connectionsSubCard()
+        .onChange(of: storedDataExpanded) { expanded in
+            if expanded {
+                Task { await state.loadSourceStats() }
             }
-            .padding(14)
-            .background(connectionsPanelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
 
-            // Manage stored data sits with the trust/permissions controls: once memory exists,
-            // removing all of it from a single source is a first-class privacy action, one card
-            // below "AI tools & permissions" and above the softer activity metrics.
-            DisclosureGroup(isExpanded: $storedDataExpanded) {
-                ConnectionsStoredDataSection(state: state)
-                    .padding(.top, 10)
-            } label: {
-                ConnectionsDisclosureLabel(
-                    systemImage: "tray.full",
-                    title: "Manage stored data",
-                    detail: "See what each source has saved, and delete it by source in one step"
-                )
+    private var recoveryTools: some View {
+        DisclosureGroup(isExpanded: $recoveryToolsExpanded) {
+            VStack(alignment: .leading, spacing: 14) {
+                SettingsDataRecoverySection(state: state)
+                Divider()
+                SettingsReliabilitySection(state: state)
+                Divider()
+                SettingsStatsSection(state: state)
             }
-            .padding(14)
-            .background(connectionsPanelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .onChange(of: storedDataExpanded) { expanded in
-                if expanded {
-                    Task { await state.loadSourceStats() }
-                }
-            }
-
-            DisclosureGroup(isExpanded: $activityMetricsExpanded) {
-                ConnectionsToolUsageSection(state: state)
-                    .padding(.top, 10)
-            } label: {
-                ConnectionsDisclosureLabel(
-                    systemImage: "gauge.with.needle",
-                    title: "Activity & alerts",
-                    detail: "How tools use memory, and how often Cortex may interrupt"
-                )
-            }
-            .padding(14)
-            .background(connectionsPanelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            DisclosureGroup(isExpanded: $recoveryToolsExpanded) {
-                VStack(alignment: .leading, spacing: 14) {
-                    SettingsDataRecoverySection(state: state)
-                    Divider()
-                    SettingsReliabilitySection(state: state)
-                }
-                .padding(.top, 10)
-            } label: {
-                ConnectionsDisclosureLabel(
-                    systemImage: "arrow.counterclockwise.circle",
-                    title: "Backups & recovery",
-                    detail: "Back up, restore, repair your local memory"
-                )
-            }
-            .padding(14)
-            .background(connectionsPanelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .onChange(of: recoveryToolsExpanded) { expanded in
-                if expanded {
-                    Task {
-                        await state.loadDiagnostics()
-                        await state.loadReliability()
-                    }
-                }
-            }
-
-            DisclosureGroup(isExpanded: $developerDetailsExpanded) {
-                VStack(alignment: .leading, spacing: 14) {
-                    Group {
-                        DisclosureGroup("Privacy history", isExpanded: $sourceAuditExpanded) {
-                            VStack(alignment: .leading, spacing: 14) {
-                                TrustSourceSection(state: state, summary: summary)
-                                TrustAuditSection(events: state.auditEvents, refresh: {
-                                    Task { await state.loadTrust() }
-                                })
-                            }
-                            .padding(.top, 8)
-                        }
-                        Divider()
-                        IntegrationTokensSection(state: state)
-                        Divider()
-                        IntegrationCenterView(state: state, compact: true)
-                        Divider()
-                    }
-                    Group {
-                        SettingsPrivacySection(state: state)
-                        Divider()
-                        SettingsHealthSection(state: state)
-                        Divider()
-                    }
-                    if let lifecycle = state.dataLifecycleReport {
-                        TrustLifecycleSection(report: lifecycle)
-                        Divider()
-                    }
-                    Group {
-                        SettingsOnboardingSection(state: state)
-                        Divider()
-                        AdvancedGraphSection(state: state)
-                        SettingsStatsSection(state: state)
-                        Divider()
-                    }
-                    Group {
-                        TrustSyncManifestSection(state: state)
-                        Divider()
-                        // App Store builds ship updates through the Mac App Store; in-app
-                        // self-update / external executable download is forbidden
-                        // (Guideline 2.4.5/2.5.2), so the updates section is direct-mode only.
-                        if !DistributionMode.isAppStore {
-                            SettingsUpdatesSection(state: state)
-                            Divider()
-                        }
-                        CortexCloudSection(state: state)
-                        Divider()
-                        SettingsBackendSection(state: state)
-                    }
-                }
-                .padding(.top, 10)
-            } label: {
-                ConnectionsDisclosureLabel(
-                    systemImage: "wrench.and.screwdriver",
-                    title: "Developer & diagnostics",
-                    detail: "Support details, engine status, updates"
-                )
-            }
-            .padding(14)
-            .background(connectionsPanelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .onChange(of: developerDetailsExpanded) { expanded in
-                if expanded {
-                    Task {
-                        await state.loadStats()
-                        await state.loadGraph()
-                        await state.loadDiagnostics()
-                        await state.loadReliability()
-                    }
+            .padding(.top, 10)
+        } label: {
+            ConnectionsDisclosureLabel(
+                systemImage: "arrow.counterclockwise.circle",
+                title: "Backups, recovery & export",
+                detail: "Back up, restore, repair, or export your local memory"
+            )
+        }
+        .connectionsSubCard()
+        .onChange(of: recoveryToolsExpanded) { expanded in
+            if expanded {
+                Task {
+                    await state.loadDiagnostics()
+                    await state.loadReliability()
+                    await state.loadStats()
                 }
             }
         }
+    }
+
+    private var activityMetrics: some View {
+        DisclosureGroup(isExpanded: $activityMetricsExpanded) {
+            ConnectionsToolUsageSection(state: state)
+                .padding(.top, 10)
+        } label: {
+            ConnectionsDisclosureLabel(
+                systemImage: "gauge.with.needle",
+                title: "Activity & alerts",
+                detail: "How tools use memory, and how often Cortex may interrupt"
+            )
+        }
+        .connectionsSubCard()
+    }
+
+    /// Privacy history (per-source trust decisions + the audit log), hoisted out of the old
+    /// developer mega-disclosure so nothing in a group nests more than one level deep.
+    private func auditHistory(summary: TrustSummaryResponse) -> some View {
+        DisclosureGroup(isExpanded: $sourceAuditExpanded) {
+            VStack(alignment: .leading, spacing: 14) {
+                TrustSourceSection(state: state, summary: summary)
+                TrustAuditSection(events: state.auditEvents, refresh: {
+                    Task { await state.loadTrust() }
+                })
+            }
+            .padding(.top, 10)
+        } label: {
+            ConnectionsDisclosureLabel(
+                systemImage: "clock.arrow.circlepath",
+                title: "Privacy history",
+                detail: "Per-source trust decisions and the audit log"
+            )
+        }
+        .connectionsSubCard()
+    }
+
+    private var developerDetails: some View {
+        DisclosureGroup(isExpanded: $developerDetailsExpanded) {
+            VStack(alignment: .leading, spacing: 14) {
+                Group {
+                    IntegrationTokensSection(state: state)
+                    Divider()
+                    IntegrationCenterView(state: state, compact: true)
+                    Divider()
+                }
+                Group {
+                    SettingsPrivacySection(state: state)
+                    Divider()
+                    SettingsHealthSection(state: state)
+                    Divider()
+                }
+                if let lifecycle = state.dataLifecycleReport {
+                    TrustLifecycleSection(report: lifecycle)
+                    Divider()
+                }
+                Group {
+                    SettingsOnboardingSection(state: state)
+                    Divider()
+                    AdvancedGraphSection(state: state)
+                    Divider()
+                }
+                Group {
+                    TrustSyncManifestSection(state: state)
+                    Divider()
+                    // App Store builds ship updates through the Mac App Store; in-app
+                    // self-update / external executable download is forbidden
+                    // (Guideline 2.4.5/2.5.2), so the updates section is direct-mode only.
+                    if !DistributionMode.isAppStore {
+                        SettingsUpdatesSection(state: state)
+                        Divider()
+                    }
+                    CortexCloudSection(state: state)
+                    Divider()
+                    SettingsBackendSection(state: state)
+                }
+            }
+            .padding(.top, 10)
+        } label: {
+            ConnectionsDisclosureLabel(
+                systemImage: "wrench.and.screwdriver",
+                title: "Developer & diagnostics",
+                detail: "Support details, engine status, updates"
+            )
+        }
+        .connectionsSubCard()
+        .onChange(of: developerDetailsExpanded) { expanded in
+            if expanded {
+                Task {
+                    await state.loadStats()
+                    await state.loadGraph()
+                    await state.loadDiagnostics()
+                    await state.loadReliability()
+                }
+            }
+        }
+    }
+}
+
+/// Shared chrome for the Connections sheet's grouping cards. Top-level groups get the panel
+/// treatment; sub-disclosures inside a group get the quieter index-card fill so the hierarchy
+/// reads at a glance without extra copy.
+private extension View {
+    func connectionsGroupCard() -> some View {
+        padding(14)
+            .background(connectionsPanelBackground)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    func connectionsSubCard() -> some View {
+        padding(12)
+            .background(CortexDesign.cardBackground)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -418,7 +490,7 @@ private struct ConnectionsObsidianSection: View {
 
     private var primarySourceDetail: String {
         if let obsidianReadiness {
-            return "\(obsidianReadiness.syncPlanDisplayTitle). Choose the local source Cortex should keep synced automatically."
+            return "\(obsidianReadiness.syncPlanDisplayTitle) — synced automatically."
         }
         return "Choose the local source Cortex should keep synced automatically."
     }
@@ -603,9 +675,9 @@ private struct ConnectionsDirectSourcesSection: View {
                     TextField("Search connections", text: $connectorSearch)
                         .textFieldStyle(.plain)
                     if !connectorSearch.isEmpty {
-                        Button { connectorSearch = "" } label: { Image(systemName: "xmark.circle.fill") }
-                            .buttonStyle(.borderless)
-                            .foregroundColor(CortexDesign.inkSecondary)
+                        CortexIconButton(systemImage: "xmark.circle.fill", role: .ghost, size: .small, help: "Clear search") {
+                            connectorSearch = ""
+                        }
                     }
                 }
                 .padding(8)
@@ -949,9 +1021,10 @@ private struct AIChatsImportCard: View {
                     Image(systemName: "sparkles").foregroundColor(CortexDesign.accent)
                     Text(summary).font(.callout).foregroundColor(CortexDesign.ink).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
-                    Button { state.importDetectedExports() } label: { Text("Import") }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(state.importInFlight)
+                    CortexButton(title: "Import", systemImage: "square.and.arrow.down", role: .secondary, size: .small) {
+                        state.importDetectedExports()
+                    }
+                    .disabled(state.importInFlight)
                 }
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.accentSoft))
@@ -967,8 +1040,8 @@ private struct AIChatsImportCard: View {
                         Text(state.importInFlight ? "Importing…" : "Drag your export here, or")
                             .font(.callout).foregroundColor(CortexDesign.inkSecondary)
                         if !state.importInFlight {
-                            Button { state.importAIChatExport() } label: {
-                                Label("Choose export file…", systemImage: "folder.badge.plus")
+                            CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .secondary, size: .small) {
+                                state.importAIChatExport()
                             }
                         }
                     }
@@ -1200,33 +1273,21 @@ private struct ConnectionsDirectSourceRow: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .help("One-tap sign-in for \(connector.name) is coming soon.")
                     .accessibilityLabel("\(connector.name): one-tap sign-in coming soon")
+            } else if isSyncing || isOAuthStarting {
+                ProgressView()
+                    .scaleEffect(0.78)
+                    .frame(minWidth: 126, minHeight: 46)
             } else {
-                Button {
+                CortexButton(title: actionTitle, systemImage: actionIcon, role: .secondary, size: .regular) {
                     runAction()
-                } label: {
-                    if isSyncing || isOAuthStarting {
-                        ProgressView()
-                            .scaleEffect(0.78)
-                            .frame(minWidth: 126, minHeight: 46)
-                    } else {
-                        Label(actionTitle, systemImage: actionIcon)
-                            .frame(minWidth: 126, minHeight: 46)
-                    }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
                 .disabled(state.isBusy || isSyncing || isOAuthStarting)
             }
 
             if !isPaused && (activeAccount != nil || hasStoredConfig) {
-                Button {
+                CortexButton(title: "Pause", systemImage: "pause.circle", role: .ghost, size: .regular) {
                     confirmPause = true
-                } label: {
-                    Label("Pause", systemImage: "pause.circle")
-                        .frame(minWidth: 98, minHeight: 42)
                 }
-                .buttonStyle(.bordered)
-                .foregroundColor(CortexDesign.inkSecondary)
                 .help("Pause automatic sync. Already synced local memory and the saved connection are kept, so you can resume without reconnecting.")
                 .disabled(state.isBusy || isSyncing || isOAuthStarting)
                 .confirmationDialog(
@@ -1244,13 +1305,9 @@ private struct ConnectionsDirectSourceRow: View {
             }
 
             if let removableImport {
-                Button(role: .destructive) {
+                CortexButton(title: "Remove", systemImage: "trash", role: .destructive, size: .regular) {
                     confirmRemove = true
-                } label: {
-                    Label("Remove", systemImage: "trash")
-                        .frame(minWidth: 104, minHeight: 42)
                 }
-                .buttonStyle(.bordered)
                 .help("Disconnect this source and remove the memory it synced.")
                 .disabled(state.isBusy || isSyncing || isOAuthStarting)
                 .confirmationDialog(
@@ -1527,15 +1584,9 @@ private struct ConnectorTokenSetupSheet: View {
 
                 Spacer(minLength: 0)
 
-                Button {
+                CortexIconButton(systemImage: "xmark", role: .ghost, size: .regular, help: "Close") {
                     dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 38, height: 38)
                 }
-                .buttonStyle(.borderless)
-                .help("Close")
                 .accessibilityLabel("Close \(connector.name) setup")
             }
             .padding(20)
@@ -1633,24 +1684,17 @@ private struct ConnectorTokenSetupSheet: View {
             Divider()
 
             HStack(spacing: 10) {
-                Button {
+                CortexButton(title: "Cancel", role: .ghost, size: .large) {
                     dismiss()
-                } label: {
-                    Text("Cancel")
-                        .frame(minWidth: 104, minHeight: 44)
                 }
-                .controlSize(.large)
 
                 Spacer()
 
-                Button {
+                // This modal's one main action — the sheet-wide "no global primary" rule applies
+                // to the Connections overview, not to a focused setup dialog.
+                CortexButton(title: "Sync \(connector.name)", systemImage: "arrow.triangle.2.circlepath", role: .primary, size: .large) {
                     sync()
-                } label: {
-                    Label("Sync \(connector.name)", systemImage: "arrow.triangle.2.circlepath")
-                        .frame(minWidth: 156, minHeight: 46)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
                 .disabled(!isValid || state.isBusy || state.connectorSyncingIDs.contains(connector.id))
             }
             .padding(20)
@@ -1726,14 +1770,14 @@ private struct ConnectorTokenSetupSheet: View {
                         TextField(placeholder(for: field), text: stringBinding(for: field))
                             .textFieldStyle(.roundedBorder)
                             .controlSize(.large)
-                        Button {
+                        CortexButton(
+                            title: "Choose",
+                            systemImage: field.normalizedKind == "local_folder" ? "folder" : "doc",
+                            role: .secondary,
+                            size: .regular
+                        ) {
                             chooseLocalPath(for: field)
-                        } label: {
-                            Label("Choose", systemImage: field.normalizedKind == "local_folder" ? "folder" : "doc")
-                                .frame(minHeight: 42)
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
                     }
                 default:
                     TextField(placeholder(for: field), text: stringBinding(for: field))
@@ -1752,21 +1796,21 @@ private struct ConnectorTokenSetupSheet: View {
     private func remoteOptionsControls(for field: SourceConnectorSetupField) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Button {
-                    loadRemoteOptions(for: field)
-                } label: {
-                    if discoveryLoadingField == field.name {
-                        ProgressView()
-                            .scaleEffect(0.75)
-                            .frame(minWidth: 132, minHeight: 40)
-                    } else {
-                        Label(discoveredOptions[field.name] == nil ? "Find \(field.displayLabel)" : "Refresh \(field.displayLabel)", systemImage: "magnifyingglass")
-                            .frame(minHeight: 40)
+                if discoveryLoadingField == field.name {
+                    ProgressView()
+                        .scaleEffect(0.75)
+                        .frame(minWidth: 132, minHeight: 40)
+                } else {
+                    CortexButton(
+                        title: discoveredOptions[field.name] == nil ? "Find \(field.displayLabel)" : "Refresh \(field.displayLabel)",
+                        systemImage: "magnifyingglass",
+                        role: .secondary,
+                        size: .regular
+                    ) {
+                        loadRemoteOptions(for: field)
                     }
+                    .disabled(discoveryLoadingField != nil || missingDiscoveryCredentialMessage(for: field) != nil)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(discoveryLoadingField != nil || missingDiscoveryCredentialMessage(for: field) != nil)
 
                 if let missingDiscoveryCredentialMessage = missingDiscoveryCredentialMessage(for: field) {
                     Text(missingDiscoveryCredentialMessage)
@@ -2109,9 +2153,10 @@ private struct ConnectionsAIToolsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
-                title: "Use reviewed memory outside Cortex",
-                detail: "Optional. Claude Desktop and other MCP apps can read reviewed memory with citations. ChatGPT or Claude web chats should be imported as exports until direct browser memory support ships."
+                title: "AI tools & permissions",
+                detail: "Optional. Connected apps read reviewed memory with citations."
             )
+            .help("Claude Desktop and other MCP apps can read reviewed memory with citations. ChatGPT or Claude web chats should be imported as exports until direct browser memory support ships.")
 
             HStack(alignment: .center, spacing: 14) {
                 ZStack {
@@ -2145,33 +2190,18 @@ private struct ConnectionsAIToolsSection: View {
                     // App Store builds installDetectedIntegrations() is a no-op, so showing this
                     // prominent button there was a dead end. Those builds get the copy-guide path
                     // below instead.
-                    Button {
+                    CortexButton(title: "Enable in apps", systemImage: "link.circle", role: .secondary, size: .large) {
                         state.installDetectedIntegrations()
-                    } label: {
-                        Label("Enable in apps", systemImage: "link.circle")
-                            .frame(minWidth: 138, minHeight: 46)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
                 } else if !detectedConnectable.isEmpty {
-                    Button {
+                    CortexButton(title: "Copy setup config", systemImage: "doc.on.doc", role: .secondary, size: .large) {
                         state.copyMCPConfig()
-                    } label: {
-                        Label("Copy setup config", systemImage: "doc.on.doc")
-                            .frame(minWidth: 138, minHeight: 46)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
                     .help("Copies the tool configuration to paste into your AI app's settings.")
                 } else {
-                    Button {
+                    CortexButton(title: "Copy tool config", systemImage: "doc.on.doc", role: .secondary, size: .large) {
                         state.copyMCPConfig()
-                    } label: {
-                        Label("Copy tool config", systemImage: "doc.on.doc")
-                            .frame(minWidth: 132, minHeight: 46)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
                     .help("Copies the Cortex MCP configuration to paste into Claude Desktop or another compatible tool.")
                 }
             }
@@ -2233,22 +2263,14 @@ private struct ConnectionsAIToolsSection: View {
             Spacer(minLength: 8)
 
             VStack(alignment: .trailing, spacing: 8) {
-                Button {
+                CortexButton(title: "Connect extension", systemImage: "puzzlepiece.extension", role: .secondary, size: .small) {
                     state.pairBrowserExtension()
-                } label: {
-                    Label("Connect extension", systemImage: "puzzlepiece.extension")
-                        .frame(minWidth: 150, minHeight: 30)
                 }
-                .buttonStyle(.bordered)
                 .help("Mints a read-only pairing token and copies it for the Cortex browser extension.")
 
-                Button {
+                CortexButton(title: "Copy API details", systemImage: "curlybraces", role: .secondary, size: .small) {
                     state.copyUniversalAPIConnectionInfo()
-                } label: {
-                    Label("Copy API details", systemImage: "curlybraces")
-                        .frame(minWidth: 150, minHeight: 30)
                 }
-                .buttonStyle(.bordered)
                 .help("Copies the base URL, token, and tool-schema endpoints for SDKs and any function-calling app.")
             }
         }
@@ -2280,14 +2302,9 @@ private struct ConnectionsAIToolsSection: View {
                         .scaleEffect(0.7)
                         .frame(minWidth: 78, minHeight: 30)
                 } else {
-                    Button {
+                    CortexButton(title: "Test", systemImage: "checklist", role: .ghost, size: .small) {
                         runTest(integration)
-                    } label: {
-                        Label("Test", systemImage: "checklist")
-                            .font(.system(size: 12, weight: .medium))
-                            .frame(minWidth: 78, minHeight: 30)
                     }
-                    .buttonStyle(.bordered)
                     .disabled(state.testingConnectionID != nil)
                     .help("Check that \(integration.name) can reach your reviewed memory.")
                 }
@@ -2391,14 +2408,9 @@ private struct ConnectionsAIToolsSection: View {
 
                 Spacer(minLength: 8)
 
-                Button {
+                CortexButton(title: "Copy memory pack", systemImage: "doc.on.clipboard", role: .secondary, size: .large) {
                     state.copyMemoryPack()
-                } label: {
-                    Label("Copy memory pack", systemImage: "doc.on.clipboard")
-                        .frame(minWidth: 138, minHeight: 46)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
                 .help("Builds a cited pack of your approved memory and copies it for ChatGPT, Claude web, Gemini, or any other assistant.")
             }
 
@@ -2417,14 +2429,14 @@ private struct ConnectionsAIToolsSection: View {
     private var memoryPackPreview: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Button {
+                CortexButton(
+                    title: state.memoryPackPreview == nil ? "Preview" : "Refresh preview",
+                    systemImage: "eye",
+                    role: .ghost,
+                    size: .small
+                ) {
                     Task { await state.loadMemoryPackPreview() }
-                } label: {
-                    Label(state.memoryPackPreview == nil ? "Preview" : "Refresh preview", systemImage: "eye")
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(minWidth: 96, minHeight: 30)
                 }
-                .buttonStyle(.bordered)
                 .help("See exactly what Cortex will copy before you paste it into a chat.")
 
                 if let preview = state.memoryPackPreview {
@@ -2515,14 +2527,9 @@ private struct ConnectionsGuidedMCPSetup: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
 
                     HStack(spacing: 10) {
-                        Button {
+                        CortexButton(title: "Copy configuration", systemImage: "doc.on.doc", role: .secondary, size: .large) {
                             state.copyMCPConfig()
-                        } label: {
-                            Label("Copy configuration", systemImage: "doc.on.doc")
-                                .frame(minHeight: 42)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
                         .help("Copies the full configuration, including this Mac's local connection token, to paste into your AI app.")
                         Spacer(minLength: 0)
                     }
@@ -2548,10 +2555,7 @@ private struct ConnectionsGuidedMCPSetup: View {
                 detail: "Copy the connection and paste it into Claude, Cursor & other AI apps"
             )
         }
-        .padding(14)
-        .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .connectionsSubCard()
     }
 }
 
@@ -2582,20 +2586,18 @@ private struct ConnectionsPrivacyDefaultsSection: View {
                     }
                 }
                 Spacer(minLength: 12)
-                Button {
+                CortexButton(
+                    title: backupCount > 0 ? "Back Up Again" : "Back Up Now",
+                    systemImage: "archivebox",
+                    role: .secondary,
+                    size: .large
+                ) {
                     state.createBackup()
-                } label: {
-                    Label(backupCount > 0 ? "Back Up Again" : "Back Up Now", systemImage: "archivebox")
-                        .frame(minHeight: 44)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
+                .help("Writes a local backup of your memory folder on this Mac.")
             }
         }
-        .padding(16)
-        .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .connectionsSubCard()
     }
 }
 
@@ -2703,12 +2705,10 @@ private struct ConnectionsMCPAccessSection: View {
                         .lineLimit(2)
                 }
                 Spacer(minLength: 8)
-                Button {
+                CortexButton(title: "Reset Token", systemImage: "arrow.triangle.2.circlepath", role: .secondary, size: .small) {
                     Task { await state.resetMCPIntegrationToken() }
-                } label: {
-                    Label("Reset Token", systemImage: "arrow.triangle.2.circlepath")
                 }
-                .controlSize(.large)
+                .help("Revokes the current MCP token and mints a new one. Connected tools must be reconfigured.")
             }
             .padding(12)
             .background(CortexDesign.cardBackground)
@@ -2778,11 +2778,6 @@ private struct ConnectionsStoredDataSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Everything Cortex has learned, grouped by where it came from. If a source added junk, remove all of it in one step.")
-                .font(.callout)
-                .foregroundColor(CortexDesign.inkSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-
             if state.sourceStats.isEmpty {
                 QuietState(
                     title: "Nothing stored yet",
@@ -2865,15 +2860,9 @@ private struct ConnectionsStoredDataRow: View {
                     .scaleEffect(0.8)
                     .frame(minWidth: 118, minHeight: 42)
             } else {
-                Button(role: .destructive) {
+                CortexButton(title: "Delete all…", systemImage: "trash", role: .destructive, size: .regular) {
                     confirmDelete = true
-                } label: {
-                    Label("Delete all…", systemImage: "trash")
-                        .frame(minWidth: 118, minHeight: 42)
                 }
-                .buttonStyle(.bordered)
-                .tint(CortexDesign.accent)
-                .foregroundColor(CortexDesign.accent)
                 .disabled(state.purgingSource != nil)
                 .help("Permanently delete every memory that came from \(displayName).")
                 .confirmationDialog(
@@ -3092,21 +3081,15 @@ private struct ConnectionsRetryState: View {
         }
     }
 
-    @ViewBuilder
     private var retryButton: some View {
-        let label = Label(isRetrying ? "Checking…" : "Retry", systemImage: "arrow.clockwise")
-            .frame(minWidth: 132, minHeight: 44)
-        if backendFailed {
-            Button(action: runRetry) { label }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(isRetrying)
-        } else {
-            Button(action: runRetry) { label }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(isRetrying)
-        }
+        CortexButton(
+            title: isRetrying ? "Checking…" : "Retry",
+            systemImage: "arrow.clockwise",
+            role: .secondary,
+            size: .large,
+            action: runRetry
+        )
+        .disabled(isRetrying)
     }
 
     private func runRetry() {

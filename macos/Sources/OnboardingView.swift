@@ -1,12 +1,12 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// A deep, guided, animated first-run walkthrough for Cortex — "The Archive".
+/// A fast, delightful first-run walkthrough for Cortex — "The Archive".
 ///
-/// The flow is a narrative in six calm beats: welcome, privacy, add memory, see yourself, an
-/// optional quick-capture opt-in, and finally connecting AI tools. Each beat animates in with a
-/// spring + asymmetric slide, carries ambient motion (`TimelineView`), and offers a clear
-/// Back / Continue with a Skip escape hatch.
+/// Three calm beats: welcome (value prop with privacy folded in), add memory (every connect path
+/// on one screen with a single primary action), and you're set (next-step pointers plus the
+/// compact quick-capture, AI-tools, and first-backup decisions). Each beat animates in with a
+/// spring + asymmetric slide and carries ambient motion (`TimelineView`).
 ///
 /// The walkthrough keeps its OWN step cursor (`WalkStep`) so the storytelling order is independent
 /// of the practical setup-loop enum that `AppState` tracks. Real actions still route through
@@ -19,14 +19,13 @@ import UniformTypeIdentifiers
 struct OnboardingView: View {
     @ObservedObject var state: AppState
 
-    /// The six narrative beats of the walkthrough. Independent of `OnboardingStep` (the setup loop).
+    /// The three narrative beats of the walkthrough. Independent of `OnboardingStep` (the setup
+    /// loop). The old privacy / see-yourself / quick-capture / connect-tools beats are merged into
+    /// these three, so the flow only ever shows three screens while every capability survives.
     private enum WalkStep: Int, CaseIterable, Identifiable {
         case welcome
-        case privacy
         case addMemory
-        case seeYourself
-        case quickCapture
-        case connectTools
+        case finish
 
         var id: Int { rawValue }
     }
@@ -81,19 +80,15 @@ struct OnboardingView: View {
                     .kerning(0.8)
                     .foregroundColor(CortexDesign.inkFaint)
                 Spacer()
-                Button {
+                CortexButton(title: "Skip", role: .ghost, size: .small) {
                     skipTapped()
-                } label: {
-                    Text("Skip")
-                        .font(.system(size: 12, weight: .medium))
                 }
-                .buttonStyle(.borderless)
                 .help("Skip the walkthrough")
                 .accessibilityLabel("Skip the walkthrough")
             }
 
             // Progress dots — the current beat is a longer, wax-red capsule; visited beats stay
-            // filled, unvisited stay quiet. A quiet "Step N of 6" for orientation.
+            // filled, unvisited stay quiet. A quiet "Step N of 3" for orientation.
             HStack(spacing: 8) {
                 ForEach(steps) { s in
                     Capsule()
@@ -122,41 +117,43 @@ struct OnboardingView: View {
 
     private var footer: some View {
         HStack {
-            Button {
+            CortexButton(title: "Back", systemImage: "chevron.left", role: .ghost, size: .large) {
                 back()
-            } label: {
-                Label("Back", systemImage: "chevron.left")
             }
-            .buttonStyle(.borderless)
-            .controlSize(.large)
             .disabled(step == .welcome)
             .opacity(step == .welcome ? 0 : 1)
 
             Spacer()
 
-            if step == steps.last {
-                Button {
-                    finishTapped()
-                } label: {
-                    Label("Finish", systemImage: "checkmark.circle")
-                        .frame(minWidth: 120)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(celebrating)
-            } else {
-                Button {
-                    advance()
-                } label: {
-                    Label(step == .quickCapture ? "Almost there" : "Continue",
-                          systemImage: "chevron.right")
-                        .frame(minWidth: 120)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-            }
+            trailingFooterButton
         }
         .padding(20)
+    }
+
+    /// Exactly one `.primary` action per step: Continue on welcome, the connect card's action on
+    /// add-memory (Continue stays quiet there until a source is actually live), Finish at the end.
+    @ViewBuilder
+    private var trailingFooterButton: some View {
+        switch step {
+        case .welcome:
+            CortexButton(title: "Continue", systemImage: "chevron.right", role: .primary, size: .large) {
+                advance()
+            }
+        case .addMemory:
+            CortexButton(
+                title: "Continue",
+                systemImage: "chevron.right",
+                role: state.onboardingHasSource ? .primary : .ghost,
+                size: .large
+            ) {
+                advance()
+            }
+        case .finish:
+            CortexButton(title: "Finish", systemImage: "checkmark.circle", role: .primary, size: .large) {
+                finishTapped()
+            }
+            .disabled(celebrating)
+        }
     }
 
     // MARK: - Navigation
@@ -206,16 +203,10 @@ struct OnboardingView: View {
         switch step {
         case .welcome:
             OnboardingWelcomeStep(markSpace: markSpace)
-        case .privacy:
-            OnboardingPrivacyStep()
         case .addMemory:
             OnboardingAddMemoryStep(state: state, advance: advance)
-        case .seeYourself:
-            OnboardingSeeYourselfStep(state: state)
-        case .quickCapture:
-            OnboardingQuickCaptureStep(state: state)
-        case .connectTools:
-            OnboardingConnectToolsStep(state: state)
+        case .finish:
+            OnboardingFinishStep(state: state)
         }
     }
 
@@ -243,48 +234,13 @@ struct OnboardingView: View {
 
 // MARK: - Step 1: Welcome
 
-/// Warm one-sentence welcome + the Archive identity, over a gently breathing hero mark.
+/// The value prop in two short lines with the privacy reassurance folded in as one quiet caption,
+/// over a gently breathing hero mark. The old standalone privacy beat lives on as compact rows
+/// inside the "How it works" disclosure — same honesty gates, a third of the reading.
 private struct OnboardingWelcomeStep: View {
     let markSpace: Namespace.ID
+    @State private var howItWorksExpanded = false
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 26) {
-            HStack {
-                Spacer()
-                OnboardingHeroMark(systemImage: "brain.head.profile", tint: CortexDesign.accent)
-                    .matchedGeometryEffect(id: "hero", in: markSpace)
-                Spacer()
-            }
-            .padding(.top, 6)
-
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Welcome to \(DistributionMode.appDisplayName)")
-                    .font(CortexDesign.Typography.display(30))
-                    .foregroundColor(CortexDesign.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text("Cortex is a private archive of what you know — it quietly distills your notes into memory you can search, review, and let your AI tools cite.")
-                    .font(CortexDesign.Typography.prose(16))
-                    .lineSpacing(4)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            OnboardingCheckRow(
-                title: "A calm, considered space",
-                detail: "No feed, no noise — just your memory, kept like a well-tended library.",
-                systemImage: "books.vertical",
-                color: CortexDesign.gold
-            )
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-// MARK: - Step 2: Privacy first
-
-/// "Everything stays on your Mac", over a calm animated lock cradling a leaf.
-private struct OnboardingPrivacyStep: View {
     // The required-account build (CortexRequireAccount=true) syncs memory to the user's account, so
     // the "nothing is uploaded / no account needed" copy is only honest for the local-only build.
     // Gate on the same Info.plist flag AppState.accountRequired reads.
@@ -293,29 +249,44 @@ private struct OnboardingPrivacyStep: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 26) {
+        VStack(alignment: .leading, spacing: 22) {
             HStack {
                 Spacer()
-                OnboardingPrivacyMark()
+                OnboardingHeroMark(systemImage: "brain.head.profile", tint: CortexDesign.accent)
+                    .matchedGeometryEffect(id: "hero", in: markSpace)
                 Spacer()
             }
             .padding(.top, 6)
 
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Private, by design")
-                    .font(CortexDesign.Typography.display(28))
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Welcome to \(DistributionMode.appDisplayName)")
+                    .font(CortexDesign.Typography.display(30))
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text(accountRequired
-                     ? "Cortex builds and keeps your memory on your Mac, and syncs it to your account so it stays safe and reachable across your devices. Your memory is always yours."
-                     : "Everything stays on your Mac. Cortex builds and keeps your memory index locally — nothing is uploaded, and there is no account to create.")
+                Text("A private archive of what you know — your notes, distilled into memory you can search and let your AI tools cite.")
                     .font(CortexDesign.Typography.prose(16))
                     .lineSpacing(4)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                // The privacy beat, folded into one quiet line.
+                Text(accountRequired
+                     ? "Built and kept on your Mac, synced privately to your account. Your memory is always yours."
+                     : "Everything stays on your Mac — nothing is uploaded, and there's no account to create.")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
+            howItWorks
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The old privacy + philosophy beats, compressed into a quiet disclosure.
+    private var howItWorks: some View {
+        DisclosureGroup(isExpanded: $howItWorksExpanded) {
             VStack(alignment: .leading, spacing: 12) {
                 OnboardingCheckRow(
                     title: accountRequired ? "Built on your Mac" : "On this Mac only",
@@ -333,21 +304,33 @@ private struct OnboardingPrivacyStep: View {
                     systemImage: "person.crop.circle.badge.checkmark",
                     color: CortexDesign.sealMoss
                 )
+                OnboardingCheckRow(
+                    title: "A calm, considered space",
+                    detail: "No feed, no noise — just your memory, kept like a well-tended library.",
+                    systemImage: "books.vertical",
+                    color: CortexDesign.gold
+                )
             }
+            .padding(.top, 10)
+        } label: {
+            Text("How it works")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(CortexDesign.inkSecondary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 2)
     }
 }
 
-// MARK: - Step 3: Add your memory
+// MARK: - Step 2: Add your memory
 
-/// The two clear first-source paths (connect notes / explore with sample notes), beside an
-/// animated illustration of notes distilling into a single memory. Preserves the original
-/// first-source actions: `connectLocalNotesFolder` and `loadSampleNotes`, and honors the
-/// "drag in a ChatGPT / Claude export" promise with a real drop target + file picker.
+/// Every first-source path on one screen: connect a notes folder (the ONE primary action), the
+/// one-click app grid, the ChatGPT / Claude export drop target + file picker, and the
+/// "Explore with sample notes" escape hatch. Preserves the original first-source actions:
+/// `connectLocalNotesFolder` and `loadSampleNotes`, and honors the "drag in a ChatGPT / Claude
+/// export" promise with a real drop target + file picker.
 private struct OnboardingAddMemoryStep: View {
     @ObservedObject var state: AppState
-    /// Called after sample notes load so the walkthrough moves forward to "See yourself".
+    /// Called after sample notes load so the walkthrough moves forward to the closing beat.
     let advance: () -> Void
 
     @State private var loadingSamples = false
@@ -358,14 +341,14 @@ private struct OnboardingAddMemoryStep: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .top, spacing: 22) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Add your first memory")
                         .font(CortexDesign.Typography.display(26))
                         .foregroundColor(CortexDesign.ink)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Point Cortex at your notes and it distills the useful parts into memory. Pick a path — you can add more later.")
+                    Text("Point Cortex at your notes — it distills the useful parts into memory. Add more later.")
                         .font(CortexDesign.Typography.prose(15))
                         .lineSpacing(3)
                         .foregroundColor(CortexDesign.inkSecondary)
@@ -376,11 +359,13 @@ private struct OnboardingAddMemoryStep: View {
                     .padding(.top, 2)
             }
 
+            // The card carries the step's `.primary` while no source is live; once one is, the
+            // card relaxes to `.secondary` ("Change source") and the footer Continue takes over.
             OnboardingConnectionCard(
                 title: connectTitle,
                 detail: connectDetail,
                 systemImage: connectIcon,
-                isPrimary: true,
+                isPrimary: !state.onboardingHasSource,
                 status: connectStatus,
                 buttonTitle: connectButtonTitle,
                 buttonSystemImage: connectButtonIcon
@@ -402,33 +387,27 @@ private struct OnboardingAddMemoryStep: View {
         }
     }
 
-    /// The lighter, link-style path: bundled sample notes so a brand-new user (or a reviewer with
+    /// The lighter, ghost-role path: bundled sample notes so a brand-new user (or a reviewer with
     /// no files of their own) can see the full memory picture instantly, then advance.
     @ViewBuilder
     private var sampleNotesOption: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button {
+        VStack(alignment: .leading, spacing: 4) {
+            CortexButton(
+                title: loadingSamples ? "Loading sample notes…" : "Explore with sample notes",
+                systemImage: "sparkles",
+                role: .ghost
+            ) {
                 exploreWithSampleNotes()
-            } label: {
-                HStack(spacing: 7) {
-                    if loadingSamples {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "sparkles")
-                    }
-                    Text("Explore with sample notes")
-                }
             }
-            .buttonStyle(.link)
             .disabled(loadingSamples || state.isBusy)
 
             Text("No files of your own yet? Try Cortex on a small set of example notes.")
                 .font(.caption)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 2)
     }
 
     /// The priority "log in and it pulls your data" sources, surfaced IN onboarding instead of
@@ -526,12 +505,9 @@ private struct OnboardingAddMemoryStep: View {
                         .font(.callout)
                         .foregroundColor(CortexDesign.inkSecondary)
                     if !state.importInFlight {
-                        Button {
+                        CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .ghost, size: .small) {
                             state.importAIChatExport()
-                        } label: {
-                            Label("Choose export file…", systemImage: "folder.badge.plus")
                         }
-                        .buttonStyle(.link)
                     }
                 }
             )
@@ -567,7 +543,7 @@ private struct OnboardingAddMemoryStep: View {
 
     private var connectDetail: String {
         if state.onboardingHasSource {
-            return "Cortex found usable memory from your connected source. See yourself next."
+            return "Cortex found usable memory from your connected source. Continue when ready."
         }
         if state.hasConnectedObsidianVault {
             return "Cortex checks connected notes on launch and every 30 minutes, then distills new memory with citations."
@@ -607,11 +583,13 @@ private struct OnboardingAddMemoryStep: View {
     }
 }
 
-// MARK: - Step 4: See yourself
+// MARK: - Step 3: You're set
 
-/// A preview of the profile and "Your Constellation" graph forming, with the review → ask → cited
-/// answers loop explained in three calm rows.
-private struct OnboardingSeeYourselfStep: View {
+/// The closing beat: the Constellation preview and the review → ask → cited-answers loop as
+/// next-step pointers, plus the compact quick-capture opt-in, the AI-tools launch point, and the
+/// first-backup decision (the last setup-loop gate). Merged from the old see-yourself,
+/// quick-capture, and connect-tools beats so the walkthrough closes on one screen.
+private struct OnboardingFinishStep: View {
     @ObservedObject var state: AppState
 
     private var memoryCount: Int {
@@ -619,13 +597,13 @@ private struct OnboardingSeeYourselfStep: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("See yourself take shape")
+                Text("You're set")
                     .font(CortexDesign.Typography.display(26))
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("As memory accumulates, Cortex draws Your Constellation — the shape of what you know — and builds a profile you can browse.")
+                Text("As memory accumulates, Cortex draws Your Constellation — review it, ask it questions, get cited answers.")
                     .font(CortexDesign.Typography.prose(15))
                     .lineSpacing(3)
                     .foregroundColor(CortexDesign.inkSecondary)
@@ -633,7 +611,7 @@ private struct OnboardingSeeYourselfStep: View {
             }
 
             OnboardingConstellationPreview()
-                .frame(height: 190)
+                .frame(height: 140)
                 .frame(maxWidth: .infinity)
                 .background(CortexDesign.panelBackground)
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(CortexDesign.softBorder, lineWidth: 1))
@@ -642,14 +620,18 @@ private struct OnboardingSeeYourselfStep: View {
                     Text(memoryCount > 0 ? "Your Constellation · \(memoryCount) memories" : "Your Constellation")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundColor(CortexDesign.inkFaint)
-                        .padding(12)
+                        .padding(10)
                 }
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 OnboardingFlowRow(index: 1, title: "Review", detail: "Approve the memory worth keeping.", systemImage: "checklist")
                 OnboardingFlowRow(index: 2, title: "Ask", detail: "Question your memory in plain language.", systemImage: "sparkle.magnifyingglass")
                 OnboardingFlowRow(index: 3, title: "Cited answers", detail: "Every answer links back to the source.", systemImage: "quote.bubble")
             }
+
+            OnboardingQuickCaptureRow(state: state)
+
+            settingsCard
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task {
@@ -657,86 +639,86 @@ private struct OnboardingSeeYourselfStep: View {
             await state.loadProfile()
         }
     }
-}
 
-private struct OnboardingFlowRow: View {
-    let index: Int
-    let title: String
-    let detail: String
-    let systemImage: String
+    /// AI tools + the first-backup decision, as two compact rows with sensible defaults —
+    /// everything here can also be revisited later from Connections / Settings.
+    private var settingsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            aiToolsRow
+            Divider().opacity(0.5)
+            backupRow
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CortexDesign.panelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
 
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            ZStack {
-                Circle().fill(CortexDesign.accentSoft)
-                Image(systemName: systemImage)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(CortexDesign.accent)
-            }
-            .frame(width: 34, height: 34)
+    /// The old connect-tools beat as one row: nothing is required to finish.
+    private var aiToolsRow: some View {
+        HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                Text("Connect your AI tools")
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(CortexDesign.ink)
-                Text(detail)
+                Text("Let agents like Claude read and cite your approved memory — set up anytime.")
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 0)
-            if index < 3 {
-                Image(systemName: "arrow.down")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(CortexDesign.inkFaint)
+            Spacer(minLength: 8)
+            CortexButton(title: "Open Connections", systemImage: "link.circle", role: .secondary, size: .small) {
+                state.openConnectionsPrivacy(statusMessage: "Connect your AI tools")
+            }
+        }
+    }
+
+    /// The setup loop's last gate (`OnboardingStep.trustBackup`) needs an explicit first-backup
+    /// decision. Offer it here — back up now, or skip and decide later from Settings — so the
+    /// walkthrough can genuinely complete onboarding instead of only dismissing for the session.
+    @ViewBuilder
+    private var backupRow: some View {
+        if state.onboardingHasBackupDecision {
+            OnboardingCheckRow(
+                title: state.onboardingBackupDecision == "skipped" ? "Backup skipped for now" : "First backup saved",
+                detail: state.onboardingBackupDecision == "skipped"
+                    ? "You can back up anytime from Settings → Data & Recovery."
+                    : "Your local memory has a restorable snapshot on this Mac.",
+                systemImage: "archivebox",
+                color: CortexDesign.sealMoss
+            )
+        } else {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Back up your memory")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Save a restorable snapshot now, or decide later in Settings.")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                CortexButton(title: "Back Up Now", systemImage: "archivebox", role: .secondary, size: .small) {
+                    state.createBackup()
+                }
+                CortexButton(title: "Skip for now", role: .ghost, size: .small) {
+                    state.skipFirstBackup()
+                }
             }
         }
     }
 }
 
-// MARK: - Step 5: Quick capture (optional opt-in)
-
-/// An opt-in card for saving anything to Cortex with a keyboard shortcut. In App Store builds this
-/// is shown as "Available in the direct-download version" with the controls disabled — screen and
-/// keyboard capture are sandbox-incompatible and must never be offered in MAS.
-private struct OnboardingQuickCaptureStep: View {
+/// The quick-capture opt-in, compressed to one compact card. In App Store builds screen and
+/// keyboard capture are sandbox-incompatible, so this renders as a positive reassurance row
+/// instead — no dead toggle, and no reference to any other place to get the app (steering users
+/// off the App Store is a Guideline 4 / 2.3.2 issue).
+private struct OnboardingQuickCaptureRow: View {
     @ObservedObject var state: AppState
 
     private var isMAS: Bool { DistributionMode.isAppStore }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Text("Quick capture")
-                        .font(CortexDesign.Typography.display(26))
-                        .foregroundColor(CortexDesign.ink)
-                    Text("Optional")
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(CortexDesign.ink)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(CortexDesign.goldSoft))
-                }
-                Text("Save anything to Cortex with a shortcut — highlighted text or what's on screen goes straight into your Archive.")
-                    .font(CortexDesign.Typography.prose(15))
-                    .lineSpacing(3)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if isMAS {
-                masCard
-            } else {
-                enableCard
-            }
-
-            Text("You can change this anytime in Settings.")
-                .font(.caption)
-                .foregroundColor(CortexDesign.inkFaint)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
 
     /// Flipping the toggle on with no shortcut yet recorded would register no hotkey — the feature
     /// would read as "on" while doing nothing. Seed the shared ⌥⌘C default (`KeyCombo.defaultCapture`,
@@ -754,17 +736,38 @@ private struct OnboardingQuickCaptureStep: View {
         )
     }
 
+    var body: some View {
+        Group {
+            if isMAS {
+                OnboardingCheckRow(
+                    title: "Everything becomes memory, automatically",
+                    detail: "Add notes or import your chats any time and \(DistributionMode.appDisplayName) distills them into cited memory on your Mac — no extra setup.",
+                    systemImage: "checkmark.seal",
+                    color: CortexDesign.gold
+                )
+            } else {
+                enableRows
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CortexDesign.panelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
     /// Direct-download build: a live opt-in toggle + a keybind recorder, bound to AppState.
-    private var enableCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
+    private var enableRows: some View {
+        VStack(alignment: .leading, spacing: 12) {
             Toggle(isOn: enabledBinding) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Enable quick capture")
-                        .font(.system(size: 14, weight: .semibold))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Quick capture")
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(CortexDesign.ink)
-                    Text("Turn on to capture with a global shortcut.")
+                    Text("Optional — save anything with a global shortcut. Change it anytime in Settings.")
                         .font(.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .toggleStyle(.switch)
@@ -772,7 +775,7 @@ private struct OnboardingQuickCaptureStep: View {
             if state.quickCaptureEnabled {
                 Divider().opacity(0.5)
                 HStack(alignment: .center, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text("Shortcut")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(CortexDesign.ink)
@@ -786,141 +789,20 @@ private struct OnboardingQuickCaptureStep: View {
                     KeybindRecorderView(combo: $state.quickCaptureKeybind)
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
-            }
 
-            // Pure-visual preview of the capture pill so the user experiences the notch during
-            // onboarding (no backend needed). Uses the same .captured style that a real quick
-            // capture surfaces. Direct-download only — deliberately absent from masCard.
-            Button {
-                NotchNotifier.shared.show(
-                    title: "Saved to Cortex",
-                    subtitle: "This is what a quick capture looks like.",
-                    style: .captured
-                )
-            } label: {
-                Label("Show me the notch", systemImage: "bell.badge")
+                // Pure-visual preview of the capture pill so the user experiences the notch during
+                // onboarding (no backend needed). Uses the same .captured style that a real quick
+                // capture surfaces. Direct-download only — deliberately absent from the MAS row.
+                CortexButton(title: "Show me the notch", systemImage: "bell.badge", role: .ghost, size: .small) {
+                    NotchNotifier.shared.show(
+                        title: "Saved to Cortex",
+                        subtitle: "This is what a quick capture looks like.",
+                        style: .captured
+                    )
+                }
             }
-            .buttonStyle(.bordered)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
         .animation(.easeInOut(duration: 0.22), value: state.quickCaptureEnabled)
-    }
-
-    /// Mac App Store build: this beat just reassures — no dead toggle, and no reference to any
-    /// other place to get the app (steering users off the App Store is a Guideline 4 / 2.3.2 issue).
-    /// A positive statement of what the sandboxed build does.
-    private var masCard: some View {
-        OnboardingCheckRow(
-            title: "Everything becomes memory, automatically",
-            detail: "Add notes or import your chats any time and \(DistributionMode.appDisplayName) distills them into cited memory on your Mac — no extra setup.",
-            systemImage: "checkmark.seal",
-            color: CortexDesign.gold
-        )
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-}
-
-// MARK: - Step 6: Connect your AI tools
-
-/// Brief close: point to Connections for wiring up AI tools, record the first backup decision
-/// (the last setup-loop gate), and finish.
-private struct OnboardingConnectToolsStep: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            HStack {
-                Spacer()
-                OnboardingHeroMark(systemImage: "point.3.connected.trianglepath.dotted", tint: CortexDesign.accent)
-                Spacer()
-            }
-            .padding(.top, 6)
-
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Connect your AI tools")
-                    .font(CortexDesign.Typography.display(26))
-                    .foregroundColor(CortexDesign.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("Let agents like Claude read and cite your approved memory. Set this up in Connections whenever you're ready — nothing is required to finish.")
-                    .font(CortexDesign.Typography.prose(15))
-                    .lineSpacing(3)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Button {
-                state.openConnectionsPrivacy(statusMessage: "Connect your AI tools")
-            } label: {
-                Label("Open Connections", systemImage: "link.circle")
-                    .frame(minWidth: 180, minHeight: 44)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-
-            backupCard
-
-            OnboardingCheckRow(
-                title: "You're set up",
-                detail: "Press Finish to enter your Archive. You can revisit any of this later.",
-                systemImage: "checkmark.seal.fill",
-                color: CortexDesign.sealMoss
-            )
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// The setup loop's last gate (`OnboardingStep.trustBackup`) needs an explicit first-backup
-    /// decision. Offer it here — back up now, or skip and decide later from Settings — so the
-    /// walkthrough can genuinely complete onboarding instead of only dismissing for the session.
-    @ViewBuilder
-    private var backupCard: some View {
-        if state.onboardingHasBackupDecision {
-            OnboardingCheckRow(
-                title: state.onboardingBackupDecision == "skipped" ? "Backup skipped for now" : "First backup saved",
-                detail: state.onboardingBackupDecision == "skipped"
-                    ? "You can back up anytime from Settings → Data & Recovery."
-                    : "Your local memory has a restorable snapshot on this Mac.",
-                systemImage: "archivebox",
-                color: CortexDesign.sealMoss
-            )
-        } else {
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Back up your memory")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(CortexDesign.ink)
-                    Text("Save a restorable snapshot of your local memory, or decide later in Settings.")
-                        .font(.caption)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                HStack(spacing: 10) {
-                    Button {
-                        state.createBackup()
-                    } label: {
-                        Label("Back Up Now", systemImage: "archivebox")
-                    }
-                    .buttonStyle(.bordered)
-                    Button("Skip for now") {
-                        state.skipFirstBackup()
-                    }
-                    .buttonStyle(.borderless)
-                }
-            }
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(CortexDesign.panelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-        }
     }
 }
 
@@ -956,33 +838,6 @@ struct OnboardingHeroMark: View {
                 .foregroundColor(tint)
                 .scaleEffect(animate ? 1.05 : 0.95)
                 .animation(.easeInOut(duration: 2).repeatForever(autoreverses: true), value: animate)
-        }
-        .frame(width: 96, height: 96)
-        .onAppear { animate = true }
-        .accessibilityHidden(true)
-    }
-}
-
-/// A calm lock cradling a leaf — the privacy mark. The leaf drifts and the lock ring breathes.
-private struct OnboardingPrivacyMark: View {
-    @State private var animate = false
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(CortexDesign.sealMoss.opacity(0.12))
-                .frame(width: 78, height: 78)
-                .scaleEffect(animate ? 1.04 : 0.96)
-                .animation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true), value: animate)
-            Image(systemName: "lock.shield")
-                .font(.system(size: 34, weight: .semibold))
-                .foregroundColor(CortexDesign.sealMoss)
-            Image(systemName: "leaf.fill")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(CortexDesign.sealMoss.opacity(0.85))
-                .offset(x: 22, y: animate ? -20 : -14)
-                .rotationEffect(.degrees(animate ? 6 : -6))
-                .animation(.easeInOut(duration: 2.8).repeatForever(autoreverses: true), value: animate)
         }
         .frame(width: 96, height: 96)
         .onAppear { animate = true }
@@ -1131,32 +986,20 @@ struct OnboardingConnectionCard: View {
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
-            actionButton
+            CortexButton(
+                title: buttonTitle,
+                systemImage: buttonSystemImage,
+                role: isPrimary ? .primary : .secondary,
+                size: .large,
+                fullWidth: true,
+                action: action
+            )
         }
         .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 176, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(isPrimary ? CortexDesign.panelBackground : CortexDesign.cardBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke((isPrimary ? Color.accentColor : Color(nsColor: .separatorColor)).opacity(isPrimary ? 0.32 : 0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    @ViewBuilder
-    private var actionButton: some View {
-        if isPrimary {
-            Button(action: action) {
-                Label(buttonTitle, systemImage: buttonSystemImage)
-                    .frame(maxWidth: .infinity, minHeight: 46)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-        } else {
-            Button(action: action) {
-                Label(buttonTitle, systemImage: buttonSystemImage)
-                    .frame(maxWidth: .infinity, minHeight: 42)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-        }
     }
 }
 
@@ -1236,6 +1079,41 @@ struct OnboardingCheckRow: View {
                     .textSelection(.enabled)
             }
             Spacer()
+        }
+    }
+}
+
+/// One compact "what's next" pointer row (Review → Ask → Cited answers).
+private struct OnboardingFlowRow: View {
+    let index: Int
+    let title: String
+    let detail: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle().fill(CortexDesign.accentSoft)
+                Image(systemName: systemImage)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+            }
+            .frame(width: 34, height: 34)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(CortexDesign.ink)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            if index < 3 {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(CortexDesign.inkFaint)
+            }
         }
     }
 }

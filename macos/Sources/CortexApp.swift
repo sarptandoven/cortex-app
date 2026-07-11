@@ -8675,19 +8675,22 @@ struct IntegrationCenterView: View {
     private var quickActions: some View {
         HStack {
             if detectedCount > connectedCount {
-                Button {
-                    state.installDetectedIntegrations()
-                } label: {
-                    Label("Connect tools", systemImage: "wand.and.stars")
+                CortexButton(
+                    title: DistributionMode.isAppStore ? "Copy setup config" : "Connect tools",
+                    systemImage: DistributionMode.isAppStore ? "doc.on.doc" : "wand.and.stars",
+                    role: .primary
+                ) {
+                    if DistributionMode.isAppStore {
+                        state.copyMCPConfig()
+                    } else {
+                        state.installDetectedIntegrations()
+                    }
                 }
-                .buttonStyle(.borderedProminent)
             }
 
             if !compact || detectedCount == 0 {
-                Button {
+                CortexButton(title: "Refresh", systemImage: "arrow.clockwise", role: .ghost) {
                     state.refreshIntegrationStates()
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
                 }
             }
 
@@ -10977,37 +10980,39 @@ struct CaptureCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(alignment: .firstTextBaseline) {
                 Text((capture.title ?? capture.source).isEmpty ? "Untitled review item" : (capture.title ?? capture.source))
-                    .font(.headline)
+                    .font(CortexDesign.Typography.title)
+                    .foregroundColor(CortexDesign.ink)
                     .lineLimit(1)
                 Spacer()
-                Text(capture.source)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
             }
-            Text(capture.summary ?? "")
-                .font(.body)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Text("\(capture.memory_count ?? 0) memories")
-                Text("\(capture.task_count ?? 0) tasks")
-                if let date = capture.captured_at {
-                    Text(String(date.prefix(10)))
-                }
-                Spacer()
+            if let summary = capture.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(CortexDesign.Typography.prose())
+                    .foregroundColor(CortexDesign.ink)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .font(.caption)
-            .foregroundColor(.secondary)
-            HStack {
-                Button("Approve") { approve() }
-                Button("Archive") { archive() }
+            HStack(alignment: .center) {
+                AccessionStamp(segments: [
+                    capture.source,
+                    "\(capture.memory_count ?? 0) memories",
+                    String((capture.captured_at ?? "").prefix(10)),
+                ].filter { !$0.isEmpty })
                 Spacer()
+                CortexButton(title: "Archive", role: .ghost, size: .small) { archive() }
+                CortexButton(title: "Approve", role: .primary, size: .small) { approve() }
             }
         }
-        .padding(10)
-        .background(CortexDesign.panelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(CortexDesign.Space.md)
+        .background(CortexDesign.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(CortexDesign.hairline, lineWidth: 1)
+        )
+        .archiveSpine(CortexDesign.gold)
     }
 }
 
@@ -11043,8 +11048,7 @@ struct MemoryCard: View {
                         ProgressView()
                             .controlSize(.small)
                     }
-                    Button("Forget") { confirmForget = true }
-                        .font(.caption)
+                    CortexButton(title: "Forget", role: .ghost, size: .small) { confirmForget = true }
                         .disabled(isInFlight)
                         .confirmationDialog("Forget this memory?", isPresented: $confirmForget) {
                             Button("Forget", role: .destructive) {

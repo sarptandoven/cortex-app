@@ -36,7 +36,7 @@ struct AskTab: View {
                         AskEmptyGuidance(
                             state: state,
                             title: "Ask your notes",
-                            detail: "Ask about a project, person, decision, or detail from your reviewed notes. Cortex answers with sources.",
+                            detail: "Cortex answers from your reviewed notes, with sources.",
                             showActionsWhenMemoryExists: false
                         )
                         AskSuggestedQuestions(state: state)
@@ -96,12 +96,12 @@ struct AskTab: View {
 
     private var askSetupDetail: String {
         if pendingReviewCount > 0 {
-            return "Approve one useful memory in Review. Then Ask can answer with citations."
+            return "Approve one useful memory in Review, then Ask can answer with citations."
         }
         if state.hasConnectedSourceAccount || state.hasConnectedObsidianVault {
-            return "Cortex needs reviewed memory before Ask can answer. Sync your source, then approve one useful item."
+            return "Sync your source, then approve one useful item in Review."
         }
-        return "Choose notes or a connected source. Cortex will sync locally, send useful memory to Review, and only then answer with sources."
+        return "Connect notes or a source — Cortex answers only from reviewed memory."
     }
 }
 
@@ -134,25 +134,15 @@ struct AskQuerySection: View {
                     }
                 }
             if !state.searchQuery.isEmpty {
-                Button {
+                CortexIconButton(systemImage: "xmark.circle.fill", role: .ghost, size: .small, help: "Clear") {
                     state.searchQuery = ""
                     queryFocused = true
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(CortexDesign.inkFaint)
                 }
-                .buttonStyle(.plain)
-                .help("Clear")
             }
-            Button {
+            // The one primary action on this surface.
+            CortexButton(title: "Ask", role: .primary, size: .large) {
                 state.runSearch()
-            } label: {
-                Text("Ask")
-                    .fontWeight(.semibold)
-                    .frame(minWidth: 76, minHeight: 40)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
             .disabled(state.isBusy || trimmedQuery.isEmpty)
         }
         .padding(.horizontal, CortexDesign.Space.md)
@@ -184,6 +174,7 @@ struct AskQuerySection: View {
 
 struct AskMemoryContextStrip: View {
     @ObservedObject var state: AppState
+    @State private var detailsExpanded = false
 
     private var report: SourceReadinessResponse? {
         state.sourceReadinessReport
@@ -281,75 +272,79 @@ struct AskMemoryContextStrip: View {
     }
 
     var body: some View {
-        // Healthy = nothing at all — the question field is the star. The diagnostic card only
-        // appears when something actually needs the user (a source needs attention or items
-        // wait in Review).
+        // Healthy = nothing at all — the question field is the star. When something actually
+        // needs the user (a source needs attention or items wait in Review), ONE quiet line
+        // appears; the telemetry tucks behind a small "Details" disclosure.
         if needsAttentionCount > 0 || (memoryCount == 0 && pendingCount > 0) {
-            fullDiagnosticCard
+            compactDiagnosticLine
         }
     }
 
-    private var fullDiagnosticCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
+    private var compactDiagnosticLine: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
                 Image(systemName: statusIcon)
-                    .font(.headline)
+                    .font(.caption)
                     .foregroundColor(statusColor)
-                    .frame(width: 28, height: 28)
-                    .background(statusColor.opacity(0.11))
-                    .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
-                        .font(CortexDesign.Typography.title)
-                        .foregroundColor(CortexDesign.ink)
-                    Text(detail)
-                        .font(CortexDesign.Typography.body)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
+                Text(title)
+                    .font(CortexDesign.Typography.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
+                    .lineLimit(1)
+                Text(detail)
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 Spacer(minLength: 0)
             }
 
-            HStack(spacing: 8) {
-                AskContextMetric(
-                    title: "Freshness",
-                    value: freshnessLabel,
-                    systemImage: "clock.arrow.circlepath"
-                )
-                AskContextMetric(
-                    title: "Citation confidence",
-                    value: citationConfidenceLabel,
-                    systemImage: "link.badge.plus"
-                )
-                AskContextMetric(
-                    title: "Source health",
-                    value: sourceHealthLabel,
-                    systemImage: "waveform.path.ecg"
-                )
-            }
-
-            if !relevantSources.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(Array(relevantSources.prefix(3))) { source in
-                        AskSourceConfidenceChip(source: source)
+            DisclosureGroup(isExpanded: $detailsExpanded) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        AskContextMetric(
+                            title: "Freshness",
+                            value: freshnessLabel,
+                            systemImage: "clock.arrow.circlepath"
+                        )
+                        AskContextMetric(
+                            title: "Citation confidence",
+                            value: citationConfidenceLabel,
+                            systemImage: "link.badge.plus"
+                        )
+                        AskContextMetric(
+                            title: "Source health",
+                            value: sourceHealthLabel,
+                            systemImage: "waveform.path.ecg"
+                        )
                     }
-                    if relevantSources.count > 3 {
-                        Text("+\(relevantSources.count - 3) more")
-                            .font(CortexDesign.Typography.caption)
-                            .foregroundColor(CortexDesign.inkSecondary)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(CortexDesign.panelBackground)
-                            .clipShape(Capsule())
-                            .overlay(Capsule().stroke(CortexDesign.hairline, lineWidth: 1))
+                    if !relevantSources.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(Array(relevantSources.prefix(3))) { source in
+                                AskSourceConfidenceChip(source: source)
+                            }
+                            if relevantSources.count > 3 {
+                                Text("+\(relevantSources.count - 3) more")
+                                    .font(CortexDesign.Typography.caption)
+                                    .foregroundColor(CortexDesign.inkSecondary)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 5)
+                                    .background(CortexDesign.panelBackground)
+                                    .clipShape(Capsule())
+                                    .overlay(Capsule().stroke(CortexDesign.hairline, lineWidth: 1))
+                            }
+                            Spacer(minLength: 0)
+                        }
                     }
-                    Spacer(minLength: 0)
                 }
+                .padding(.top, 6)
+            } label: {
+                Text("Details")
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
             }
         }
-        .cortexCard(padding: CortexDesign.Space.md, background: CortexDesign.panelBackground)
+        .cortexCard(padding: CortexDesign.Space.sm, background: CortexDesign.panelBackground)
     }
 
     private var freshnessLabel: String {
@@ -496,14 +491,9 @@ struct AskErrorCard: View {
 
             HStack(spacing: 10) {
                 Spacer(minLength: 0)
-                Button {
+                CortexButton(title: "Retry", systemImage: "arrow.clockwise", role: .secondary) {
                     state.runSearch()
-                } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                        .frame(minWidth: 120, minHeight: 44)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
                 .disabled(state.isBusy)
             }
         }
@@ -520,25 +510,29 @@ struct AskErrorCard: View {
 struct AskResponseSection: View {
     @ObservedObject var state: AppState
     @Binding var citedMemoriesExpanded: Bool
+    /// The question the visible answer actually answered — snapshotted when an answer lands, so
+    /// editing the field without re-asking never relabels an old answer.
+    @State private var askedQuestion = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if !state.askAnswer.isEmpty {
                 AskAnswerPanel(
                     answer: state.askAnswer,
-                    citations: state.askCitations
+                    citations: state.askCitations,
+                    question: askedQuestion.isEmpty ? state.searchQuery : askedQuestion
                 )
             } else if state.searchResults.isEmpty {
                 AskEmptyGuidance(
                     state: state,
                     title: "No cited answer found",
-                    detail: "I could not find that in reviewed notes yet. Review new synced items or try a more specific question.",
+                    detail: "Nothing in reviewed notes matches yet — try a more specific question.",
                     showActionsWhenMemoryExists: true
                 )
             } else {
                 AskQuietState(
                     title: "Matching memory found",
-                    detail: "Cortex found related memory, but no answer was returned. Open sources below."
+                    detail: "Related memory found, but no direct answer. Open sources below."
                 )
             }
 
@@ -556,6 +550,12 @@ struct AskResponseSection: View {
                         .foregroundColor(CortexDesign.inkSecondary)
                 }
             }
+        }
+        .onAppear {
+            askedQuestion = state.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        .onChange(of: state.askAnswer) { _ in
+            askedQuestion = state.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 
@@ -596,37 +596,25 @@ struct AskEmptyGuidance: View {
 
             if approvedMemoryCount == 0 || showActionsWhenMemoryExists {
                 HStack(spacing: 10) {
-                    if approvedMemoryCount == 0 {
-                        if pendingReviewCount > 0 {
-                            Button {
-                                state.selectedTab = .review
-                                state.status = "Review memory"
-                            } label: {
-                                Label("Review memory", systemImage: "checklist")
-                                    .frame(minWidth: 164, minHeight: 46)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.large)
-                        } else {
-                            Button {
-                                startNotesSync()
-                            } label: {
-                                Label(primarySourceActionTitle, systemImage: primarySourceActionIcon)
-                                    .frame(minWidth: 172, minHeight: 46)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.large)
+                    if approvedMemoryCount == 0 && pendingReviewCount == 0 {
+                        CortexButton(
+                            title: primarySourceActionTitle,
+                            systemImage: primarySourceActionIcon,
+                            role: .secondary,
+                            size: .large
+                        ) {
+                            startNotesSync()
                         }
                     } else {
-                        Button {
+                        CortexButton(
+                            title: "Review memory",
+                            systemImage: "checklist",
+                            role: .secondary,
+                            size: .large
+                        ) {
                             state.selectedTab = .review
-                            state.status = "Review more memory"
-                        } label: {
-                            Label("Review memory", systemImage: "checklist")
-                                .frame(minWidth: 150, minHeight: 46)
+                            state.status = approvedMemoryCount == 0 ? "Review memory" : "Review more memory"
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -696,7 +684,12 @@ struct AskSuggestedQuestions: View {
                     .fontWeight(.semibold)
                     .foregroundColor(CortexDesign.inkSecondary)
                 ForEach(suggestions.prefix(2), id: \.self) { suggestion in
-                    AskSuggestionChip(text: suggestion) {
+                    CortexButton(
+                        title: suggestion,
+                        systemImage: "sparkle.magnifyingglass",
+                        role: .secondary,
+                        fullWidth: true
+                    ) {
                         state.searchQuery = suggestion
                         state.runSearch()
                     }
@@ -706,52 +699,16 @@ struct AskSuggestedQuestions: View {
     }
 }
 
-struct AskSuggestionChip: View {
-    let text: String
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: "sparkle.magnifyingglass")
-                    .font(.caption)
-                    .foregroundColor(CortexDesign.accent)
-                Text(text)
-                    .font(CortexDesign.Typography.caption)
-                    .foregroundColor(CortexDesign.ink)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 0)
-                Image(systemName: "arrow.right")
-                    .font(.caption2)
-                    .foregroundColor(CortexDesign.inkFaint)
-                    .opacity(hovering ? 1 : 0)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(hovering ? CortexDesign.accentSoft : CortexDesign.panelBackground)
-            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
-                    .stroke(CortexDesign.hairline, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-    }
-}
-
 struct AskResultsSection: View {
     @ObservedObject var state: AppState
 
     var body: some View {
         Group {
             if state.searchResults.isEmpty && !state.hasSearched {
-                AskQuietState(title: "Ask your notes", detail: "Ask about a project, person, decision, or detail from reviewed notes.")
+                AskQuietState(title: "Ask your notes", detail: "Cortex answers from your reviewed notes, with sources.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if state.searchResults.isEmpty {
-                AskQuietState(title: "No cited result matched", detail: "Review new synced items or try a more specific question.")
+                AskQuietState(title: "No cited result matched", detail: "Try a more specific question, or review new synced items.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -863,26 +820,28 @@ struct AskAnswerPanel: View {
                 Spacer()
                 // Copy is a post-reading action — revealed only while the pointer is over the
                 // panel, so the answer opens as prose instead of chrome.
-                Button {
+                CortexButton(
+                    title: justCopied ? "Copied" : "Copy",
+                    systemImage: justCopied ? "checkmark" : "doc.on.doc",
+                    role: .ghost,
+                    size: .small
+                ) {
                     copyAnswerWithSources()
-                } label: {
-                    Label(justCopied ? "Copied" : "Copy",
-                          systemImage: justCopied ? "checkmark" : "doc.on.doc")
-                        .font(.caption)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
                 .disabled(justCopied)
                 .help("Copy the answer with its sources")
                 .opacity(hovering || justCopied ? 1 : 0)
                 .animation(.easeOut(duration: 0.12), value: hovering)
             }
             if let echoedQuestion {
+                // The asked question, echoed quietly above the answer so the prose has context.
                 Text(echoedQuestion)
                     .font(.system(size: 14, design: .serif))
                     .italic()
                     .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(echoedQuestion)
                     .frame(maxWidth: 620, alignment: .leading)
             }
             Text(answer)
@@ -907,12 +866,13 @@ struct AskAnswerPanel: View {
                         AskCitationRow(citation: citation)
                     }
                     if citations.count > Self.collapsedCitationCount {
-                        Button(showAllCitations ? "Show fewer citations" : "Show all \(citations.count) citations") {
+                        CortexButton(
+                            title: showAllCitations ? "Show fewer citations" : "Show all \(citations.count) citations",
+                            role: .ghost,
+                            size: .small
+                        ) {
                             showAllCitations.toggle()
                         }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundColor(CortexDesign.accent)
                     }
                 }
             }
@@ -971,66 +931,44 @@ struct AskCitationRow: View {
                 rowContent(openable: true)
             }
             .buttonStyle(.plain)
-            .help("Open source")
+            .help(helpText(openable: true))
             .accessibilityAddTraits(.isLink)
         } else {
             rowContent(openable: false)
+                .help(helpText(openable: false))
         }
     }
 
     private func rowContent(openable: Bool) -> some View {
-        // A footnote ledger entry: mono wax-red numeral, SF title in ink, then a dotted leader
-        // running out to a right-aligned mono line-range/date — a table-of-contents line.
+        // One clean footnote line: mono wax-red numeral, source label + short title in ink,
+        // then the line range/date as a quiet right-aligned stamp. The excerpt tucks into the
+        // tooltip so each citation stays a single readable line.
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("\(citation.index).")
                 .font(CortexDesign.Typography.stamp)
                 .foregroundColor(CortexDesign.accent)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(sourceLabel)
-                        .font(.system(size: 12))
-                        .foregroundColor(CortexDesign.ink)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if openable {
-                        Image(systemName: "arrow.up.right.square")
-                            .font(.caption2)
-                            .foregroundColor(CortexDesign.accent)
-                    }
-                    if let trailing = leaderLabel {
-                        AskDottedLeader()
-                            .stroke(CortexDesign.hairline, style: StrokeStyle(lineWidth: 1, dash: [1, 3]))
-                            .frame(height: 3)
-                            .frame(minWidth: 12)
-                        Text(trailing.uppercased())
-                            .font(CortexDesign.Typography.stamp)
-                            .kerning(0.8)
-                            .foregroundColor(CortexDesign.inkFaint)
-                            .lineLimit(1)
-                            .layoutPriority(1)
-                    } else {
-                        Spacer(minLength: 0)
-                    }
-                }
-                if let detail = sourceDetail {
-                    Text(detail)
-                        .font(.caption2)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                if !excerpt.isEmpty {
-                    Text(excerpt)
-                        .font(.caption)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            Text(compactTitle)
+                .font(.system(size: 12))
+                .foregroundColor(CortexDesign.ink)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if openable {
+                Image(systemName: "arrow.up.right.square")
+                    .font(.caption2)
+                    .foregroundColor(CortexDesign.accent)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: 8)
+            if let trailing = leaderLabel {
+                Text(trailing.uppercased())
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+            }
         }
         .padding(.horizontal, 6)
-        .padding(.vertical, 4)
+        .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(hovering && openable ? CortexDesign.accentSoft : Color.clear)
@@ -1039,6 +977,21 @@ struct AskCitationRow: View {
         .onHover { inside in
             hovering = inside
         }
+    }
+
+    /// Source label plus its short title (section/scope) on one line, separated by a middle dot.
+    private var compactTitle: String {
+        guard let detail = sourceDetail else { return sourceLabel }
+        return "\(sourceLabel) · \(detail)"
+    }
+
+    /// Tooltip carries the tucked excerpt (when present) so no citation data is lost to the
+    /// one-line layout; otherwise it names the click affordance.
+    private func helpText(openable: Bool) -> String {
+        if !excerpt.isEmpty {
+            return openable ? "\(excerpt)\n\nClick to open source" : excerpt
+        }
+        return openable ? "Open source" : compactTitle
     }
 
     private var sourceLabel: String {
@@ -1088,16 +1041,5 @@ struct AskCitationRow: View {
         // A bare file path adds nothing under a row that already names the source — suppress it.
         if MemoryText.isPathLike(raw) { return "" }
         return raw
-    }
-}
-
-/// The dotted leader of a footnote ledger row — a hairline of 1pt dots stretching between the
-/// source title and its right-aligned line range, like a table-of-contents line.
-private struct AskDottedLeader: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: 0, y: rect.midY))
-        path.addLine(to: CGPoint(x: rect.width, y: rect.midY))
-        return path
     }
 }

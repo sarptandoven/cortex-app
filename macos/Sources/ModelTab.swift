@@ -6,12 +6,15 @@ struct ModelTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                if let progress = state.syncProgress, progress.active {
-                    SyncProgressCard(progress: progress)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
+            VStack(alignment: .leading, spacing: CortexDesign.Space.xl) {
+                // Tier 1 — the hero: one headline, ONE primary action. Live sync progress
+                // and the source status line now live inside it, so status has one home.
                 HomeHeroSection(state: state, review: state.review)
+
+                // Tier 2 — the at-a-glance numbers (hidden until there is something to count).
+                HomeStatStrip(state: state, review: state.review)
+
+                // Tier 3 — secondary cards: Mirror insight, Constellation, twin, profile.
                 if state.mirrorInsight != nil {
                     MirrorMomentCard(state: state)
                         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -21,17 +24,17 @@ struct ModelTab: View {
                         HStack(alignment: .firstTextBaseline) {
                             SectionHeader(
                                 title: "Your Constellation",
-                                detail: "The people, projects, and topics Cortex has learned about — and how they connect."
+                                detail: "People, projects, and topics — and how they connect."
                             )
                             Spacer(minLength: CortexDesign.Space.md)
-                            Button {
+                            CortexButton(
+                                title: "Open full view",
+                                systemImage: "arrow.up.left.and.arrow.down.right",
+                                role: .ghost,
+                                size: .small
+                            ) {
                                 NotificationCenter.default.post(name: .cortexPresentConstellation, object: nil)
-                            } label: {
-                                Label("Open full view", systemImage: "arrow.up.left.and.arrow.down.right")
-                                    .font(CortexDesign.Typography.caption.weight(.semibold))
                             }
-                            .buttonStyle(.bordered)
-                            .tint(CortexDesign.accent)
                             .help("Open the Constellation full-screen")
                         }
                         MemoryMapView(state: state)
@@ -57,7 +60,7 @@ struct ModelTab: View {
                                 .accessibilityLabel(segments.joined(separator: ", "))
                         }
                     }
-                    .padding(.top, CortexDesign.Space.xl)
+                    .padding(.top, CortexDesign.Space.md)
                     ForEach(profile.sections) { section in
                         ProfileCard(section: section)
                     }
@@ -129,8 +132,8 @@ struct ModelTab: View {
 }
 
 /// A real, changing sync-progress bar (determinate, driven by the job queue) shown while Cortex
-/// is turning newly-synced content into cited memory. The "learning about you" panel below it
-/// refreshes live as the queue drains, so the user watches memory build in real time.
+/// is turning newly-synced content into cited memory. Rendered inside the hero (its one
+/// status home) so the user watches memory build in real time without a second status card.
 struct SyncProgressCard: View {
     let progress: SyncProgress
 
@@ -172,6 +175,38 @@ struct SyncProgressCard: View {
     }
 }
 
+/// Tier 2 of Home: the at-a-glance numbers — Memories, Entities, and what's waiting in
+/// Review — in one quiet strip of `CortexStatView`s. Hidden until the engine is up and at
+/// least one number is non-zero, so brand-new users see the three-step map, not a row of
+/// zeros. Falls back from the daily review payload to the raw stats endpoint, mirroring
+/// the hero's own counting rules.
+struct HomeStatStrip: View {
+    @ObservedObject var state: AppState
+    let review: DailyReviewResponse?
+
+    private var memories: Int { review?.stats.memories ?? state.stats?.memories ?? 0 }
+    private var entities: Int { review?.stats.entities ?? state.stats?.entities ?? 0 }
+    private var pending: Int { review?.stats.pending_captures ?? state.inbox.count }
+
+    var body: some View {
+        if state.isLocalServiceReady && (memories > 0 || entities > 0 || pending > 0) {
+            HStack(alignment: .top, spacing: 0) {
+                CortexStatView(value: memories.formatted(), label: "Memories")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                CortexStatView(value: entities.formatted(), label: "Entities")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                CortexStatView(value: pending.formatted(), label: "To review")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .cortexCard(padding: CortexDesign.Space.md)
+            .frame(maxWidth: 620, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(memories) memories, \(entities) entities, \(pending) to review")
+            .transition(.opacity)
+        }
+    }
+}
+
 /// The "Mirror Moment" — the "holy-shit, it knows me" beat. Surfaces the single thing
 /// Cortex learned about the user, in their words, with its source, and lets them confirm
 /// or dismiss in one tap. Only rendered when `state.mirrorInsight != nil`; if the backend
@@ -205,7 +240,7 @@ struct MirrorMomentCard: View {
                     .foregroundColor(CortexDesign.accent)
                     .accessibilityHidden(true)
 
-                Text(MemoryText.displayProse(insight.headline, maxLength: 220))
+                Text(MemoryText.displayProse(insight.headline, maxLength: 180))
                     .font(CortexDesign.Typography.display(22))
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -219,24 +254,14 @@ struct MirrorMomentCard: View {
                 }
 
                 HStack(spacing: CortexDesign.Space.sm) {
-                    Button {
+                    CortexButton(title: "That's right", systemImage: "checkmark", role: .secondary) {
                         state.confirmMirrorInsight()
-                    } label: {
-                        Label("That's right", systemImage: "checkmark")
-                            .frame(minHeight: CortexDesign.controlHeight - 8)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
                     .accessibilityLabel("That's right, this is accurate")
 
-                    Button {
+                    CortexButton(title: "Not quite", systemImage: "xmark", role: .ghost) {
                         state.dismissMirrorInsight()
-                    } label: {
-                        Label("Not quite", systemImage: "xmark")
-                            .frame(minHeight: CortexDesign.controlHeight - 8)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
                     .accessibilityLabel("Not quite, dismiss this")
 
                     Spacer(minLength: 0)
@@ -245,7 +270,7 @@ struct MirrorMomentCard: View {
             .cortexCard(background: CortexDesign.accentSoft)
             .frame(maxWidth: 620, alignment: .leading)
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Cortex noticed: \(MemoryText.displayProse(insight.headline, maxLength: 220))")
+            .accessibilityLabel("Cortex noticed: \(MemoryText.displayProse(insight.headline, maxLength: 180))")
         }
     }
 }
@@ -295,7 +320,7 @@ struct ProfileCard: View {
             }
 
             if let statement = section.statement, !statement.isEmpty {
-                Text(MemoryText.displayProse(statement, maxLength: 360))
+                Text(MemoryText.displayProse(statement, maxLength: 200))
                     .font(CortexDesign.Typography.prose(15))
                     .lineSpacing(3)
                     .foregroundColor(CortexDesign.ink)
@@ -304,21 +329,14 @@ struct ProfileCard: View {
             }
 
             if !visibleElements.isEmpty {
-                Button {
+                CortexButton(
+                    title: showSources ? "Hide sources" : "Where this comes from",
+                    systemImage: showSources ? "chevron.down" : "chevron.right",
+                    role: .ghost,
+                    size: .small
+                ) {
                     withAnimation(.easeOut(duration: 0.2)) { showSources.toggle() }
-                } label: {
-                    HStack(spacing: CortexDesign.Space.xs) {
-                        Image(systemName: "chevron.right")
-                            .font(.caption2.weight(.semibold))
-                            .rotationEffect(.degrees(showSources ? 90 : 0))
-                        Text(showSources ? "Hide sources" : "Where this comes from")
-                    }
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundColor(CortexDesign.accent)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
                 .accessibilityLabel(showSources ? "Hide sources" : "Show sources")
 
                 if showSources {
@@ -349,7 +367,7 @@ struct ProfileCard: View {
             prefix = "\(section.title), Emerging"
         }
         if let statement = section.statement, !statement.isEmpty {
-            return "\(prefix): \(MemoryText.displayProse(statement, maxLength: 360))"
+            return "\(prefix): \(MemoryText.displayProse(statement, maxLength: 200))"
         }
         return prefix
     }
@@ -566,26 +584,35 @@ struct HomeHeroSection: View {
     }
 
     // Only problem and first-run states carry an explanation line; healthy states
-    // let the display title speak alone.
+    // let the display title speak alone. One crisp line each — the fuller story
+    // moves to `detailHelp` (a tooltip), not a paragraph.
     private var detail: String? {
         if !state.isLocalServiceReady {
             if CortexRecoveryText.needsAttention(state.displayStatus) {
                 return state.displayStatus
             }
-            if let progress = state.syncProgress, progress.active {
-                return "Syncing your notes — you can start reviewing as items arrive."
+            if state.syncProgress?.active == true {
+                // The live progress bar above already says "syncing"; add only what it can't.
+                return "You can start reviewing as items arrive."
             }
             return "This usually takes a moment."
         }
         if needsAttentionSources > 0 {
             if let failing = state.sourceReadinessReport?.sources.first(where: { $0.needsAttention }) {
+                // The old status row's "and N more" count is merged here — this line is
+                // now the one place source trouble is narrated.
                 let action = failing.next_action.trimmingCharacters(in: .whitespacesAndNewlines)
+                let lead = needsAttentionSources > 1
+                    ? "\(failing.name) and \(needsAttentionSources - 1) more need attention"
+                    : "\(failing.name) needs attention"
                 if !action.isEmpty {
-                    return "\(failing.name): \(action)"
+                    return "\(lead): \(action)"
                 }
-                return "\(failing.name) needs attention before fresh items arrive. Already synced memory stays available."
+                return "\(lead) — synced memory stays available."
             }
-            return "Cortex keeps already synced memory local, but one or more sources need attention before fresh items arrive."
+            return needsAttentionSources > 1
+                ? "\(needsAttentionSources) sources need attention — synced memory stays available."
+                : "A source needs attention — synced memory stays available."
         }
         if pendingCount > 0 {
             return nil
@@ -603,12 +630,23 @@ struct HomeHeroSection: View {
             return nil
         }
         if hasEmptySource {
-            return "Cortex could not find usable content there. Pick a source with real notes or records."
+            return "No usable content found there — pick a source with real notes."
         }
         if state.connectedAIIntegrationCount > 0 {
             return "Connect notes so Ask can answer with citations."
         }
-        return "Connect your notes once. Cortex keeps them synced and brings new memory to Review."
+        return "Connect once — Cortex keeps notes synced and brings new memory to Review."
+    }
+
+    // The longer explanation lives in a tooltip so the hero stays one line tall.
+    private var detailHelp: String? {
+        if state.isLocalServiceReady && needsAttentionSources > 0 {
+            return "Cortex keeps already synced memory local. Fresh items resume once the source connection is fixed."
+        }
+        if state.isLocalServiceReady && activeSources == 0 && hasEmptySource {
+            return "Cortex scanned the selected source and could not find notes or records it can learn from."
+        }
+        return nil
     }
 
     private var actionTitle: String {
@@ -641,8 +679,29 @@ struct HomeHeroSection: View {
         }
     }
 
+    // The hero title/detail already narrate the source problem in these states; a second
+    // "needs attention" row under the button would say the same thing twice. Unique info
+    // (the failing source's name and fix) is merged into the detail line above.
+    private var statusRowIsRedundant: Bool {
+        switch heroState {
+        case .needsAttention, .connectEmpty:
+            return true
+        case .starting, .gettingReady, .review, .dueSync, .connect,
+             .ask, .syncing, .connected, .syncNotes, .viewNotes:
+            return false
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
+            if let progress = state.syncProgress, progress.active {
+                // Sync status has ONE home: the hero. The live bar rides above the headline
+                // instead of being a second, competing status card.
+                SyncProgressCard(progress: progress)
+                    .frame(maxWidth: 620, alignment: .leading)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
             VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
                 Text(title)
                     .font(CortexDesign.Typography.display(30))
@@ -653,18 +712,19 @@ struct HomeHeroSection: View {
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: 680, alignment: .leading)
+                        .help(detailHelp ?? "")
                 }
             }
 
             HStack(alignment: .center, spacing: CortexDesign.Space.md) {
-                Button {
+                CortexButton(
+                    title: actionTitle,
+                    systemImage: actionIcon,
+                    role: .primary,
+                    size: .large
+                ) {
                     runNextAction()
-                } label: {
-                    Label(actionTitle, systemImage: actionIcon)
-                        .frame(minWidth: 150, minHeight: 48)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
                 .disabled(state.isBusy)
 
                 Spacer(minLength: 0)
@@ -680,7 +740,7 @@ struct HomeHeroSection: View {
                 }
                 .cortexCard(padding: CortexDesign.Space.md)
                 .frame(maxWidth: 620, alignment: .leading)
-            } else {
+            } else if !statusRowIsRedundant {
                 HomeStatusRow(
                     title: sourceRowTitle,
                     detail: sourceStatus.detail,
@@ -691,7 +751,7 @@ struct HomeHeroSection: View {
                 .frame(maxWidth: 620, alignment: .leading)
             }
         }
-        .padding(.vertical, CortexDesign.Space.xl)
+        .padding(.vertical, CortexDesign.Space.md)
         .padding(.horizontal, CortexDesign.Space.xs)
         .frame(maxWidth: .infinity, alignment: .leading)
     }

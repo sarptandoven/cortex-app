@@ -148,6 +148,197 @@ enum CortexDesign {
     }
 }
 
+// MARK: - Buttons
+//
+// The app-wide button language. Every interactive button routes through these four roles so
+// controls stop rendering as stock system-blue AppKit buttons (the pre-overhaul state: ~115 raw
+// .buttonStyle sites with a dozen different heights). Wax-red primary carries THE one main action
+// of a surface; paper secondary is the workhorse; ghost is for quiet inline actions; destructive
+// stays system red per the design guardrails.
+
+enum CortexButtonRole {
+    case primary      // wax-red fill, paper text — exactly one per surface
+    case secondary    // index-card fill, hairline border, ink text
+    case ghost        // no fill until hover — quiet inline actions
+    case destructive  // system red, bordered — delete/purge only
+
+    var background: Color {
+        switch self {
+        case .primary: return CortexDesign.accent
+        case .secondary: return CortexDesign.cardBackground
+        case .ghost: return .clear
+        case .destructive: return Color.red.opacity(0.08)
+        }
+    }
+
+    var hoverBackground: Color {
+        switch self {
+        case .primary: return CortexDesign.accent.opacity(0.88)
+        case .secondary: return CortexDesign.quietBackground
+        case .ghost: return CortexDesign.ink.opacity(0.06)
+        case .destructive: return Color.red.opacity(0.14)
+        }
+    }
+
+    var foreground: Color {
+        switch self {
+        case .primary: return CortexDesign.panelBackground
+        case .secondary: return CortexDesign.ink
+        case .ghost: return CortexDesign.inkSecondary
+        case .destructive: return .red
+        }
+    }
+
+    var border: Color {
+        switch self {
+        case .primary: return .clear
+        case .secondary: return CortexDesign.softBorder
+        case .ghost: return .clear
+        case .destructive: return Color.red.opacity(0.35)
+        }
+    }
+}
+
+enum CortexButtonSize {
+    case small    // inline row actions
+    case regular  // standard controls
+    case large    // heroes and empty states
+
+    var height: CGFloat {
+        switch self {
+        case .small: return 28
+        case .regular: return 36
+        case .large: return 44
+        }
+    }
+
+    var font: Font {
+        switch self {
+        case .small: return .system(size: 12, weight: .medium)
+        case .regular: return .system(size: 13, weight: .medium)
+        case .large: return .system(size: 14, weight: .semibold)
+        }
+    }
+
+    var horizontalPadding: CGFloat {
+        switch self {
+        case .small: return 10
+        case .regular: return 14
+        case .large: return 18
+        }
+    }
+}
+
+/// The one true button. Hover, press, and disabled states are built in, so every call site gets
+/// the same physics: quick fade on hover, a subtle press scale, 40% opacity when disabled.
+struct CortexButton: View {
+    let title: String
+    var systemImage: String? = nil
+    var role: CortexButtonRole = .secondary
+    var size: CortexButtonSize = .regular
+    var fullWidth: Bool = false
+    let action: () -> Void
+
+    @State private var hovering = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(size.font.weight(.medium))
+                }
+                Text(title)
+                    .font(size.font)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, size.horizontalPadding)
+            .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: size.height)
+            .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        }
+        .buttonStyle(CortexPressStyle(
+            background: hovering ? role.hoverBackground : role.background,
+            foreground: role.foreground,
+            border: role.border
+        ))
+        .onHover { hovering = $0 }
+        .opacity(isEnabled ? 1 : 0.4)
+        .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
+/// Icon-only sibling (toolbar actions, row affordances). Same states, square hit target.
+struct CortexIconButton: View {
+    let systemImage: String
+    var role: CortexButtonRole = .ghost
+    var size: CortexButtonSize = .regular
+    var help: String = ""
+    let action: () -> Void
+
+    @State private var hovering = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(size.font.weight(.medium))
+                .frame(width: size.height, height: size.height)
+                .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        }
+        .buttonStyle(CortexPressStyle(
+            background: hovering ? role.hoverBackground : role.background,
+            foreground: role.foreground,
+            border: role.border
+        ))
+        .onHover { hovering = $0 }
+        .opacity(isEnabled ? 1 : 0.4)
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help(help)
+    }
+}
+
+/// Press physics shared by both button components: fill + hairline + a 0.98 press scale.
+struct CortexPressStyle: ButtonStyle {
+    let background: Color
+    let foreground: Color
+    let border: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundColor(foreground)
+            .background(background)
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                    .stroke(border, lineWidth: 1)
+            )
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+// MARK: - Stat
+
+/// One consistent treatment for headline numbers (Home stats, counts): serif numerals over a
+/// small SF label — replaces the mixed .title3/.stat ad-hoc shapes.
+struct CortexStatView: View {
+    let value: String
+    let label: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(CortexDesign.Typography.stat)
+                .monospacedDigit()
+                .foregroundColor(CortexDesign.ink)
+            Text(label)
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
+        }
+    }
+}
+
 // MARK: - Index card
 
 /// The index-card recipe: solid card surface, crisp 8pt corners, hairline ink border, and a
@@ -301,11 +492,7 @@ struct CortexEmptyState: View {
                     .frame(maxWidth: 420)
             }
             if let actionTitle, let action {
-                Button(action: action) {
-                    Text(actionTitle).frame(minHeight: CortexDesign.controlHeight - 8)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                CortexButton(title: actionTitle, role: .primary, size: .large, action: action)
             }
         }
         .frame(maxWidth: .infinity)
