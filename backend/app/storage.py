@@ -3313,6 +3313,12 @@ class CortexStore:
             self.regenerate_vault_pages(user_id)
         except Exception:
             pass
+        # Self-heal dangling relation/fts orphans so the readiness gate never stalls the app in
+        # 'starting' on cruft left by normal deletes (see prune_orphans). Best-effort, no backup.
+        try:
+            self.prune_orphans(user_id)
+        except Exception:
+            pass
         vault_diagnostics = self.vault.diagnostics()
         existing_records = sum(
             vault_diagnostics["record_counts"].get(key, 0)
@@ -18402,16 +18408,11 @@ class CortexStore:
             "age_days": int(age_seconds // 86400),
         }
 
-    def repair_storage(self, user_id: str) -> dict[str, Any]:
-        before = self.diagnostics(user_id)
-        backup = self.create_backup(user_id)
-        actions: list[dict[str, Any]] = []
-
-        def deleted_rows(cursor: sqlite3.Cursor) -> int:
-            return cursor.rowcount if cursor.rowcount is not None and cursor.rowcount >= 0 else 0
-
-        with connect(self.db_path) as conn:
-            cleanup_statements = [
+    def _orphan_cleanup_plan(self, user_id: str) -> list:
+        """The orphan-row DELETE statements shared by repair_storage() (heavy: backs up +
+        reindexes) and prune_orphans() (light: startup self-heal). Each removes rows that point at
+        a memory/task/capture that no longer exists — pure dangling references, safe to delete."""
+        return [
                 (
                     "remove_fts_orphans",
                     """
@@ -18486,7 +18487,35 @@ class CortexStore:
                     """,
                     (user_id,),
                 ),
-            ]
+        ]
+
+    def prune_orphans(self, user_id: str) -> dict:
+        """Delete dangling relation/fts/graph-edge rows WITHOUT a backup or reindex. Orphans are
+        junk (their parent row is already gone), so this is safe to run on every startup. This is
+        the self-heal for the readiness gate: relation_orphans left by normal deletes would otherwise
+        flip /ready to needs_maintenance and stall the app in 'starting' forever."""
+        actions: list[dict] = []
+        removed = 0
+        with connect(self.db_path) as conn:
+            for name, statement, parameters in self._orphan_cleanup_plan(user_id):
+                cursor = conn.execute(statement, parameters)
+                rows = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+                removed += rows
+                actions.append({"name": name, "rows": rows})
+            if removed:
+                conn.execute("PRAGMA optimize")
+        return {"removed": removed, "actions": actions}
+
+    def repair_storage(self, user_id: str) -> dict[str, Any]:
+        before = self.diagnostics(user_id)
+        backup = self.create_backup(user_id)
+        actions: list[dict[str, Any]] = []
+
+        def deleted_rows(cursor: sqlite3.Cursor) -> int:
+            return cursor.rowcount if cursor.rowcount is not None and cursor.rowcount >= 0 else 0
+
+        with connect(self.db_path) as conn:
+            cleanup_statements = self._orphan_cleanup_plan(user_id)
             for name, statement, parameters in cleanup_statements:
                 cursor = conn.execute(statement, parameters)
                 actions.append({"name": name, "rows": deleted_rows(cursor)})
