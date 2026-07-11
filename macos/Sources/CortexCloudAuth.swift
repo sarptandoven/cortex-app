@@ -581,6 +581,8 @@ extension AppState {
     private func resetToLocalDefaults() {
         stopPushSync()          // cancel the background push loop before its creds/target disappear
         clearPushSyncState()    // drop the push cursor + device id so a different account resyncs from 0
+        stopPullSync()          // cancel the background pull loop for the same reason
+        clearPullSyncState()    // drop the pull cursor so a different account re-pulls from 0
         clearCloudRefreshToken()
         cloudAccountEmail = ""
         cloudAccessToken = ""
@@ -699,6 +701,9 @@ enum CortexCloudAuth {
 
 struct CortexCloudSection: View {
     @ObservedObject var state: AppState
+    /// Pull-sync live status (CortexPullSync.swift). Push's equivalents live on AppState; pull's
+    /// live in this shared center because AppState's stored properties are declared elsewhere.
+    @ObservedObject var pullCenter: PullSyncCenter = .shared
     @State private var hostedURL: String = ""
     @State private var email: String = ""
     @State private var password: String = ""
@@ -741,26 +746,39 @@ struct CortexCloudSection: View {
         state.isSignedIn && !state.cloudSyncBaseURL.isEmpty && !state.requiresSignIn
     }
 
-    /// Live background-sync status (Phase 2): the memory is on this Mac and syncs to the account.
+    /// Live background-sync status (Phase 2), one quiet row covering BOTH directions: push (this
+    /// Mac → the account, state on AppState) and pull (the account → this Mac, state on
+    /// PullSyncCenter). In-flight work first, then errors, then the combined synced summary.
     @ViewBuilder private var pushSyncStatusView: some View {
-        switch state.pushSyncState {
-        case .idle:
-            if canActuallyPushSync {
-                Label("Your memory stays on this Mac and syncs to your account.", systemImage: "icloud")
-                    .font(.caption).foregroundColor(.secondary)
-            } else {
-                Label("Sync is unavailable — sign in again to reconnect your account.", systemImage: "exclamationmark.icloud")
-                    .font(.caption).foregroundColor(.orange)
-            }
-        case .syncing:
+        if case .syncing = pullCenter.state {
+            Label(pullCenter.pendingCount > 0 ? "Pulling… \(pullCenter.pendingCount) items" : "Pulling…",
+                  systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption).foregroundColor(.secondary)
+        } else if case .syncing = state.pushSyncState {
             Label(state.pushPendingCount > 0 ? "Syncing… \(state.pushPendingCount) pending" : "Syncing…",
                   systemImage: "arrow.triangle.2.circlepath")
                 .font(.caption).foregroundColor(.secondary)
-        case .synced(let date):
-            Label("Synced ✓ · \(CortexCloudSection.relativeShort(date))", systemImage: "checkmark.icloud")
-                .font(.caption).foregroundColor(.secondary)
-        case .error(let message):
+        } else if case .error(let message) = state.pushSyncState {
             Label(message, systemImage: "exclamationmark.icloud")
+                .font(.caption).foregroundColor(.orange)
+        } else if case .error(let message) = pullCenter.state {
+            Label("Pull sync: \(message)", systemImage: "exclamationmark.icloud")
+                .font(.caption).foregroundColor(.orange)
+        } else if case .synced(let pushed) = state.pushSyncState, case .synced(let pulled) = pullCenter.state {
+            Label("Synced ✓ · pushed \(CortexCloudSection.relativeShort(pushed)) · pulled \(CortexCloudSection.relativeShort(pulled))",
+                  systemImage: "checkmark.icloud")
+                .font(.caption).foregroundColor(.secondary)
+        } else if case .synced(let pushed) = state.pushSyncState {
+            Label("Synced ✓ · pushed \(CortexCloudSection.relativeShort(pushed))", systemImage: "checkmark.icloud")
+                .font(.caption).foregroundColor(.secondary)
+        } else if case .synced(let pulled) = pullCenter.state {
+            Label("Synced ✓ · pulled \(CortexCloudSection.relativeShort(pulled))", systemImage: "checkmark.icloud")
+                .font(.caption).foregroundColor(.secondary)
+        } else if canActuallyPushSync {
+            Label("Your memory stays on this Mac and syncs to your account.", systemImage: "icloud")
+                .font(.caption).foregroundColor(.secondary)
+        } else {
+            Label("Sync is unavailable — sign in again to reconnect your account.", systemImage: "exclamationmark.icloud")
                 .font(.caption).foregroundColor(.orange)
         }
     }

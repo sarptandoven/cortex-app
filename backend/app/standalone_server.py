@@ -2851,6 +2851,101 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     _int_param(params, "limit", 100, 1, 500),
                 ))
                 return
+            if method == "POST" and path == "/v1/sync/ingest":
+                # Phase-2 sync inbound (mirrors main.py): apply a batch of synced captures into the
+                # local store. Idempotent — each item carries its stable capture id
+                # (capture_id_override -> ON CONFLICT(id) DO UPDATE), so re-applying a batch is a
+                # safe no-op upsert. This is the endpoint the desktop pull-sync worker applies
+                # HOSTED pages to, so a second Mac converges on the signed-in account's memory.
+                body = self._json_body()
+                raw_items = body.get("items") if isinstance(body.get("items"), list) else []
+                try:
+                    if len(raw_items) > 500:
+                        raise ValueError("items must contain at most 500 entries")
+                    normalized_items: list[dict[str, Any]] = []
+                    for raw in raw_items:
+                        if not isinstance(raw, dict):
+                            raise ValueError("each item must be an object")
+                        content = str(raw.get("content") or "")
+                        if not content.strip():
+                            raise ValueError("content is required")
+                        if len(content) > 200_000:
+                            raise ValueError("content is too large")
+                        client_capture_id = str(raw.get("client_capture_id") or "").strip()
+                        if not client_capture_id or len(client_capture_id) > 80:
+                            raise ValueError("client_capture_id is required (at most 80 characters)")
+                        review_status = str(raw.get("review_status") or "").strip().lower() or None
+                        # Trust passthrough is bounded to the two mirrorable review states.
+                        if review_status is not None and review_status not in {"approved", "pending"}:
+                            raise ValueError("review_status must be approved or pending")
+                        normalized_items.append({
+                            "client_capture_id": client_capture_id,
+                            "content": content,
+                            "source": str(raw.get("source") or "macos")[:80],
+                            "source_url": str(raw.get("source_url") or "")[:500] or None,
+                            "title": str(raw.get("title") or "")[:200] or None,
+                            "captured_at": str(raw.get("captured_at") or "")[:40] or None,
+                            "review_status": review_status,
+                        })
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
+                aliases = store.settings(user_id).get("identity_aliases")
+                results = []
+                review_gated_sources: dict[str, bool] = {}
+                for item in normalized_items:
+                    extracted = extract_context(item["content"], item["source"], author_aliases=aliases)
+                    if item["captured_at"]:
+                        extracted["_timestamp"] = item["captured_at"]
+                    # Trust passthrough (pull sync), same rules as main.py's /v1/sync/ingest:
+                    # "approved" mirrors a review decision another device already granted;
+                    # "pending" pins the origin's not-yet-approved state. SECURITY: a per-source
+                    # review policy on THIS store wins over the passthrough, so a connector can
+                    # never use it to bypass review on first ingest; and save_capture preserves
+                    # the existing local decision for unchanged content, so an echoed re-apply
+                    # can never escalate it. Absent -> today's normal review flow.
+                    auto_approve = settings.auto_approve_captures
+                    force_review = False
+                    if item["review_status"] == "approved":
+                        source_gated = review_gated_sources.get(item["source"])
+                        if source_gated is None:
+                            source_gated = store.source_policy_requires_review(user_id, item["source"])
+                            review_gated_sources[item["source"]] = source_gated
+                        if source_gated:
+                            force_review = True  # per-source policy wins over the passthrough
+                        else:
+                            auto_approve = True
+                    elif item["review_status"] == "pending":
+                        force_review = True
+                    saved = store.save_capture(
+                        user_id=user_id,
+                        content=item["content"],
+                        source=item["source"],
+                        source_url=item["source_url"],
+                        title=item["title"],
+                        extracted=extracted,
+                        capture_id_override=item["client_capture_id"],
+                        cite_capture_provenance=True,
+                        auto_approve=auto_approve,
+                        force_review=force_review,
+                    )
+                    results.append({
+                        "client_capture_id": item["client_capture_id"],
+                        "capture_id": saved.get("capture_id", ""),
+                        "status": "accepted",
+                    })
+                device_id = str(body.get("device_id") or "").strip()[:80]
+                cursor = str(body.get("cursor") or "").strip()[:160]
+                if device_id and cursor:
+                    try:
+                        store.record_sync_receipt(
+                            user_id, device_id, cursor=cursor,
+                            status="accepted", stats={"count": len(results)},
+                        )
+                    except Exception:
+                        pass  # best-effort high-watermark; a missing/revoked device must not fail ingest
+                self._send_json({"applied": len(results), "cursor": cursor, "results": results})
+                return
             if method == "GET" and path == "/v1/diagnostics":
                 self._send_json(store.diagnostics(user_id))
                 return

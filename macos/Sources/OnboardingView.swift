@@ -610,7 +610,10 @@ private struct OnboardingFinishStep: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            OnboardingConstellationPreview()
+            // The user's REAL graph, laid out by the same engine as the full map — never a
+            // decorative fake. With no data yet it says so honestly ("your map builds as you
+            // import") instead of pretending.
+            ConstellationMiniPreview(nodes: state.graphNodes, edges: state.graphEdges)
                 .frame(height: 140)
                 .frame(maxWidth: .infinity)
                 .background(CortexDesign.panelBackground)
@@ -622,6 +625,11 @@ private struct OnboardingFinishStep: View {
                         .foregroundColor(CortexDesign.inkFaint)
                         .padding(10)
                 }
+
+            // The proof moment: waits for the first external AI read and flips to
+            // "<app> just read your memory. Continuity, proven." Purely observational —
+            // it polls only while this step is on screen and never blocks Finish.
+            RecallProofWatcher(state: state, waitingLine: "Waiting for your first external read…")
 
             VStack(alignment: .leading, spacing: 10) {
                 OnboardingFlowRow(index: 1, title: "Review", detail: "Approve the memory worth keeping.", systemImage: "checklist")
@@ -637,6 +645,8 @@ private struct OnboardingFinishStep: View {
         .task {
             await state.loadStats()
             await state.loadProfile()
+            // Fresh graph data for the real-data Constellation preview above.
+            await state.loadGraph()
         }
     }
 
@@ -881,46 +891,8 @@ private struct OnboardingDistillMark: View {
     }
 }
 
-/// A small constellation forming: nodes fade/settle into place with gently pulsing links —
-/// a preview of "Your Constellation". Pure `TimelineView` + `Canvas`, macOS-13 safe.
-private struct OnboardingConstellationPreview: View {
-    // Fixed layout so the preview reads as a coherent shape rather than random noise.
-    private let nodes: [CGPoint] = [
-        CGPoint(x: 0.20, y: 0.34), CGPoint(x: 0.38, y: 0.66), CGPoint(x: 0.50, y: 0.30),
-        CGPoint(x: 0.64, y: 0.58), CGPoint(x: 0.78, y: 0.38), CGPoint(x: 0.86, y: 0.68),
-        CGPoint(x: 0.30, y: 0.52), CGPoint(x: 0.58, y: 0.74),
-    ]
-    private let edges: [(Int, Int)] = [(0, 2), (0, 6), (6, 1), (1, 7), (2, 3), (3, 4), (4, 5), (3, 7)]
-
-    var body: some View {
-        TimelineView(.animation) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            Canvas { ctx, size in
-                func point(_ p: CGPoint) -> CGPoint {
-                    CGPoint(x: 18 + p.x * (size.width - 36), y: 18 + p.y * (size.height - 36))
-                }
-                // Links first, pulsing softly.
-                for (a, b) in edges {
-                    let pa = point(nodes[a]); let pb = point(nodes[b])
-                    var path = Path(); path.move(to: pa); path.addLine(to: pb)
-                    let flicker = 0.14 + (sin(t * 0.8 + Double(a + b)) + 1) * 0.06
-                    ctx.stroke(path, with: .color(CortexDesign.accent.opacity(flicker)), lineWidth: 1)
-                }
-                // Nodes settling in with a gentle breathing scale.
-                for (i, n) in nodes.enumerated() {
-                    let p = point(n)
-                    let pulse = 1 + sin(t * 1.1 + Double(i) * 0.7) * 0.18
-                    let r = (i == 2 || i == 3 ? 5.5 : 4.0) * pulse
-                    let halo = CGRect(x: p.x - r * 2, y: p.y - r * 2, width: r * 4, height: r * 4)
-                    ctx.fill(Path(ellipseIn: halo), with: .color(CortexDesign.accent.opacity(0.08)))
-                    let dot = CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)
-                    ctx.fill(Path(ellipseIn: dot), with: .color(CortexDesign.accent.opacity(0.85)))
-                }
-            }
-        }
-        .accessibilityHidden(true)
-    }
-}
+// (The old OnboardingConstellationPreview — a hardcoded 8-node decoration — was replaced by
+// ConstellationMiniPreview in CortexNorthStar.swift, which draws the user's REAL graph.)
 
 /// A whisper-quiet drifting field behind the whole walkthrough — a few faint gold motes moving
 /// slowly across the paper. Never busy; opacity stays very low.

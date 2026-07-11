@@ -2611,10 +2611,34 @@ def sync_ingest(request: SyncIngestRequest, user_id: str = Depends(auth)) -> dic
     _enforce_memory_quota(user_id)
     aliases = store.settings(user_id).get("identity_aliases")
     results: list[dict[str, Any]] = []
+    review_gated_sources: dict[str, bool] = {}
     for item in request.items:
         extracted = extract_context(item.content, item.source, author_aliases=aliases)
         if item.captured_at:
             extracted["_timestamp"] = item.captured_at
+        # Trust passthrough (pull sync): `review_status` mirrors a review decision ANOTHER device
+        # already granted — "approved" on Mac A must not land review-pending on Mac B, and
+        # "pending" pins the origin's not-yet-approved state so it still shows in Review here.
+        # SECURITY: the passthrough must never let a connector bypass a per-source review policy
+        # on FIRST ingest. When a connected source account for this source demands review
+        # (policy.review_required is not False), the LOCAL policy wins: the capture is held for
+        # Review regardless of the "approved" claim. For content this store already holds
+        # unchanged, save_capture preserves the existing local review decision, so an echoed
+        # re-apply can never escalate it either. Absent review_status keeps today's behavior
+        # (deployment auto-approve flag + the user's review setting).
+        auto_approve = settings.auto_approve_captures
+        force_review = False
+        if item.review_status == "approved":
+            source_gated = review_gated_sources.get(item.source)
+            if source_gated is None:
+                source_gated = store.source_policy_requires_review(user_id, item.source)
+                review_gated_sources[item.source] = source_gated
+            if source_gated:
+                force_review = True  # per-source policy wins over the passthrough
+            else:
+                auto_approve = True
+        elif item.review_status == "pending":
+            force_review = True
         saved = store.save_capture(
             user_id=user_id,
             content=item.content,
@@ -2624,7 +2648,8 @@ def sync_ingest(request: SyncIngestRequest, user_id: str = Depends(auth)) -> dic
             extracted=extracted,
             capture_id_override=item.client_capture_id,
             cite_capture_provenance=True,
-            auto_approve=settings.auto_approve_captures,
+            auto_approve=auto_approve,
+            force_review=force_review,
         )
         results.append({
             "client_capture_id": item.client_capture_id,

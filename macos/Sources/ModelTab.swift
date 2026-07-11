@@ -11,6 +11,11 @@ struct ModelTab: View {
                 // and the source status line now live inside it, so status has one home.
                 HomeHeroSection(state: state, review: state.review)
 
+                // The north-star headline — the felt proof of "your memory, actively used
+                // across every AI". Hidden until the endpoint answers once; empty weeks get a
+                // purposeful connect nudge instead of a sad zero (see RecallHeadlineCard).
+                RecallHeadlineCard(state: state)
+
                 // Tier 2 — the at-a-glance numbers (hidden until there is something to count).
                 HomeStatStrip(state: state, review: state.review)
 
@@ -83,6 +88,14 @@ struct ModelTab: View {
             .animation(.easeInOut(duration: 0.25), value: state.syncProgress)
         }
         .background(CortexDesign.appBackground)
+        // Keep the north-star headline fresh whenever Home is (re)activated — the same
+        // tab-activation reload pattern Review uses (all tabs stay mounted, so onChange fires
+        // on every switch back to Home).
+        .task { await state.loadRecallHeadline() }
+        .onChange(of: state.selectedTab) { tab in
+            guard tab == .model else { return }
+            Task { await state.loadRecallHeadline() }
+        }
     }
 
     /// The profile's own accession line — "PROFILE READINESS · 62/100 · COMPILED · 6 JUL 2026".

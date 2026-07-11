@@ -3040,6 +3040,19 @@ struct ConnectAppWizard: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.sealMoss.opacity(0.1)))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
 
+            // The proof moment, scoped to the tool that was just connected: waits for ITS first
+            // read (per-app token label == tool name) and flips to "<tool> just read your memory.
+            // Continuity, proven." Memory-pack tools are excluded honestly — pasted packs never
+            // produce an attributable read call, so a watcher there could never flip. Additive
+            // over the done-step content and never blocks Close / Connect another app.
+            if let tool = selected, tool.connectionKind != .memoryPack {
+                RecallProofWatcher(
+                    state: state,
+                    toolLabel: tool.name,
+                    waitingLine: "Waiting for \(tool.name) to read your memory — ask it anything about you."
+                )
+            }
+
             CortexButton(title: "Connect another app", systemImage: "plus", role: .secondary, size: .large) {
                 resetForAnother()
             }

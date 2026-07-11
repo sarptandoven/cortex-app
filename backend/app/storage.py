@@ -8808,7 +8808,7 @@ class CortexStore:
                 # NEVER push a capture the user REJECTED (archived) in Review to the cloud — that
                 # would sync raw content the user explicitly chose to forget, violating the privacy
                 # promise. Archived rows are skipped; the rowid cursor still advances past them.
-                "SELECT rowid AS seq, id, source, source_url, title, raw_text, captured_at "
+                "SELECT rowid AS seq, id, source, source_url, title, raw_text, captured_at, review_status "
                 "FROM captures WHERE user_id = ? AND rowid > ? AND review_status != 'archived' "
                 "ORDER BY rowid ASC LIMIT ?",
                 (user_id, after, limit + 1),
@@ -8824,11 +8824,40 @@ class CortexStore:
                 "source_url": row["source_url"],
                 "title": row["title"],
                 "captured_at": row["captured_at"],
+                # ADDITIVE (pull sync trust passthrough): the review decision this store holds, so
+                # a second device can mirror an approval instead of re-queuing the capture for
+                # Review. Existing consumers are unaffected: the push worker's Codable struct
+                # (CortexPushSync.swift PushCaptureItem) ignores unknown JSON keys.
+                "review_status": row["review_status"],
             }
             for row in rows
         ]
         next_seq = items[-1]["seq"] if items else after
         return {"items": items, "next_seq": next_seq, "has_more": has_more}
+
+    def source_policy_requires_review(self, user_id: str, source: str) -> bool:
+        """True when a CONNECTED source account for `source` carries a review-gating policy
+        (policy.review_required is anything but an explicit False — the same fail-closed reading
+        save_capture applies to connector saves).
+
+        Used by the sync-ingest trust passthrough: a pulled capture marked approved-on-another-
+        device may skip Review ONLY when no local per-source policy demands review. The
+        passthrough exists to mirror an approval a device already granted; it must never become
+        a side door for a connector to bypass the user's per-source review gate on FIRST ingest —
+        when the local store's policy demands review, policy wins and the capture stays pending."""
+        normalized = str(source or "").strip()
+        if not normalized:
+            return False
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT policy_json FROM source_accounts WHERE user_id = ? AND source = ? AND disconnected_at IS NULL",
+                (user_id, normalized),
+            ).fetchall()
+        for row in rows:
+            policy = self._json_or_empty(row["policy_json"])
+            if not (isinstance(policy, dict) and policy.get("review_required") is False):
+                return True
+        return False
 
     def record_sync_receipt(
         self,

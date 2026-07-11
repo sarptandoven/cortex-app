@@ -27,6 +27,9 @@ private struct PushCaptureItem: Codable {
     let source_url: String?
     let title: String?
     let captured_at: String
+    // Review fidelity across devices: carries this Mac's approve/pending decision so the hosted
+    // copy (and any Mac that later pulls it) mirrors the decision instead of re-triaging.
+    let review_status: String?
 }
 
 private struct PushCapturePage: Codable {
@@ -126,6 +129,11 @@ extension AppState {
                         ]
                         if let url = item.source_url { dict["source_url"] = url }
                         if let title = item.title { dict["title"] = title }
+                        // Only the two states the sync-ingest contract accepts; anything else
+                        // (e.g. archived) stays local and the hosted side applies its defaults.
+                        if let review = item.review_status, review == "approved" || review == "pending" {
+                            dict["review_status"] = review
+                        }
                         return dict
                     },
                 ]

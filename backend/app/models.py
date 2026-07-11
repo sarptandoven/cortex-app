@@ -39,6 +39,9 @@ class CaptureChangeItem(BaseModel):
     source_url: str | None = None
     title: str | None = None
     captured_at: str
+    # Pull sync (trust passthrough): the capture's review decision on THIS store, so a second
+    # device can mirror an approval the user already granted instead of re-queuing it for Review.
+    review_status: str | None = None
 
 
 class CaptureChangePage(BaseModel):
@@ -55,6 +58,10 @@ class SyncIngestItem(BaseModel):
     source_url: str | None = Field(default=None, max_length=500)
     title: str | None = Field(default=None, max_length=200)
     captured_at: str | None = Field(default=None, max_length=40)
+    # Trust passthrough (SYNC-INGEST PATH ONLY): mirrors a review decision ANOTHER device already
+    # granted, so a capture approved on Mac A doesn't land review-pending on Mac B. Bounded to the
+    # two mirrorable states; anything else is a validation error. Absent -> normal review flow.
+    review_status: Literal["approved", "pending"] | None = None
 
 
 class SyncIngestRequest(BaseModel):

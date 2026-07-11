@@ -3316,6 +3316,9 @@ final class AppState: ObservableObject {
     @Published var inFlightAlertIds: Set<String> = []
     @Published var twinPrediction: TwinPredictionResponse?
     @Published var twinScorecard: TwinScorecardResponse?
+    /// North-star headline (GET /v1/usage/headline): how many distinct AIs read memory this week.
+    /// nil until the endpoint answers once; kept on failure so the Home card never flickers away.
+    @Published var recallHeadline: RecallHeadline?
     @Published var inFlightTwinGradeIds: Set<String> = []
     @Published var alertPrecision: AlertPrecisionResponse?
     @Published var prefetchHitRate: PrefetchHitRateResponse?
@@ -3857,10 +3860,12 @@ final class AppState: ObservableObject {
         await loadProfile()
         await loadProactiveAlerts()
         await loadTwinScorecard()
+        await loadRecallHeadline()
         refreshStoredConnectorConfigState()
         refreshIntegrationStates()
         startConnectedSourceAutoSync()
         startPushSync()
+        startPullSync()
         startSyncProgressPolling()
         startActivityStream()
         activateQuickCaptureIfEnabled()
@@ -4152,6 +4157,7 @@ final class AppState: ObservableObject {
         await loadTrust()
         await loadMirrorInsight()
         await loadProfile()
+        await loadRecallHeadline()
     }
 
     func loadInbox() async {
@@ -4702,6 +4708,17 @@ final class AppState: ObservableObject {
         if let data = try? await request(path: "/v1/sources/stats", method: "GET"),
            let response = try? JSONDecoder().decode(SourceStatsResponse.self, from: data) {
             sourceStats = response.results
+        }
+    }
+
+    /// Load the north-star headline (GET /v1/usage/headline?days=7): how many distinct AIs read
+    /// memory this week, per-client recall counts, and the honest unattributed bucket. Best-effort:
+    /// on any failure the prior value is left untouched so the Home headline card and the proof
+    /// watchers never flicker to empty on a transient timeout (mirrors loadSourceStats).
+    func loadRecallHeadline() async {
+        if let data = try? await request(path: "/v1/usage/headline?days=7", method: "GET"),
+           let response = try? JSONDecoder().decode(RecallHeadline.self, from: data) {
+            recallHeadline = response
         }
     }
 
