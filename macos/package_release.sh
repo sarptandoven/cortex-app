@@ -171,10 +171,26 @@ mkdir -p "$OUT_DIR"
 # bundled Python framework, native wheels, and the outer .app so the hardened
 # runtime launches and notarization passes on the first submission. No extra
 # wiring is needed here.
-CORTEX_BUNDLE_PYTHON="$BUNDLE_PYTHON" "$ROOT/build.sh"
+#
+# EMBEDDINGS DEMO-INTEGRITY GUARD (release path): CORTEX_REQUIRE_MODEL=1 is exported
+# UNCONDITIONALLY — a release artifact (DMG/ZIP) without the bundled Model2Vec model must be
+# impossible. build.sh hard-fails when Resources/model2vec is missing/incomplete instead of
+# silently shipping the keyword-hash embedding fallback. Dev builds (plain ./macos/build.sh)
+# are unaffected; only this packaging path enforces it.
+CORTEX_BUNDLE_PYTHON="$BUNDLE_PYTHON" CORTEX_REQUIRE_MODEL=1 "$ROOT/build.sh"
 codesign --verify --deep --strict "$APP"
+# Belt and braces: independently verify the built .app actually contains the bundled embedding
+# model files (exactly what model2vec's save_pretrained() writes and what the app launcher and
+# backend loader key on). build.sh already asserts this under CORTEX_REQUIRE_MODEL=1, but the
+# release artifact is cut from this .app, so re-check it here before staging the DMG/ZIP.
+for model_file in config.json model.safetensors tokenizer.json; do
+  if [[ ! -e "$APP/Contents/Resources/model2vec/$model_file" ]]; then
+    echo "Release packaging aborted: bundled embedding model file is missing from the built app: $APP/Contents/Resources/model2vec/$model_file" >&2
+    exit 3
+  fi
+done
 if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON" != "no" ]]; then
-  python3 "$PROJECT_ROOT/scripts/check_vector_runtime.py" --app "$APP"
+  python3 "$PROJECT_ROOT/scripts/check_vector_runtime.py" --app "$APP" --require-model2vec
 fi
 
 rm -rf "$STAGING"

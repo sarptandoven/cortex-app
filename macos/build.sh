@@ -249,15 +249,16 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
     find "$PY_RUNTIME_DEPS" -type d -name "__pycache__" -prune -exec rm -rf {} +
     find "$PY_RUNTIME_DEPS" -type f -name "*.pyc" -delete
     # Bundle the local embedding model (~8MB) so semantics work fully offline with no API key and
-    # no first-run network download. Non-fatal: if bundling fails, the app leaves the provider
-    # unset and the backend uses its deterministic hash fallback.
+    # no first-run network download. If bundling fails, the demo-integrity guard below decides:
+    # dev builds warn LOUDLY but keep building; CORTEX_REQUIRE_MODEL=1 (exported unconditionally
+    # by package_release.sh) hard-fails so a release can never silently ship the hash fallback.
     CORTEX_MODEL2VEC_MODEL="${CORTEX_MODEL2VEC_MODEL:-minishlab/potion-base-8M}"
     if PYTHONPATH="$PY_RUNTIME_DEPS" "$PYTHON_FRAMEWORK_SOURCE/bin/python3.12" -c \
         "import sys; from model2vec import StaticModel; StaticModel.from_pretrained('$CORTEX_MODEL2VEC_MODEL').save_pretrained('$RES/model2vec')" ; then
       find "$RES/model2vec" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
       echo "Bundled local embedding model into $RES/model2vec"
     else
-      echo "warning: local embedding model not bundled ($CORTEX_MODEL2VEC_MODEL); backend will use the hash fallback"
+      echo "warning: bundling the local embedding model failed ($CORTEX_MODEL2VEC_MODEL)" >&2
       rm -rf "$RES/model2vec"
     fi
   fi
@@ -300,6 +301,31 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
     fi
     echo "  app-store: no runnable helper scripts or plugin payload in bundle (2.5.2)"
   fi
+fi
+
+# --- EMBEDDINGS DEMO-INTEGRITY GUARD ---------------------------------------------------------
+# The product's on-device semantics ("it knows me") ride entirely on the bundled Model2Vec model
+# at Resources/model2vec (potion-base-8M). Without it, the backend silently degrades to the
+# deterministic keyword-hash fallback — a build that LOOKS fine but has no real semantics.
+# Dev builds may legitimately lack the model (CORTEX_BUNDLE_PYTHON=0, offline machine), but that
+# must be LOUD, never silent. Releases must make it impossible: macos/package_release.sh exports
+# CORTEX_REQUIRE_MODEL=1 unconditionally, turning a missing/incomplete model into a hard failure
+# here. The three sentinel files are exactly what model2vec's save_pretrained() writes and what
+# the app launcher (CortexApp.swift) and backend loader key on.
+MODEL2VEC_RES="$RES/model2vec"
+MODEL2VEC_MISSING=""
+for model_file in config.json model.safetensors tokenizer.json; do
+  if [[ ! -e "$MODEL2VEC_RES/$model_file" ]]; then
+    MODEL2VEC_MISSING="$MODEL2VEC_RES/$model_file"
+    break
+  fi
+done
+if [[ -n "$MODEL2VEC_MISSING" ]]; then
+  if [[ "${CORTEX_REQUIRE_MODEL:-0}" == "1" ]]; then
+    echo "ERROR: CORTEX_REQUIRE_MODEL=1 but the bundled embedding model is missing/incomplete: $MODEL2VEC_MISSING — refusing to build an artifact that would silently fall back to keyword-hash embeddings" >&2
+    exit 3
+  fi
+  echo "WARNING: EMBEDDINGS FALLBACK — bundled model2vec model missing ($MODEL2VEC_MISSING); this build will use keyword-hash embeddings, NOT real semantics (dev-only; release packaging enforces CORTEX_REQUIRE_MODEL=1)" >&2
 fi
 
 export CLANG_MODULE_CACHE_PATH="$CACHE"

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// "Your Constellation" — the interactive picture of who the user is: the people, projects,
 /// topics and sources Cortex has learned about, and how they connect.
@@ -84,6 +85,10 @@ struct MemoryMapView: View {
     /// because that is the readable "who/what" picture. Raw memory/task sentence-nodes (often
     /// hundreds) turn the map into a blob; they stay one toggle away for users who want density.
     @State private var showDetailLayer = false
+
+    /// Whether the share-card sheet is up. The card view, its layout pass and the 2× render are
+    /// all built inside the sheet, so the map pays nothing until the user actually asks to share.
+    @State private var showShareCard = false
 
     private static let minZoom: CGFloat = 0.6
     private static let maxZoom: CGFloat = 4.0
@@ -250,6 +255,16 @@ struct MemoryMapView: View {
                 neighborhood = nil
             }
             hoveredNodeID = nil
+        }
+        // The share card is explicitly user-triggered (node labels are personal), and everything
+        // about it — data snapshot, layout, 2× raster — is built only when this sheet presents.
+        .sheet(isPresented: $showShareCard) {
+            ConstellationShareSheet(
+                nodes: mapNodes,
+                edges: mapEdges,
+                analysis: state.graphAnalysis,
+                memoriesCount: state.stats?.memories
+            )
         }
     }
 
@@ -502,6 +517,9 @@ struct MemoryMapView: View {
                 )
 
                 cameraControls
+
+                shareControl
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .onAppear { syncWorkingPositions(to: layout) }
@@ -555,6 +573,21 @@ struct MemoryMapView: View {
             RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
                 .stroke(CortexDesign.hairline, lineWidth: 1)
         )
+        .padding(8)
+    }
+
+    /// The share affordance, opposite the zoom cluster. Opening it is the ONLY path that ever
+    /// produces the share card — labels are personal content, so sharing stays an explicit act.
+    private var shareControl: some View {
+        CortexIconButton(
+            systemImage: "square.and.arrow.up",
+            role: .secondary,
+            size: .small,
+            help: "Share your constellation"
+        ) {
+            showShareCard = true
+        }
+        .accessibilityLabel("Share your constellation")
         .padding(8)
     }
 
@@ -1591,5 +1624,555 @@ struct MemoryMapLayout {
             hash = hash &* 0x100000001b3
         }
         return hash
+    }
+}
+
+// MARK: - Constellation share card — "Spotify Wrapped for your knowledge".
+//
+// A screenshot-native, social-ratio picture of the user's REAL graph: real positions (the same
+// deterministic force layout the live map runs), real community colors, real god nodes, real
+// counts. Built entirely behind the map's Share button — data snapshot, layout pass, and 2× raster
+// all happen when the sheet opens, never during normal map rendering.
+
+/// Everything the share card renders, computed ONCE when the share sheet opens: the capped
+/// prominence-first node subset, the edges between them, a fresh deterministic layout at card
+/// scale, and the headline numbers. Plain data, so the card view itself is trivial.
+struct ConstellationShareCardModel {
+    struct Stat {
+        let value: String
+        let label: String
+    }
+
+    let nodes: [GraphNode]
+    let edges: [GraphEdge]
+    let layout: MemoryMapLayout
+    /// Up to three god-node labels — "Your world orbits: X · Y · Z".
+    let orbitLabels: [String]
+    let stats: [Stat]
+    /// The mono stamp line, e.g. "YOUR CONSTELLATION · 11 JUL 2026".
+    let stampLine: String
+
+    /// Legibility caps: a few hundred nodes reads as a constellation; thousands reads as noise.
+    private static let nodeBudget = 280
+    private static let edgeBudget = 700
+
+    static func build(
+        nodes allNodes: [GraphNode],
+        edges allEdges: [GraphEdge],
+        analysis: GraphAnalysis?,
+        memoriesCount: Int?,
+        graphSize: CGSize
+    ) -> ConstellationShareCardModel {
+        // Degree from the full edge list — a prominence tie-break so well-connected nodes win a
+        // spot on the card even when centrality is missing.
+        var degree: [String: Int] = [:]
+        for edge in allEdges {
+            degree[edge.source_id, default: 0] += 1
+            degree[edge.target_id, default: 0] += 1
+        }
+
+        /// The god-node signal, mirroring the live map's sizing: hubs first, then centrality,
+        /// then degree/importance. Ties break on id so the card is deterministic.
+        func prominence(_ node: GraphNode) -> Double {
+            var score = node.centrality ?? 0
+            if node.is_hub == true { score += 1 }
+            score += Double(degree[node.id] ?? 0) * 0.001
+            score += Double(node.importance ?? 0) * 0.000_1
+            return score
+        }
+
+        let ranked = allNodes.sorted { lhs, rhs in
+            let lp = prominence(lhs)
+            let rp = prominence(rhs)
+            if lp != rp { return lp > rp }
+            return lhs.id < rhs.id
+        }
+        let kept = Array(ranked.prefix(nodeBudget))
+        let keptIDs = Set(kept.map(\.id))
+        let keptEdges = Array(
+            allEdges
+                .filter { keptIDs.contains($0.source_id) && keptIDs.contains($0.target_id) }
+                .sorted { lhs, rhs in
+                    let lw = lhs.weight ?? 0
+                    let rw = rhs.weight ?? 0
+                    if lw != rw { return lw > rw }
+                    return lhs.id < rhs.id
+                }
+                .prefix(edgeBudget)
+        )
+
+        // Direct init ON PURPOSE: `MemoryMapLayout.layout(...)` owns the one-slot memo cache the
+        // LIVE map depends on every render. Going around it means opening the share sheet never
+        // evicts the map's cached layout — and the card's own layout runs exactly once, here.
+        let layout = MemoryMapLayout(nodes: kept, edges: keptEdges, size: graphSize)
+
+        // Top 3 god-node labels. `ranked` already leads with hubs/centrality; skip empty or
+        // sentence-length labels, dedupe, and truncate so the headline stays one line.
+        var orbitLabels: [String] = []
+        var seenLabels = Set<String>()
+        for node in ranked {
+            guard orbitLabels.count < 3 else { break }
+            let label = node.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !label.isEmpty, label.count <= 32 else { continue }
+            let key = label.lowercased()
+            guard !seenLabels.contains(key) else { continue }
+            seenLabels.insert(key)
+            orbitLabels.append(label.count > 22 ? String(label.prefix(20)) + "…" : label)
+        }
+
+        // Honest headline numbers: never fabricate. Memories come from /v1/stats when known;
+        // otherwise the card counts what it actually draws from ("points").
+        var stats: [Stat] = []
+        if let memoriesCount, memoriesCount > 0 {
+            stats.append(Stat(value: memoriesCount.formatted(), label: memoriesCount == 1 ? "MEMORY" : "MEMORIES"))
+        } else {
+            stats.append(Stat(value: allNodes.count.formatted(), label: allNodes.count == 1 ? "POINT" : "POINTS"))
+        }
+        stats.append(Stat(value: allEdges.count.formatted(), label: allEdges.count == 1 ? "CONNECTION" : "CONNECTIONS"))
+        let clusterCount = analysis?.community_count ?? Set(allNodes.compactMap(\.community)).count
+        if clusterCount >= 1 {
+            stats.append(Stat(value: clusterCount.formatted(), label: clusterCount == 1 ? "CLUSTER" : "CLUSTERS"))
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "d MMM yyyy"
+        let stampLine = "YOUR CONSTELLATION · " + formatter.string(from: Date()).uppercased()
+
+        return ConstellationShareCardModel(
+            nodes: kept,
+            edges: keptEdges,
+            layout: layout,
+            orbitLabels: orbitLabels,
+            stats: stats,
+            stampLine: stampLine
+        )
+    }
+}
+
+/// The fixed-size (1200×630, standard social-card ratio) share card. Renders the real graph in
+/// the Archive's DARK identity — a night sky of the user's own constellation — with headline
+/// stats and quiet Cortex branding. Never blank: a young graph still gets its star field, stats,
+/// and stamp. Exported at 2× (2400×1260) via ImageRenderer.
+struct ConstellationShareCard: View {
+    static let size = CGSize(width: 1200, height: 630)
+    /// The region the graph layout fills; the scrimmed margins belong to the text chrome.
+    static let graphSize = CGSize(width: 1104, height: 470)
+    private static let graphOrigin = CGPoint(x: 48, y: 104)
+
+    let model: ConstellationShareCardModel
+
+    /// The Archive's dark palette, fixed by VALUE: the app window is pinned light, and the
+    /// adaptive `CortexDesign` tokens would resolve light here — the card must always be the
+    /// night-sky identity, so it carries the dark hex values directly.
+    private enum Night {
+        static let paper = Color(red: 0.110, green: 0.102, blue: 0.090)          // #1C1A17
+        static let panel = Color(red: 0.149, green: 0.137, blue: 0.125)          // #262320
+        static let ink = Color(red: 0.910, green: 0.890, blue: 0.851)            // #E8E3D9
+        static let inkSecondary = Color(red: 0.690, green: 0.663, blue: 0.616)   // #B0A99D
+        static let inkFaint = Color(red: 0.549, green: 0.522, blue: 0.478)       // #8C857A
+        static let accent = Color(red: 0.788, green: 0.420, blue: 0.341)         // #C96B57
+        static let gold = Color(red: 0.827, green: 0.627, blue: 0.298)           // #D3A04C
+        static let moss = Color(red: 0.494, green: 0.604, blue: 0.447)           // #7E9A72
+    }
+
+    /// Dark siblings of `MemoryMapView.communityPalette`, index-aligned so each cluster keeps
+    /// the same hue family on the card as on the live map.
+    private static let communityPalette: [Color] = [
+        Night.accent,
+        Night.gold,
+        Night.moss,
+        Color(red: 0.58, green: 0.51, blue: 0.78),
+        Color(red: 0.82, green: 0.56, blue: 0.42),
+        Color(red: 0.42, green: 0.66, blue: 0.69),
+    ]
+
+    private static func nodeColor(_ node: GraphNode) -> Color {
+        if let community = node.community {
+            let count = communityPalette.count
+            return communityPalette[((community % count) + count) % count]
+        }
+        switch node.type.lowercased() {
+        case "person", "people": return Night.accent
+        case "project": return Night.gold
+        case "topic", "theme", "concept": return Night.moss
+        default: return Night.inkSecondary
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            Night.paper
+            // A soft center glow so the sky has depth instead of flat black.
+            RadialGradient(
+                colors: [Night.panel.opacity(0.9), Night.paper],
+                center: .center,
+                startRadius: 40,
+                endRadius: 620
+            )
+            graphCanvas
+            scrims
+            chrome
+            // The archive plate: a quiet inner hairline framing the card.
+            Rectangle()
+                .strokeBorder(Night.ink.opacity(0.12), lineWidth: 1)
+                .padding(16)
+        }
+        .frame(width: Self.size.width, height: Self.size.height)
+    }
+
+    /// layout space → card space (the layout fills `graphSize`, inset by `graphOrigin`).
+    private static func cardPoint(_ p: CGPoint) -> CGPoint {
+        CGPoint(x: graphOrigin.x + p.x, y: graphOrigin.y + p.y)
+    }
+
+    private var graphCanvas: some View {
+        Canvas { context, _ in
+            drawDust(&context)
+            // Painter's order matches the live map: edges, then circles, then labels.
+            for edge in model.edges {
+                guard let la = model.layout.position(of: edge.source_id),
+                      let lb = model.layout.position(of: edge.target_id) else { continue }
+                let a = Self.cardPoint(la)
+                let b = Self.cardPoint(lb)
+                var path = Path()
+                path.move(to: a)
+                path.addLine(to: b)
+                let weight = max(0, min(1, edge.weight ?? 0.5))
+                if edge.is_bridge == true {
+                    context.stroke(path, with: .color(Night.gold.opacity(0.45)), style: StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
+                } else {
+                    context.stroke(path, with: .color(Night.ink.opacity(0.07 + weight * 0.12)), lineWidth: 0.8 + CGFloat(weight) * 1.2)
+                }
+            }
+            for node in model.nodes {
+                guard let lp = model.layout.position(of: node.id) else { continue }
+                let p = Self.cardPoint(lp)
+                let radius = model.layout.radius(of: node) * 1.45
+                let fill = Self.nodeColor(node)
+                // The god nodes glow.
+                if model.layout.radius(of: node) >= 12 {
+                    let halo = radius + 12
+                    context.fill(
+                        Path(ellipseIn: CGRect(x: p.x - halo, y: p.y - halo, width: halo * 2, height: halo * 2)),
+                        with: .color(fill.opacity(0.16))
+                    )
+                }
+                context.fill(
+                    Path(ellipseIn: CGRect(x: p.x - radius, y: p.y - radius, width: radius * 2, height: radius * 2)),
+                    with: .color(fill.opacity(0.95))
+                )
+            }
+            drawTopLabels(&context)
+        }
+        .frame(width: Self.size.width, height: Self.size.height)
+    }
+
+    /// Faint deterministic star-dust (FNV-seeded, like the layout itself — no randomness) so a
+    /// young, small graph still renders as a living night sky. The card is never blank.
+    private func drawDust(_ context: inout GraphicsContext) {
+        for index in 0..<110 {
+            var hash: UInt64 = 0xcbf29ce484222325
+            for byte in "dust-\(index)".utf8 {
+                hash ^= UInt64(byte)
+                hash = hash &* 0x100000001b3
+            }
+            let x = CGFloat(hash % UInt64(Self.size.width))
+            let y = CGFloat((hash >> 16) % UInt64(Self.size.height))
+            let alpha = 0.04 + Double((hash >> 32) % 90) / 1_500
+            let radius: CGFloat = (hash >> 44) % 5 == 0 ? 1.5 : 0.9
+            context.fill(
+                Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)),
+                with: .color(Night.ink.opacity(alpha))
+            )
+        }
+    }
+
+    /// Label only the most prominent nodes (largest radii — hubs and high-centrality entities),
+    /// greedily dropping collisions, so the card reads as a constellation, not a word cloud.
+    private func drawTopLabels(_ context: inout GraphicsContext) {
+        let ordered = model.nodes
+            .sorted { lhs, rhs in
+                let lr = model.layout.radius(of: lhs)
+                let rr = model.layout.radius(of: rhs)
+                if lr != rr { return lr > rr }
+                return lhs.id < rhs.id
+            }
+            .prefix(12)
+        var occupied: [CGRect] = []
+        for node in ordered {
+            let raw = node.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !raw.isEmpty else { continue }
+            guard let lp = model.layout.position(of: node.id) else { continue }
+            let p = Self.cardPoint(lp)
+            let radius = model.layout.radius(of: node) * 1.45
+            let label = raw.count > 26 ? String(raw.prefix(24)) + "…" : raw
+            let text = Text(label)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundColor(Night.ink.opacity(0.92))
+            let resolved = context.resolve(text)
+            let textSize = resolved.measure(in: CGSize(width: 240, height: 44))
+            var textX = p.x + radius + 7
+            if textX + textSize.width > Self.size.width - 40 {
+                textX = p.x - radius - 7 - textSize.width
+            }
+            let origin = CGPoint(x: textX, y: p.y - textSize.height / 2)
+            let rect = CGRect(origin: origin, size: textSize).insetBy(dx: -4, dy: -3)
+            guard !occupied.contains(where: { $0.intersects(rect) }) else { continue }
+            occupied.append(rect)
+            // A whisper of ground so labels stay legible over edge lines.
+            context.fill(Path(roundedRect: rect, cornerRadius: 4), with: .color(Night.paper.opacity(0.55)))
+            context.draw(resolved, in: CGRect(origin: origin, size: textSize))
+        }
+    }
+
+    /// Legibility scrims over the graph's top and bottom margins, where the text chrome sits.
+    private var scrims: some View {
+        VStack(spacing: 0) {
+            LinearGradient(
+                colors: [Night.paper.opacity(0.92), Night.paper.opacity(0)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 168)
+            Spacer(minLength: 0)
+            LinearGradient(
+                colors: [Night.paper.opacity(0), Night.paper.opacity(0.94)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 168)
+        }
+    }
+
+    /// "Your world orbits: X · Y · Z" — the top god-node labels, in the serif archive voice.
+    /// Falls back gracefully while the graph is still young.
+    private var headline: Text {
+        let base = Font.system(size: 34, weight: .semibold, design: .serif)
+        guard !model.orbitLabels.isEmpty else {
+            return Text("Your knowledge, mapped.").font(base).foregroundColor(Night.ink)
+        }
+        var line = Text("Your world orbits: ").font(base).foregroundColor(Night.ink)
+        for (index, label) in model.orbitLabels.enumerated() {
+            if index > 0 {
+                line = line + Text(" · ").font(base).foregroundColor(Night.inkFaint)
+            }
+            line = line + Text(label).font(base).foregroundColor(Night.ink)
+        }
+        return line
+    }
+
+    private var chrome: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(model.stampLine)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .kerning(2.4)
+                .foregroundColor(Night.inkFaint)
+            headline
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .padding(.top, 14)
+            Spacer(minLength: 0)
+            HStack(alignment: .lastTextBaseline, spacing: 44) {
+                ForEach(model.stats, id: \.label) { stat in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(stat.value)
+                            .font(.system(size: 40, weight: .semibold, design: .serif))
+                            .monospacedDigit()
+                            .foregroundColor(Night.ink)
+                        Text(stat.label)
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .kerning(1.8)
+                            .foregroundColor(Night.inkFaint)
+                    }
+                }
+                Spacer(minLength: 0)
+                // The branding: a wax-red seal dot and the wordmark, nothing louder.
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Circle()
+                        .fill(Night.accent)
+                        .frame(width: 7, height: 7)
+                    Text("Mapped by")
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundColor(Night.inkSecondary)
+                    Text("Cortex")
+                        .font(.system(size: 22, weight: .semibold, design: .serif))
+                        .foregroundColor(Night.ink)
+                }
+            }
+        }
+        .padding(.horizontal, 52)
+        .padding(.top, 46)
+        .padding(.bottom, 44)
+    }
+}
+
+/// A weak handle to the AppKit view planted under the Share button, so the sharing picker's
+/// popover can anchor to the button that summoned it.
+private final class ShareAnchor {
+    weak var view: NSView?
+}
+
+private struct ShareAnchorView: NSViewRepresentable {
+    let anchor: ShareAnchor
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        anchor.view = view
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        anchor.view = nsView
+    }
+}
+
+/// The preview sheet behind the map's share button: renders the card ONCE (2× via ImageRenderer),
+/// shows exactly the pixels that would leave the machine, and offers the three exits — the system
+/// share picker (the one primary action), copy, and save-as-PNG.
+private struct ConstellationShareSheet: View {
+    let nodes: [GraphNode]
+    let edges: [GraphEdge]
+    let analysis: GraphAnalysis?
+    let memoriesCount: Int?
+
+    @Environment(\.dismiss) private var dismiss
+
+    /// The rendered card (preview + share-picker item) and its PNG bytes (copy + save).
+    @State private var cardImage: NSImage?
+    @State private var cardPNG: Data?
+    @State private var copied = false
+    /// Held so the picker isn't deallocated out from under its own popover.
+    @State private var activePicker: NSSharingServicePicker?
+    @State private var shareAnchor = ShareAnchor()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+            HStack(alignment: .firstTextBaseline, spacing: CortexDesign.Space.sm) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Share your constellation")
+                        .font(CortexDesign.Typography.title)
+                        .foregroundColor(CortexDesign.ink)
+                    Text("A snapshot of your real memory graph. Node names are visible — share it on purpose.")
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                }
+                Spacer(minLength: 0)
+                CortexIconButton(systemImage: "xmark", role: .ghost, size: .small, help: "Close") {
+                    dismiss()
+                }
+                .accessibilityLabel("Close share preview")
+            }
+
+            preview
+
+            HStack(spacing: CortexDesign.Space.sm) {
+                CortexButton(title: copied ? "Copied" : "Copy", systemImage: "doc.on.doc", role: .secondary) {
+                    copyPNG()
+                }
+                .disabled(cardPNG == nil)
+                CortexButton(title: "Save PNG", systemImage: "square.and.arrow.down", role: .secondary) {
+                    savePNG()
+                }
+                .disabled(cardPNG == nil)
+                Spacer(minLength: 0)
+                CortexButton(title: "Share…", systemImage: "square.and.arrow.up", role: .primary) {
+                    presentSharePicker()
+                }
+                .disabled(cardImage == nil)
+                .background(ShareAnchorView(anchor: shareAnchor))
+            }
+        }
+        .padding(CortexDesign.Space.lg)
+        .frame(minWidth: 684, minHeight: 470)
+        .background(CortexDesign.appBackground)
+        .task { renderCard() }
+    }
+
+    @ViewBuilder
+    private var preview: some View {
+        ZStack {
+            if let cardImage {
+                Image(nsImage: cardImage)
+                    .resizable()
+                    .scaledToFit()
+                    .accessibilityLabel("Preview of your constellation share card")
+            } else {
+                // The render lands in one beat; this ground only shows on the largest graphs.
+                Rectangle()
+                    .fill(CortexDesign.quietBackground)
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .frame(width: 640, height: 336)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(CortexDesign.hairline, lineWidth: 1)
+        )
+    }
+
+    /// Build the model, lay the capped graph out at card scale, and rasterize at 2× — all of it
+    /// deferred to sheet-open, so the live map never pays a cost for the card's existence.
+    @MainActor
+    private func renderCard() {
+        guard cardImage == nil else { return }
+        let model = ConstellationShareCardModel.build(
+            nodes: nodes,
+            edges: edges,
+            analysis: analysis,
+            memoriesCount: memoriesCount,
+            graphSize: ConstellationShareCard.graphSize
+        )
+        let renderer = ImageRenderer(content: ConstellationShareCard(model: model))
+        renderer.scale = 2
+        guard let cgImage = renderer.cgImage else { return }
+        let rep = NSBitmapImageRep(cgImage: cgImage)
+        // Point size stays 1200×630 while the pixel grid is 2400×1260 — crisp on retina, correct
+        // dimensions everywhere else.
+        rep.size = NSSize(width: ConstellationShareCard.size.width, height: ConstellationShareCard.size.height)
+        cardPNG = rep.representation(using: .png, properties: [:])
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+        cardImage = image
+    }
+
+    /// PNG straight onto the general pasteboard (plus TIFF for older paste targets).
+    private func copyPNG() {
+        guard let data = cardPNG else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.declareTypes([.png, .tiff], owner: nil)
+        pasteboard.setData(data, forType: .png)
+        if let tiff = cardImage?.tiffRepresentation {
+            pasteboard.setData(tiff, forType: .tiff)
+        }
+        copied = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            copied = false
+        }
+    }
+
+    private func savePNG() {
+        guard let data = cardPNG else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.nameFieldStringValue = "my-constellation.png"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        if panel.runModal() == .OK, let url = panel.url {
+            try? data.write(to: url)
+        }
+    }
+
+    /// NSSharingServicePicker needs a real AppKit anchor; `ShareAnchorView` plants one under the
+    /// Share button so the popover points at the control that summoned it.
+    private func presentSharePicker() {
+        guard let image = cardImage, let anchorView = shareAnchor.view else { return }
+        let picker = NSSharingServicePicker(items: [image])
+        activePicker = picker
+        picker.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .minY)
     }
 }

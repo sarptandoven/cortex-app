@@ -2342,6 +2342,17 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
                 return
+            if method == "GET" and path == "/v1/usage/headline":
+                # North-star headline: memories actively used across N distinct AIs this window
+                # (weekly cross-AI recall). Shared/default/untokened traffic is exposed as
+                # unattributed_calls and never counted in distinct_ais.
+                self._send_json(
+                    store.cross_ai_recall_headline(
+                        user_id,
+                        days=_int_param(params, "days", 7, 1, 90),
+                    )
+                )
+                return
             if method == "GET" and path == "/v1/twin/scorecard":
                 self._send_json(
                     store.get_twin_scorecard(

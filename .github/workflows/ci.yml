@@ -71,8 +71,21 @@ jobs:
       - name: Run delivery/push safety gate
         run: python scripts/delivery_eval.py
 
-      - name: Run model2vec retrieval-lift gate (skips if model unavailable)
-        run: python scripts/rerank_eval.py
+      # EMBEDDINGS DEMO-INTEGRITY GUARD (CI-visible skip): this job installs
+      # backend/requirements.txt only, which does NOT provision the model2vec package or the
+      # potion-base-8M weights, so the model2vec-seeded gate legitimately skips here. We do NOT
+      # pass --forbid-skip (that would break CI without adding new model-provisioning
+      # infrastructure); instead the skip is made EXPLICIT: the eval output is captured and a
+      # status=skipped result emits a GitHub notice annotation, so a skip shows up in the job
+      # log/summary rather than passing silently. Strict enforcement lives in the release path,
+      # where the model is guaranteed present: macos/package_release.sh exports
+      # CORTEX_REQUIRE_MODEL=1 and runs check_vector_runtime.py --require-model2vec.
+      - name: Run model2vec retrieval-lift gate (explicit skip when model not provisioned)
+        run: |
+          python scripts/rerank_eval.py | tee "$RUNNER_TEMP/rerank_eval.json"
+          if grep -q '"status": "skipped"' "$RUNNER_TEMP/rerank_eval.json"; then
+            echo "::notice title=rerank_eval status=skipped::model2vec is not provisioned in this CI job, so the semantic retrieval-lift gate did not run. Release artifacts enforce the real model via CORTEX_REQUIRE_MODEL=1 + check_vector_runtime.py --require-model2vec."
+          fi
 
       - name: Run adaptation quality evaluation
         run: python scripts/adaptation_eval.py
@@ -170,6 +183,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # Dev-mode build: CORTEX_BUNDLE_PYTHON=0 means no bundled interpreter and no bundled
+      # model2vec model, so build.sh prints its loud "EMBEDDINGS FALLBACK" warning here — that is
+      # expected and non-fatal. CORTEX_REQUIRE_MODEL is deliberately NOT set: this CI job does not
+      # provision the model; only release packaging (macos/package_release.sh) enforces it.
       - name: Build app bundle
         env:
           CORTEX_BUNDLE_PYTHON: "0"

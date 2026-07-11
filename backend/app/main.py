@@ -1906,6 +1906,17 @@ def tool_scorecard(
     return store.get_tool_scorecard(user_id, days=days, token_id=token_id)
 
 
+@app.get("/v1/usage/headline")
+def usage_headline(
+    days: int = Query(default=7, ge=1, le=90),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    """North-star headline: memories actively used across N distinct AIs in the window
+    (weekly cross-AI recall). Shared/default/untokened traffic is exposed as
+    unattributed_calls and never counted in distinct_ais."""
+    return store.cross_ai_recall_headline(user_id, days=days)
+
+
 @app.get("/v1/sources/reputation")
 def source_reputation(
     days: int = Query(default=90, ge=1, le=365),

@@ -906,6 +906,7 @@ struct LiveActivityTicker: View {
         case "source":  return "trash"
         case "graph":   return "circle.hexagongrid.fill"
         case "review":  return "checkmark.seal.fill"
+        case "reach":   return "antenna.radiowaves.left.and.right"
         default:        return "brain.head.profile"
         }
     }

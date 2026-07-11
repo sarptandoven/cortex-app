@@ -93,7 +93,7 @@ While competitors pitch the "memory layer" sentence pre-product, we argue from a
 | **Cited Ask** | `/v1/ask`, `/v1/search`, `/v1/context` in `backend/app/main.py`; `AskTab.swift`, `CitationDisplay.swift` | Cite-or-abstain retrieval, eval-gated — the credibility floor that turns a trial into a habit. |
 | **Layered, provenanced memory** | `backend/app/extractor.py` (7 memory layers + authorship gate), `provenance.py` (author_class, recomputable trust_score, HMAC-signed authorship) | Typed, atomic, trustworthy memory — not a blob. Fills the exact "shallow vendor memory" gap. |
 | **The portable Vault** | `backend/app/vault.py` (1723 lines), `vault_markdown.py`, `docs/LOCAL_VAULT_FORMAT.md`; tombstones, self-contained backups, rebuild-from-vault | A memory the user owns as a folder — the Rewind-refugee's exact ask. |
-| **Universal Reach** | `backend/app/mcp_tools.py` (3420 lines, `POST /mcp`), `/v1/tools/schema` (openai/anthropic/openapi), `sdk/python`, `sdk/typescript`, `extension/` (MV3), signed content-addressed context packs | Your memory works *inside* every AI app today — the real moat, and it's the hardest thing to build. |
+| **Universal Reach** | `backend/app/mcp_tools.py` (3420 lines, `POST /mcp`), `/v1/tools/schema` (openai/anthropic/openapi), `sdk/python`, `sdk/typescript`, `extension/` (MV3), signed content-addressed context packs | Your memory works *inside* every AI app today — the real moat, and it's the hardest thing to build. *(Honest footnote: SDKs are code-complete but not yet published to PyPI/npm, and the tools-schema surface is being mirrored to the hosted API — both are packaging, not research.)* |
 | **Ingestion breadth** | `backend/app/source_ingest.py` (30+ import parsers, no OAuth), `connectors/` (14 live incremental-sync clients), `oauth_broker.py`, GitHub Device Flow sign-in | Any export a user already has becomes cited memory; connect-once sources keep pulling. |
 
 **The founder story (the earned secret — insight from building, not a market map):** *"We didn't build a memory API and go looking for users. We built a local-first personal-memory product people actually use, and because we were paranoid about our users owning their own data, we over-engineered the parts everyone else skips — a portable vault, cited provenance, a real knowledge graph, and universal outbound reach into every AI tool. Then the memory wars started, everyone got locked into a silo, and we realized we'd already built the one thing the labs structurally can't: the neutral, user-owned layer that spans all of them."*
@@ -206,13 +206,13 @@ Three revenue engines, one product:
 Grounded in the honest gap list — the remaining work is almost entirely on the **reach / liveness / identity** axis, not the depth axis (which is shipped).
 
 **Phase 0 (0–3 mo) — Make the memory real and the aha undeniable.**
-- **Real on-device embeddings** (Model2Vec/bge-small via ONNX), replacing the keyword-hash "semantics" — the #1 fix; makes the ownership+privacy story technically true offline for the first time. *(Currently: real semantics need a cloud key, which breaks the privacy story — `CORTEX_STRATEGY.txt`.)*
+- ✅ **Real on-device embeddings — SHIPPED.** Model2Vec (potion-base-8M, 256-dim static) is implemented, bundled into every DMG/App Store build, and default-on at launch (verified in shipped 0.2.0-2: `/ready provider=model2vec`). The ownership+privacy story is technically true offline today. *Named open work: upgrade to a bge-class model for higher semantic fidelity — an improvement, not a gap.*
 - **The one-import → Mirror onboarding** polished to a screenshot-worthy 10-minute first-run; the **Constellation card** shareable artifact.
 - Ship the MCP + extension "wire everywhere in 60 seconds" flow as the headline path.
 
 **Phase 1 (3–6 mo) — Liveness across tools.**
 - **Bidirectional / push sync** so memory updates flow into ChatGPT/Claude/Cursor in real time (today the extension is pull/inject only, one-directional — `extension/README.md`). Add server→client SSE push.
-- **Hosted multi-device sync** — build the Phase-2 push loop + sync worker that's *designed but unbuilt* (`PHASE2_SYNC_DESIGN.md`: "no hosted ingest endpoint"). Turns a single-device product into "your memory, everywhere."
+- **Hosted multi-device sync — push half SHIPPED.** The local→hosted push loop is built, tested, and wired (`CortexPushSync.swift`, `POST /v1/sync/ingest`, `GET /v1/sync/captures`, idempotent capture upsert, device registration, `test_sync_push.py`). Remaining: the **pull leg** (hosted→second device), delete/tombstone propagation, and **end-to-end encryption of synced content** — today sync payloads are Ed25519-*signed* but stored plaintext on the hosted store, which we state plainly (§14) until E2EE ships.
 
 **Phase 2 (6–12 mo) — Reach the rest of the multi-tool population.**
 - **Mobile capture/read surface** (iOS) — a portable-memory company that "lives with you" needs at least a mobile read/capture surface (currently macOS-only, deliberately deferred in `MVP_ROADMAP.md`).
@@ -230,7 +230,7 @@ Grounded in the honest gap list — the remaining work is almost entirely on the
 
 **North-star metric:** **memories actively used across N different AIs per week** (weekly cross-AI recall) — the number that proves the core promise (one memory, working everywhere) is actually happening. Secondary: multi-tool activation (does an external AI visibly cite your context), 4-week retention, sources connected per user, Constellation cards shared.
 
-**Honest current status:** the product is shipped and real (Mac App Store, ~578 backend tests, real connectors, cited retrieval, Constellation, universal reach), but the plan's honest gaps are: no real-time bidirectional sync yet, semantic memory needs the on-device embedding fix, no hosted multi-device sync, no mobile, no team product. **We have the depth; we don't yet have public pull-numbers on the reach/liveness axis.** That's the single biggest thing to close before YC.
+**Honest current status:** the product is shipped and real (Mac App Store, ~1,845 backend tests, real connectors, cited retrieval with on-device Model2Vec embeddings default-on, Constellation, universal reach, local→hosted push sync), and the honest remaining gaps are: the pull leg of multi-device sync, E2E encryption of synced content, real-time push into tools, no mobile, no team product — and above all **no public pull-numbers and, until this build, no surface that even computed our own north-star metric.** We have the depth; the evidence loop (demo + metric + users) is the single biggest thing to close before YC — see `docs/YC_EXECUTION_PLAN.md` for the judgment and the build closing it.
 
 **What to build + show for YC (ranked by yes-flipping power):**
 1. **The 60-second cross-AI demo, live in the room:** one memory answering the same question — correctly, with citations — inside *three different tools*. This is the demoable "holy shit," not a TAM slide.
@@ -281,7 +281,8 @@ Honest scale statement: this is a seed→Series-A trajectory to ~$10–20M ARR b
 - **"A model of you does nothing on day one" (the Personal.ai failure).** *Mitigation:* the aha is single-player-useful *immediately* — the Mirror is a screenshot-worthy "it knows me" moment and continuity is felt inside the tools you already use, in 10 minutes.
 - **Retention / is it a vitamin.** *Mitigation:* the retention hook is that once your memory is wired into your daily tools, ripping it out means going back to re-explaining yourself — and the corpus compounds. North-star is cross-AI weekly recall, not novelty.
 - **"Portability is a fallacy" (Zep).** *Mitigation:* we port human-readable, cited Markdown + a re-embeddable source-of-truth, not vendor vectors; built from the user's own data over open MCP, needing zero lab cooperation (§5).
-- **Depth-shipped, reach-unbuilt.** *Mitigation:* named plainly (§10/§11). The remaining work (bidirectional sync, on-device embeddings, hosted sync, mobile) is engineering, not research — sequenced Phase 0–2.
+- **Depth-shipped, reach-unbuilt.** *Mitigation:* named plainly (§10/§11). The remaining work (bidirectional sync, pull-leg multi-device sync, mobile) is engineering, not research — sequenced Phase 0–2, with on-device embeddings and push-sync already shipped.
+- **The hosted-sync privacy gap (we name it before a journalist does).** Synced captures are currently stored *plaintext* on our hosted store — portable bundles are Ed25519-**signed** for integrity, not encrypted — and local purges don't yet propagate to the hosted copy or other devices. This is the one place the ownership pitch breaks today. *Mitigation:* stated honestly in-product and here; E2E encryption of sync payloads (per-user key, age-style) and tombstone propagation are the first post-wave engineering items (`docs/YC_EXECUTION_PLAN.md` §2); until then, sync is opt-in and local-only mode loses nothing.
 
 ---
 
@@ -303,7 +304,7 @@ Free to own your memory; **$12/mo Pro** for cross-tool + cross-device sync; **$1
 In the last 12 months: every lab shipped memory (validated) but siloed (the gap); MCP became the universal distribution rail (technically distributable now); Rewind/Limitless was killed by Meta (a live refugee cohort of privacy-primed users); and agents now need a portable model of the user to act. The pain (fragmentation) and the enabling standard (MCP) arrived together.
 
 **Progress so far?**
-Shipped: Mac App Store app, hosted backend, 30+ import parsers + 14 live connectors, cited Ask, a whole-person profile, an interactive knowledge graph, MCP + OpenAI/Anthropic/OpenAPI schemas + SDKs + browser extension, a portable Markdown vault. Next: on-device embeddings, real-time cross-AI sync, hosted multi-device sync, mobile.
+Shipped: Mac App Store app, hosted backend, 30+ import parsers + 14 live connectors, cited Ask with on-device embeddings (default-on, no cloud key), a whole-person profile, an interactive knowledge graph, MCP + OpenAI/Anthropic/OpenAPI schemas + SDKs + browser extension, a portable Markdown vault, and local→hosted push sync. Next: the cross-AI usage meter + live demo + share card (in build), pull-leg multi-device sync, E2E-encrypted sync, mobile.
 
 **One-line summary.**
 1Password for your AI memory — the private, portable model of who you are that you own and that works in every AI.

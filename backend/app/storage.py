@@ -20497,6 +20497,49 @@ class CortexStore:
                 pass
         return payload
 
+    # Bounded cap on served-memory IDs logged per tool call (north-star instrumentation): big
+    # enough to cover any real context pack, small enough that the audit row stays cheap.
+    SERVED_MEMORY_IDS_CAP = 50
+
+    def _served_memory_ids(self, result: Any) -> list[str]:
+        """Memory IDs a READ tool actually served, harvested from its result payload — IDs ONLY,
+        never content or summaries. Recognizes the shapes the read tools emit: memory dicts
+        (result_type == "memory" from _memory_from_row / answer citations), citation records
+        ("memory_id" from assemble_context), and expand_context's cited_memory_ids lists.
+        Deduped in first-served order and capped at SERVED_MEMORY_IDS_CAP."""
+        served: list[str] = []
+        seen: set[str] = set()
+
+        def _add(value: Any) -> None:
+            text = str(value or "").strip()
+            if text and text not in seen and len(served) < self.SERVED_MEMORY_IDS_CAP:
+                seen.add(text)
+                served.append(text)
+
+        def _walk(node: Any, depth: int) -> None:
+            if len(served) >= self.SERVED_MEMORY_IDS_CAP or depth > 8:
+                return
+            if isinstance(node, dict):
+                if node.get("result_type") == "memory" and node.get("id"):
+                    _add(node.get("id"))
+                if isinstance(node.get("memory_id"), str):
+                    _add(node["memory_id"])
+                cited = node.get("cited_memory_ids")
+                if isinstance(cited, list):
+                    for item in cited:
+                        if isinstance(item, str):
+                            _add(item)
+                for value in node.values():
+                    if isinstance(value, (dict, list)):
+                        _walk(value, depth + 1)
+            elif isinstance(node, list):
+                for item in node:
+                    if isinstance(item, (dict, list)):
+                        _walk(item, depth + 1)
+
+        _walk(result, 0)
+        return served
+
     def record_agent_event(
         self,
         user_id: str,
@@ -20527,6 +20570,13 @@ class CortexStore:
             if all(isinstance(result.get(bucket), list) for bucket in ("consistent", "contradicted", "unsupported")):
                 for bucket in ("consistent", "contradicted", "unsupported"):
                     metadata[f"graded_{bucket}"] = len(result[bucket])
+        # North-star instrumentation (weekly cross-AI recall): for READ tools, log WHICH memory
+        # IDs the call served — IDs only, never content — so cross_ai_recall_headline can rank
+        # top-served memories. Additive and bounded; absent when the tool served nothing.
+        if self._scorecard_tool_kind(tool_name) == "read" and isinstance(result, (dict, list)):
+            served_ids = self._served_memory_ids(result)
+            if served_ids:
+                metadata["served_memory_ids"] = served_ids
         if token:
             metadata["token_id"] = token.get("token_id")
             metadata["token_label"] = token.get("label")
@@ -20543,6 +20593,20 @@ class CortexStore:
             metadata["error"] = error[:240]
         with connect(self.db_path) as conn:
             self._event(conn, user_id, f"mcp:{tool_name}", "agent", "tool_call", metadata)
+        # Recall receipt: when a distinctly-attributed external AI successfully READS memory,
+        # surface it on the live ticker ("Claude Desktop read your memory"). This is the felt
+        # proof of the product's core promise; shared/default/untokened traffic stays silent so
+        # the receipt never overclaims which app did the reading.
+        if success and self._scorecard_tool_kind(tool_name) == "read" and token:
+            label = str(token.get("label") or "").strip()
+            if token.get("token_id") and label and label.lower() not in self.SHARED_TOKEN_LABELS:
+                served = metadata.get("served_memory_ids") or []
+                self._emit_activity(
+                    user_id, "reach", "recall",
+                    title=f"{label} read your memory",
+                    detail=(f"served {len(served)} memor{'y' if len(served) == 1 else 'ies'}" if served else "answered from your memory"),
+                    source=label,
+                )
 
     # ------------------------------------------------------------------
     # Personal eval harness (Phase 4): request-side scorecard + answer grading
@@ -20656,6 +20720,116 @@ class CortexStore:
             "caveats": [
                 "Faithfulness metrics cover only answers submitted via submit_answer_for_grading.",
                 "Usage-rate metrics cover every logged MCP tool call in the window.",
+            ],
+        }
+
+    # ------------------------------------------------------------------
+    # North-star metric: weekly cross-AI recall
+    # ------------------------------------------------------------------
+
+    # Token labels that are SHARED surfaces rather than one attributable AI app: the legacy
+    # macOS "Connected AI tools" key, the default local token, and the generic mint labels.
+    # Each of these can hide several distinct apps behind one credential, so counting one as
+    # "an AI" would let the north-star number overclaim — they are reported as unattributed
+    # instead (visible, never counted as distinct). Matched case-insensitively.
+    SHARED_TOKEN_LABELS = frozenset({
+        "connected ai tools",      # legacy shared macOS token (pre per-app tokens)
+        "local mcp integrations",  # default local token (tok_local_mcp)
+        "mcp integration",         # create_mcp_token default label
+        "rest api client",         # create_api_token default label
+        "provisioned mcp token",   # hosted provisioning default label
+    })
+
+    def cross_ai_recall_headline(self, user_id: str, *, days: int = 7) -> dict[str, Any]:
+        """North-star headline: memories actively used across N different AIs in the window
+        (weekly cross-AI recall). A pure read-model over the mcp:{tool} event log
+        (record_agent_event) — no new writes, no LLM.
+
+        Honesty rules:
+          - distinct_ais counts DISTINCT per-app token labels with >=1 successful read-class
+            call. The "(untokened)" bucket and shared/default labels (SHARED_TOKEN_LABELS)
+            are NEVER counted as distinct AIs; their traffic surfaces in unattributed_calls /
+            unattributed_sources so the number can't overclaim.
+          - total_recalls counts every successful read-class call, attributed or not.
+          - top_memories joins served_memory_ids back to the memories table for a SHORT local
+            display title; served IDs that no longer resolve to a memory are dropped, never
+            guessed. Content never leaves the local store beyond that short title."""
+        window_days = max(1, min(int(days), 90))
+        clients: dict[str, dict[str, Any]] = {}
+        unattributed: dict[str, dict[str, Any]] = {}
+        served_counts: dict[str, int] = {}
+        total_recalls = 0
+        top_memories: list[dict[str, Any]] = []
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT metadata_json, created_at
+                FROM memory_events
+                WHERE user_id = ? AND object_type = 'agent' AND event_type = 'tool_call'
+                  AND object_id LIKE 'mcp:%'
+                  AND created_at >= datetime('now', ?)
+                ORDER BY created_at, rowid
+                """,
+                (user_id, f"-{window_days} days"),
+            ).fetchall()
+            for row in rows:
+                metadata = self._json_or_empty(row["metadata_json"])
+                tool = str(metadata.get("tool") or "")
+                # A recall = a SUCCESSFUL read-class call; failed reads served nothing.
+                if self._scorecard_tool_kind(tool) != "read" or metadata.get("success") is False:
+                    continue
+                total_recalls += 1
+                served = metadata.get("served_memory_ids")
+                if isinstance(served, list):
+                    for memory_id in served[: self.SERVED_MEMORY_IDS_CAP]:
+                        key = str(memory_id or "").strip()
+                        if key:
+                            served_counts[key] = served_counts.get(key, 0) + 1
+                label = str(metadata.get("token_label") or "").strip()
+                token_id = str(metadata.get("token_id") or "").strip()
+                attributed = bool(token_id) and bool(label) and label.lower() not in self.SHARED_TOKEN_LABELS
+                bucket = clients if attributed else unattributed
+                bucket_key = label.lower() or "(untokened)"
+                entry = bucket.setdefault(bucket_key, {"label": label or "(untokened)", "read_calls": 0, "last_used_at": None})
+                entry["read_calls"] += 1
+                created_at = str(row["created_at"] or "")
+                if created_at and (entry["last_used_at"] is None or created_at > entry["last_used_at"]):
+                    entry["last_used_at"] = created_at
+            if served_counts:
+                # Deterministic ranking (count desc, then id) over a bounded candidate slate,
+                # joined to the memories table so vanished/purged memories drop out honestly.
+                candidates = sorted(served_counts.items(), key=lambda item: (-item[1], item[0]))[:25]
+                placeholders = ",".join("?" for _ in candidates)
+                title_rows = conn.execute(
+                    f"SELECT id, summary, content FROM memories WHERE user_id = ? AND id IN ({placeholders})",
+                    (user_id, *[memory_id for memory_id, _ in candidates]),
+                ).fetchall()
+                titles = {
+                    str(title_row["id"]): (str(title_row["summary"] or "").strip() or str(title_row["content"] or "").strip())[:80]
+                    for title_row in title_rows
+                }
+                for memory_id, times_served in candidates:
+                    title = titles.get(memory_id)
+                    if not title:
+                        continue
+                    top_memories.append({"memory_id": memory_id, "times_served": times_served, "title_or_summary": title})
+                    if len(top_memories) >= 5:
+                        break
+        client_rows = sorted(clients.values(), key=lambda entry: (-entry["read_calls"], entry["label"].lower()))
+        unattributed_rows = sorted(unattributed.values(), key=lambda entry: (-entry["read_calls"], entry["label"].lower()))
+        return {
+            "window_days": window_days,
+            "computed_at": now_iso(),
+            "distinct_ais": len(client_rows),
+            "total_recalls": total_recalls,
+            "clients": client_rows,
+            "top_memories": top_memories,
+            "unattributed_calls": sum(entry["read_calls"] for entry in unattributed_rows),
+            "unattributed_sources": unattributed_rows,
+            # Honest caveats surfaced in every payload, matching the scorecard convention.
+            "caveats": [
+                "distinct_ais counts only per-app token labels; shared/default tokens and untokened calls are reported as unattributed, never as distinct AIs.",
+                "total_recalls counts every successful read-class tool call in the window, attributed or not.",
             ],
         }
 
