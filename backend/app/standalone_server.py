@@ -15,6 +15,13 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import load_settings
+from .context_file import (
+    DEFAULT_STYLE as CONTEXT_FILE_DEFAULT_STYLE,
+    SUPPORTED_STYLES as CONTEXT_FILE_SUPPORTED_STYLES,
+    render_context_block,
+    sync_context_file,
+    validate_context_file_path,
+)
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
 from .mcp_tools import (
@@ -174,6 +181,13 @@ def _required_api_scope(method: str, path: str) -> str:
     # Obsidian write-back persists distilled memory into user-owned vault files (egress out of
     # Cortex custody) — export-scoped like the bulk exports, parity with the MCP tool.
     if normalized_path == "/v1/connectors/obsidian/write-back":
+        return "export"
+    # CLAUDE.md compiler: previewing the rendered block is a read (nothing leaves Cortex custody
+    # until it's written); syncing WRITES distilled memory into a user-owned file outside the vault
+    # — export-scoped, same reasoning as Obsidian write-back / delivery send.
+    if normalized_path == "/v1/context-file/preview":
+        return "read"
+    if normalized_path == "/v1/context-file/sync":
         return "export"
     # Delivery: previewing the cited brief is a read; SENDING it out of Cortex is egress of
     # personal memory, gated like a bulk export (export scope + allow_agent_exports trust toggle).
@@ -1465,6 +1479,43 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         people_limit=people_limit,
                     )
                     self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
+                except FileNotFoundError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                except PermissionError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/context-file/preview":
+                # CLAUDE.md compiler: render the managed block WITHOUT writing anything, so a
+                # caller can see exactly what would be synced first. Read-scoped.
+                body = self._json_body()
+                try:
+                    style = str(body.get("style") or CONTEXT_FILE_DEFAULT_STYLE).strip().lower() or CONTEXT_FILE_DEFAULT_STYLE
+                    if style not in CONTEXT_FILE_SUPPORTED_STYLES:
+                        raise ValueError(f"style must be one of {sorted(CONTEXT_FILE_SUPPORTED_STYLES)}")
+                    block = render_context_block(store, user_id, style=style)
+                    self._send_json({"block": block, "style": style})
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/context-file/sync":
+                # CLAUDE.md compiler: render + write the managed block into a file the user
+                # already owns (CLAUDE.md / AGENTS.md / .cursorrules / GEMINI.md / any .md). The
+                # data plane never leaves the local filesystem — export-scoped like Obsidian
+                # write-back because it persists distilled memory outside Cortex custody.
+                body = self._json_body()
+                try:
+                    style = str(body.get("style") or CONTEXT_FILE_DEFAULT_STYLE).strip().lower() or CONTEXT_FILE_DEFAULT_STYLE
+                    if style not in CONTEXT_FILE_SUPPORTED_STYLES:
+                        raise ValueError(f"style must be one of {sorted(CONTEXT_FILE_SUPPORTED_STYLES)}")
+                    raw_path = str(body.get("path") or "").strip()
+                    if not raw_path:
+                        raise ValueError("path is required")
+                    vault_root = store.vault_root_path(user_id)
+                    resolved = validate_context_file_path(raw_path, vault_root=vault_root)
+                    result = sync_context_file(store, user_id, str(resolved), style=style)
+                    self._send_json(result)
                 except FileNotFoundError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
                 except PermissionError as exc:

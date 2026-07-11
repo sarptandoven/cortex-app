@@ -2277,6 +2277,35 @@ struct MemoryPackPreview: Equatable { let text: String; let itemCount: Int; let 
 // The outcome of a one-shot "Test connection" probe for an AI integration.
 struct ConnectionTestResult: Equatable { let ok: Bool; let message: String }
 
+// MARK: - Context-file compiler ("Sync to CLAUDE.md")
+//
+// Meets the ICP where they already are: a CLAUDE.md / AGENTS.md / .cursorrules file they
+// hand-maintain as a manual memory workaround. Cortex renders the cited profile into a
+// fenced, Cortex-managed block of a file the user chooses, refreshed on demand.
+
+/// A cached preview of the rendered managed block (POST /v1/context-file/preview). Not tied
+/// to any one target file — the same rendered block is what would be written to any of them.
+struct ContextFileBlockPreview: Equatable { let text: String; let style: String }
+
+/// The result of a completed sync to one target file (POST /v1/context-file/sync), plus a
+/// friendly relative timestamp for the row's status line.
+struct ContextFileSyncResult: Equatable {
+    let path: String
+    let bytesWritten: Int
+    let blockLines: Int
+    let created: Bool
+    let syncedAt: Date
+}
+
+private struct ContextFilePreviewResponse: Codable { let block: String; let style: String }
+
+private struct ContextFileSyncResponse: Codable {
+    let path: String
+    let bytes_written: Int
+    let block_lines: Int
+    let created: Bool
+}
+
 // Decode wrappers for the endpoints above. Kept private to the file — only AppState decodes them.
 private struct ActivityFeedResponse: Codable {
     let events: [ActivityEvent]
@@ -3447,6 +3476,16 @@ final class AppState: ObservableObject {
     // connection" probe is in flight (drives a per-row spinner).
     @Published private(set) var memoryPackPreview: MemoryPackPreview? = nil
     @Published private(set) var testingConnectionID: String? = nil
+
+    // MARK: Connections: context-file compiler ("Sync to CLAUDE.md")
+    //
+    // The list of context-file paths the user has picked (CLAUDE.md / AGENTS.md /
+    // .cursorrules / ...), persisted so the Connections sheet remembers them across
+    // launches. Per-path sync results and the shared block preview are session-only.
+    @Published private(set) var contextFilePaths: [String] = UserDefaults.standard.stringArray(forKey: "contextFilePaths.v1") ?? []
+    @Published private(set) var contextFileSyncResults: [String: ContextFileSyncResult] = [:]
+    @Published private(set) var contextFileBlockPreview: ContextFileBlockPreview? = nil
+    @Published private(set) var syncingContextFilePath: String? = nil
 
     private static func loadQuickCaptureKeybind() -> KeyCombo? {
         guard let data = UserDefaults.standard.data(forKey: quickCaptureKeybindDefaultsKey) else { return nil }
@@ -4833,6 +4872,78 @@ final class AppState: ObservableObject {
             return 0
         }
         return schema.count
+    }
+
+    // MARK: - Connections: context-file compiler ("Sync to CLAUDE.md")
+
+    private static let contextFilePathsDefaultsKey = "contextFilePaths.v1"
+    /// Filenames NSSavePanel offers as one-tap suggestions in the picker below.
+    static let contextFileSuggestedNames = ["CLAUDE.md", "AGENTS.md", ".cursorrules", "GEMINI.md"]
+
+    /// Opens a save-style picker so the user can either pick an EXISTING CLAUDE.md/AGENTS.md/
+    /// .cursorrules or type a new filename to create one — NSOpenPanel has no "type a new name"
+    /// affordance, so NSSavePanel (which supports navigating into an existing file OR typing a
+    /// fresh one) is the right primitive here, even though nothing is saved by the panel itself;
+    /// Cortex writes the file on the next "Sync now". Remembers the chosen path in UserDefaults.
+    func chooseContextFile() {
+        let panel = NSSavePanel()
+        panel.title = "Choose or create a context file"
+        panel.message = "Pick an existing CLAUDE.md / AGENTS.md / .cursorrules, or type a new filename to create one."
+        panel.prompt = "Choose"
+        panel.nameFieldStringValue = "CLAUDE.md"
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = [.text]
+        panel.isExtensionHidden = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        addContextFilePath(url.standardizedFileURL.path)
+    }
+
+    /// Adds a path to the remembered list (de-duplicated, sorted for stable ordering) and
+    /// persists it. Additive-only for this slice — removing a path is left to a future pass.
+    func addContextFilePath(_ path: String) {
+        guard !path.isEmpty else { return }
+        contextFilePaths = Array(Set(contextFilePaths + [path])).sorted()
+        UserDefaults.standard.set(contextFilePaths, forKey: Self.contextFilePathsDefaultsKey)
+    }
+
+    /// Loads a preview of the rendered managed block WITHOUT writing anything
+    /// (POST /v1/context-file/preview). Shared across every remembered path — the same cited
+    /// block would be written to any of them, so one preview covers all rows.
+    func loadContextFilePreview(style: String = "claude") async {
+        do {
+            let data = try await request(path: "/v1/context-file/preview", method: "POST", body: ["style": style])
+            let response = try JSONDecoder().decode(ContextFilePreviewResponse.self, from: data)
+            contextFileBlockPreview = ContextFileBlockPreview(text: response.block, style: response.style)
+        } catch {
+            status = CortexRecoveryText.failureStatus("Context file preview", error: error)
+        }
+    }
+
+    /// Renders + writes the managed block into `path` (POST /v1/context-file/sync). Manual
+    /// "Sync now" only for this slice — auto-refresh-on-memory-change is a natural next slice
+    /// (e.g. triggered from the same place loadRecent()/loadReview() already refresh after a
+    /// capture) but is deliberately out of scope here to keep this a single, reviewable step.
+    @discardableResult
+    func syncContextFile(path: String, style: String = "claude") async -> Bool {
+        syncingContextFilePath = path
+        defer { syncingContextFilePath = nil }
+        do {
+            let data = try await request(path: "/v1/context-file/sync", method: "POST", body: ["path": path, "style": style])
+            let response = try JSONDecoder().decode(ContextFileSyncResponse.self, from: data)
+            contextFileSyncResults[path] = ContextFileSyncResult(
+                path: response.path,
+                bytesWritten: response.bytes_written,
+                blockLines: response.block_lines,
+                created: response.created,
+                syncedAt: Date()
+            )
+            addContextFilePath(response.path)
+            status = response.created ? "Created \(URL(fileURLWithPath: response.path).lastPathComponent)" : "Synced \(URL(fileURLWithPath: response.path).lastPathComponent)"
+            return true
+        } catch {
+            status = CortexRecoveryText.failureStatus("Context file sync", error: error)
+            return false
+        }
     }
 
     func loadMemoryQuality() async {

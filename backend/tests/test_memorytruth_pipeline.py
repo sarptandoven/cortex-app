@@ -71,6 +71,29 @@ class MemoryTruthLivePipelineTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         # The bench's temporal probes drive /v1/memory/conflicts/resolve and its
         # store writes go through the exact handler stack the packaged app ships.
+        #
+        # standalone_server.{settings,store} are import-time singletons: whichever
+        # test module imports standalone_server FIRST locks in its own CORTEX_API_KEY /
+        # DB / vault paths. When another module (alphabetically earlier) imported it
+        # before us, our module-level `_set_env(...)` had no effect and the live handler
+        # would authenticate against a stale key (401) over a since-deleted tempdir.
+        # Re-pin both to THIS module's env so the test is import-order-independent.
+        from backend.app.config import load_settings
+        from backend.app.sharding import StoreRegistry
+
+        # Re-ASSERT our env immediately before loading — another module may have mutated
+        # CORTEX_API_KEY/DB/VAULT in os.environ between our import and now, and load_settings()
+        # reads os.environ. This makes the live handler authenticate our token no matter what
+        # ran before us.
+        os.environ["CORTEX_DB_PATH"] = str(Path(MODULE_TMP.name) / "pipeline.sqlite")
+        os.environ["CORTEX_VAULT_PATH"] = str(Path(MODULE_TMP.name) / "pipeline.vault")
+        os.environ["CORTEX_API_KEY"] = "memorytruth-pipeline-token"
+
+        cls._prior_settings = standalone_server.settings
+        cls._prior_store = standalone_server.store
+        standalone_server.settings = load_settings()
+        standalone_server.store = StoreRegistry.from_settings(standalone_server.settings)
+
         cls.port = _free_port()
         cls.server = standalone_server.ThreadingHTTPServer(
             ("127.0.0.1", cls.port), standalone_server.CortexRequestHandler
@@ -82,6 +105,9 @@ class MemoryTruthLivePipelineTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.server.shutdown()
         cls.server.server_close()
+        # Restore the singletons so we don't become a polluter for later modules.
+        standalone_server.settings = cls._prior_settings
+        standalone_server.store = cls._prior_store
 
     def test_live_server_holds_every_floor(self) -> None:
         client = HTTPClient(

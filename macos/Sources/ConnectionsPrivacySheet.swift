@@ -2133,6 +2133,8 @@ private struct ConnectionsAIToolsSection: View {
     @State private var testResults: [String: ConnectionTestResult] = [:]
     /// Memory-pack preview disclosure state for the browser-assistant row.
     @State private var packPreviewExpanded = false
+    /// Context-file ("Sync to CLAUDE.md") block-preview disclosure state.
+    @State private var contextBlockPreviewExpanded = false
     /// Presents the guided "Connect an app" wizard (pick → connect → verify → done). Additive
     /// front door over the per-tool tiles below — the same catalog, primitives, and honesty gates.
     @State private var showConnectWizard = false
@@ -2225,6 +2227,8 @@ private struct ConnectionsAIToolsSection: View {
             browserAssistantRow
 
             universalReachRow
+
+            contextFilesRow
 
             if !connectedIntegrations.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
@@ -2328,6 +2332,151 @@ private struct ConnectionsAIToolsSection: View {
         .background(connectionsPanelBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// "Sync to CLAUDE.md": keeps a file the user ALREADY hand-maintains (CLAUDE.md / AGENTS.md /
+    /// .cursorrules / GEMINI.md) in sync with the cited profile — meeting the developer ICP inside
+    /// their existing manual-memory workaround instead of asking them to adopt something new. One
+    /// shared block preview (the rendered Markdown is identical regardless of which file it lands
+    /// in) plus a per-file "Sync now" row for every remembered path.
+    ///
+    /// Manual "Sync now" only for this slice; auto-refresh-on-memory-change (e.g. re-syncing after
+    /// a capture the same way loadRecent()/loadReview() already do) is a natural next slice.
+    private var contextFilesRow: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(CortexDesign.gold.opacity(0.13))
+                    Image(systemName: "doc.badge.gearshape")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(CortexDesign.gold)
+                }
+                .frame(width: 56, height: 56)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Context files".uppercased())
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
+                    Text("Keep your CLAUDE.md in sync")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Keep your CLAUDE.md in sync with your memory — cited, visible, yours.")
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                CortexButton(title: "Add file…", systemImage: "plus", role: .secondary, size: .large) {
+                    state.chooseContextFile()
+                }
+                .help("Pick an existing CLAUDE.md, AGENTS.md, or .cursorrules — or type a new filename to create one.")
+            }
+
+            if !state.contextFilePaths.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(state.contextFilePaths, id: \.self) { path in
+                        contextFileRow(path)
+                    }
+                }
+            }
+
+            contextBlockPreview
+        }
+        .padding(14)
+        .background(connectionsPanelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// One remembered context-file path: its filename, a "Sync now" button (spinner while in
+    /// flight), and the last sync's result line once available.
+    @ViewBuilder
+    private func contextFileRow(_ path: String) -> some View {
+        let result = state.contextFileSyncResults[path]
+        let isSyncing = state.syncingContextFilePath == path
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.text")
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(URL(fileURLWithPath: path).lastPathComponent)
+                        .font(.callout)
+                        .fontWeight(.medium)
+                        .foregroundColor(CortexDesign.ink)
+                    Text(path)
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
+                if isSyncing {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                        .frame(minWidth: 78, minHeight: 30)
+                } else {
+                    CortexButton(title: "Sync now", systemImage: "arrow.triangle.2.circlepath", role: .ghost, size: .small) {
+                        Task { await state.syncContextFile(path: path) }
+                    }
+                    .disabled(state.syncingContextFilePath != nil)
+                    .help("Renders your cited profile into this file's Cortex-managed block.")
+                }
+            }
+            if let result {
+                Text("\(result.created ? "Created" : "Synced") · \(result.blockLines) lines · \(result.bytesWritten) bytes")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.sealMoss)
+            }
+        }
+    }
+
+    /// A lightweight preview of the rendered managed block — the same idiom as
+    /// memoryPackPreview above (expandable, read-only, monospaced excerpt) so a user sees exactly
+    /// what will be written before they hit "Sync now" on any file.
+    @ViewBuilder
+    private var contextBlockPreview: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                CortexButton(
+                    title: state.contextFileBlockPreview == nil ? "Preview" : "Refresh preview",
+                    systemImage: "eye",
+                    role: .ghost,
+                    size: .small
+                ) {
+                    Task { await state.loadContextFilePreview() }
+                }
+                .help("See exactly what Cortex will write before you sync any file.")
+                Spacer(minLength: 0)
+            }
+
+            if let preview = state.contextFileBlockPreview {
+                DisclosureGroup(isExpanded: $contextBlockPreviewExpanded) {
+                    ScrollView {
+                        Text(preview.text)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(CortexDesign.ink)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    }
+                    .frame(maxHeight: 180)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.quietBackground))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
+                    .padding(.top, 6)
+                } label: {
+                    Text(contextBlockPreviewExpanded ? "Hide preview" : "Show what will be written")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                }
+            }
+        }
     }
 
     /// A connected-tool row with an inline "Test" button. Testing confirms the tool can actually

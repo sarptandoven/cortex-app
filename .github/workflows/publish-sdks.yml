@@ -1,0 +1,149 @@
+name: Publish SDKs
+
+# MANUAL ONLY. This workflow never runs on push or pull_request — it is workflow_dispatch only,
+# so a publish to PyPI/npm only happens when a human explicitly triggers it from the Actions tab
+# (or `gh workflow run publish-sdks.yml`) and opts in via the `publish_python` / `publish_typescript`
+# inputs below. Build/typecheck/test always run (cheap, safe, and catch drift on every manual
+# invocation); the actual `twine upload` / `npm publish` steps are additionally gated on the
+# corresponding secret being present, so a misconfigured run degrades to "verified but not
+# published" instead of failing loudly. See sdk/PUBLISHING.md for the human-run publish steps and
+# the package-name research (doppl-cortex-client / @doppl-tech/cortex-client) this workflow assumes.
+on:
+  workflow_dispatch:
+    inputs:
+      publish_python:
+        description: "Publish sdk/python to PyPI (requires PYPI_API_TOKEN secret)"
+        type: boolean
+        default: false
+      publish_typescript:
+        description: "Publish sdk/typescript to npm (requires NPM_TOKEN secret)"
+        type: boolean
+        default: false
+      pypi_repository:
+        description: "twine --repository target for the Python publish step"
+        type: choice
+        options:
+          - pypi
+          - testpypi
+        default: pypi
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-sdks-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  python-sdk:
+    name: Python SDK (build, test, optional publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test + build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest build twine
+
+      - name: Run SDK unit tests
+        run: python -m pytest sdk/python/tests -q
+
+      - name: Build distributions (sdist + wheel)
+        working-directory: sdk/python
+        run: python -m build
+
+      - name: Validate package metadata
+        working-directory: sdk/python
+        run: python -m twine check dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: doppl-cortex-client-python-dist
+          path: sdk/python/dist/*
+          retention-days: 14
+
+      # PUBLISH-PREP ONLY: publishing itself is founder-gated behind BOTH the workflow_dispatch
+      # `publish_python` input AND the PYPI_API_TOKEN secret existing. Neither this job nor any
+      # other automation in this repo runs `twine upload` on push/PR.
+      - name: Publish to PyPI
+        if: ${{ inputs.publish_python && github.event.inputs.publish_python == 'true' }}
+        working-directory: sdk/python
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$TWINE_PASSWORD" ]; then
+            echo "::warning title=PyPI publish skipped::PYPI_API_TOKEN secret is not set; publish_python was requested but there is no credential to publish with. Set the secret in Settings -> Secrets and variables -> Actions, then re-run."
+            exit 0
+          fi
+          python -m twine upload --repository "${{ inputs.pypi_repository }}" dist/*
+
+  typescript-sdk:
+    name: TypeScript SDK (build, typecheck, test, optional publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+
+      - name: Install dependencies
+        working-directory: sdk/typescript
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: sdk/typescript
+        run: npm run typecheck
+
+      - name: Run client test suite (node:test against a stubbed fetch)
+        working-directory: sdk/typescript
+        run: npm test
+
+      - name: Build (emit dist/index.js + dist/index.d.ts)
+        working-directory: sdk/typescript
+        run: npm run build
+
+      - name: Pack (dry run) to confirm publishable contents
+        working-directory: sdk/typescript
+        run: npm pack --dry-run
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: doppl-tech-cortex-client-typescript-dist
+          path: sdk/typescript/dist/*
+          retention-days: 14
+
+      # PUBLISH-PREP ONLY: publishing itself is founder-gated behind BOTH the workflow_dispatch
+      # `publish_typescript` input AND the NPM_TOKEN secret existing. Neither this job nor any
+      # other automation in this repo runs `npm publish` on push/PR. NPM_TOKEN must be an
+      # automation/publish token for an account with publish rights on the @doppl-tech scope.
+      - name: Publish to npm
+        if: ${{ inputs.publish_typescript && github.event.inputs.publish_typescript == 'true' }}
+        working-directory: sdk/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning title=npm publish skipped::NPM_TOKEN secret is not set; publish_typescript was requested but there is no credential to publish with. Set the secret in Settings -> Secrets and variables -> Actions, then re-run."
+            exit 0
+          fi
+          echo "//registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}" > .npmrc
+          npm publish --access public

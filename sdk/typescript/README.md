@@ -1,4 +1,4 @@
-# @cortex/client (TypeScript)
+# @doppl-tech/cortex-client (TypeScript)
 
 A small, **dependency-free** client for the [Cortex](../../README.md) local memory
 server. Uses the built-in `fetch` (Node 18+ or any modern browser) — no runtime
@@ -10,15 +10,27 @@ tool definition. This client wraps that HTTP surface.
 
 - Default base URL: `http://127.0.0.1:8766` (local loopback — Cortex is local-first).
 - Auth: `Authorization: Bearer <token>`, optional `X-Cortex-User` header.
+- Same routes work against the hosted plane — set `baseUrl: "https://api.signindoppl.com"`
+  and use a token minted there. The hosted server (`backend/app/main.py`) mirrors the local
+  server's `/v1/tools/schema` and `/v1/tools/call` request/response shapes exactly, including
+  scope enforcement, so this client (and the OpenAI/Anthropic examples below) work unmodified
+  against either.
 
-## Install / build
+## Install
 
 Requires Node 18+ (for global `fetch` / `AbortController`).
 
 ```bash
+npm install @doppl-tech/cortex-client   # once published (see sdk/PUBLISHING.md)
+```
+
+### Build from source
+
+```bash
 cd sdk/typescript
-npm install      # dev-only: typescript
+npm install      # dev-only: typescript, @types/node
 npm run build    # emits dist/index.js + dist/index.d.ts via tsc
+npm test         # compiles test/ + src/ and runs against a stubbed fetch (node:test)
 ```
 
 Or drop `src/index.ts` straight into your project.
@@ -26,7 +38,7 @@ Or drop `src/index.ts` straight into your project.
 ## Quickstart
 
 ```ts
-import { CortexClient, CortexError } from "@cortex/client";
+import { CortexClient, CortexError } from "@doppl-tech/cortex-client";
 
 const cortex = new CortexClient({
   baseUrl: "http://127.0.0.1:8766",
@@ -80,7 +92,7 @@ back through `cortex.callTool`:
 
 ```ts
 import OpenAI from "openai";
-import { CortexClient } from "@cortex/client";
+import { CortexClient } from "@doppl-tech/cortex-client";
 
 const cortex = new CortexClient({ token: "ctx_your_token" });
 const oai = new OpenAI();
@@ -112,7 +124,7 @@ input_schema }` shape. Route `tool_use` blocks back through `callTool` and reply
 
 ```ts
 import Anthropic from "@anthropic-ai/sdk";
-import { CortexClient } from "@cortex/client";
+import { CortexClient } from "@doppl-tech/cortex-client";
 
 const cortex = new CortexClient({ token: "ctx_your_token" });
 const client = new Anthropic();

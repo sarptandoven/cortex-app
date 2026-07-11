@@ -1,5 +1,5 @@
 /**
- * @cortex/client — a small, dependency-free client for the Cortex local memory server.
+ * @doppl-tech/cortex-client — a small, dependency-free client for the Cortex local memory server.
  *
  * Uses the built-in `fetch` (Node 18+ or any modern browser), so there are no runtime
  * dependencies. Cortex serves the same tool catalog it exposes over MCP as plain HTTP,

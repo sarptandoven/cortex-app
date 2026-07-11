@@ -69,8 +69,8 @@ resp = openai.chat.completions.create(model="...", messages=[...], tools=tools)
 
 ## 3. Client SDK (Python / TypeScript)
 
-`sdk/python` (`pip install cortex-client`, stdlib-only) and `sdk/typescript` (`@cortex/client`,
-fetch-based) wrap the above:
+`sdk/python` (`pip install doppl-cortex-client`, stdlib-only) and `sdk/typescript`
+(`@doppl-tech/cortex-client`, fetch-based) wrap the above:
 ```python
 from cortex_client import CortexClient
 cx = CortexClient(token="<cxm_ token>")            # base_url defaults to loopback

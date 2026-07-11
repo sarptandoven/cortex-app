@@ -30,7 +30,7 @@ from .authn import (
 from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import CORE_TOOL_NAMES, TOOLS, call_tool, tool_call_result, tools_for_scopes
+from .mcp_tools import CORE_TOOL_NAMES, TOOLS, call_tool, export_tool_schema, tool_call_result, tools_for_scopes
 from .observability import metrics, route_label
 from .models import AgentSessionsSyncRequest, AgentSessionsSyncResponse, APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
@@ -2850,6 +2850,11 @@ def manifest() -> dict[str, Any]:
             "tools": [tool["name"] for tool in TOOLS],
             "core_tools": sorted(CORE_TOOL_NAMES),
         },
+        "tools_api": {
+            "schema_endpoint": "/v1/tools/schema",
+            "call_endpoint": "/v1/tools/call",
+            "formats": ["openai", "anthropic", "openapi", "mcp"],
+        },
         "context_engine": {"endpoint": "/v1/context"},
     }
 
@@ -4247,3 +4252,86 @@ async def mcp(request: Request, context: dict[str, Any] = Depends(mcp_auth)) -> 
         return JSONResponse({"jsonrpc": "2.0", "id": message.get("id"), "result": jsonable_encoder(result)})
     except Exception as exc:
         return JSONResponse({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32000, "message": str(exc)}})
+
+
+def _safe_tool_error_message(exc: Exception) -> str:
+    # PermissionError/ValueError messages are intentionally user-facing and safe. For any other
+    # exception (sqlite3.OperationalError, OSError/FileNotFoundError, ...) the message may carry
+    # an absolute vault/db path or secret; run it through the store's agent-facing redaction
+    # before exposing it to callers/agents. Mirrors standalone_server.py's _safe_error_message so
+    # a hosted caller gets the same redaction guarantee a local caller gets.
+    if isinstance(exc, (PermissionError, ValueError)):
+        return str(exc)
+    message = str(exc)
+    try:
+        return store.default_store._redact_text(message)
+    except Exception:
+        return "Internal error"
+
+
+# Universal adapter surface (hosted mirror of standalone_server.py's /v1/tools/*): the same tool
+# catalog, reachable by any function-calling app over plain HTTP against api.signindoppl.com
+# instead of a local server. Authed exactly like /mcp (Bearer -> scoped context via mcp_auth), so
+# a read-only MCP token gets a read-only surface here too. GET /v1/tools/schema projects the
+# catalog to openai/anthropic/openapi/mcp; POST /v1/tools/call dispatches through the SAME
+# call_tool/_require_tool_access path /mcp uses — advertisement is never authorization, call_tool
+# re-checks every scope regardless of what tools_for_scopes chose to show. Every call records an
+# agent event exactly like /mcp does, so hosted tool use counts toward the cross-AI recall metric.
+@app.get("/v1/tools/schema")
+def hosted_tools_schema(
+    format: str = Query(default="openai"),
+    context: dict[str, Any] = Depends(mcp_auth),
+) -> dict[str, Any]:
+    token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
+    base_url = settings.public_base_url.rstrip("/") or "http://127.0.0.1:8766"
+    try:
+        return {"schema": export_tool_schema(format, token_scopes, surface="full", base_url=base_url)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/tools/call")
+def hosted_tools_call(body: dict[str, Any], context: dict[str, Any] = Depends(mcp_auth)) -> dict[str, Any]:
+    tool_user = context["user_id"]
+    token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
+    tool_name = str(body.get("name") or "")
+    arguments = body.get("arguments") if isinstance(body.get("arguments"), dict) else {}
+    if not tool_name:
+        raise HTTPException(status_code=422, detail="tool name is required")
+    try:
+        value = call_tool(store, tool_user, tool_name, arguments, token_scopes=token_scopes)
+        store.record_agent_event(tool_user, tool_name, arguments, success=True, token=context, result=value)
+    except PermissionError as exc:
+        store.record_agent_event(tool_user, tool_name, arguments, success=False, error=str(exc), token=context)
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (ValueError, KeyError) as exc:
+        store.record_agent_event(tool_user, tool_name, arguments, success=False, error=str(exc), token=context)
+        raise HTTPException(status_code=422, detail=_safe_tool_error_message(exc)) from exc
+    except Exception as exc:
+        store.record_agent_event(tool_user, tool_name, arguments, success=False, error=str(exc), token=context)
+        raise HTTPException(status_code=500, detail=_safe_tool_error_message(exc)) from exc
+    return {"tool": tool_name, "result": value}
+
+
+@app.post("/v1/tools/{tool_name}")
+def hosted_tools_call_named(tool_name: str, body: dict[str, Any] | None = None, context: dict[str, Any] = Depends(mcp_auth)) -> Any:
+    # Per-tool path matching the OpenAPI operationIds (/v1/tools/{name}): the URL names the tool,
+    # the whole body is the arguments — mirrors standalone_server.py's dispatch for custom-GPT
+    # actions / Zapier-style connectors that call one operationId per tool rather than the
+    # generic {"name", "arguments"} envelope.
+    tool_user = context["user_id"]
+    token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
+    arguments = body if isinstance(body, dict) else {}
+    try:
+        value = call_tool(store, tool_user, tool_name, arguments, token_scopes=token_scopes)
+        store.record_agent_event(tool_user, tool_name, arguments, success=True, token=context, result=value)
+    except PermissionError as exc:
+        store.record_agent_event(tool_user, tool_name, arguments, success=False, error=str(exc), token=context)
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (ValueError, KeyError) as exc:
+        store.record_agent_event(tool_user, tool_name, arguments, success=False, error=str(exc), token=context)
+        raise HTTPException(status_code=422, detail=_safe_tool_error_message(exc)) from exc
+    except Exception as exc:
+        store.record_agent_event(tool_user, tool_name, arguments, success=False, error=str(exc), token=context)
+        raise HTTPException(status_code=500, detail=_safe_tool_error_message(exc)) from exc
+    return value

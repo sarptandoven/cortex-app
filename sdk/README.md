@@ -7,8 +7,8 @@ catalog.
 
 | SDK | Package | Transport | Runtime deps |
 | --- | --- | --- | --- |
-| [Python](./python/) | `cortex-client` | stdlib `urllib` | none (Python 3.9+) |
-| [TypeScript](./typescript/) | `@cortex/client` | `fetch` | none (Node 18+ / browser) |
+| [Python](./python/) | `doppl-cortex-client` | stdlib `urllib` | none (Python 3.9+) |
+| [TypeScript](./typescript/) | `@doppl-tech/cortex-client` | `fetch` | none (Node 18+ / browser) |
 
 Both mirror the same method surface:
 

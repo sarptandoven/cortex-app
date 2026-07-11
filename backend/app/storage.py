@@ -5904,6 +5904,17 @@ class CortexStore:
         result["scan"] = scan_summary
         return result
 
+    def vault_root_path(self, user_id: str) -> str:
+        """The absolute filesystem path of this user's Cortex vault root.
+
+        Takes ``user_id`` (even though today's vault is process-wide, not per-user) so the
+        call is a normal *method* — ``StoreRegistry.__getattr__`` only routes callables to
+        the correct per-user shard, and a bare attribute access like ``store.vault.root``
+        would silently resolve to the registry's default shard under sharded/hosted modes.
+        Used by the context-file sync route to refuse paths inside the vault regardless of
+        shard mode."""
+        return str(self.vault.root)
+
     def write_obsidian_pages(
         self,
         user_id: str,

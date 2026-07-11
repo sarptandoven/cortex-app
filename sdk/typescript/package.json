@@ -1,5 +1,5 @@
 {
-  "name": "@cortex/client",
+  "name": "@doppl-tech/cortex-client",
   "version": "0.1.0",
   "description": "Dependency-free (fetch-based) client for the Cortex local memory server.",
   "type": "module",
@@ -19,7 +19,10 @@
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "pretest": "tsc -p tsconfig.test.json",
+    "test": "node --test dist-test/test/*.test.js",
+    "posttest": "rm -rf dist-test"
   },
   "keywords": [
     "cortex",
@@ -31,13 +34,22 @@
   ],
   "license": "MIT",
   "homepage": "https://trydoppl.com",
-  "repository": { "type": "git", "url": "https://github.com/doppl-tech/cortex-app.git", "directory": "sdk/typescript" },
-  "bugs": { "url": "https://github.com/doppl-tech/cortex-app/issues" },
-  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/doppl-tech/cortex-app.git",
+    "directory": "sdk/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/doppl-tech/cortex-app/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18"
   },
   "devDependencies": {
+    "@types/node": "^20.19.43",
     "typescript": "^5.4.0"
   }
 }

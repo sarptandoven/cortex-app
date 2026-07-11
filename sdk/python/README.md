@@ -1,4 +1,4 @@
-# cortex-client (Python)
+# doppl-cortex-client (Python)
 
 A tiny, **dependency-light** client for the [Cortex](../../README.md) local memory
 server. Uses only the Python standard library (`urllib`, `json`, `typing`) — no
@@ -10,17 +10,24 @@ tool definition. This client wraps that HTTP surface.
 
 - Default base URL: `http://127.0.0.1:8766` (local loopback — Cortex is local-first).
 - Auth: `Authorization: Bearer <token>`, optional `X-Cortex-User` header.
+- Same routes work against the hosted plane — pass `base_url="https://api.signindoppl.com"`
+  and a token minted there. The hosted server (`backend/app/main.py`) mirrors the local
+  server's `/v1/tools/schema` and `/v1/tools/call` request/response shapes exactly, including
+  scope enforcement.
 
 ## Install
 
 Requires Python 3.9+.
 
 ```bash
-cd sdk/python
-pip install -e .
+pip install doppl-cortex-client   # once published (see sdk/PUBLISHING.md)
+# or, for local development against this repo:
+cd sdk/python && pip install -e .
 ```
 
-Or just copy the `cortex_client/` folder into your project — it has no dependencies.
+The importable module is `cortex_client` regardless of the PyPI package name (`doppl-cortex-client`)
+— see the Quickstart below. Or just copy the `cortex_client/` folder into your project — it has no
+dependencies.
 
 ## Quickstart
 
