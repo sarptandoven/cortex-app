@@ -267,6 +267,60 @@ class EntityGraphStoreTests(unittest.TestCase):
                 self.assertIn(key, edge)
             self.assertEqual(edge["user_id"], self.user_id)
 
+    def test_co_occurs_edges_are_not_starved_by_a_mentions_flood(self) -> None:
+        # Second Constellation starvation bug (found testing the live app): co_occurs is the ONLY
+        # entity<->entity edge, but it shared the top priority tier with 'mentions'/'involves'
+        # (memory/task->entity). On a real vault a flood of high-weight mentions saturated the
+        # limit*4 edge cap and drove co_occurs to zero — 36 entities, 0 entity<->entity edges,
+        # every one isolated. The fix gives co_occurs its own top tier. Here: three entities that
+        # co-occur, buried under a flood of memories that only MENTION them.
+        entities = {
+            "ent_a": {"id": "ent_a", "kind": "person", "name": "Ana", "aliases": [], "context": ""},
+            "ent_b": {"id": "ent_b", "kind": "person", "name": "Ben", "aliases": [], "context": ""},
+            "ent_c": {"id": "ent_c", "kind": "topic", "name": "Migration", "aliases": [], "context": ""},
+        }
+
+        def _seed(mem_id: str, entity_ids: list[str]) -> None:
+            self.store.save_capture(
+                user_id=self.user_id, content=f"note {mem_id}", source="obsidian",
+                source_url=f"local-file://{mem_id}", title=mem_id,
+                extracted={
+                    "_timestamp": now_iso(), "summary": mem_id,
+                    "records": [{"id": mem_id, "kind": "claim", "layer": "semantic", "content": f"note {mem_id}",
+                                 "confidence": "confirmed", "importance": 3, "topics": [], "entity_ids": entity_ids}],
+                    "tasks": [], "entities": [entities[e] for e in entity_ids],
+                },
+            )
+
+        # A few co-occurring captures -> co_occurs edges between all three entities.
+        _seed("co1", ["ent_a", "ent_b", "ent_c"])
+        _seed("co2", ["ent_a", "ent_b"])
+        _seed("co3", ["ent_b", "ent_c"])
+        # Flood: many single-entity captures -> pure mentions edges (no co_occurs), enough to blow
+        # past the limit*4 edge cap so priority actually decides what survives.
+        limit = 12
+        for i in range(limit * 4 + 20):
+            _seed(f"m{i}", ["ent_a"])
+
+        graph = self.store.graph(self.user_id, limit=limit)
+        pairs = {(e["source_id"], e["target_id"], e["kind"]) for e in graph["edges"]}
+        entity_ids = set(entities)
+        connected = {i for i in entity_ids for e in graph["edges"]
+                     if e["kind"] == "co_occurs" and (e["source_id"] == i or e["target_id"] == i)}
+        # co_occurs must survive the mentions flood; all three entities stay connected to each other.
+        self.assertTrue(any(k == "co_occurs" for _, _, k in pairs), "co_occurs starved by the mentions flood")
+        self.assertEqual(connected, entity_ids, "every co-occurring entity must keep a co_occurs edge")
+
+    def test_graph_edge_priority_ranks_co_occurs_above_mentions(self) -> None:
+        # Source-level pin so the tiers can't be flattened again (which is exactly what starved
+        # co_occurs before). co_occurs must rank strictly ahead of mentions/involves.
+        import inspect
+        src = inspect.getsource(CortexStore.graph)
+        co = src.index("WHEN 'co_occurs' THEN 0")
+        men = src.index("WHEN 'mentions' THEN 1")
+        inv = src.index("WHEN 'involves' THEN 1")
+        self.assertTrue(co < men and co < inv, "co_occurs must be a strictly higher tier than mentions/involves")
+
     def test_empty_graph_analysis_block_is_safe(self) -> None:
         graph = self.store.graph("empty-user", limit=50)
         self.assertEqual(graph["analysis"]["community_count"], 0)

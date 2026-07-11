@@ -17822,12 +17822,18 @@ class CortexStore:
                     GROUP BY ge.source_id, ge.target_id, ge.kind
                     ORDER BY
                       CASE ge.kind
+                        -- co_occurs is the ONLY entity<->entity edge; it connects the entities the
+                        -- Constellation actually shows, so it gets its own top tier. Sharing tier 0
+                        -- with mentions/involves (memory/task->entity) let high-weight mentions
+                        -- saturate the limit*4 cap and starve co_occurs to zero, leaving every entity
+                        -- isolated. mentions/involves rank next (they light up the "show memories"
+                        -- view), then the capture->memory / task scaffolding.
                         WHEN 'co_occurs' THEN 0
-                        WHEN 'involves' THEN 0
-                        WHEN 'mentions' THEN 0
-                        WHEN 'contains' THEN 1
-                        WHEN 'creates_task' THEN 2
-                        ELSE 3
+                        WHEN 'mentions' THEN 1
+                        WHEN 'involves' THEN 1
+                        WHEN 'contains' THEN 2
+                        WHEN 'creates_task' THEN 3
+                        ELSE 4
                       END,
                       weight DESC,
                       created_at DESC,
@@ -20292,7 +20298,7 @@ class CortexStore:
     # test_phase4_eval_harness.py asserts these sets agree with mcp_tools.READ_TOOLS /
     # WRITE_TOOLS so drift is caught at test time, not in production.
     SCORECARD_READ_TOOL_PREFIXES = ("get_", "list_", "search_", "ask_", "resume_", "prepare_", "build_", "expand_", "use_", "would_", "draft_", "verify_")
-    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_", "record_")
+    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_", "record_", "import_")
 
     def _scorecard_tool_kind(self, tool_name: str) -> str:
         name = str(tool_name or "")
