@@ -377,6 +377,8 @@ private struct OnboardingAddMemoryStep: View {
                 runConnectAction()
             }
 
+            appConnectGrid
+
             aiExportOption
 
             sampleNotesOption
@@ -416,6 +418,78 @@ private struct OnboardingAddMemoryStep: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 2)
+    }
+
+    /// The priority "log in and it pulls your data" sources, surfaced IN onboarding instead of
+    /// buried in Connections. Each tile reuses the exact connect dispatch the Connections library
+    /// uses (GitHub device flow / managed-OAuth start), so there is one code path. Managed-OAuth
+    /// connectors whose provider credentials aren't configured on the server render honestly as
+    /// "Available soon" rather than a dead button — matching the Connections sheet.
+    private static let onboardingSourceIDs = ["notion", "gmail", "google-drive", "github"]
+
+    private var onboardingSources: [SourceConnectorCatalogItem] {
+        OnboardingAddMemoryStep.onboardingSourceIDs.compactMap { id in
+            state.sourceConnectorCatalog.first { $0.id == id }
+        }
+    }
+
+    private func sourceIsConnectable(_ connector: SourceConnectorCatalogItem) -> Bool {
+        if connector.connectionSetup?.supportsDeviceFlow == true { return true }
+        if connector.connectionSetup?.supportsManagedOAuth == true {
+            return state.managedOAuthIsConfigured(connector)
+        }
+        return false
+    }
+
+    private func connectOnboardingSource(_ connector: SourceConnectorCatalogItem) {
+        // Same dispatch as ConnectionsPrivacySheet.libraryAction — one connect path, no drift.
+        if connector.connectionSetup?.supportsDeviceFlow == true {
+            state.startGitHubDeviceFlow(connector)
+        } else if connector.connectionSetup?.supportsManagedOAuth == true,
+                  state.managedOAuthIsConfigured(connector) {
+            state.startManagedOAuthConnector(connector)
+        }
+    }
+
+    private func sourceIcon(_ id: String) -> String {
+        switch id {
+        case "notion": return "doc.richtext"
+        case "gmail": return "envelope"
+        case "google-drive": return "externaldrive"
+        case "github": return "chevron.left.forwardslash.chevron.right"
+        default: return "app.connected.to.app.below.fill"
+        }
+    }
+
+    @ViewBuilder
+    private var appConnectGrid: some View {
+        let sources = onboardingSources
+        if !sources.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("…or connect an app — sign in once and Cortex pulls your data")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
+                    spacing: 10
+                ) {
+                    ForEach(sources) { connector in
+                        OnboardingSourceTile(
+                            name: connector.name,
+                            systemImage: sourceIcon(connector.id),
+                            connectable: sourceIsConnectable(connector),
+                            starting: state.connectorOAuthStartingIDs.contains(connector.id),
+                            connected: state.connectorSyncingIDs.contains(connector.id)
+                        ) {
+                            connectOnboardingSource(connector)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     /// The promised ChatGPT / Claude export path: a real drop target that routes straight into
@@ -1057,6 +1131,60 @@ struct OnboardingConnectionCard: View {
             .buttonStyle(.bordered)
             .controlSize(.large)
         }
+    }
+}
+
+/// A compact connect tile for the onboarding source grid. Shows a one-click "Connect" affordance for
+/// wired providers, an in-flight spinner while OAuth is starting, and an honest "Available soon" for
+/// managed-OAuth providers not yet configured on the server (never a dead button).
+struct OnboardingSourceTile: View {
+    let name: String
+    let systemImage: String
+    let connectable: Bool
+    let starting: Bool
+    let connected: Bool
+    let action: () -> Void
+
+    private var subtitle: String {
+        if connected { return "Syncing…" }
+        if starting { return "Opening sign-in…" }
+        return connectable ? "Connect" : "Available soon"
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.title3)
+                    .foregroundColor(connectable ? CortexDesign.accent : CortexDesign.inkFaint)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(name)
+                        .font(.callout)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.ink)
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                }
+                Spacer(minLength: 4)
+                if starting {
+                    ProgressView().controlSize(.small)
+                } else if connectable {
+                    Image(systemName: "arrow.right.circle.fill")
+                        .foregroundColor(CortexDesign.accent)
+                }
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CortexDesign.cardBackground)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder.opacity(0.45)))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .opacity(connectable ? 1 : 0.7)
+        }
+        .buttonStyle(.plain)
+        .disabled(!connectable || starting)
+        .help(connectable ? "Sign in to \(name) and import your data" : "\(name) sign-in is coming soon")
     }
 }
 
