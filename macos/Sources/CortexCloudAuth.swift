@@ -112,7 +112,21 @@ extension AppState {
     /// for EVERY sign-in gate — the main-window wall (CortexView), the menu-bar "Cortex Spotlight"
     /// quick panel, and onboarding presentation — so no surface can drift out of sync and expose
     /// Ask/Capture/Review before the user has signed in.
-    var requiresSignIn: Bool { accountRequired && !isSignedIn }
+    var requiresSignIn: Bool { accountRequired && !isSignedIn && !localPreviewUnlocked }
+
+    /// Reviewer / try-before-you-sign-up escape hatch: drop the required-account wall for THIS
+    /// session and make the app fully usable locally. Mirrors the post-sign-in re-bootstrap (the wall
+    /// dropping re-enters bootstrap so onboarding + local memory present), then loads the bundled
+    /// sample notes so Home/Review/Ask/Constellation are immediately exercisable with no account and
+    /// no network. Not persisted, so the real account requirement returns on next launch.
+    func unlockLocalPreview() {
+        guard !localPreviewUnlocked else { return }
+        localPreviewUnlocked = true
+        Task {
+            await bootstrap()
+            await loadSampleNotes()
+        }
+    }
 
     /// Message shown when a cloud-auth action is attempted in a build where it is disabled.
     static let cloudAuthUnavailableMessage = "Cortex Cloud is not available in this version."

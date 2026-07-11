@@ -517,7 +517,7 @@ struct ReviewEmptyState: View {
                 if approvedMemoryCount > 0 {
                     Button {
                         state.selectedTab = .ask
-                        state.status = "Ask Cortex"
+                        state.status = "Ask \(DistributionMode.appDisplayName)"
                     } label: {
                         Label("Ask a question", systemImage: "magnifyingglass")
                             .frame(minWidth: 150, minHeight: 46)
@@ -609,7 +609,7 @@ struct ReviewServiceStartingState: View {
     }
 
     private var title: String {
-        needsAttention ? "Cortex needs attention" : "Cortex is starting"
+        needsAttention ? "\(DistributionMode.appDisplayName) needs attention" : "\(DistributionMode.appDisplayName) is starting"
     }
 
     private var detail: String {

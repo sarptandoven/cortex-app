@@ -16,7 +16,13 @@ which **requires a signed-in account**.
 **Backend server address (production):** `https://api.signindoppl.com`
 (Health check: `https://api.signindoppl.com/health` returns `{"status":"ok", ...}`.)
 
-**Demo account (already provisioned, ready to sign in):**
+**No account needed to review the app.** The sign-in screen has a
+**"Explore with sample notes — no account needed"** button. Tapping it dismisses the sign-in screen
+and runs the entire app **locally on the Mac** (no network, no account): the bundled sample notes are
+distilled on-device and Home / Constellation / Ask / Review become fully exercisable. Use this to
+review every feature offline.
+
+**Demo account (optional — for reviewing account sync):**
 - **Email:** `review@trydoppl.com`
 - **Password:** `<PASTE IN APP STORE CONNECT SIGN-IN INFORMATION>`
 - (Or sign in with the reviewer's own Apple ID via **Sign in with Apple** — see 4.8.)
@@ -27,11 +33,11 @@ Mac** (local-first); signing in enables the app's account-based functionality: t
 their AI tools. Sign-in + sync run over HTTPS (`https://api.signindoppl.com`) using the system
 networking stack (Swift `URLSession`).
 
-**How to review every feature after signing in (no downloads or files needed):**
-1. Launch Doppl and sign in with the demo account above (or Sign in with Apple).
-2. On first run choose **Explore with sample notes** — Doppl loads a small bundled set of example
-   notes and distills them **on-device** (a progress bar shows it building); the resulting memory
-   syncs to your account.
+**How to review every feature (no account, no downloads, no files needed):**
+1. Launch Doppl. On the sign-in screen tap **"Explore with sample notes — no account needed"**
+   (or, to review account sync, sign in with the demo account above / Sign in with Apple).
+2. Choose **Explore with sample notes** — Doppl loads a small bundled set of example notes and
+   distills them **on-device** (a progress bar shows it building). No network is required for this.
 3. Open **Home**: the distilled profile ("What Doppl has learned") across every memory type, and
    **Your Constellation**, an interactive map of people, projects, and topics you can click.
 4. Open **Ask** and type e.g. "how do I like to write?" — you get a cited answer sourced from the
@@ -39,8 +45,9 @@ networking stack (Swift `URLSession`).
 5. **Connect an AI tool** (in Connections) shows guided, copy‑paste instructions only; the app does
    not install, write, or launch any external code.
 
-The demo account has sample memory pre‑loaded, so Home / Review / Ask are exercisable immediately
-after signing in.
+Choosing **Explore with sample notes** (either offline via the no-account button, or after signing
+in) distills the bundled notes on-device, so Home / Review / Ask / Constellation are exercisable
+within a few seconds — no server-side pre-load or reviewer setup required.
 
 ## 5.1.1(v) — Why an account is required
 

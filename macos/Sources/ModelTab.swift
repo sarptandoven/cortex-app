@@ -518,7 +518,7 @@ struct HomeHeroSection: View {
             if state.syncProgress?.active == true {
                 return "Getting your memory ready"
             }
-            return "Cortex is starting"
+            return "\(DistributionMode.appDisplayName) is starting"
         }
         if needsAttentionSources > 0 {
             return "Check your source connection"
@@ -740,7 +740,7 @@ struct HomeHeroSection: View {
             state.status = "Review memory"
         } else if hasMemory {
             state.selectedTab = .ask
-            state.status = "Ask Cortex"
+            state.status = "Ask \(DistributionMode.appDisplayName)"
         } else {
             if canSyncSource, let connector = obsidianConnector {
                 state.connectLocalNotesFolder(connector)

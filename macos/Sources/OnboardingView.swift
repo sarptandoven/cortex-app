@@ -73,7 +73,7 @@ struct OnboardingView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 10) {
-                Text("Cortex")
+                Text(DistributionMode.appDisplayName)
                     .font(.system(size: 15, weight: .semibold, design: .serif))
                     .foregroundColor(CortexDesign.ink)
                 Text("The Archive")
@@ -247,7 +247,7 @@ private struct OnboardingWelcomeStep: View {
             .padding(.top, 6)
 
             VStack(alignment: .leading, spacing: 14) {
-                Text("Welcome to Cortex")
+                Text("Welcome to \(DistributionMode.appDisplayName)")
                     .font(CortexDesign.Typography.display(30))
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -431,6 +431,12 @@ private struct OnboardingAddMemoryStep: View {
         OnboardingAddMemoryStep.onboardingSourceIDs.compactMap { id in
             state.sourceConnectorCatalog.first { $0.id == id }
         }
+        // App Store builds are local-first: outbound HTTPS is stripped, so these OAuth/token
+        // connectors literally cannot sync — never show a dead "Connect" tile for them (mirrors
+        // ConnectionsPrivacySheet's wiredConnectors filter). In MAS this leaves the grid empty, so
+        // the "connect an app" section simply doesn't render; the notes-folder + export + sample
+        // paths (which DO work locally) remain.
+        .filter { !DistributionMode.isAppStore || $0.connectionSetup?.mode == "native-local-connector" }
     }
 
     private func sourceIsConnectable(_ connector: SourceConnectorCatalogItem) -> Bool {
@@ -777,23 +783,16 @@ private struct OnboardingQuickCaptureStep: View {
         .animation(.easeInOut(duration: 0.22), value: state.quickCaptureEnabled)
     }
 
-    /// Mac App Store build: capture is unavailable (sandbox-incompatible), controls disabled.
+    /// Mac App Store build: this beat just reassures — no dead toggle, and no reference to any
+    /// other place to get the app (steering users off the App Store is a Guideline 4 / 2.3.2 issue).
+    /// A positive statement of what the sandboxed build does.
     private var masCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            OnboardingCheckRow(
-                title: "Available in the direct-download version",
-                detail: "Quick capture uses system-wide shortcuts that this version can't provide. Everything else works exactly the same.",
-                systemImage: "arrow.down.circle",
-                color: CortexDesign.gold
-            )
-            Toggle(isOn: .constant(false)) {
-                Text("Enable quick capture")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(CortexDesign.inkSecondary)
-            }
-            .toggleStyle(.switch)
-            .disabled(true)
-        }
+        OnboardingCheckRow(
+            title: "Everything becomes memory, automatically",
+            detail: "Add notes or import your chats any time and \(DistributionMode.appDisplayName) distills them into cited memory on your Mac — no extra setup.",
+            systemImage: "checkmark.seal",
+            color: CortexDesign.gold
+        )
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(CortexDesign.panelBackground)

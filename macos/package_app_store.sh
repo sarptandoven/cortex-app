@@ -268,6 +268,12 @@ else
       <key>NSPrivacyAccessedAPITypeReasons</key>
       <array><string>35F9.1</string></array>
     </dict>
+    <dict>
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array><string>E174.1</string></array>
+    </dict>
   </array>
 </dict>
 </plist>
@@ -284,6 +290,21 @@ else
   plutil -insert ITSAppUsesNonExemptEncryption -bool false "$APP_INFO"
 fi
 log "  set ITSAppUsesNonExemptEncryption = false in the app bundle Info.plist"
+
+# 2a) Strip capability strings for features the sandboxed build does NOT ship.
+#     Quick Capture (screen recording) is Developer-ID/DMG-only (gated off via
+#     DistributionMode.isAppStore + no screen-recording entitlement here), so a
+#     leftover NSScreenCaptureUsageDescription would declare a purpose string for a
+#     capability the app never uses — an inconsistency reviewers flag. Remove it.
+plutil -remove NSScreenCaptureUsageDescription "$APP_INFO" 2>/dev/null \
+  && log "  removed NSScreenCaptureUsageDescription (screen capture is DMG-only)" \
+  || true
+
+# 2b) Metadata identity: the bundle ships as "$APP_NAME" (Doppl), so the copyright
+#     string must not read "Cortex". Keep it consistent with the App Store listing.
+plutil -replace NSHumanReadableCopyright -string "Copyright 2026 ${APP_NAME}" "$APP_INFO" 2>/dev/null \
+  && log "  set NSHumanReadableCopyright = Copyright 2026 ${APP_NAME}" \
+  || true
 
 # --- Re-seal the bundle. build.sh already signed it, but we just mutated
 #     Resources/ and Info.plist, so the seal is stale and MUST be refreshed.

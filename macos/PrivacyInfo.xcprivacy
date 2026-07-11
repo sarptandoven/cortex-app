@@ -104,6 +104,23 @@
         <string>35F9.1</string>
       </array>
     </dict>
+    <!--
+      Disk-space APIs. The bundled CPython framework's stdlib (shutil.disk_usage,
+      os.statvfs, and the storage engine's own file-size / vault-size accounting)
+      links statfs/statvfs, which Apple's static scanner detects in the
+      Python.framework binary. Reason E174.1: display disk-space information to the
+      user / manage the app's own storage (backups, vault size in Settings).
+      Declared to satisfy the required-reason API rule (prevents ITMS-91053 on
+      upload); no data leaves the device.
+    -->
+    <dict>
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>E174.1</string>
+      </array>
+    </dict>
   </array>
 </dict>
 </plist>

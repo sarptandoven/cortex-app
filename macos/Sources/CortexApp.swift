@@ -2251,6 +2251,16 @@ enum DistributionMode {
     static var isAppStore: Bool {
         (Bundle.main.object(forInfoDictionaryKey: "CortexDistributionMode") as? String) == "app-store"
     }
+
+    /// The user-facing app name from the bundle (CFBundleDisplayName, else CFBundleName). The MAS
+    /// build ships as "Doppl" and the Developer-ID/DMG build as "Cortex", so every user-visible label
+    /// must read this at runtime rather than hardcode "Cortex" — otherwise the App Store build leaks
+    /// the wrong brand (a Guideline 4 consistency issue).
+    static var appDisplayName: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? "Doppl"
+    }
 }
 
 struct CortexHTTPError: LocalizedError {
@@ -3263,6 +3273,11 @@ final class AppState: ObservableObject {
     @Published var lastSupportBundlePath: String?
     @Published var lastRepairSummary: String = ""
     @Published var backendStatus: String = "Starting"
+    /// Session-only "explore without an account" unlock. Lets an App Store reviewer (2.1) — or any
+    /// user who wants to try before signing up — dismiss the required-account wall and use the app
+    /// fully LOCALLY (loopback engine + bundled sample notes). Never persisted (resets on relaunch),
+    /// so it does not weaken the real account requirement; it only removes the reviewability blocker.
+    @Published var localPreviewUnlocked = false
     @Published var backendLogPath: String = BackendSupervisor.shared.logURL.path
     @Published var updateFeedURL: String = UserDefaults.standard.string(forKey: "updateFeedURL")
         ?? (Bundle.main.object(forInfoDictionaryKey: "CortexUpdateFeedURL") as? String ?? "")
@@ -3773,7 +3788,7 @@ final class AppState: ObservableObject {
             UserDefaults.standard.set(true, forKey: "welcomeNotchShown.v1")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                 NotchNotifier.shared.show(
-                    title: "Welcome to Cortex",
+                    title: "Welcome to \(DistributionMode.appDisplayName)",
                     subtitle: "This is your notch — Cortex speaks here.",
                     style: .info
                 )
@@ -4603,7 +4618,7 @@ final class AppState: ObservableObject {
             askAnswer = ""
             askCitations = []
             hasSearched = false
-            status = "Ask Cortex what it knows"
+            status = "Ask \(DistributionMode.appDisplayName) what it knows"
         default:
             status = "Loop complete"
         }
@@ -8007,7 +8022,7 @@ struct CortexView: View {
         VStack(spacing: 0) {
             HStack(spacing: CortexDesign.Space.md) {
                 // The wordmark speaks in the archive's voice: serif ink on bare paper.
-                Text("Cortex")
+                Text(DistributionMode.appDisplayName)
                     .font(.system(size: 20, weight: .semibold, design: .serif))
                     .foregroundColor(CortexDesign.ink)
                 Spacer()
@@ -8091,10 +8106,10 @@ struct CortexSignInWall: View {
                     Image(systemName: "brain.head.profile")
                         .font(.system(size: 42, weight: .semibold))
                         .foregroundColor(CortexDesign.accent)
-                    Text("Sign in to Doppl")
+                    Text("Sign in to \(DistributionMode.appDisplayName)")
                         .font(.system(size: 26, weight: .bold, design: .serif))
                         .foregroundColor(CortexDesign.ink)
-                    Text("Create your account or sign in. Cortex then walks you through connecting memory sources and using them in Claude Desktop, ChatGPT, and other AI tools.")
+                    Text("Create your account or sign in. \(DistributionMode.appDisplayName) then walks you through connecting memory sources and using them in Claude Desktop, ChatGPT, and other AI tools.")
                         .font(.callout)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .multilineTextAlignment(.center)
@@ -8107,6 +8122,23 @@ struct CortexSignInWall: View {
                         .background(CortexDesign.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(CortexDesign.hairline))
+
+                    // Try-before-you-sign-up / reviewer path: use the app fully LOCALLY with bundled
+                    // sample notes, no account and no network. Keeps a required-account build
+                    // reviewable (App Store 2.1) and lets any user preview first.
+                    VStack(spacing: 4) {
+                        Button {
+                            state.unlockLocalPreview()
+                        } label: {
+                            Label("Explore with sample notes — no account needed", systemImage: "sparkles")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .buttonStyle(.link)
+                        Text("Everything runs on your Mac. Sign in later to sync across devices.")
+                            .font(.caption2)
+                            .foregroundColor(CortexDesign.inkFaint)
+                    }
+                    .frame(maxWidth: 480)
                 }
                 .padding(40)
                 .frame(maxWidth: .infinity)
@@ -8123,7 +8155,7 @@ struct CortexSignInWall: View {
                 .fontWeight(.semibold)
                 .foregroundColor(CortexDesign.ink)
             Text("1. Connect a memory source: local notes, ChatGPT/Claude export, or a service connector.")
-            Text("2. Review what Cortex learned so only approved memory is used.")
+            Text("2. Review what \(DistributionMode.appDisplayName) learned so only approved memory is used.")
             Text("3. Open Connections to wire Claude Desktop, ChatGPT exports, Cursor, or another AI tool.")
         }
         .font(.caption)
@@ -11053,8 +11085,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             return menu
         }
 
-        addMenuItem(to: menu, title: "Ask Cortex…  (⌃⌥Space)", action: #selector(menuAskSpotlight), key: "")
-        addMenuItem(to: menu, title: "Open Cortex", action: #selector(menuOpenCortex), key: "o")
+        addMenuItem(to: menu, title: "Ask \(DistributionMode.appDisplayName)…  (⌃⌥Space)", action: #selector(menuAskSpotlight), key: "")
+        addMenuItem(to: menu, title: "Open \(DistributionMode.appDisplayName)", action: #selector(menuOpenCortex), key: "o")
 
         let pending = state.review?.stats.pending_captures ?? state.inbox.count
         let reviewTitle = pending > 0 ? "Review (\(pending))" : "Review"
@@ -11260,7 +11292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             backing: .buffered,
             defer: false
         )
-        window.title = "Cortex"
+        window.title = DistributionMode.appDisplayName
         // Unified paper titlebar: the transparent titlebar + hidden system title + paper background
         // let the Archive canvas run edge-to-edge under the traffic lights, with no gray system bar
         // (the hallmark of a premium Mac app). Content still lays out below the titlebar, so the
