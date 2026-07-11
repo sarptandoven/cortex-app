@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.database import init_db
+from backend.app.database import connect, init_db
 from backend.app.storage import CortexStore, now_iso
 
 
@@ -192,6 +192,80 @@ class EntityGraphStoreTests(unittest.TestCase):
         non_entity = [n for n in graph["nodes"] if n["id"] not in self.ENTITIES]
         self.assertTrue(non_entity)  # memory / capture nodes are seeded
         self.assertTrue(all("community" not in n for n in non_entity))
+
+    def test_graph_edges_survive_contains_flood_dedup_and_null_missing_evidence(self) -> None:
+        # Regression for the Constellation starvation bug: the old edge query took the newest
+        # limit*2 graph_edges rows by recency. A flood of newer 'contains' (capture->memory)
+        # edges pushed every entity-connecting edge ('co_occurs'/'mentions') out of the window,
+        # so all entity nodes rendered isolated. The fix queries edges whose BOTH endpoints are
+        # loaded nodes, dedupes per (source, target, kind), and nulls (not drops) evidence_id
+        # when the evidence node isn't loaded.
+        limit = 30
+        old_ts = "2026-01-01T00:00:00+00:00"
+
+        def _seed_at(mem_id: str, content: str, entity_ids: list[str], timestamp: str) -> None:
+            self.store.save_capture(
+                user_id=self.user_id,
+                content=content,
+                source="obsidian",
+                source_url=f"local-file://{mem_id}",
+                title=mem_id,
+                extracted={
+                    "_timestamp": timestamp,
+                    "summary": content,
+                    "records": [
+                        {"id": mem_id, "kind": "claim", "layer": "semantic", "content": content,
+                         "confidence": "confirmed", "importance": 3, "topics": [], "entity_ids": entity_ids}
+                    ],
+                    "tasks": [],
+                    "entities": [self.ENTITIES[e] for e in entity_ids],
+                },
+            )
+
+        # Old entity-bearing captures: the SAME pair twice -> two co_occurs rows in graph_edges
+        # with the same (source, target, kind) but different evidence (each capture id).
+        _seed_at("old1", "Alice leads Project Zephyr.", ["ent_alice", "ent_zephyr"], old_ts)
+        _seed_at("old2", "Alice reviewed the Project Zephyr roadmap.", ["ent_alice", "ent_zephyr"], old_ts)
+        _seed_at("old3", "Alice and Bob paired on the migration.", ["ent_alice", "ent_bob"], old_ts)
+
+        # Flood: more than limit*2 newer entity-free captures, each emitting a newer 'contains'
+        # edge. Under the old recency-window query, these crowd out every entity edge.
+        for i in range(limit * 2 + 10):
+            _seed_at(f"flood{i}", f"Routine note {i}.", [], f"2026-06-01T00:{i // 60:02d}:{i % 60:02d}+00:00")
+
+        graph = self.store.graph(self.user_id, limit=limit)
+        node_ids = {n["id"] for n in graph["nodes"]}
+        self.assertIn("ent_alice", node_ids)
+        self.assertIn("ent_zephyr", node_ids)
+
+        entity_edges = [
+            e for e in graph["edges"]
+            if e["kind"] in {"co_occurs", "mentions", "involves"}
+            and e["source_id"] in self.ENTITIES and e["target_id"] in self.ENTITIES
+        ]
+        self.assertTrue(entity_edges, "entity-connecting edges must survive the contains flood")
+        pair_kinds = {(e["source_id"], e["target_id"], e["kind"]) for e in entity_edges}
+        self.assertIn(("ent_alice", "ent_zephyr", "co_occurs"), pair_kinds)
+
+        # Duplicate (source, target, kind) rows exist in the table but are deduplicated here.
+        with connect(self.db_path) as conn:
+            raw = conn.execute(
+                "SELECT COUNT(*) FROM graph_edges WHERE user_id = ? AND source_id = ? AND target_id = ? AND kind = ?",
+                (self.user_id, "ent_alice", "ent_zephyr", "co_occurs"),
+            ).fetchone()[0]
+        self.assertGreaterEqual(raw, 2, "seed must create duplicate co_occurs rows")
+        keys = [(e["source_id"], e["target_id"], e["kind"]) for e in graph["edges"]]
+        self.assertEqual(len(keys), len(set(keys)), "response edges must be deduped per (source, target, kind)")
+
+        # The old captures (co_occurs evidence) fell out of the capture node window (limit // 3
+        # newest), so those edges must come back with evidence_id nulled instead of being dropped.
+        az = next(e for e in graph["edges"] if (e["source_id"], e["target_id"], e["kind"]) == ("ent_alice", "ent_zephyr", "co_occurs"))
+        self.assertIsNone(az["evidence_id"])
+        # And every edge keeps the full API shape.
+        for edge in graph["edges"]:
+            for key in ("id", "user_id", "source_id", "target_id", "kind", "weight", "evidence_id", "created_at", "is_bridge"):
+                self.assertIn(key, edge)
+            self.assertEqual(edge["user_id"], self.user_id)
 
     def test_empty_graph_analysis_block_is_safe(self) -> None:
         graph = self.store.graph("empty-user", limit=50)

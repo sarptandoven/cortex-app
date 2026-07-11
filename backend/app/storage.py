@@ -17793,19 +17793,59 @@ class CortexStore:
                 [*task_params, limit // 2],
             ).fetchall():
                 nodes[row["id"]] = {"id": row["id"], "type": row["kind"], "label": row["content"][:72], "status": row["status"]}
-            for row in conn.execute(
-                """
-                SELECT ge.*
-                FROM graph_edges ge
-                WHERE ge.user_id = ?
-                ORDER BY ge.created_at DESC
-                LIMIT ?
-                """,
-                (user_id, limit * 2),
-            ).fetchall():
-                evidence_id = row["evidence_id"]
-                if row["source_id"] in nodes and row["target_id"] in nodes and (not evidence_id or evidence_id in nodes):
-                    edges.append(dict(row))
+            # Select edges whose BOTH endpoints are already-loaded nodes instead of the newest
+            # limit*2 rows overall: in large vaults the recency window is saturated by 'contains'
+            # (capture->memory) edges, which starves entity-connecting edges ('mentions',
+            # 'co_occurs', 'involves') and leaves every entity node isolated in the Constellation.
+            # Parameter-count bound: the node set holds at most ~3*limit ids (limit<=500 from the
+            # server handler => ~1250 ids), and it appears twice in the IN clauses (~2500 bound
+            # params) — well under the 32766 variable limit of the SQLite bundled with Python 3.12,
+            # so plain placeholders are fine without chunking or a temp table.
+            node_ids = list(nodes)
+            if node_ids:
+                placeholders = ",".join("?" for _ in node_ids)
+                for row in conn.execute(
+                    f"""
+                    SELECT MIN(ge.id) AS id, ge.source_id, ge.target_id, ge.kind,
+                           MAX(ge.weight) AS weight, MAX(ge.evidence_id) AS evidence_id,
+                           MAX(ge.created_at) AS created_at
+                    FROM graph_edges ge
+                    WHERE ge.user_id = ?
+                      AND ge.source_id IN ({placeholders})
+                      AND ge.target_id IN ({placeholders})
+                    GROUP BY ge.source_id, ge.target_id, ge.kind
+                    ORDER BY
+                      CASE ge.kind
+                        WHEN 'co_occurs' THEN 0
+                        WHEN 'involves' THEN 0
+                        WHEN 'mentions' THEN 0
+                        WHEN 'contains' THEN 1
+                        WHEN 'creates_task' THEN 2
+                        ELSE 3
+                      END,
+                      weight DESC,
+                      created_at DESC,
+                      id
+                    LIMIT ?
+                    """,
+                    [user_id, *node_ids, *node_ids, limit * 4],
+                ).fetchall():
+                    evidence_id = row["evidence_id"]
+                    edges.append(
+                        {
+                            "id": row["id"],
+                            "user_id": user_id,
+                            "source_id": row["source_id"],
+                            "target_id": row["target_id"],
+                            "kind": row["kind"],
+                            "weight": row["weight"],
+                            # Keep the edge even when its evidence memory isn't a loaded node —
+                            # dropping such edges is what starved the map; just null the pointer.
+                            "evidence_id": evidence_id if evidence_id in nodes else None,
+                            "created_at": row["created_at"],
+                            "is_bridge": False,
+                        }
+                    )
 
         # Fold in the deterministic entity-graph analysis the backend already computes (centrality /
         # community / bridges) so the Constellation UI can color by community, size by centrality, and
