@@ -37,6 +37,8 @@
 
 ## 2. THE RANKED BUILD (synthesis of all four judges, ordered by yes-flipping power)
 
+> **STATUS 2026-07-11: all three waves SHIPPED, verified, and pushed** (`49f5aad` wave 1, `ace356a` wave 2, `585505a` wave 3). Full backend suite 1944 passing; macOS `build.sh` green; TS SDK 20/20, Py SDK 19/19; an adversarial review of the wave-3 diff caught 3 real defects in the CLAUDE.md compiler (a HIGH symlink-escape arbitrary-write, a HIGH indented-marker data-loss, a MEDIUM CRLF over-rewrite) — all fixed with regression tests before commit. What remains is **not code**: the 50–200-user experiment in §3, plus the founder-gated items (E2EE sync, SDK publishing, OAuth registration, hosted redeploy).
+
 Execution is 3 waves of parallel, file-disjoint workstreams. **Waves 1–2 are the YC-critical path.**
 
 ### Wave 1 — evidence primitives (in flight now)
