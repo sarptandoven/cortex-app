@@ -2,31 +2,31 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-22.dmg",
+      "filename": "Cortex-0.2.0-24.dmg",
       "kind": "dmg",
-      "sha256": "eb421cf0fd767b3aaf8a1d5ef05235186b67e056d30f299c777ae89d9cad34b9",
-      "size_bytes": 87312603,
-      "url": "downloads/Cortex-0.2.0-22.dmg"
+      "sha256": "fa46bf6b3ea0049a749e712ef95c9c82740321e5b9eff5daa3ce9bf6e03183d2",
+      "size_bytes": 88100822,
+      "url": "https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-24/Cortex-0.2.0-24.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-22.app.zip",
+      "filename": "Cortex-0.2.0-24.app.zip",
       "kind": "zip",
-      "sha256": "eb8797c807fa2b50fc9a5972660ffd639348c59077a84c192a342f6266c4f2bd",
-      "size_bytes": 68365377,
-      "url": "downloads/Cortex-0.2.0-22.app.zip"
+      "sha256": "8f5a0799fd528086ffe9a4ad3cfb9493c5e0c915cdfdd63b4d18af1015dfd8c5",
+      "size_bytes": 68638075,
+      "url": "https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-24/Cortex-0.2.0-24.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
       "kind": "obsidian-plugin",
-      "sha256": "c74d9f0e46cda400e2fac5638afff3153c7f85efe2292aef035d7414d0637383",
+      "sha256": "0ed8d89797a6e6808f6f6dfa52c5e1f203e61c5bd0b8ec29b26cc9dde1ab8b4b",
       "size_bytes": 3423,
-      "url": "downloads/cortex-memory-0.1.0.zip"
+      "url": "https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-24/cortex-memory-0.1.0.zip"
     }
   ],
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.2.0-22.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-24.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
@@ -70,19 +70,20 @@
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
-  "build": "22",
+  "build": "24",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "Build 22: adds verify_context_pack (Phase 2b), Obsidian write-back (A), session harvesting (B), source reputation (C), memory integrity + portable bundle (D), and the context-pack content-address fix. Local-first beta; no hosted accounts or cloud sync required."
+    "Fix first-run sign-in layout, Apple fallback messaging, and clearer Connections setup for Claude Desktop, ChatGPT, and other AI tools.",
+    "Pin hosted GitHub OAuth callback docs/tests so redirect_uri mismatches are caught."
   ],
-  "released_at": "2026-07-09T19:09:30Z",
+  "released_at": "2026-07-11T00:09:26Z",
   "source_provenance": {
-    "built_at": "2026-07-09T19:09:30Z",
+    "built_at": "2026-07-11T00:09:26Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "2f585f562451fe892fdee4b3071530ebc842174e",
+    "git_commit": "9ec01bd8a17560482fc8752a05939248bf783db1",
     "git_dirty": false
   },
   "version": "0.2.0"

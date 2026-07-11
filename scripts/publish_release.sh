@@ -267,14 +267,26 @@ fi
 
 BASE_URL="https://github.com/$REPO/releases/download/$TAG"
 
-python3 - "$SITE_MANIFEST" "$BASE_URL" "$DRY_RUN" <<'PY'
+python3 - "$MANIFEST_SRC" "$SITE_MANIFEST" "$BASE_URL" "$DRY_RUN" <<'PY'
 import json
 import sys
 
-manifest_path, base_url, dry_run = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+source_manifest_path, site_manifest_path, base_url, dry_run = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 
-with open(manifest_path, encoding="utf-8") as handle:
+with open(source_manifest_path, encoding="utf-8") as handle:
     manifest = json.load(handle)
+
+try:
+    with open(site_manifest_path, encoding="utf-8") as handle:
+        previous_manifest = json.load(handle)
+except FileNotFoundError:
+    previous_manifest = {}
+
+previous_artifacts = {
+    artifact.get("filename"): artifact
+    for artifact in previous_manifest.get("artifacts", [])
+    if artifact.get("filename")
+}
 
 changes = []
 for artifact in manifest.get("artifacts", []):
@@ -282,10 +294,12 @@ for artifact in manifest.get("artifacts", []):
     if not name:
         continue
     new_url = f"{base_url}/{name}"
-    old_url = artifact.get("url", "")
-    if old_url != new_url:
+    old = previous_artifacts.get(name, {})
+    old_url = old.get("url", "")
+    if old_url != new_url or old.get("sha256") != artifact.get("sha256") or old.get("size_bytes") != artifact.get("size_bytes"):
         changes.append((name, old_url, new_url))
-    # filename / size_bytes / sha256 are preserved; only url flips.
+    # The source release manifest is authoritative for filename, sha256, size, build, and notes.
+    # Only URL changes from local file:// to the GitHub Release asset URL.
     artifact["url"] = new_url
 
 if dry_run:
@@ -297,11 +311,11 @@ if dry_run:
         print(f"  {name}:\n    {old or '(none)'} -> {new}")
     sys.exit(0)
 
-with open(manifest_path, "w", encoding="utf-8") as handle:
+with open(site_manifest_path, "w", encoding="utf-8") as handle:
     json.dump(manifest, handle, indent=2, sort_keys=True)
     handle.write("\n")
 
-print(f"Rewrote {len(changes)} artifact url(s) in {manifest_path} -> {base_url}/<file>")
+print(f"Rewrote {len(changes)} artifact url(s) in {site_manifest_path} -> {base_url}/<file>")
 PY
 
 if [[ "$DRY_RUN" == "1" ]]; then
