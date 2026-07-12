@@ -75,7 +75,7 @@ struct ModelTab: View {
                 if let scorecard = state.twinScorecard, scorecard.predictions > 0 {
                     // The twin's accuracy record — only once it has actually predicted
                     // something; an all-zero scorecard is noise, not a mirror.
-                    TwinScorecardCard(scorecard: scorecard)
+                    TwinScorecardCard(scorecard: scorecard, state: state)
                         .transition(.opacity)
                 }
                 if let profile = state.profile, !profile.sections.isEmpty {
@@ -89,20 +89,29 @@ struct ModelTab: View {
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel(segments.joined(separator: ", "))
                         }
+                        // U-MODEL4: an under-100 readiness stamp is a dead read-out — the user is
+                        // told the profile is incomplete with no way to improve it. Offer the one
+                        // real lever we have: connect another source so Cortex has more to learn from.
+                        if let readiness = profile.readiness, readiness < 100 {
+                            CortexButton(
+                                title: "Improve readiness",
+                                systemImage: "arrow.up.forward",
+                                role: .ghost,
+                                size: .small
+                            ) {
+                                state.presentConnectToolsWizard(statusMessage: "Improve profile readiness")
+                            }
+                            .help("Connect more of your notes and AI tools so Cortex has more to learn from.")
+                            .accessibilityLabel("Improve readiness by connecting more sources")
+                        }
                     }
                     .padding(.top, CortexDesign.Space.md)
                     ForEach(profile.sections) { section in
-                        ProfileCard(section: section)
+                        ProfileCard(section: section, state: state)
                     }
-                    if let footnote = limitationsFootnote(for: profile) {
-                        Text(footnote)
-                            .font(CortexDesign.Typography.prose(13).italic())
-                            .lineSpacing(3)
-                            .foregroundColor(CortexDesign.inkFaint)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: 620, alignment: .leading)
-                            .accessibilityLabel("Note: \(footnote)")
-                    }
+                    // U-MODEL9: the footnote silently dropped every limitation past the first two.
+                    // Show all of them behind a disclosure when there are more than two.
+                    ProfileLimitationsFootnote(limitations: profileLimitations(for: profile))
                 }
             }
             .frame(maxWidth: 760, alignment: .leading)
@@ -122,12 +131,19 @@ struct ModelTab: View {
         .task {
             await state.loadRecallHeadline()
             await state.loadTwinScorecard()
+            // The Model tab renders state.profile and state.mirrorInsight, but nothing on
+            // Home fetched them — so both were permanently stale (blank profile stack, a
+            // never-refreshing Mirror). Load them here on the same tab-activation pattern.
+            await state.loadProfile()
+            await state.loadMirrorInsight()
         }
         .onChange(of: state.selectedTab) { tab in
             guard tab == .model else { return }
             Task {
                 await state.loadRecallHeadline()
                 await state.loadTwinScorecard()
+                await state.loadProfile()
+                await state.loadMirrorInsight()
             }
         }
     }
@@ -148,14 +164,12 @@ struct ModelTab: View {
         return segments.isEmpty ? nil : segments
     }
 
-    /// One marginal note at the foot of the profile column: the first couple of backend
-    /// limitations, joined. No card, no icon — just faint serif italic in the margin.
-    private func limitationsFootnote(for profile: ProfileResponse) -> String? {
-        let notes = (profile.limitations ?? [])
+    /// The full, cleaned list of backend limitations for the profile column's footnote.
+    /// The footnote view decides how many to show inline versus behind a disclosure.
+    private func profileLimitations(for profile: ProfileResponse) -> [String] {
+        (profile.limitations ?? [])
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-            .prefix(2)
-        return notes.isEmpty ? nil : notes.joined(separator: " ")
     }
 
     /// Parses the backend's ISO-8601 `generated_at` into "6 Jul 2026" (AccessionStamp applies
@@ -175,6 +189,54 @@ struct ModelTab: View {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "d MMM yyyy"
         return formatter.string(from: date)
+    }
+}
+
+/// The marginal notes at the foot of the profile column — the backend's honesty caveats about
+/// what the profile could and could not learn. Shows the first two inline (faint serif italic in
+/// the margin, no card, no icon); when there are more, a quiet "See all N notes" disclosure reveals
+/// the rest so nothing is silently dropped (U-MODEL9). Renders nothing when there are no notes.
+private struct ProfileLimitationsFootnote: View {
+    let limitations: [String]
+
+    @State private var expanded = false
+
+    /// How many notes to show before the disclosure. Matches the prior inline behaviour.
+    private static let inlineCount = 2
+
+    private var visible: [String] {
+        expanded ? limitations : Array(limitations.prefix(Self.inlineCount))
+    }
+
+    private var hiddenCount: Int {
+        max(0, limitations.count - Self.inlineCount)
+    }
+
+    var body: some View {
+        if !limitations.isEmpty {
+            VStack(alignment: .leading, spacing: CortexDesign.Space.xs) {
+                Text(visible.joined(separator: " "))
+                    .font(CortexDesign.Typography.prose(13).italic())
+                    .lineSpacing(3)
+                    .foregroundColor(CortexDesign.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 620, alignment: .leading)
+                    .accessibilityLabel("Note: \(visible.joined(separator: " "))")
+
+                if hiddenCount > 0 {
+                    CortexButton(
+                        title: expanded ? "Show fewer notes" : "See all \(limitations.count) notes",
+                        systemImage: expanded ? "chevron.up" : "chevron.down",
+                        role: .ghost,
+                        size: .small
+                    ) {
+                        withAnimation(.easeOut(duration: 0.2)) { expanded.toggle() }
+                    }
+                    .accessibilityLabel(expanded ? "Show fewer notes" : "See all \(limitations.count) notes")
+                }
+            }
+            .frame(maxWidth: 620, alignment: .leading)
+        }
     }
 }
 
@@ -215,13 +277,6 @@ struct ConnectAIToolsHeroCard: View {
             return "\(connected) connected. Your memory travels with you into every AI you wire in."
         }
         return "Not connected yet. Wire Cortex into the tools you already work in."
-    }
-
-    /// The quiet "we noticed apps you could connect right now" nudge, shown only before the first
-    /// connection and only when the detector actually found installed-but-unconfigured AI apps.
-    private var detectedNudge: String? {
-        guard !isConnected, detected > 0 else { return nil }
-        return "\(detected) ready to connect on this Mac"
     }
 
     var body: some View {
@@ -266,11 +321,18 @@ struct ConnectAIToolsHeroCard: View {
                 }
                 .help("Opens the step-by-step wizard: connect Claude Desktop, ChatGPT, Cursor, and other AI tools to your memory.")
 
-                if let detectedNudge {
-                    Label(detectedNudge, systemImage: "sparkles")
-                        .font(CortexDesign.Typography.caption)
-                        .foregroundColor(CortexDesign.inkFaint)
-                        .accessibilityHidden(true)
+                if detected > 0, !isConnected {
+                    // U-MODEL3: "N ready to connect on this Mac" was static text. Make it the
+                    // action it names — one tap into the wizard, pre-scoped to what we detected.
+                    CortexButton(
+                        title: "Connect the \(detected) we found",
+                        systemImage: "sparkles",
+                        role: .secondary,
+                        size: .large
+                    ) {
+                        state.presentConnectToolsWizard(statusMessage: "Connect detected AI tools")
+                    }
+                    .help("Opens the wizard on the AI apps we detected installed on this Mac, ready to connect.")
                 }
 
                 Spacer(minLength: 0)
@@ -582,12 +644,17 @@ struct MirrorMomentCard: View {
 
                 HStack(spacing: CortexDesign.Space.sm) {
                     CortexButton(title: "That's right", systemImage: "checkmark", role: .secondary) {
+                        // U-MODEL6: confirming/dismissing dead-stopped the card. Chain the next
+                        // insight so the Mirror keeps mirroring; loadMirrorInsight abstains to nil
+                        // when there is nothing more, and the card simply falls away.
                         state.confirmMirrorInsight()
+                        Task { await state.loadMirrorInsight() }
                     }
                     .accessibilityLabel("That's right, this is accurate")
 
                     CortexButton(title: "Not quite", systemImage: "xmark", role: .ghost) {
                         state.dismissMirrorInsight()
+                        Task { await state.loadMirrorInsight() }
                     }
                     .accessibilityLabel("Not quite, dismiss this")
 
@@ -611,8 +678,13 @@ struct MirrorMomentCard: View {
 /// for non-empty profiles; a section with no statement and no elements shows just its title.
 struct ProfileCard: View {
     let section: ProfileSection
+    @ObservedObject var state: AppState
 
     @State private var showSources = false
+    // U-MODEL5: the confidence pill was an inert read-out. Tapping it now reveals a one-line
+    // "why" and a "Confirm this" affordance that trains the profile.
+    @State private var showConfidenceWhy = false
+    @State private var confirmedConfidence = false
 
     /// At most three grounding elements, and only those with something to show.
     private var visibleElements: [ProfileElement] {
@@ -624,12 +696,48 @@ struct ProfileCard: View {
         (section.confidence ?? "").lowercased() == "low"
     }
 
+    /// The one-line "why is this only emerging" explanation, driven off the evidence we have.
+    /// Never fabricates a certainty we don't have — it names the honest reason the band is low.
+    private var confidenceWhy: String {
+        let count = section.elements.compactMap { $0.count }.reduce(0, +)
+        if isEarlySignal {
+            return "This is a first hint. Cortex has seen it too few times to be sure."
+        }
+        if count > 0 {
+            return "A pattern still taking shape. Seen \(count) time\(count == 1 ? "" : "s") so far."
+        }
+        return "A pattern still taking shape. More memory will settle it."
+    }
+
+    /// The tappable confidence pill: a status pill wrapped in a plain button that toggles the
+    /// "why" disclosure. Keeps the same label/colour language as before.
     private var confidencePill: some View {
-        CortexStatusPill(
-            label: isEarlySignal ? "Early signal" : "Emerging",
-            systemImage: "sparkles",
-            color: isEarlySignal ? CortexDesign.inkFaint : CortexDesign.inkSecondary
-        )
+        Button {
+            withAnimation(.easeOut(duration: 0.2)) { showConfidenceWhy.toggle() }
+        } label: {
+            CortexStatusPill(
+                label: isEarlySignal ? "Early signal" : "Emerging",
+                systemImage: "sparkles",
+                color: isEarlySignal ? CortexDesign.inkFaint : CortexDesign.inkSecondary
+            )
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(confidenceWhy)
+        .accessibilityLabel((isEarlySignal ? "Early signal" : "Emerging") + ". \(confidenceWhy)")
+        .accessibilityHint("Reveals why, and lets you confirm it")
+    }
+
+    /// Records the user's confirmation of this profile section as a first-person capture, so an
+    /// explicit "yes, this is me" strengthens the memory (reuses the same capture path the Mirror
+    /// confirmation uses). Best-effort; a failure just leaves the card as-is.
+    private func confirmConfidence() {
+        confirmedConfidence = true
+        let claim = (section.statement ?? section.title).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !claim.isEmpty else { return }
+        Task {
+            await state.saveQuickCapture("I confirmed this about myself: \(claim)", "profile-confirmation")
+        }
     }
 
     var body: some View {
@@ -642,8 +750,33 @@ struct ProfileCard: View {
                 Spacer(minLength: 0)
                 if !section.isConfident {
                     confidencePill
-                        .accessibilityHidden(true)
                 }
+            }
+
+            if !section.isConfident, showConfidenceWhy {
+                VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
+                    Text(confidenceWhy)
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 560, alignment: .leading)
+                    if confirmedConfidence {
+                        Label("Thanks, noted.", systemImage: "checkmark")
+                            .font(.callout)
+                            .foregroundColor(CortexDesign.sealMoss)
+                    } else {
+                        CortexButton(
+                            title: "Confirm this",
+                            systemImage: "checkmark",
+                            role: .ghost,
+                            size: .small
+                        ) {
+                            confirmConfidence()
+                        }
+                        .accessibilityLabel("Confirm this is accurate")
+                    }
+                }
+                .transition(.opacity)
             }
 
             if let statement = section.statement, !statement.isEmpty {
@@ -809,6 +942,8 @@ private struct ProfileElementRow: View {
 struct HomeHeroSection: View {
     @ObservedObject var state: AppState
     let review: DailyReviewResponse?
+
+    @State private var portraitHovering = false
 
     private var activeSources: Int {
         if let connected = state.sourceReadinessReport?.summary.connected {
@@ -1033,27 +1168,48 @@ struct HomeHeroSection: View {
     // graph is empty). The portrait only earns its place once the layout has room, so it hides on
     // the narrow first-run column and folds into the text zone there.
     private var portrait: some View {
-        ConstellationMiniPreview(nodes: state.graphNodes, edges: state.graphEdges)
-            .frame(width: 300, height: 168)
-            .background(CortexDesign.panelBackground)
-            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
-            .embossedBorder(radius: CortexDesign.Radius.md)
-            .overlay(alignment: .bottom) {
-                // The sync beam rides UNDER the portrait in the live-activity language — the one
-                // sync indicator, folded into the hero instead of a competing native ProgressView.
-                if let progress = state.syncProgress, progress.active {
-                    SyncBeam(fraction: progress.fraction)
-                        .padding(.horizontal, CortexDesign.Space.sm)
-                        .padding(.bottom, CortexDesign.Space.sm)
-                        .transition(.opacity)
-                }
+        // U-MODEL2: the hero portrait was a dead decoration. Make it the obvious tap target it
+        // looks like — a populated graph opens the full Constellation (the exact call "Open full
+        // view" uses); an empty one routes into the connect wizard so the tap always leads somewhere.
+        Button {
+            if state.graphNodes.isEmpty {
+                state.presentConnectToolsWizard(statusMessage: "Connect your memory")
+            } else {
+                NotificationCenter.default.post(name: .cortexPresentConstellation, object: nil)
             }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(
-                state.graphNodes.isEmpty
-                    ? "Your Constellation builds as you import"
-                    : "A living preview of your Constellation, drawn from your real memory graph"
-            )
+        } label: {
+            ConstellationMiniPreview(nodes: state.graphNodes, edges: state.graphEdges)
+                .frame(width: 300, height: 168)
+                .background(CortexDesign.panelBackground)
+                .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+                .embossedBorder(radius: CortexDesign.Radius.md)
+                .overlay(alignment: .bottom) {
+                    // The sync beam rides UNDER the portrait in the live-activity language — the one
+                    // sync indicator, folded into the hero instead of a competing native ProgressView.
+                    if let progress = state.syncProgress, progress.active {
+                        SyncBeam(fraction: progress.fraction)
+                            .padding(.horizontal, CortexDesign.Space.sm)
+                            .padding(.bottom, CortexDesign.Space.sm)
+                            .transition(.opacity)
+                    }
+                }
+                .scaleEffect(portraitHovering ? 0.99 : 1)
+                .animation(CortexMotion.press, value: portraitHovering)
+                .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { portraitHovering = $0 }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            state.graphNodes.isEmpty
+                ? "Your Constellation builds as you import"
+                : "A living preview of your Constellation, drawn from your real memory graph"
+        )
+        .accessibilityHint(
+            state.graphNodes.isEmpty
+                ? "Connect your memory to build your Constellation"
+                : "Opens the Constellation full-screen"
+        )
     }
 
     /// The left text zone: serif hero line, its optional detail, and the ONE wax primary action.
@@ -1065,12 +1221,19 @@ struct HomeHeroSection: View {
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
                 if let detail {
-                    Text(detail)
-                        .font(CortexDesign.Typography.body)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: 400, alignment: .leading)
-                        .help(detailHelp ?? "")
+                    // U-MODEL8: attach the tooltip only when there is real help text — an empty
+                    // .help("") registered a phantom, always-empty tooltip on every hero state.
+                    Group {
+                        if let detailHelp {
+                            Text(detail).help(detailHelp)
+                        } else {
+                            Text(detail)
+                        }
+                    }
+                    .font(CortexDesign.Typography.body)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 400, alignment: .leading)
                 }
             }
 

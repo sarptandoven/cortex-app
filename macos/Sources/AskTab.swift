@@ -63,6 +63,18 @@ struct AskTab: View {
             guard tab == .ask, initialLoadDone else { return }
             Task { await reload() }
         }
+        // U-ASK8: the context strip goes stale when memory changes elsewhere (e.g. an approve in
+        // Review) while the Ask tab stays mounted. Re-pull the source-readiness report — the strip's
+        // data source — when the reviewed-memory count moves. This does NOT touch review/stats, so it
+        // can't loop. Only fires once the initial load is done and the tab is showing.
+        .onChange(of: state.review?.stats.memories ?? 0) { _ in
+            guard initialLoadDone, state.selectedTab == .ask else { return }
+            Task { await state.loadSourceConnectivity() }
+        }
+        .onChange(of: state.stats?.memories ?? 0) { _ in
+            guard initialLoadDone, state.selectedTab == .ask else { return }
+            Task { await state.loadSourceConnectivity() }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(CortexDesign.appBackground)
     }
@@ -111,6 +123,13 @@ struct AskQuerySection: View {
 
     private var trimmedQuery: String {
         state.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// U-ASK2: the recent-query chips show beneath the field only when the field is empty and
+    /// focused — the moment the user is deciding what to ask again — so they never crowd an
+    /// in-progress question or a landed answer.
+    private var showRecents: Bool {
+        queryFocused && trimmedQuery.isEmpty && !state.recentQueries.isEmpty && !state.isBusy
     }
 
     var body: some View {
@@ -182,15 +201,91 @@ struct AskQuerySection: View {
             .accessibilityElement()
             .accessibilityLabel("Searching your memory")
         }
+
+        // U-ASK2: recent-query chips. One click re-runs a prior question — the shortest path back
+        // to an answer the reader already found useful. Deduped/capped/persisted in AppState.
+        if showRecents {
+            AskRecentQueriesRow(state: state) { query in
+                state.searchQuery = query
+                state.runSearch()
+            }
+            .transition(.opacity)
+        }
         }
         .animation(.easeOut(duration: 0.15), value: state.isBusy)
+        .animation(.easeOut(duration: 0.15), value: showRecents)
+        // U-ASK9: focus is driven off the tab becoming Ask, not a fragile fixed-delay DispatchQueue
+        // timer. A switch back to the Ask tab refocuses via a state change SwiftUI honors reliably.
+        // For the initial appear (tab already Ask, so no onChange fires) we hop one runloop tick so the
+        // field has joined the hierarchy — a synchronous set is silently dropped on macOS 13 — but
+        // without racing an arbitrary 50ms deadline.
         .onAppear {
-            // Focus after the field joins the hierarchy — an immediate assignment is
-            // silently dropped on macOS 13.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                queryFocused = true
+            guard state.selectedTab == .ask else { return }
+            Task { @MainActor in queryFocused = true }
+        }
+        .onChange(of: state.selectedTab) { tab in
+            if tab == .ask { queryFocused = true }
+        }
+    }
+}
+
+/// U-ASK2: a wrapping row of recent-query chips with a "Clear" affordance. Each chip re-runs its
+/// query. Sits under the Ask field when the field is empty and focused.
+struct AskRecentQueriesRow: View {
+    @ObservedObject var state: AppState
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.caption2)
+                    .foregroundColor(CortexDesign.inkFaint)
+                Text("Recent")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                Spacer(minLength: 0)
+                Button {
+                    state.clearRecentQueries()
+                } label: {
+                    Text("Clear")
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkFaint)
+                }
+                .buttonStyle(.plain)
+                .help("Clear your recent Ask history")
+            }
+            AskFlowLayout(spacing: 6, lineSpacing: 6) {
+                ForEach(state.recentQueries.prefix(8), id: \.self) { query in
+                    Button {
+                        onSelect(query)
+                    } label: {
+                        Text(shortened(query))
+                            .font(CortexDesign.Typography.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(CortexDesign.panelBackground)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(CortexDesign.hairline, lineWidth: 1))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help(query)
+                }
             }
         }
+        .padding(.horizontal, CortexDesign.Space.xs)
+        .padding(.top, 2)
+    }
+
+    /// Keep chips a readable width — a long question is middle-truncated so both its start and end
+    /// survive; the full text stays in the button's `.help` tooltip.
+    private func shortened(_ query: String) -> String {
+        MemoryText.middleTruncated(query, max: 54)
     }
 }
 
@@ -329,26 +424,40 @@ struct AskMemoryContextStrip: View {
             ) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
+                        // U-ASK5: Freshness routes to a manual sync when a source is due; otherwise
+                        // to Connections to fix an unsynced/never-synced source.
                         AskContextMetric(
                             title: "Freshness",
                             value: freshnessLabel,
-                            systemImage: "clock.arrow.circlepath"
+                            systemImage: "clock.arrow.circlepath",
+                            action: freshnessAction,
+                            actionHint: freshnessActionHint
                         )
                         AskContextMetric(
                             title: "Citation confidence",
                             value: citationConfidenceLabel,
-                            systemImage: "link.badge.plus"
+                            systemImage: "link.badge.plus",
+                            action: citationConfidenceAction,
+                            actionHint: citationConfidenceActionHint
                         )
+                        // U-ASK5: Source health routes to whatever resolves it — Review for pending,
+                        // Connections for needs-attention, a sync for due sources.
                         AskContextMetric(
                             title: "Source health",
                             value: sourceHealthLabel,
-                            systemImage: "waveform.path.ecg"
+                            systemImage: "waveform.path.ecg",
+                            action: sourceHealthAction,
+                            actionHint: sourceHealthActionHint
                         )
                     }
                     if !relevantSources.isEmpty {
                         HStack(spacing: 6) {
                             ForEach(Array(relevantSources.prefix(3))) { source in
-                                AskSourceConfidenceChip(source: source)
+                                AskSourceConfidenceChip(source: source) {
+                                    // U-ASK5: a source chip routes to Connections scoped to that
+                                    // source so the reader can act on its health directly.
+                                    state.openConnectionsPrivacy(statusMessage: "Review \(source.name)")
+                                }
                             }
                             if relevantSources.count > 3 {
                                 Text("+\(relevantSources.count - 3) more")
@@ -399,14 +508,93 @@ struct AskMemoryContextStrip: View {
         }
         return "Not connected"
     }
+
+    // MARK: - U-ASK5 telemetry actions
+
+    /// A manual sync mirroring the menu's "Sync Now" — used when a source is due or awaiting its
+    /// first sync so the reader can refresh from the Ask surface instead of hunting for the menu.
+    private func syncNow() {
+        state.syncNowFromMenu()
+    }
+
+    private var freshnessAction: (() -> Void)? {
+        if dueCount > 0 || (latestSync == nil && sourceCount > 0) {
+            return { syncNow() }
+        }
+        if sourceCount == 0 {
+            return { state.openConnectionsPrivacy(statusMessage: "Connect a source") }
+        }
+        return nil
+    }
+
+    private var freshnessActionHint: String? {
+        if dueCount > 0 || (latestSync == nil && sourceCount > 0) { return "Sync now" }
+        if sourceCount == 0 { return "Open Connections" }
+        return nil
+    }
+
+    private var citationConfidenceAction: (() -> Void)? {
+        if pendingCount > 0 {
+            return {
+                state.selectedTab = .review
+                state.status = "Review memory"
+            }
+        }
+        if memoryCount == 0 {
+            return { state.openConnectionsPrivacy(statusMessage: "Connect a source") }
+        }
+        return nil
+    }
+
+    private var citationConfidenceActionHint: String? {
+        if pendingCount > 0 { return "Open Review" }
+        if memoryCount == 0 { return "Open Connections" }
+        return nil
+    }
+
+    private var sourceHealthAction: (() -> Void)? {
+        if needsAttentionCount > 0 {
+            let name = relevantSources.first(where: { !$0.warnings.isEmpty })?.name
+            return { state.openConnectionsPrivacy(statusMessage: name.map { "Fix \($0)" } ?? "Fix a source") }
+        }
+        if dueCount > 0 {
+            return { syncNow() }
+        }
+        if pendingCount > 0 {
+            return {
+                state.selectedTab = .review
+                state.status = "Review memory"
+            }
+        }
+        if sourceCount == 0 {
+            return { state.openConnectionsPrivacy(statusMessage: "Connect a source") }
+        }
+        return nil
+    }
+
+    private var sourceHealthActionHint: String? {
+        if needsAttentionCount > 0 { return "Open Connections" }
+        if dueCount > 0 { return "Sync now" }
+        if pendingCount > 0 { return "Open Review" }
+        if sourceCount == 0 { return "Open Connections" }
+        return nil
+    }
 }
 
 struct AskContextMetric: View {
     let title: String
     let value: String
     let systemImage: String
+    /// U-ASK5: when set, the whole metric cell becomes a button that routes to the surface that
+    /// resolves it (Review, Connections, sync). Nil keeps it a plain read-out.
+    var action: (() -> Void)? = nil
+    /// A short caption for the action target ("Open Review") shown on hover, plus VoiceOver.
+    var actionHint: String? = nil
 
-    var body: some View {
+    @State private var hovering = false
+
+    @ViewBuilder
+    private var cell: some View {
         HStack(spacing: 7) {
             Image(systemName: systemImage)
                 .font(.caption)
@@ -424,19 +612,42 @@ struct AskContextMetric: View {
                     .minimumScaleFactor(0.82)
             }
             Spacer(minLength: 0)
+            if action != nil {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(hovering ? CortexDesign.accent : CortexDesign.inkFaint)
+            }
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-        .background(CortexDesign.quietBackground)
+        .background(action != nil && hovering ? CortexDesign.accentSoft : CortexDesign.quietBackground)
         .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
+        .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
+    }
+
+    var body: some View {
+        if let action {
+            Button(action: action) { cell }
+                .buttonStyle(.plain)
+                .onHover { hovering = $0 }
+                .help(actionHint ?? "\(title): \(value)")
+                .accessibilityLabel("\(title): \(value)")
+                .accessibilityHint(actionHint ?? "")
+        } else {
+            cell
+        }
     }
 }
 
 struct AskSourceConfidenceChip: View {
     let source: SourceReadinessItem
+    /// U-ASK5: when set, tapping the chip routes to Connections scoped to this source.
+    var action: (() -> Void)? = nil
 
-    var body: some View {
+    @State private var hovering = false
+
+    private var chipLabel: some View {
         Text(label)
             .font(CortexDesign.Typography.caption)
             .foregroundColor(CortexDesign.inkSecondary)
@@ -444,10 +655,21 @@ struct AskSourceConfidenceChip: View {
             .truncationMode(.tail)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
-            .background(CortexDesign.panelBackground)
+            .background(action != nil && hovering ? CortexDesign.accentSoft : CortexDesign.panelBackground)
             .clipShape(Capsule())
-            .overlay(Capsule().stroke(CortexDesign.hairline, lineWidth: 1))
-            .help(helpText)
+            .overlay(Capsule().stroke(action != nil && hovering ? CortexDesign.accent.opacity(0.4) : CortexDesign.hairline, lineWidth: 1))
+            .contentShape(Capsule())
+    }
+
+    var body: some View {
+        if let action {
+            Button(action: action) { chipLabel }
+                .buttonStyle(.plain)
+                .onHover { hovering = $0 }
+                .help(helpText)
+        } else {
+            chipLabel.help(helpText)
+        }
     }
 
     private var label: String {
@@ -565,6 +787,47 @@ struct AskErrorCard: View {
     @ObservedObject var state: AppState
     let message: String
 
+    /// U-ASK6: classify the failure so the card can name what actually happened and offer the
+    /// action that fixes THAT case, instead of only a blind Retry.
+    private enum Failure {
+        case connectivity   // engine/network unreachable
+        case noMemory       // nothing reviewed yet — Ask has nothing to answer from
+        case unknown
+    }
+
+    private var failure: Failure {
+        let lower = message.lowercased()
+        if lower.contains("reach") || lower.contains("connect") || lower.contains("network")
+            || lower.contains("offline") || lower.contains("timed out") || lower.contains("timeout")
+            || lower.contains("could not") {
+            return .connectivity
+        }
+        if lower.contains("no memory") || lower.contains("no reviewed") || lower.contains("nothing")
+            || lower.contains("empty") {
+            return .noMemory
+        }
+        return .unknown
+    }
+
+    private var heading: String {
+        switch failure {
+        case .noMemory: return "No reviewed memory yet"
+        default: return "Ask could not reach your memory"
+        }
+    }
+
+    /// A one-line hint that disambiguates the two common causes so the reader knows which lever to pull.
+    private var hint: String? {
+        switch failure {
+        case .connectivity:
+            return "The memory engine looks unreachable. Check your connection, then try again."
+        case .noMemory:
+            return "Approve one useful item in Review, then Ask can answer with citations."
+        case .unknown:
+            return nil
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 10) {
@@ -575,19 +838,40 @@ struct AskErrorCard: View {
                     .background(CortexDesign.accentSoft)
                     .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Ask could not reach your memory")
+                    Text(heading)
                         .font(CortexDesign.Typography.title)
                         .foregroundColor(CortexDesign.ink)
                     Text(message)
                         .font(CortexDesign.Typography.body)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if let hint {
+                        Text(hint)
+                            .font(CortexDesign.Typography.caption)
+                            .foregroundColor(CortexDesign.inkFaint)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Spacer(minLength: 0)
             }
 
             HStack(spacing: 10) {
                 Spacer(minLength: 0)
+                // U-ASK6: a contextual secondary tied to the failure type.
+                switch failure {
+                case .connectivity:
+                    CortexButton(title: "Check connection", systemImage: "wifi", role: .ghost) {
+                        Task { await state.loadSourceConnectivity() }
+                        state.openConnectionsPrivacy(statusMessage: "Check connection")
+                    }
+                case .noMemory:
+                    CortexButton(title: "Review memory", systemImage: "checklist", role: .ghost) {
+                        state.selectedTab = .review
+                        state.status = "Review memory"
+                    }
+                case .unknown:
+                    EmptyView()
+                }
                 CortexButton(title: "Retry", systemImage: "arrow.clockwise", role: .secondary) {
                     state.runSearch()
                 }
@@ -615,6 +899,7 @@ struct AskResponseSection: View {
         VStack(alignment: .leading, spacing: 12) {
             if !state.askAnswer.isEmpty {
                 AskAnswerPanel(
+                    state: state,
                     answer: state.askAnswer,
                     citations: state.askCitations,
                     question: askedQuestion.isEmpty ? state.searchQuery : askedQuestion
@@ -626,6 +911,9 @@ struct AskResponseSection: View {
                     detail: "Nothing in reviewed notes matches yet. Try a more specific question.",
                     showActionsWhenMemoryExists: true
                 )
+                // U-ASK1: a no-answer page is otherwise a dead-end — offer questions drawn from the
+                // user's own reviewed memory so one tap gets a first cited answer.
+                AskSuggestedQuestions(state: state)
             } else {
                 // Retrieval found related memory but the model wouldn't commit to a single
                 // cited answer. Rather than a dead "no answer" line, name what happened and
@@ -636,6 +924,9 @@ struct AskResponseSection: View {
                     systemImage: "text.magnifyingglass"
                 )
                 .onAppear { citedMemoriesExpanded = true }
+                // U-ASK1: still offer a next question so the user isn't stranded when the closest
+                // matches don't help.
+                AskSuggestedQuestions(state: state)
             }
 
             // ALWAYS expose the fuller retrieved set when there is one — even beneath a cited
@@ -877,12 +1168,27 @@ struct AskSourceDetailRow: View {
     @ObservedObject var state: AppState
     let item: MemoryItem
 
+    // U-ASK3: local expand toggle (6-line preview → full) and a brief "Copied" confirmation.
+    @State private var expanded = false
+    @State private var justCopied = false
+
     private var openableURL: URL? {
         CitationDisplay.openableURL(sourceURL: item.source_url)
     }
 
     private var isForgetting: Bool {
         state.inFlightMemoryIds.contains(item.id)
+    }
+
+    /// The full, unwrapped memory text — used for Copy and (when the prose is long) the expand toggle.
+    private var fullText: String {
+        MemoryText.unwrap(item.content)
+    }
+
+    /// Only offer the expand toggle for prose that is actually long enough to be clipped at 6 lines —
+    /// a bare file path (which already renders on one line) never gets a pointless "Show more".
+    private var isExpandable: Bool {
+        MemoryText.displayContent(item.content).path == nil && fullText.count > 240
     }
 
     var body: some View {
@@ -905,10 +1211,20 @@ struct AskSourceDetailRow: View {
             Text(display.headline)
                 .font(CortexDesign.Typography.body)
                 .foregroundColor(CortexDesign.ink)
-                .lineLimit(display.path == nil ? 6 : 2)
+                .lineLimit(expanded ? nil : (display.path == nil ? 6 : 2))
                 .truncationMode(.middle)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+            if isExpandable {
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+                } label: {
+                    Text(expanded ? "Show less" : "Show more")
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.accent)
+                }
+                .buttonStyle(.plain)
+            }
             if let path = display.path {
                 Text(path)
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
@@ -931,9 +1247,27 @@ struct AskSourceDetailRow: View {
                 .help(item.source_url ?? citation)
             }
 
-            // Lightweight row actions: open the underlying source when it's reachable, and
-            // let the reader forget a match that isn't helpful (it drops out of future answers).
+            // Lightweight row actions: copy the excerpt, ask a follow-up scoped to it, open the
+            // underlying source when reachable, and let the reader forget an unhelpful match.
             HStack(spacing: CortexDesign.Space.xs) {
+                // U-ASK3: copy the memory's real text to the clipboard, with a brief label flip.
+                CortexButton(
+                    title: justCopied ? "Copied" : "Copy",
+                    systemImage: justCopied ? "checkmark" : "doc.on.doc",
+                    role: .ghost,
+                    size: .small
+                ) {
+                    copyContent()
+                }
+                .disabled(justCopied)
+                .help("Copy this memory's text")
+                // U-ASK3: seed a follow-up question scoped to this memory and run it — turning a
+                // read-only source into the start of the next question.
+                CortexButton(title: "Ask about this", systemImage: "sparkle.magnifyingglass", role: .ghost, size: .small) {
+                    askAboutThis()
+                }
+                .disabled(state.isBusy)
+                .help("Ask a follow-up scoped to this memory")
                 if let url = openableURL {
                     CortexButton(title: "Open source", systemImage: "arrow.up.right.square", role: .ghost, size: .small) {
                         NSWorkspace.shared.open(url)
@@ -967,6 +1301,24 @@ struct AskSourceDetailRow: View {
 
     private var citationLabel: String? {
         CitationDisplay.label(sourceURL: item.source_url)
+    }
+
+    private func copyContent() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(fullText, forType: .string)
+        justCopied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            justCopied = false
+        }
+    }
+
+    /// U-ASK3: seed a follow-up question scoped to this memory's subject and run it. When the memory
+    /// has a clean subject we ask about that; otherwise we scope to the source name so the follow-up
+    /// never leaks a raw path or UUID into the field.
+    private func askAboutThis() {
+        let subject = MemoryText.suggestionSubject(item.content) ?? sourceTitle
+        state.searchQuery = "Tell me more about \(subject)"
+        state.runSearch()
     }
 }
 
@@ -1046,7 +1398,11 @@ func askSourceGlyph(kind: String, sourceType: String?) -> String {
 /// line-range / date leader. A shared `selectedCitation` binds claim ↔ receipt: hovering or tapping
 /// a superscript highlights its margin card and vice-versa. An always-on provenance stamp sits above
 /// the answer.
+@MainActor
 struct AskAnswerPanel: View {
+    /// U-ASK7: threaded so the answer can be saved back as a note. Optional so existing/preview call
+    /// sites that only want the read-out render unchanged (Save-as-note is hidden when nil).
+    var state: AppState? = nil
     let answer: String
     let citations: [AskCitationItem]
     /// The question echoed back in italic serif above the answer — an annotated reply, not a
@@ -1057,6 +1413,9 @@ struct AskAnswerPanel: View {
     /// the other side highlights to match.
     @State private var selectedCitation: Int? = nil
     @State private var justCopied = false
+    // U-ASK7: brief "Saved" confirmation for the save-as-note action.
+    @State private var justSaved = false
+    @State private var saving = false
 
     private var citationsByIndex: [Int: AskCitationItem] {
         Dictionary(citations.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
@@ -1152,17 +1511,35 @@ struct AskAnswerPanel: View {
         .animation(.spring(response: 0.32, dampingFraction: 0.8), value: justCopied)
         .onChange(of: answer) { _ in
             justCopied = false
+            justSaved = false
             selectedCitation = nil
         }
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(verbatim: "ANSWER")
                 .font(CortexDesign.Typography.stamp)
                 .kerning(0.8)
                 .foregroundColor(CortexDesign.inkFaint)
             Spacer()
+            // U-ASK7: save this answer (with its sources) back into memory as a note, so a useful
+            // synthesized answer isn't a read-only terminus. Hidden when no AppState is threaded in.
+            if let state, !state.requiresSignIn {
+                CortexButton(
+                    title: justSaved ? "Saved" : "Save as note",
+                    systemImage: justSaved ? "checkmark" : "square.and.arrow.down",
+                    role: .ghost,
+                    size: .small
+                ) {
+                    saveAsNote()
+                }
+                .disabled(justSaved || saving)
+                .help("Save this answer and its sources back into your memory")
+            }
+            // U-ASK7: share the answer through the standard macOS share sheet.
+            AskAnswerShareButton(text: shareText)
+                .help("Share this answer")
             // Copy stays reachable at all times (no hover gate) and answers ⌘⇧C — so keyboard and
             // VoiceOver users can reach it too. A ghost button keeps it quiet until used.
             CortexButton(
@@ -1176,6 +1553,48 @@ struct AskAnswerPanel: View {
             .disabled(justCopied)
             .keyboardShortcut("c", modifiers: [.command, .shift])
             .help("Copy the answer with its sources (⌘⇧C)")
+        }
+    }
+
+    /// U-ASK7: the answer plus its source list, reused for both Share and Save-as-note so the two
+    /// paths carry identical provenance.
+    private var shareText: String {
+        answerWithSources()
+    }
+
+    private func answerWithSources() -> String {
+        var text = answer
+        if !citations.isEmpty {
+            let lines = citations.map { citation -> String in
+                let label = CitationDisplay.label(
+                    path: citation.citation_path,
+                    sourceURL: citation.source_url,
+                    fallback: citation.source
+                ) ?? citation.source
+                return "[\(citation.index)] \(label)"
+            }
+            text += "\n\nSources:\n" + lines.joined(separator: "\n")
+        }
+        return text
+    }
+
+    private func saveAsNote() {
+        guard let state, !saving else { return }
+        // Honesty: saveQuickCapture writes nothing while the sign-in wall is up, so never flash a
+        // false "Saved" in that state — just no-op (the button is disabled there anyway).
+        guard !state.requiresSignIn else { return }
+        saving = true
+        // Prefix the saved note with the question so the saved memory carries its own context.
+        let q = (question ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = q.isEmpty ? answerWithSources() : "Q: \(q)\n\n\(answerWithSources())"
+        let body = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task { @MainActor in
+            await state.saveQuickCapture(body, "cortex-ask")
+            saving = false
+            justSaved = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                justSaved = false
+            }
         }
     }
 
@@ -1350,6 +1769,9 @@ struct AskMarginCitationCard: View {
     let onTap: () -> Void
     let onHover: (Bool) -> Void
 
+    // U-ASK4: brief "Copied" confirmation for the per-citation copy action.
+    @State private var justCopied = false
+
     private var openableURL: URL? {
         // A file URL whose target has been deleted/moved is not really openable — treat it as
         // unavailable so the card shows a note instead of a link that opens to nothing.
@@ -1438,6 +1860,31 @@ struct AskMarginCitationCard: View {
                 }
                 .foregroundColor(CortexDesign.inkFaint)
                 .help("The original file for this citation was moved or deleted. The quoted excerpt above is still what Cortex used.")
+            }
+
+            // U-ASK4: per-citation copy. Always present (not hover-gated) so keyboard and VoiceOver
+            // users can lift a single receipt's excerpt without copying the whole answer.
+            if !copyableText.isEmpty {
+                HStack(spacing: 6) {
+                    Spacer(minLength: 0)
+                    Button {
+                        copyExcerpt()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
+                                .font(.system(size: 9))
+                            Text(justCopied ? "Copied" : "Copy excerpt")
+                                .font(CortexDesign.Typography.hint)
+                        }
+                        .foregroundColor(justCopied ? CortexDesign.sealMoss : CortexDesign.inkSecondary)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(justCopied)
+                    .help("Copy this citation's excerpt")
+                    .accessibilityLabel("Copy excerpt for citation \(citation.index)")
+                }
+                .padding(.top, 1)
             }
         }
         .padding(.horizontal, 10)
@@ -1533,6 +1980,25 @@ struct AskMarginCitationCard: View {
         if MemoryText.isPathLike(raw) { return "" }
         return raw
     }
+
+    /// The text the Copy-excerpt action lifts: the visible excerpt when present, else the raw
+    /// citation excerpt (so a path-only citation can still be copied verbatim).
+    private var copyableText: String {
+        if !excerpt.isEmpty { return excerpt }
+        return citation.excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func copyExcerpt() {
+        guard !copyableText.isEmpty else { return }
+        var text = copyableText
+        text += "\n\nSource: \(sourceLabel)"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        justCopied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            justCopied = false
+        }
+    }
 }
 
 /// A one-segment horizontal line, used for the dotted leader.
@@ -1594,5 +2060,51 @@ struct AskFlowLayout: Layout {
             x += size.width + spacing
             lineHeight = max(lineHeight, size.height)
         }
+    }
+}
+
+// MARK: - U-ASK7 share
+
+/// A ghost "Share" button that presents the standard macOS share sheet for the answer text. The
+/// picker needs a real AppKit anchor, so a zero-size `NSView` is planted under the button and used as
+/// the presentation rect — the same anchor pattern the wrapped/constellation share sheets use.
+struct AskAnswerShareButton: View {
+    let text: String
+
+    @State private var anchor = AskShareAnchor()
+    @State private var picker: NSSharingServicePicker?
+
+    var body: some View {
+        CortexButton(title: "Share", systemImage: "square.and.arrow.up", role: .ghost, size: .small) {
+            present()
+        }
+        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .background(AskShareAnchorView(anchor: anchor).frame(width: 0, height: 0))
+    }
+
+    private func present() {
+        guard let view = anchor.view else { return }
+        let picker = NSSharingServicePicker(items: [text])
+        self.picker = picker
+        picker.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+    }
+}
+
+/// Holds the AppKit anchor view the share picker presents from.
+final class AskShareAnchor: ObservableObject {
+    weak var view: NSView?
+}
+
+private struct AskShareAnchorView: NSViewRepresentable {
+    let anchor: AskShareAnchor
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        anchor.view = view
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        anchor.view = nsView
     }
 }

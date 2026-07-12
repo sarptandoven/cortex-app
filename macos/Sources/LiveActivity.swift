@@ -785,7 +785,12 @@ struct LiveActivityTicker: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .allowsHitTesting(false)
+        // U-LIVE4: hit-testing is no longer blanket-disabled here so the card itself can be tapped
+        // (the card applies its own contentShape + onTapGesture below). The surrounding empty area of
+        // this full-bleed frame stays transparent to clicks because nothing else has a gesture or an
+        // opaque background — only the bounded card rect responds. NOTE: the parent mount in
+        // CortexApp.swift currently wraps this view in `.allowsHitTesting(false)`; that outer modifier
+        // must be removed there for taps to reach the card (owner of CortexApp.swift).
         .animation(.easeInOut(duration: 0.28), value: isShowing)
         // Swap the whole card identity on each new event → the keyed transition below plays and the
         // previous headline visibly gives way to the new one.
@@ -849,7 +854,29 @@ struct LiveActivityTicker: View {
                 )
                 .shadow(color: CortexDesign.ink.opacity(0.16), radius: 14, x: 0, y: 5)
         )
+        // U-LIVE4: the whole card is now a tap target that jumps to the tab most relevant to the event
+        // (e.g. a review event → Review, an import/memory event → Home) and brings Cortex forward.
+        // contentShape makes the padded card fully hittable; only this bounded rect responds to clicks.
+        .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.lg, style: .continuous))
+        .onTapGesture { openTarget(for: latest) }
+        .help("Open \(targetTab(for: latest.kind).label)")
         .padding(.bottom, 14)
+    }
+
+    /// U-LIVE4: map an activity event to the most relevant destination tab and route there, bringing
+    /// Cortex forward. The mapping mirrors the ticker's own icon vocabulary (`iconName(for:)`).
+    private func openTarget(for event: ActivityEvent) {
+        state.selectedTab = targetTab(for: event.kind)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// The tab an event kind should open. Review/graded work lands in Review; imports, new memories,
+    /// graph and reach updates land on Home (the memory overview); anything unknown defaults to Home.
+    private func targetTab(for kind: String) -> AppTab {
+        switch kind {
+        case "review": return .review
+        default:       return .model
+        }
     }
 
     private func headline(_ event: ActivityEvent) -> some View {

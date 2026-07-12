@@ -96,29 +96,38 @@ struct SourceConnectorStatusCard: View {
 
     // MARK: - Stamp vocabulary (moss / gold / wax — words and ink, no capsules)
 
+    /// True when the source reads as connected in the ledger but has no local notes-folder bookmark on
+    /// this Mac (state.hasConnectedObsidianVault == false). The detail text and primary button already
+    /// tell the user to "Reconnect notes" in this case, so the stamp/spine must agree instead of
+    /// claiming "Synced" against a missing local vault.
+    private var needsLocalReconnect: Bool {
+        connected && !state.hasConnectedObsidianVault
+    }
+
     /// The mono accession word for the current state.
     private var statusStamp: String {
         if needsAttention { return "Needs attention" }
         if needsContent { return "No notes found" }
+        if needsLocalReconnect { return "Reconnect" }
         return connected ? "Synced" : "Not connected"
     }
 
     /// Whether the state stamp is emphasized (tinted wax) — reserved for the states that want a look.
     private var stampEmphasized: Bool {
-        needsAttention || needsContent || !connected
+        needsAttention || needsContent || needsLocalReconnect || !connected
     }
 
     /// The semantic color for the glyph well and the state — moss when synced (LOCAL, healthy),
     /// gold when it needs attention, wax for the call-to-connect.
     private var stampColor: Color {
-        if needsAttention || needsContent { return CortexDesign.gold }
+        if needsAttention || needsContent || needsLocalReconnect { return CortexDesign.gold }
         return connected ? CortexDesign.sealMoss : CortexDesign.accent
     }
 
     /// The margin spine: wax when connected/kept, gold when attention is owed, bare otherwise.
     private var spineColor: Color {
+        if needsAttention || needsContent || needsLocalReconnect { return CortexDesign.gold }
         if connected { return CortexDesign.accent }
-        if needsAttention || needsContent { return CortexDesign.gold }
         return Color.clear
     }
 

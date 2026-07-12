@@ -68,7 +68,9 @@ class ConstellationCameraContractTests(unittest.TestCase):
         # Pinch alone is not discoverable on a Mac.
         self.assertIn("plus.magnifyingglass", self.source)
         self.assertIn("minus.magnifyingglass", self.source)
-        self.assertIn("Reset view", self.source)
+        # U-MAP8: the reset control is now "Fit to view" — it resets the camera AND reseeds the
+        # working layout (strictly more than the old "Reset view"), and is always discoverable.
+        self.assertIn("Fit to view", self.source)
 
     def test_hit_testing_accounts_for_camera(self) -> None:
         # Taps and hovers must convert screen->layout space or selection breaks when zoomed.

@@ -412,10 +412,50 @@ struct TwinEvidenceRow: View {
 
 struct TwinScorecardCard: View {
     let scorecard: TwinScorecardResponse
+    @ObservedObject var state: AppState
 
     private var accuracyText: String {
         guard let accuracy = scorecard.accuracy else { return "–" }
         return "\(Int((accuracy * 100).rounded()))%"
+    }
+
+    private var ungradedCount: Int {
+        scorecard.ungraded.count
+    }
+
+    /// U-TWIN4: a compact one-line breakdown of the verdicts the twin has produced, so the
+    /// predictions count is legible ("Likely yes 8 · Likely no 3 · Mixed 2") rather than opaque.
+    private var verdictMixLine: String? {
+        var parts: [String] = []
+        if let yes = scorecard.verdict_mix["likely_yes"], yes > 0 {
+            parts.append("Likely yes \(yes)")
+        }
+        if let no = scorecard.verdict_mix["likely_no"], no > 0 {
+            parts.append("Likely no \(no)")
+        }
+        if let mixed = scorecard.verdict_mix["mixed"], mixed > 0 {
+            parts.append("Mixed \(mixed)")
+        }
+        if let insufficient = scorecard.verdict_mix["insufficient_evidence"], insufficient > 0 {
+            parts.append("Not enough \(insufficient)")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// U-TWIN1: switch to the Ask tab and seed a real "Would I " prefix the user completes.
+    /// This is an invitation to compose, not an auto-fired search: we deliberately do NOT
+    /// call runSearch() here, so an empty/no-evidence Ask never round-trips the twin or
+    /// pollutes the persisted recent-queries list. AppState exposes no Ask-field focus
+    /// request, so we only switch the tab and seed the text.
+    private func askWouldI() {
+        state.selectedTab = .ask
+        state.searchQuery = "Would I "
+    }
+
+    /// U-TWIN2 / U-TWIN3: route to the Review tab's grading queue.
+    private func openGradingQueue() {
+        state.selectedTab = .review
+        state.status = "Grade twin predictions"
     }
 
     var body: some View {
@@ -436,6 +476,13 @@ struct TwinScorecardCard: View {
                 twinStat(value: "\(scorecard.graded)", label: "Graded")
                 twinStat(value: accuracyText, label: "Accuracy")
             }
+            if let verdictMixLine {
+                Text(verdictMixLine)
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.6)
+                    .foregroundColor(CortexDesign.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text(scorecard.graded == 0
                  ? "No grades yet. When a prediction's real outcome lands, grade it in Review."
                  : "Accuracy covers only the predictions you graded.")
@@ -443,23 +490,80 @@ struct TwinScorecardCard: View {
                 .lineSpacing(3)
                 .foregroundColor(CortexDesign.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)
+
+            // U-TWIN4: surface the twin's own caveat (same faint-italic footnote treatment as
+            // ConnectionsToolUsageSection), so honesty notes on the scorecard aren't dropped.
+            if let caveat = scorecard.caveats.first, !caveat.isEmpty {
+                Text(caveat)
+                    .font(CortexDesign.Typography.prose(13).italic())
+                    .lineSpacing(3)
+                    .foregroundColor(CortexDesign.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // U-TWIN1 / U-TWIN2: primary "Ask would I…" plus the grading action when there are
+            // ungraded predictions waiting (replacing the passive footnote's dead-end).
+            HStack(spacing: CortexDesign.Space.sm) {
+                CortexButton(title: "Ask would I\u{2026}", systemImage: "questionmark.circle", role: .primary) {
+                    askWouldI()
+                }
+                if ungradedCount > 0 {
+                    CortexButton(
+                        title: "Grade \(ungradedCount) prediction\(ungradedCount == 1 ? "" : "s")",
+                        systemImage: "checkmark.seal",
+                        role: .secondary
+                    ) {
+                        openGradingQueue()
+                    }
+                }
+                Spacer(minLength: 0)
+            }
         }
         .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.panelBackground)
         .frame(maxWidth: 620, alignment: .leading)
     }
 
+    // U-TWIN3: the stat cells route into the Review grading queue (mirrors ModelTab's
+    // LedgerColumn press/hover language) so Predictions / Graded / Accuracy are live.
     private func twinStat(value: String, label: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value)
-                .font(CortexDesign.Typography.stat)
-                .monospacedDigit()
-                .foregroundColor(CortexDesign.ink)
-            Text(label.uppercased())
-                .font(CortexDesign.Typography.stamp)
-                .kerning(0.8)
-                .foregroundColor(CortexDesign.inkFaint)
+        TwinStatCell(value: value, label: label, action: openGradingQueue)
+    }
+}
+
+/// A tappable Twin stat cell in the LedgerColumn press/hover language (U-TWIN3).
+private struct TwinStatCell: View {
+    let value: String
+    let label: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(value)
+                    .font(CortexDesign.Typography.stat)
+                    .monospacedDigit()
+                    .foregroundColor(CortexDesign.ink)
+                Text(label.uppercased())
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
+            }
+            .padding(.vertical, CortexDesign.Space.xs)
+            .padding(.horizontal, CortexDesign.Space.sm)
+            .background(
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                    .fill(hovering ? CortexDesign.quietBackground : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
         }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(CortexMotion.press, value: hovering)
+        .help("Grade twin predictions in Review")
         .accessibilityElement(children: .combine)
+        .accessibilityHint("Opens the twin grading queue in Review")
     }
 }
 

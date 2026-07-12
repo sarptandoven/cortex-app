@@ -262,9 +262,12 @@ final class QuickCapture {
         guard ensureAccessibilityPermission() else {
             NotchNotifier.shared.show(
                 title: "Cortex needs Accessibility",
-                subtitle: "Enable Cortex in System Settings › Privacy › Accessibility.",
+                subtitle: "Opening System Settings › Privacy › Accessibility…",
                 style: .info
             )
+            // U-LIVE5: the notch is non-interactive, so the toast alone leaves the user hunting through
+            // System Settings. Deep-link straight to the exact pane so enabling Cortex is one step.
+            openPrivacyPane("Privacy_Accessibility")
             return
         }
 
@@ -355,9 +358,12 @@ final class QuickCapture {
         guard ensureScreenRecordingPermission() else {
             NotchNotifier.shared.show(
                 title: "Cortex needs Screen Recording",
-                subtitle: "Enable Cortex in System Settings › Privacy › Screen Recording.",
+                subtitle: "Opening System Settings › Privacy › Screen Recording…",
                 style: .info
             )
+            // U-LIVE5: deep-link straight to the Screen Recording pane so the non-interactive notch
+            // toast becomes actionable — the user just flips the toggle and re-triggers capture.
+            openPrivacyPane("Privacy_ScreenCapture")
             return
         }
         guard let image = captureMainDisplay() else {
@@ -457,6 +463,14 @@ final class QuickCapture {
         // so we still return false this pass and guide the user.
         _ = CGRequestScreenCaptureAccess()
         return false
+    }
+
+    /// U-LIVE5: open a specific System Settings › Privacy & Security pane by its anchor (e.g.
+    /// "Privacy_Accessibility", "Privacy_ScreenCapture"). Pairs with the permission toasts so a denial
+    /// deep-links the user straight to the toggle instead of leaving them to navigate there by hand.
+    private func openPrivacyPane(_ anchor: String) {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     // MARK: Logging

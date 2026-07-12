@@ -90,6 +90,14 @@ struct MemoryMapView: View {
     /// all built inside the sheet, so the map pays nothing until the user actually asks to share.
     @State private var showShareCard = false
 
+    /// The last canvas size the map drew at, captured so the "jump to result" camera math
+    /// (`frameNode`) can convert a node's layout point into a pan offset outside the GeometryReader.
+    @State private var lastCanvasSize: CGSize = .zero
+
+    /// One-time drag/zoom teaching hint gate (U-MAP9): the richer hint shows until the user has
+    /// interacted with the map once, then it settles to the quieter selection hint.
+    @AppStorage("cortexMapDragZoomHintSeen.v1") private var dragZoomHintSeen = false
+
     private static let minZoom: CGFloat = 0.6
     private static let maxZoom: CGFloat = 4.0
 
@@ -230,14 +238,21 @@ struct MemoryMapView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
             if state.graphNodes.isEmpty {
-                CortexEmptyState(
-                    systemImage: "point.3.connected.trianglepath.dotted",
-                    title: "Your Constellation",
-                    message: "Your memory map appears as Cortex learns about you."
-                )
+                // U-MAP5: distinguish "still loading" and "load failed" from a genuinely empty graph,
+                // so a connection failure is never dressed up as "no memories yet". The empty state
+                // itself (U-MAP1) is actionable rather than a dead read-out.
+                switch state.graphLoadState {
+                case .loading, .idle:
+                    graphLoadingState
+                case .failed(let message):
+                    graphFailedState(message)
+                case .loaded:
+                    graphEmptyState
+                }
             } else {
                 if mapNodes.count > 8 {
                     searchField
+                    searchResultsStrip
                 }
                 mapCanvas
                 compositionLine
@@ -249,7 +264,8 @@ struct MemoryMapView: View {
                         edgeSummaries: selectedEdgeSummaries,
                         loading: loadingNeighborhood,
                         onExplore: exploreAction,
-                        onSelectConnection: { entityID in selectNode(entityID) }
+                        onSelectConnection: { entityID in selectNode(entityID) },
+                        onSeeMemories: seeMemoriesAction
                     )
                     .transition(.opacity)
                 }
@@ -288,6 +304,60 @@ struct MemoryMapView: View {
         }
     }
 
+    // MARK: Empty / loading / failed states (U-MAP1, U-MAP5)
+
+    /// U-MAP1: the empty map is a starting point, not a dead-end — a primary route to bring memory
+    /// in and a quiet secondary route to Ask, so a user with an empty constellation always has a
+    /// next move.
+    private var graphEmptyState: some View {
+        VStack(spacing: CortexDesign.Space.sm) {
+            CortexEmptyState(
+                systemImage: "point.3.connected.trianglepath.dotted",
+                title: "Your Constellation",
+                message: "Your memory map appears as Cortex learns about you. Bring your memory in to draw the first stars.",
+                actionTitle: "Bring your memory in"
+            ) {
+                state.selectedTab = .review
+            }
+            CortexButton(
+                title: "Ask Cortex something",
+                systemImage: "sparkle.magnifyingglass",
+                role: .ghost,
+                size: .small
+            ) {
+                state.selectedTab = .ask
+            }
+            .accessibilityHint("Switches to the Ask tab.")
+        }
+    }
+
+    /// U-MAP5: an honest "still building" state while the graph loads, so a slow first load never
+    /// flashes the empty-constellation copy.
+    private var graphLoadingState: some View {
+        VStack(spacing: CortexDesign.Space.md) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Building your constellation…")
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, CortexDesign.Space.xl)
+    }
+
+    /// U-MAP5: a load FAILURE reads as a failure (with the real reason and a Retry), never as an
+    /// empty graph — masking a connection error as "no memories yet" would be dishonest.
+    private func graphFailedState(_ message: String) -> some View {
+        CortexEmptyState(
+            systemImage: "exclamationmark.triangle",
+            title: "Couldn't load your map",
+            message: message,
+            actionTitle: "Retry"
+        ) {
+            Task { await state.loadGraph() }
+        }
+    }
+
     private var searchField: some View {
         HStack(spacing: CortexDesign.Space.xs) {
             Image(systemName: "magnifyingglass")
@@ -296,6 +366,9 @@ struct MemoryMapView: View {
             TextField("Find a person, project, or topic", text: $searchText)
                 .textFieldStyle(.plain)
                 .font(CortexDesign.Typography.caption)
+                // U-MAP2: Enter jumps to (and frames) the matching point instead of only dimming
+                // the rest of the map.
+                .onSubmit { jumpToSearchResult() }
             if !searchText.isEmpty {
                 Button {
                     searchText = ""
@@ -313,6 +386,58 @@ struct MemoryMapView: View {
             RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
                 .stroke(CortexDesign.hairline, lineWidth: 1)
         )
+    }
+
+    /// The nodes matching the current search, in draw order, for the tappable results list.
+    private var matchedNodes: [GraphNode] {
+        guard let matched = matchedNodeIDs else { return [] }
+        return mapNodes.filter { matched.contains($0.id) }
+    }
+
+    /// U-MAP2: below the field, either an honest "nothing matched" line (so the dimmed map isn't a
+    /// silent dead-end) or a compact list of the matches — tap one to select and frame it.
+    @ViewBuilder
+    private var searchResultsStrip: some View {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        if !query.isEmpty {
+            if matchedNodes.isEmpty {
+                Text("No person, project, or topic matches \u{201C}\(query)\u{201D}")
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .padding(.horizontal, CortexDesign.Space.xs)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: CortexDesign.Space.xs) {
+                        ForEach(matchedNodes.prefix(12)) { node in
+                            Button {
+                                selectNode(node.id)
+                                frameNode(node.id)
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Circle()
+                                        .fill(MemoryMapView.color(for: node))
+                                        .frame(width: 7, height: 7)
+                                    Text(node.label)
+                                        .font(CortexDesign.Typography.caption)
+                                        .foregroundColor(CortexDesign.ink)
+                                        .lineLimit(1)
+                                }
+                                .padding(.horizontal, CortexDesign.Space.sm)
+                                .padding(.vertical, 4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                                        .fill(node.id == selectedNodeID ? CortexDesign.accent.opacity(0.14) : CortexDesign.quietBackground)
+                                )
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Jump to \(node.label)")
+                        }
+                    }
+                    .padding(.horizontal, 2)
+                }
+            }
+        }
     }
 
     /// Select a node by id and, for an entity node, fetch its cited neighborhood for the drill panel.
@@ -365,6 +490,31 @@ struct MemoryMapView: View {
         }
     }
 
+    /// U-MAP7: the "See memories" recipe — an evidence-scoped Ask ("What do you remember about X?")
+    /// that surfaces the citing memories rather than the bare-label exploration. In the overlay we
+    /// reuse `onExplore` for its dismiss + bring-window-forward plumbing, then override the query
+    /// with the scoped one and re-run; on the read-only Home embed we run it in place.
+    private func scopedMemoryQuery(for node: GraphNode) -> String {
+        "What do you remember about \(node.label)?"
+    }
+
+    private var seeMemoriesAction: (GraphNode) -> Void {
+        return { node in
+            let query = scopedMemoryQuery(for: node)
+            if let onExplore {
+                // Let the overlay dismiss + bring the main window forward + switch to Ask.
+                onExplore(node)
+                // Then replace the bare-label query the overlay seeded with the scoped one.
+                state.searchQuery = query
+                state.runSearch()
+            } else {
+                state.searchQuery = query
+                state.selectedTab = .ask
+                state.runSearch()
+            }
+        }
+    }
+
     // MARK: Camera math
 
     private var effectiveZoom: CGFloat {
@@ -398,6 +548,52 @@ struct MemoryMapView: View {
             zoomScale = 1
             panOffset = .zero
         }
+    }
+
+    /// U-MAP8: return the map to its canonical, readable arrangement — reset the camera AND reseed
+    /// the mutable working positions from the deterministic layout, undoing any drags the user has
+    /// applied. The camera reset is animated; the position reseed eases neighbors home.
+    private func fitToView() {
+        resetCamera()
+        let size = lastCanvasSize
+        guard size.width > 0, size.height > 0 else { return }
+        let layout = MemoryMapLayout.layout(nodes: mapNodes, edges: mapEdges, size: size)
+        withAnimation(.easeOut(duration: 0.28)) {
+            workingPositions = layout.allPositions()
+        }
+        seededLayoutKey = layout.identityKey
+        activeDrag = nil
+    }
+
+    /// U-MAP2 / U-MAP8: pan (and gently zoom) so `id`'s node sits at the canvas center. Reads the
+    /// node's canonical/working layout position and solves for the pan offset that lands it on the
+    /// center at the target zoom. No-ops until the canvas has drawn once (we need its size).
+    private func frameNode(_ id: String) {
+        let size = lastCanvasSize
+        guard size.width > 0, size.height > 0 else { return }
+        let layout = MemoryMapLayout.layout(nodes: mapNodes, edges: mapEdges, size: size)
+        guard let p = resolvedPosition(of: id, layout: layout) else { return }
+        // A comfortable "read this neighborhood" zoom; keep inside the camera clamp.
+        let targetZoom = min(Self.maxZoom, max(zoomScale, 1.8))
+        let c = CGPoint(x: size.width / 2, y: size.height / 2)
+        // Invert screenPoint at the target zoom with zero pan, then choose the pan that recenters p.
+        let projectedX = c.x + (p.x - c.x) * targetZoom
+        let projectedY = c.y + (p.y - c.y) * targetZoom
+        withAnimation(.easeInOut(duration: 0.28)) {
+            zoomScale = targetZoom
+            panOffset = CGSize(width: c.x - projectedX, height: c.y - projectedY)
+        }
+    }
+
+    /// U-MAP2: jump to the current search's result. With exactly one match, frame + select it; with
+    /// several, frame + select the first (the results list lets the user pick another).
+    private func jumpToSearchResult() {
+        guard let matched = matchedNodeIDs, !matched.isEmpty else { return }
+        // Deterministic pick: first match in draw order so Enter always lands the same place.
+        let target = mapNodes.first { matched.contains($0.id) }?.id
+        guard let target else { return }
+        selectNode(target)
+        frameNode(target)
     }
 
     // MARK: Position resolution — the Canvas reads the mutable working copy, falling back to the
@@ -491,12 +687,16 @@ struct MemoryMapView: View {
             break
         }
         activeDrag = nil
+        // The user has now dragged the map — retire the one-time drag/zoom teaching hint (U-MAP9).
+        if !dragZoomHintSeen { dragZoomHintSeen = true }
     }
 
     private func stepZoom(_ factor: CGFloat) {
         withAnimation(.easeInOut(duration: 0.15)) {
             zoomScale = min(Self.maxZoom, max(Self.minZoom, zoomScale * factor))
         }
+        // A zoom interaction also satisfies the one-time teaching hint (U-MAP9).
+        if !dragZoomHintSeen { dragZoomHintSeen = true }
     }
 
     private var mapCanvas: some View {
@@ -586,8 +786,12 @@ struct MemoryMapView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            .onAppear { syncWorkingPositions(to: layout) }
+            .onAppear {
+                syncWorkingPositions(to: layout)
+                lastCanvasSize = geo.size
+            }
             .onChange(of: layout.identityKey) { _ in syncWorkingPositions(to: layout) }
+            .onChange(of: geo.size) { newSize in lastCanvasSize = newSize }
         }
         .frame(height: canvasHeight)
         .background(
@@ -628,14 +832,14 @@ struct MemoryMapView: View {
                 help: "Zoom in",
                 disabled: zoomScale >= Self.maxZoom - 0.001
             ) { stepZoom(1.35) }
-            if zoomScale != 1 || panOffset != .zero {
-                ZoomStepButton(
-                    systemImage: "arrow.counterclockwise",
-                    help: "Reset view",
-                    disabled: false
-                ) { resetCamera() }
-                .transition(.opacity)
-            }
+            // U-MAP8: "Fit to view" is ALWAYS available (not just when zoomed/panned): it resets the
+            // camera AND reseeds the working positions from the canonical layout, so a map the user
+            // has dragged into a tangle can always be returned to its readable arrangement.
+            ZoomStepButton(
+                systemImage: "arrow.up.left.and.arrow.down.right",
+                help: "Fit to view",
+                disabled: false
+            ) { fitToView() }
         }
         .font(.system(size: 12, weight: .medium))
         .foregroundColor(CortexDesign.inkSecondary)
@@ -908,18 +1112,38 @@ struct MemoryMapView: View {
         let people = nodes.filter { ["person", "people"].contains($0.type.lowercased()) }.count
         let projects = nodes.filter { $0.type.lowercased() == "project" }.count
         let topics = nodes.filter { ["topic", "theme", "concept"].contains($0.type.lowercased()) }.count
-        var parts: [String] = []
-        if people > 0 { parts.append("\(people) \(people == 1 ? "person" : "people")") }
-        if projects > 0 { parts.append("\(projects) project\(projects == 1 ? "" : "s")") }
-        if topics > 0 { parts.append("\(topics) topic\(topics == 1 ? "" : "s")") }
         let others = nodes.count - people - projects - topics
-        if others > 0 { parts.append("\(others) other\(others == 1 ? "" : "s")") }
-        parts.append("\(mapEdges.count) connection\(mapEdges.count == 1 ? "" : "s")")
-        return HStack(spacing: CortexDesign.Space.sm) {
-            Text(parts.joined(separator: " · "))
+        // U-MAP4: the People / Projects / Topics counts are now the same spotlight lens the legend
+        // drives — tapping one dims everything but that type, tapping the active one clears it.
+        var accessibilityParts: [String] = []
+        if people > 0 { accessibilityParts.append("\(people) \(people == 1 ? "person" : "people")") }
+        if projects > 0 { accessibilityParts.append("\(projects) project\(projects == 1 ? "" : "s")") }
+        if topics > 0 { accessibilityParts.append("\(topics) topic\(topics == 1 ? "" : "s")") }
+        if others > 0 { accessibilityParts.append("\(others) other\(others == 1 ? "" : "s")") }
+        accessibilityParts.append("\(mapEdges.count) connection\(mapEdges.count == 1 ? "" : "s")")
+        return HStack(spacing: 6) {
+            if people > 0 {
+                compositionSegment("\(people) \(people == 1 ? "person" : "people")", spotlightType: "People")
+                compositionDot
+            }
+            if projects > 0 {
+                compositionSegment("\(projects) project\(projects == 1 ? "" : "s")", spotlightType: "Projects")
+                compositionDot
+            }
+            if topics > 0 {
+                compositionSegment("\(topics) topic\(topics == 1 ? "" : "s")", spotlightType: "Topics")
+                compositionDot
+            }
+            if others > 0 {
+                Text("\(others) other\(others == 1 ? "" : "s")")
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkFaint)
+                compositionDot
+            }
+            Text("\(mapEdges.count) connection\(mapEdges.count == 1 ? "" : "s")")
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkFaint)
-                .accessibilityLabel("Map shows \(parts.joined(separator: ", "))")
+                .accessibilityLabel("Map shows \(accessibilityParts.joined(separator: ", "))")
             if hiddenDetailCount > 0 {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { showDetailLayer.toggle() }
@@ -938,6 +1162,33 @@ struct MemoryMapView: View {
             }
             Spacer(minLength: 0)
         }
+    }
+
+    /// A quiet middle-dot separator between composition segments.
+    private var compositionDot: some View {
+        Text("·")
+            .font(CortexDesign.Typography.caption)
+            .foregroundColor(CortexDesign.inkFaint)
+    }
+
+    /// U-MAP4: one tappable count segment. Tapping spotlights that type (dimming the rest of the
+    /// map); tapping the active one clears it. The active segment reads brighter so the current lens
+    /// is legible.
+    private func compositionSegment(_ label: String, spotlightType: String) -> some View {
+        let lens = MapSpotlight.type(spotlightType)
+        let active = spotlight == lens
+        return Button {
+            spotlight = active ? nil : lens
+        } label: {
+            Text(label)
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(active ? CortexDesign.ink : CortexDesign.inkFaint)
+                .underline(active)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(active ? "Show everything" : "Spotlight \(spotlightType.lowercased())")
+        .accessibilityLabel(active ? "Clear \(spotlightType) spotlight" : "Spotlight \(spotlightType), \(label)")
     }
 
     // MARK: Legend — honest, adaptive, clickable.
@@ -991,10 +1242,19 @@ struct MemoryMapView: View {
                 }
             }
             Spacer(minLength: 0)
-            Text(selectedNodeID == nil ? "Tap a point to see its connections" : "Tap empty space to clear")
+            Text(legendHint)
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkFaint)
         }
+    }
+
+    /// U-MAP9: the hint teaches the map's real interactions. Until the user has touched the map
+    /// once (persisted flag), it teaches drag + zoom; after that it settles to the quieter
+    /// selection hint. A live selection always shows the "clear" hint.
+    private var legendHint: String {
+        if selectedNodeID != nil { return "Tap empty space to clear" }
+        if !dragZoomHintSeen { return "Drag a point to rearrange · scroll to zoom · tap to see connections" }
+        return "Tap a point to see its connections"
     }
 
     private func legendChip(label: String, color: Color, active: Bool, action: @escaping () -> Void) -> some View {
@@ -1212,6 +1472,8 @@ private struct NodeDetailPanel: View {
     var onExplore: ((GraphNode) -> Void)? = nil
     /// Tapping a connection re-centers the drill on that entity/node.
     var onSelectConnection: ((String) -> Void)? = nil
+    /// U-MAP7: evidence-first "See memories" — jump straight to the memories behind this node.
+    var onSeeMemories: ((GraphNode) -> Void)? = nil
 
     private var typeWord: String {
         switch node.type.lowercased() {
@@ -1259,19 +1521,35 @@ private struct NodeDetailPanel: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             connectionsSection
-            if let onExplore {
-                CortexButton(
-                    title: "Explore in Ask",
-                    systemImage: "sparkle.magnifyingglass",
-                    role: .primary,
-                    size: .small
-                ) {
-                    onExplore(node)
+            HStack(spacing: CortexDesign.Space.xs) {
+                if let onExplore {
+                    CortexButton(
+                        title: "Explore in Ask",
+                        systemImage: "sparkle.magnifyingglass",
+                        role: .primary,
+                        size: .small
+                    ) {
+                        onExplore(node)
+                    }
+                    .help("Ask Cortex about \(node.label) and jump to the answer.")
+                    .accessibilityLabel("Explore \(node.label) in Ask")
                 }
-                .help("Ask Cortex about \(node.label) and jump to the answer.")
-                .accessibilityLabel("Explore \(node.label) in Ask")
-                .padding(.top, 2)
+                if let onSeeMemories {
+                    // U-MAP7: an evidence-first path — the memories that mention this node, not a
+                    // generated answer.
+                    CortexButton(
+                        title: "See memories",
+                        systemImage: "text.quote",
+                        role: .secondary,
+                        size: .small
+                    ) {
+                        onSeeMemories(node)
+                    }
+                    .help("See the memories that mention \(node.label).")
+                    .accessibilityLabel("See memories about \(node.label)")
+                }
             }
+            .padding(.top, 2)
         }
         .cortexCard(padding: CortexDesign.Space.md)
         .accessibilityElement(children: .combine)
@@ -1295,20 +1573,27 @@ private struct NodeDetailPanel: View {
                 Button {
                     onSelectConnection?(connection.entity_id)
                 } label: {
-                    HStack(spacing: CortexDesign.Space.xs) {
-                        Text(connection.label ?? connection.entity_id)
-                            .font(CortexDesign.Typography.caption.weight(.medium))
-                            .foregroundColor(CortexDesign.ink)
-                        if let relation = connection.relation, !relation.isEmpty {
-                            Text(relation.replacingOccurrences(of: "_", with: " "))
-                                .font(CortexDesign.Typography.stamp)
-                                .foregroundColor(CortexDesign.inkFaint)
+                    // U-MAP6: the citing memory (`example`) is the evidence for the connection — it
+                    // now reads as a quiet italic second line instead of hiding behind a decorative
+                    // quote glyph, so a selection SHOWS why two things are linked.
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: CortexDesign.Space.xs) {
+                            Text(connection.label ?? connection.entity_id)
+                                .font(CortexDesign.Typography.caption.weight(.medium))
+                                .foregroundColor(CortexDesign.ink)
+                            if let relation = connection.relation, !relation.isEmpty {
+                                Text(relation.replacingOccurrences(of: "_", with: " "))
+                                    .font(CortexDesign.Typography.stamp)
+                                    .foregroundColor(CortexDesign.inkFaint)
+                            }
+                            Spacer(minLength: 0)
                         }
-                        Spacer(minLength: 0)
                         if let example = connection.example, !example.isEmpty {
-                            Image(systemName: "quote.opening")
-                                .font(.system(size: 8))
+                            Text(example)
+                                .font(CortexDesign.Typography.caption.italic())
                                 .foregroundColor(CortexDesign.inkFaint)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .contentShape(Rectangle())

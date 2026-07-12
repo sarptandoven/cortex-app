@@ -179,18 +179,26 @@ private struct PillView: View {
 
     private var content: some View {
         VStack(spacing: expanded ? 10 : 0) {
-            HStack(spacing: CortexDesign.Space.sm) {
-                ZStack {
-                    Circle().fill(CortexDesign.accent.opacity(0.14)).frame(width: 28, height: 28)
-                    Image(systemName: "tray.full.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(CortexDesign.accent)
+            // U-LIVE8: the collapsed pill body was inert — the user had to hover to reveal buttons and
+            // then click one. Make the whole collapsed row a single tap → open Review directly (the
+            // pill's core job). Hover still expands to the explicit Review / Open Cortex choices below.
+            Button(action: onReview) {
+                HStack(spacing: CortexDesign.Space.sm) {
+                    ZStack {
+                        Circle().fill(CortexDesign.accent.opacity(0.14)).frame(width: 28, height: 28)
+                        Image(systemName: "tray.full.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(CortexDesign.accent)
+                    }
+                    Text("\(model.pendingCount) to review")
+                        .font(CortexDesign.Typography.body.weight(.semibold))
+                        .foregroundColor(CortexDesign.ink)
+                        .lineLimit(1)
                 }
-                Text("\(model.pendingCount) to review")
-                    .font(CortexDesign.Typography.body.weight(.semibold))
-                    .foregroundColor(CortexDesign.ink)
-                    .lineLimit(1)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help("\(model.pendingCount) waiting. Open Review")
             if expanded {
                 HStack(spacing: CortexDesign.Space.sm) {
                     Button(action: onReview) {

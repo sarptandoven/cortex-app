@@ -148,7 +148,9 @@ class PhaseUISurfaceWiringTests(unittest.TestCase):
     def test_model_tab_shows_scorecard_only_after_predictions_exist(self) -> None:
         model = read(MODEL_TAB)
         self.assertIn("scorecard.predictions > 0", model)
-        self.assertIn("TwinScorecardCard(scorecard: scorecard)", model)
+        # U-TWIN1: the scorecard card now takes `state` so it can host the "Ask would I…" and
+        # "Grade N predictions" actions; the predictions>0 honesty gate above is unchanged.
+        self.assertIn("TwinScorecardCard(scorecard: scorecard, state: state)", model)
 
     def test_connections_sheet_has_the_activity_panel_and_budget(self) -> None:
         sheet = read(CONNECTIONS_SHEET)

@@ -32,7 +32,7 @@ from .authn import (
 from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import CORE_TOOL_NAMES, TOOLS, call_tool, export_tool_schema, tool_call_result, tools_for_scopes
+from .mcp_tools import CORE_TOOL_NAMES, MCP_TOOL_SURFACES, TOOLS, call_tool, export_tool_schema, tool_call_result, tools_for_scopes
 from .observability import metrics, route_label
 from .models import AgentSessionsSyncRequest, AgentSessionsSyncResponse, APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
@@ -2529,6 +2529,42 @@ def list_integration_tokens(
     return {"results": store.list_tokens(user_id, audience=audience, include_revoked=include_revoked)}
 
 
+@app.post("/v1/integrations/tokens", status_code=201)
+def mint_integration_token(payload: dict[str, Any], user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Mint a connector token bound to the calling user, returning the plaintext token EXACTLY once.
+    The signed-in desktop app calls this (with its cxs_ session access token) to hand the user a
+    working hosted MCP/connector key instead of a locally-registered one that would 401 against the
+    hosted /mcp. An optional `surface` (mcp only) binds the token to a tool-advertisement preset —
+    e.g. 'chatgpt' for the ChatGPT connector, 'core'/'full' for a generic remote client — which
+    /mcp tools/list then honors per token. Defaults keep audience=mcp, scopes=[read]."""
+    audience = str(payload.get("audience") or "mcp").strip().lower()
+    if audience not in {"api", "mcp"}:
+        raise HTTPException(status_code=422, detail="audience must be 'api' or 'mcp'")
+    label = str(payload.get("label") or "").strip()[:120]
+    scopes = payload.get("scopes")
+    surface = _normalize_mcp_surface(payload.get("surface"))
+    if audience == "api":
+        minted = store.create_api_token(
+            user_id,
+            label=label or "Connector REST token",
+            scopes=scopes if scopes is not None else list(DEFAULT_SELF_SERVE_API_SCOPES),
+        )
+    else:
+        minted = store.create_mcp_token(
+            user_id,
+            label=_label_with_surface_tag(label or "Connector MCP token", surface),
+            scopes=scopes if scopes is not None else list(DEFAULT_SELF_SERVE_MCP_SCOPES),
+        )
+    return {
+        "token": minted["token"],
+        "token_id": minted.get("token_id"),
+        "audience": audience,
+        "label": _strip_surface_tag(minted.get("label")),
+        "scopes": minted.get("scopes"),
+        "surface": surface if audience == "mcp" else None,
+    }
+
+
 @app.delete("/v1/integrations/tokens/{token_id}", response_model=APITokenRevokeResponse)
 def revoke_integration_token(token_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
     revoked = store.revoke_token(user_id, token_id)
@@ -2982,6 +3018,64 @@ APP_LOGIN_FLOW_TTL_SECONDS = 600
 ACCOUNT_CLAIM_TTL_SECONDS = 72 * 60 * 60
 DEFAULT_SELF_SERVE_API_SCOPES = ("read", "write")
 DEFAULT_SELF_SERVE_MCP_SCOPES = ("read",)
+
+# Per-token MCP tool surface.
+#
+# Different remote clients want different advertised tool lists off the SAME hosted /mcp endpoint:
+# ChatGPT's connector needs the `chatgpt` surface (search/fetch by name), while a generic
+# Claude-web / Cursor-over-remote connector wants `core` or `full`. The token store's api_tokens
+# table has no dedicated surface column, so we carry the surface on the token's LABEL as a compact,
+# machine-readable tag ("<label> [surface:chatgpt]"). It round-trips through create_mcp_token ->
+# ensure_mcp_token (stored) and back out of authenticate_mcp_token (context["label"]), so tools/list
+# can resolve a per-token surface without any schema change. When a token carries no tag, tools/list
+# falls back to the global settings.mcp_tool_surface — byte-identical to the previous behavior.
+_MCP_SURFACE_TAG_PREFIX = "[surface:"
+_VALID_MCP_SURFACES = frozenset({"full"}) | frozenset(MCP_TOOL_SURFACES.keys())
+
+
+def _normalize_mcp_surface(surface: str | None) -> str | None:
+    """Return a known surface name (a MCP_TOOL_SURFACES key or 'full'), or None when unset/unknown.
+    None means 'no per-token surface' so the caller falls back to the global default."""
+    if not surface:
+        return None
+    normalized = str(surface).strip().lower()
+    return normalized if normalized in _VALID_MCP_SURFACES else None
+
+
+def _label_with_surface_tag(label: str, surface: str | None) -> str:
+    """Embed a resolved surface as a trailing tag on the token label. No-op when surface is unset;
+    strips any pre-existing tag first so a re-mint never double-tags. Result is clamped to 120 chars
+    (the store's label limit) with the tag preserved."""
+    base = _strip_surface_tag(label).strip()
+    resolved = _normalize_mcp_surface(surface)
+    if not resolved:
+        return base[:120]
+    tag = f"{_MCP_SURFACE_TAG_PREFIX}{resolved}]"
+    room = 120 - len(tag) - 1
+    base = base[: max(0, room)].rstrip()
+    return (f"{base} {tag}" if base else tag)[:120]
+
+
+def _strip_surface_tag(label: str | None) -> str:
+    """The human-readable label without the trailing surface tag."""
+    text = str(label or "")
+    idx = text.rfind(_MCP_SURFACE_TAG_PREFIX)
+    if idx == -1:
+        return text
+    return text[:idx].rstrip()
+
+
+def _surface_from_label(label: str | None) -> str | None:
+    """Extract the surface a token was minted with from its stored label tag, or None if untagged."""
+    text = str(label or "")
+    idx = text.rfind(_MCP_SURFACE_TAG_PREFIX)
+    if idx == -1:
+        return None
+    inner = text[idx + len(_MCP_SURFACE_TAG_PREFIX):]
+    end = inner.find("]")
+    if end == -1:
+        return None
+    return _normalize_mcp_surface(inner[:end])
 
 
 class AuthRuntime:
@@ -3989,6 +4083,10 @@ def auth_mint_token(
     audience = str(payload.get("audience") or "api").strip().lower()
     label = str(payload.get("label") or "").strip()[:120]
     scopes = payload.get("scopes")
+    # Optional connector surface (mcp only): binds the minted token to a tool-advertisement preset
+    # (e.g. 'chatgpt' for the ChatGPT connector, 'core'/'full' for a generic remote client) so the
+    # signed-in desktop app can mint one token per destination. Ignored for api tokens.
+    surface = _normalize_mcp_surface(payload.get("surface"))
     account_id = str(account["account_id"])
     _ensure_account_provisioned(account)
     if audience == "api":
@@ -4001,7 +4099,7 @@ def auth_mint_token(
     elif audience == "mcp":
         minted = store.create_mcp_token(
             user_id,
-            label=label or "Self-serve MCP token",
+            label=_label_with_surface_tag(label or "Self-serve MCP token", surface),
             scopes=scopes if scopes is not None else list(DEFAULT_SELF_SERVE_MCP_SCOPES),
             account_id=account_id,
         )
@@ -4011,8 +4109,10 @@ def auth_mint_token(
         "token": minted["token"],
         "token_id": minted.get("token_id"),
         "audience": audience,
-        "label": minted.get("label"),
+        # Report the clean, human-readable label (surface tag stripped) plus the resolved surface.
+        "label": _strip_surface_tag(minted.get("label")),
         "scopes": minted.get("scopes"),
+        "surface": surface if audience == "mcp" else None,
         "account_id": account_id,
     }
 
@@ -4382,7 +4482,12 @@ async def mcp(request: Request, context: dict[str, Any] = Depends(mcp_auth)) -> 
         elif method == "tools/list":
             # Spec params such as cursor are tolerated (ignored): the full list is one page,
             # so no nextCursor is ever returned.
-            result = {"tools": tools_for_scopes(token_scopes, surface=settings.mcp_tool_surface)}
+            # Per-token surface: a token minted with an explicit surface (carried on its label tag)
+            # decides its own advertised list, so ChatGPT connectors see the `chatgpt` surface while a
+            # generic Claude-web / Cursor-over-remote token sees `core`/`full` off the SAME endpoint.
+            # Untagged tokens fall back to the global default — unchanged from before.
+            token_surface = _surface_from_label(context.get("label")) or settings.mcp_tool_surface
+            result = {"tools": tools_for_scopes(token_scopes, surface=token_surface)}
         elif method == "tools/call":
             params = message.get("params") or {}
             tool_name = params.get("name", "")

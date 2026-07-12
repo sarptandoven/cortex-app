@@ -211,6 +211,23 @@ struct ImportDiffView: View {
     @State private var addedFactIDs: Set<String> = []
     /// Highlight state for the drop zone while a file hovers over it.
     @State private var dropTargeted = false
+    /// Facts the user chose to keep Cortex's version of (dismissed the vendor's claim). Keyed by the
+    /// fact's stable id so a conflicting/stale row can be resolved without re-fetching.
+    @State private var keptCortexFactIDs: Set<String> = []
+    /// True while a batch "Add all" is running; carries the running progress "Adding 3/25…".
+    @State private var batchAddCount: Int = 0
+    @State private var batchAddTotal: Int = 0
+
+    /// UserDefaults keys for U-DIFF9: persist the last compare so reopening the surface (or comparing
+    /// a second vendor) doesn't silently drop the previous verdict. Stored locally here rather than on
+    /// AppState so this surface owns its own resume state.
+    private static let lastDiffDefaultsKey = "cortexImportDiff.lastResult.v1"
+    private static let lastDiffAddedDefaultsKey = "cortexImportDiff.lastAddedIDs.v1"
+
+    /// U-DIFF3: presents the shareable verdict card sheet.
+    @State private var showShareSheet = false
+    /// Feedback for the "Copy summary" fallback action.
+    @State private var summaryCopied = false
 
     private var trimmedInput: String {
         pasted.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -414,13 +431,79 @@ struct ImportDiffView: View {
     // MARK: Empty / transient states
 
     private var introState: some View {
-        CortexEmptyState(
-            systemImage: "sparkle.magnifyingglass",
-            title: "See what an AI remembers about you",
-            message: "Export your memory from ChatGPT, Claude, or Gemini, paste it above, and Cortex will tell you what it can confirm, what conflicts, and what it already knew that the export missed."
-        )
-        .frame(maxWidth: .infinity)
+        VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+            CortexEmptyState(
+                systemImage: "sparkle.magnifyingglass",
+                title: "See what an AI remembers about you",
+                message: "Export your memory from ChatGPT, Claude, or Gemini, paste it above, and Cortex will tell you what it can confirm, what conflicts, and what it already knew that the export missed."
+            )
+            .frame(maxWidth: .infinity)
+
+            // U-DIFF9: offer to bring back the last compare rather than starting cold.
+            if hasSavedDiff {
+                HStack(spacing: CortexDesign.Space.sm) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .foregroundColor(CortexDesign.accent)
+                    Text("You have a saved result from your last compare.")
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                    Spacer(minLength: 0)
+                    CortexButton(title: "Show it again", role: .ghost, size: .small) {
+                        restoreLastDiff()
+                    }
+                }
+                .padding(CortexDesign.Space.md)
+                .background(
+                    RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                        .fill(CortexDesign.quietBackground)
+                )
+                .embossedBorder(radius: CortexDesign.Radius.md)
+            }
+
+            // U-DIFF8: a quick-win row — where to find the export button in each AI, and a bundled
+            // sample so a curious user can see the result before they've exported anything.
+            introHelpRow
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, CortexDesign.Space.md)
+    }
+
+    /// U-DIFF8: concrete "how to export" deep links per vendor plus a "Try a sample" that loads a
+    /// small bundled export so the compare can be seen immediately.
+    private var introHelpRow: some View {
+        VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
+            Text("WHERE TO GET YOUR EXPORT")
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.inkFaint)
+            HStack(spacing: CortexDesign.Space.sm) {
+                CortexButton(title: "ChatGPT", systemImage: "arrow.up.right.square", role: .ghost, size: .small) {
+                    openExportHelp(.chatgpt)
+                }
+                CortexButton(title: "Claude", systemImage: "arrow.up.right.square", role: .ghost, size: .small) {
+                    openExportHelp(.claude)
+                }
+                CortexButton(title: "Gemini", systemImage: "arrow.up.right.square", role: .ghost, size: .small) {
+                    openExportHelp(.gemini)
+                }
+                Spacer(minLength: 0)
+                CortexButton(title: "Try a sample", systemImage: "wand.and.stars", role: .secondary, size: .small) {
+                    loadSampleExport()
+                }
+                .disabled(comparing)
+            }
+            Text("Each AI emails your export as a file. Download it, then drop it above. We never send the export anywhere except your own Cortex.")
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(CortexDesign.Space.md)
+        .background(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .fill(CortexDesign.quietBackground)
+        )
+        .embossedBorder(radius: CortexDesign.Radius.md)
     }
 
     private var comparingState: some View {
@@ -440,6 +523,8 @@ struct ImportDiffView: View {
     private func resultsSection(_ result: ImportDiffResult) -> some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
             summaryHeader(result)
+
+            shareRow(result)
 
             let facts = result.facts ?? []
             let confirmed = facts.filter { $0.normalizedStatus == .confirmed }
@@ -519,6 +604,39 @@ struct ImportDiffView: View {
         .archiveSpine(CortexDesign.accent)
     }
 
+    /// U-DIFF3: the share affordance under the verdict band. "Share result…" opens a night-sky
+    /// share card mirroring Memory Wrapped; "Copy summary" is the honest fallback that puts the
+    /// plain verdict counts on the clipboard. Both use only numbers the backend actually returned.
+    @ViewBuilder
+    private func shareRow(_ result: ImportDiffResult) -> some View {
+        HStack(spacing: CortexDesign.Space.sm) {
+            CortexButton(title: "Share result…", systemImage: "square.and.arrow.up", role: .secondary, size: .small) {
+                showShareSheet = true
+            }
+            CortexButton(title: summaryCopied ? "Copied" : "Copy summary", systemImage: "doc.on.doc", role: .ghost, size: .small) {
+                copySummary(result)
+            }
+            Spacer(minLength: 0)
+        }
+        .sheet(isPresented: $showShareSheet) {
+            ImportDiffShareSheet(model: ImportDiffShareModel.build(from: result))
+        }
+    }
+
+    /// The honest text fallback for U-DIFF3: verdict counts, vendor, and a made-of-Cortex line.
+    private func copySummary(_ result: ImportDiffResult) {
+        let model = ImportDiffShareModel.build(from: result)
+        let text = model.clipboardSummary
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        summaryCopied = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            summaryCopied = false
+        }
+    }
+
     /// One column of the verdict band: a mono field title over a stack of large serif numerals.
     private func verdictLedger(title: String, stats: [(count: Int, label: String, tone: Color)], ground: Color) -> some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
@@ -546,6 +664,9 @@ struct ImportDiffView: View {
 
     @ViewBuilder
     private func factGroup(status: ImportDiffStatus, facts: [ImportDiffFact], result: ImportDiffResult, headerOverride: String? = nil) -> some View {
+        // How many of these facts still have an "Add to Cortex" action outstanding — the ones that
+        // aren't already added. Drives the batch "Add all" button's enabled state and count.
+        let addable = facts.filter { !addedFactIDs.contains($0.id) }
         VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
             HStack(spacing: 8) {
                 Image(systemName: status.systemImage)
@@ -558,13 +679,44 @@ struct ImportDiffView: View {
                     .monospacedDigit()
                     .foregroundColor(CortexDesign.inkSecondary)
                 Spacer(minLength: 0)
+
+                // U-DIFF1: batch "Add all N to Cortex" for the missing group — one tap to import
+                // everything the export knew that Cortex didn't. Shows live progress and disables
+                // once nothing is left to add.
+                if status == .missing {
+                    if batchAddTotal > 0 {
+                        CortexButton(
+                            title: "Adding \(batchAddCount)/\(batchAddTotal)…",
+                            systemImage: "plus.circle",
+                            role: .secondary,
+                            size: .small
+                        ) {}
+                        .disabled(true)
+                    } else if !addable.isEmpty {
+                        CortexButton(
+                            title: "Add all \(addable.count) to Cortex",
+                            systemImage: "plus.circle",
+                            role: .secondary,
+                            size: .small
+                        ) {
+                            Task { await addAllMissing(addable, vendorLabel: result.displayVendorLabel) }
+                        }
+                    } else {
+                        Label("All added", systemImage: "checkmark.seal.fill")
+                            .font(CortexDesign.Typography.caption)
+                            .foregroundColor(CortexDesign.sealMoss)
+                    }
+                }
             }
             ForEach(facts) { fact in
                 ImportDiffFactRow(
                     fact: fact,
                     vendorLabel: result.displayVendorLabel,
                     alreadyAdded: addedFactIDs.contains(fact.id),
-                    onAdd: { await addToCortex(fact) }
+                    keptCortex: keptCortexFactIDs.contains(fact.id),
+                    onAdd: { await addToCortex(fact) },
+                    onKeepCortex: { keptCortexFactIDs.insert(fact.id) },
+                    onOpenMatch: { openMatch(fact.match) }
                 )
             }
         }
@@ -640,10 +792,44 @@ struct ImportDiffView: View {
             comparing = false
             if let diff {
                 result = diff
+                persistLastDiff()
             } else {
                 errorText = "Couldn't compare that export right now. Check that Cortex is running and try again."
             }
         }
+    }
+
+    // MARK: Last-compare persistence (U-DIFF9)
+
+    /// Persist the current result plus the set of facts already added, so reopening the surface (or
+    /// running a second vendor and coming back) can restore the last verdict instead of starting cold.
+    private func persistLastDiff() {
+        let defaults = UserDefaults.standard
+        if let result, let data = try? JSONEncoder().encode(result) {
+            defaults.set(data, forKey: Self.lastDiffDefaultsKey)
+            defaults.set(Array(addedFactIDs), forKey: Self.lastDiffAddedDefaultsKey)
+        }
+    }
+
+    /// True when a previously-saved compare exists that isn't already loaded — drives the "resume"
+    /// chip in the intro state.
+    private var hasSavedDiff: Bool {
+        result == nil && UserDefaults.standard.data(forKey: Self.lastDiffDefaultsKey) != nil
+    }
+
+    /// Restore the last saved compare into the view (U-DIFF9). Best-effort: a stale/undecodable blob
+    /// is quietly cleared rather than surfaced as an error.
+    private func restoreLastDiff() {
+        let defaults = UserDefaults.standard
+        guard let data = defaults.data(forKey: Self.lastDiffDefaultsKey),
+              let saved = try? JSONDecoder().decode(ImportDiffResult.self, from: data) else {
+            defaults.removeObject(forKey: Self.lastDiffDefaultsKey)
+            defaults.removeObject(forKey: Self.lastDiffAddedDefaultsKey)
+            return
+        }
+        result = saved
+        addedFactIDs = Set(defaults.stringArray(forKey: Self.lastDiffAddedDefaultsKey) ?? [])
+        errorText = nil
     }
 
     private func addToCortex(_ fact: ImportDiffFact) async {
@@ -652,8 +838,94 @@ struct ImportDiffView: View {
         let added = await state.addImportDiffFact(text: text, vendorLabel: fact.vendor_label ?? result?.displayVendorLabel ?? "")
         if added {
             addedFactIDs.insert(fact.id)
+            persistLastDiff()
         }
     }
+
+    /// U-DIFF1: add every missing fact in one action, one after another, so the user never taps
+    /// through 25 rows. Progress is reflected in the header button title ("Adding 3/25…"). Facts
+    /// that fail to add stay actionable per-row (their id just never enters `addedFactIDs`).
+    @MainActor
+    private func addAllMissing(_ facts: [ImportDiffFact], vendorLabel: String) async {
+        guard batchAddTotal == 0 else { return }
+        batchAddCount = 0
+        batchAddTotal = facts.count
+        defer {
+            batchAddTotal = 0
+            batchAddCount = 0
+        }
+        for fact in facts {
+            batchAddCount += 1
+            if addedFactIDs.contains(fact.id) { continue }
+            let text = fact.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            let added = await state.addImportDiffFact(text: text, vendorLabel: fact.vendor_label ?? vendorLabel)
+            if added {
+                addedFactIDs.insert(fact.id)
+            }
+        }
+        persistLastDiff()
+    }
+
+    /// U-DIFF2 / U-DIFF5: open the internal Cortex memory a fact was matched against. There's no
+    /// dedicated memory-detail-by-id surface, so this reuses the app's established "explore a memory"
+    /// path: seed the Ask tab with the memory's own text and run a real retrieval, exactly as the
+    /// Constellation node tap does. Never fabricates a link when there's nothing to open.
+    private func openMatch(_ match: ImportDiffMatch?) {
+        guard let match else { return }
+        // Prefer the actual openable source URL if the memory carries one (a file/web citation).
+        if let url = CitationDisplay.openableURL(path: nil, sourceURL: match.source_url) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        // Otherwise pivot into Ask on the memory's own content so the user lands on it in context.
+        let seed = (match.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !seed.isEmpty else { return }
+        state.searchQuery = String(seed.prefix(200))
+        state.selectedTab = .ask
+        state.runSearch()
+        onClose?()
+    }
+
+    /// U-DIFF8: open the vendor's own data-export page so the user can start the export in one click.
+    /// These are the real, current export destinations for each provider.
+    private func openExportHelp(_ choice: VendorChoice) {
+        let urlString: String
+        switch choice {
+        case .chatgpt: urlString = "https://chatgpt.com/#settings/DataControls"
+        case .claude: urlString = "https://claude.ai/settings/data-privacy-controls"
+        case .gemini: urlString = "https://takeout.google.com/"
+        case .auto: urlString = "https://takeout.google.com/"
+        }
+        if let url = URL(string: urlString) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// U-DIFF8: load a small bundled sample export into the paste well and compare it, so a first-time
+    /// visitor can see exactly what the result looks like before exporting their own memory. The sample
+    /// is a plainly-labeled illustration, not the user's data; the compare runs against their real
+    /// Cortex, so the missing/confirmed split is still honest for whatever they actually hold.
+    private func loadSampleExport() {
+        vendor = .chatgpt
+        pasted = Self.sampleExportText
+        errorText = nil
+        result = nil
+        compare()
+    }
+
+    /// A compact, obviously-illustrative ChatGPT-style memory export. Plain text so the backend reads
+    /// it the same way it reads a real paste. Kept short so the sample compare returns quickly.
+    private static let sampleExportText = """
+    Sample memory export (illustration only)
+
+    - The user is a founder building a macOS app for personal memory.
+    - Prefers concise, direct answers without filler.
+    - Is based in the San Francisco Bay Area.
+    - Enjoys long-distance running on weekends.
+    - Is learning to play the piano.
+    - Cares deeply about user privacy and local-first software.
+    """
 
     private func openExportFile() {
         let panel = NSOpenPanel()
@@ -818,7 +1090,13 @@ struct ImportDiffFactRow: View {
     let fact: ImportDiffFact
     let vendorLabel: String
     let alreadyAdded: Bool
+    /// True once the user chose to keep Cortex's version of a conflicting/stale fact (U-DIFF2).
+    var keptCortex: Bool = false
     let onAdd: () async -> Void
+    /// U-DIFF2: dismiss the vendor's conflicting/stale claim, keeping what Cortex already holds.
+    var onKeepCortex: () -> Void = {}
+    /// U-DIFF2 / U-DIFF5: open the internal Cortex memory this fact was matched against.
+    var onOpenMatch: () -> Void = {}
 
     @State private var adding = false
 
@@ -862,10 +1140,57 @@ struct ImportDiffFactRow: View {
             // Missing facts get one action: add the vendor's fact to Cortex.
             if effectiveStatus == .missing {
                 addRow
+            } else if effectiveStatus == .conflicting || effectiveStatus == .stale {
+                // U-DIFF2: conflicting/stale facts are no longer a dead-end — resolve them in place.
+                tensionActionRow
             }
         }
         .cortexCard(padding: CortexDesign.Space.md)
         .archiveSpine(effectiveStatus.tone)
+    }
+
+    /// U-DIFF2: the resolve row for a conflicting or stale fact. "Update Cortex with this" writes the
+    /// vendor's version in; "Keep Cortex's" dismisses the vendor claim; when the match carries an id,
+    /// "Open in Cortex" pivots to the memory it disagreed with so the user can inspect it.
+    @ViewBuilder
+    private var tensionActionRow: some View {
+        HStack(spacing: CortexDesign.Space.sm) {
+            if alreadyAdded {
+                Label("Updated in Cortex", systemImage: "checkmark.seal.fill")
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.sealMoss)
+            } else if keptCortex {
+                Label("Kept Cortex's version", systemImage: "checkmark.circle")
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+            } else {
+                CortexButton(
+                    title: adding ? "Updating…" : "Update Cortex with this",
+                    systemImage: "arrow.triangle.2.circlepath",
+                    role: .secondary,
+                    size: .small
+                ) {
+                    guard !adding else { return }
+                    adding = true
+                    Task {
+                        await onAdd()
+                        adding = false
+                    }
+                }
+                .disabled(adding)
+                CortexButton(title: "Keep Cortex's", role: .ghost, size: .small) {
+                    onKeepCortex()
+                }
+                .disabled(adding)
+            }
+            if !(fact.match?.memory_id ?? "").isEmpty || !((fact.match?.content ?? "").isEmpty) {
+                CortexButton(title: "Open in Cortex", systemImage: "arrow.up.right.square", role: .ghost, size: .small) {
+                    onOpenMatch()
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 20)
     }
 
     @ViewBuilder
@@ -878,11 +1203,30 @@ struct ImportDiffFactRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let content = match.content?.trimmingCharacters(in: .whitespacesAndNewlines), !content.isEmpty {
-                Text("Cortex remembers: \(MemoryText.displayProse(content, maxLength: 320))")
+                // U-DIFF5: when the matched memory is a real, openable Cortex memory, the "Cortex
+                // remembers" line becomes a tap-through into it; otherwise it stays plain text so we
+                // never offer a dead link.
+                let canOpen = !(match.memory_id ?? "").isEmpty
+                let remembers = Text("Cortex remembers: \(MemoryText.displayProse(content, maxLength: 320))")
                     .font(CortexDesign.Typography.prose(13))
                     .lineSpacing(3)
                     .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if canOpen {
+                    Button {
+                        onOpenMatch()
+                    } label: {
+                        remembers
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open this memory in Cortex")
+                    .accessibilityAddTraits(.isButton)
+                } else {
+                    remembers
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             ImportDiffCitation(
                 source: match.source,
@@ -1025,5 +1369,339 @@ struct ImportDiffCitation: View {
                 .fill(hovering && openable ? CortexDesign.accentSoft : Color.clear)
         )
         .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Shareable verdict card (U-DIFF3)
+
+/// Everything the `ImportDiffShareCard` draws, computed once from an `ImportDiffResult`. Plain data
+/// so the card view is trivial and deterministic. Never invents a number: every count comes straight
+/// off the summary the backend returned, and the "facts read" figure is capped at what it actually
+/// parsed.
+struct ImportDiffShareModel {
+    let vendorLabel: String
+    let factsRead: Int
+    let confirms: Int
+    let disputes: Int
+    let missing: Int
+    let remembers: Int
+    /// "MEMORY DIFF · 12 JUL 2026" — the mono stamp line.
+    let stampLine: String
+
+    static func build(from result: ImportDiffResult) -> ImportDiffShareModel {
+        let summary = result.summary
+        let confirms = summary?.confirmed ?? 0
+        let disputes = (summary?.conflicting ?? 0) + (summary?.stale ?? 0)
+        let missing = summary?.missing ?? 0
+        let remembers = summary?.cortex_only ?? 0
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "d MMM yyyy"
+        let stamp = "MEMORY DIFF · " + formatter.string(from: Date()).uppercased()
+
+        return ImportDiffShareModel(
+            vendorLabel: result.displayVendorLabel,
+            factsRead: result.factsRead,
+            confirms: confirms,
+            disputes: disputes,
+            missing: missing,
+            remembers: remembers,
+            stampLine: stamp
+        )
+    }
+
+    /// The hero line on the card and in the copy-summary fallback.
+    var headlineText: String {
+        "What \(vendorLabel) thinks it knows about me, checked against my Cortex."
+    }
+
+    /// The honest plain-text fallback for "Copy summary".
+    var clipboardSummary: String {
+        var lines: [String] = []
+        lines.append("What \(vendorLabel) thinks it knows about me, checked against my Cortex:")
+        lines.append("· \(factsRead) fact\(factsRead == 1 ? "" : "s") read from the export")
+        lines.append("· \(confirms) confirmed")
+        lines.append("· \(disputes) disputed")
+        lines.append("· \(missing) new to Cortex")
+        lines.append("· \(remembers) my Cortex already knew that the export forgot")
+        lines.append("Measured by Cortex.")
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// The fixed-size (1200×630) shareable verdict card. Same night-sky Archive identity as
+/// `MemoryWrappedCard` so the two share objects read as one family; rendered at 2× via ImageRenderer.
+struct ImportDiffShareCard: View {
+    static let size = CGSize(width: 1200, height: 630)
+
+    let model: ImportDiffShareModel
+
+    /// The Archive's dark palette, fixed by value (identical hex to `MemoryWrappedCard.Night`).
+    private enum Night {
+        static let paper = Color(red: 0.110, green: 0.102, blue: 0.090)
+        static let panel = Color(red: 0.149, green: 0.137, blue: 0.125)
+        static let ink = Color(red: 0.910, green: 0.890, blue: 0.851)
+        static let inkSecondary = Color(red: 0.690, green: 0.663, blue: 0.616)
+        static let inkFaint = Color(red: 0.549, green: 0.522, blue: 0.478)
+        static let accent = Color(red: 0.788, green: 0.420, blue: 0.341)
+        static let gold = Color(red: 0.827, green: 0.627, blue: 0.298)
+        static let moss = Color(red: 0.494, green: 0.604, blue: 0.447)
+    }
+
+    var body: some View {
+        ZStack {
+            Night.paper
+            RadialGradient(
+                colors: [Night.panel.opacity(0.9), Night.paper],
+                center: .init(x: 0.28, y: 0.32),
+                startRadius: 40,
+                endRadius: 720
+            )
+            starDust
+            chrome
+            Rectangle()
+                .strokeBorder(Night.ink.opacity(0.12), lineWidth: 1)
+                .padding(16)
+        }
+        .frame(width: Self.size.width, height: Self.size.height)
+    }
+
+    /// Faint FNV-seeded star-dust (no randomness) — the constellation contract, matched to
+    /// `MemoryWrappedCard` so the two cards share a night sky.
+    private var starDust: some View {
+        Canvas { context, _ in
+            for index in 0..<120 {
+                var hash: UInt64 = 0xcbf29ce484222325
+                for byte in "diff-dust-\(index)".utf8 {
+                    hash ^= UInt64(byte)
+                    hash = hash &* 0x100000001b3
+                }
+                let x = CGFloat(hash % UInt64(Self.size.width))
+                let y = CGFloat((hash >> 16) % UInt64(Self.size.height))
+                let alpha = 0.03 + Double((hash >> 32) % 90) / 1_600
+                let radius: CGFloat = (hash >> 44) % 6 == 0 ? 1.6 : 0.9
+                context.fill(
+                    Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)),
+                    with: .color(Night.ink.opacity(alpha))
+                )
+            }
+        }
+        .frame(width: Self.size.width, height: Self.size.height)
+    }
+
+    private var chrome: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(model.stampLine)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .kerning(2.4)
+                .foregroundColor(Night.inkFaint)
+
+            Text("\(model.factsRead) FACT\(model.factsRead == 1 ? "" : "S") READ FROM \(model.vendorLabel.uppercased())")
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .kerning(1.8)
+                .foregroundColor(Night.inkFaint.opacity(0.85))
+                .padding(.top, 6)
+
+            Text(model.headlineText)
+                .font(.system(size: 42, weight: .semibold, design: .serif))
+                .foregroundColor(Night.ink)
+                .lineLimit(3)
+                .minimumScaleFactor(0.7)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 24)
+
+            Spacer(minLength: 0)
+
+            statsFoot
+        }
+        .padding(.horizontal, 52)
+        .padding(.top, 46)
+        .padding(.bottom, 44)
+    }
+
+    private var statsFoot: some View {
+        HStack(alignment: .lastTextBaseline, spacing: 40) {
+            stat(model.confirms, "CONFIRMED", Night.moss)
+            stat(model.disputes, "DISPUTED", Night.gold)
+            stat(model.missing, "NEW TO CORTEX", Night.accent)
+            stat(model.remembers, "CORTEX KNEW", Night.ink)
+            Spacer(minLength: 0)
+            branding
+        }
+    }
+
+    private func stat(_ count: Int, _ label: String, _ tone: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(count)")
+                .font(.system(size: 40, weight: .semibold, design: .serif))
+                .monospacedDigit()
+                .foregroundColor(tone)
+            Text(label)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .kerning(1.4)
+                .foregroundColor(Night.inkFaint)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: 200, alignment: .leading)
+    }
+
+    private var branding: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle()
+                .fill(Night.accent)
+                .frame(width: 7, height: 7)
+            Text("Measured by")
+                .font(.system(size: 15, weight: .regular))
+                .foregroundColor(Night.inkSecondary)
+            Text("Cortex")
+                .font(.system(size: 22, weight: .semibold, design: .serif))
+                .foregroundColor(Night.ink)
+        }
+    }
+}
+
+// MARK: - Verdict share sheet (built only when opened)
+
+/// A weak handle to the AppKit view planted under the Share button so the sharing picker's popover
+/// can anchor to it. (Named to avoid colliding with the other share anchors.)
+private final class ImportDiffShareAnchor {
+    weak var view: NSView?
+}
+
+private struct ImportDiffShareAnchorView: NSViewRepresentable {
+    let anchor: ImportDiffShareAnchor
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        anchor.view = view
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        anchor.view = nsView
+    }
+}
+
+/// The preview + share sheet behind "Share result…". Renders the verdict card once (2× via
+/// ImageRenderer), shows exactly the pixels that would leave the machine, and offers Share, Copy,
+/// and Save PNG. Mirrors `MemoryWrappedShareSheet` so the two share flows behave identically.
+struct ImportDiffShareSheet: View {
+    let model: ImportDiffShareModel
+
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var cardImage: NSImage?
+    @State private var cardPNG: Data?
+    @State private var copied = false
+    @State private var renderFailed = false
+    @State private var activePicker: NSSharingServicePicker?
+    @State private var shareAnchor = ImportDiffShareAnchor()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+            HStack(alignment: .firstTextBaseline, spacing: CortexDesign.Space.sm) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Share what the AI thinks of you")
+                        .font(CortexDesign.Typography.title)
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Your verdict card, ready to share. Real counts only, straight from your compare.")
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                }
+                Spacer(minLength: 0)
+                CortexIconButton(systemImage: "xmark", role: .ghost, size: .small, help: "Close") {
+                    dismiss()
+                }
+                .accessibilityLabel("Close share preview")
+            }
+
+            preview
+
+            HStack(spacing: CortexDesign.Space.sm) {
+                CortexButton(title: copied ? "Copied" : "Copy", systemImage: "doc.on.doc", role: .secondary) {
+                    copyPNG()
+                }
+                .disabled(cardPNG == nil)
+                CortexButton(title: "Save PNG", systemImage: "square.and.arrow.down", role: .secondary) {
+                    savePNG()
+                }
+                .disabled(cardPNG == nil)
+                Spacer(minLength: 0)
+                CortexButton(title: "Share…", systemImage: "square.and.arrow.up", role: .primary) {
+                    presentSharePicker()
+                }
+                .disabled(cardImage == nil)
+                .background(ImportDiffShareAnchorView(anchor: shareAnchor))
+            }
+        }
+        .padding(CortexDesign.Space.lg)
+        .frame(minWidth: 684, minHeight: 520)
+        .background(CortexDesign.appBackground)
+        .task { renderCard() }
+    }
+
+    @ViewBuilder
+    private var preview: some View {
+        ConstellationTrophy(
+            image: cardImage,
+            failed: renderFailed,
+            stampText: "MEMORY DIFF",
+            sealText: "Cortex",
+            onRetry: { Task { @MainActor in renderCard() } }
+        )
+    }
+
+    @MainActor
+    private func renderCard() {
+        guard cardImage == nil else { return }
+        renderFailed = false
+        let renderer = ImageRenderer(content: ImportDiffShareCard(model: model))
+        renderer.scale = 2
+        guard let cgImage = renderer.cgImage else {
+            renderFailed = true
+            return
+        }
+        let rep = NSBitmapImageRep(cgImage: cgImage)
+        rep.size = NSSize(width: ImportDiffShareCard.size.width, height: ImportDiffShareCard.size.height)
+        cardPNG = rep.representation(using: .png, properties: [:])
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+        cardImage = image
+    }
+
+    private func copyPNG() {
+        guard let data = cardPNG else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.declareTypes([.png, .tiff], owner: nil)
+        pasteboard.setData(data, forType: .png)
+        if let tiff = cardImage?.tiffRepresentation {
+            pasteboard.setData(tiff, forType: .tiff)
+        }
+        copied = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            copied = false
+        }
+    }
+
+    private func savePNG() {
+        guard let data = cardPNG else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.nameFieldStringValue = "what-the-ai-thinks-of-me.png"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        if panel.runModal() == .OK, let url = panel.url {
+            try? data.write(to: url)
+        }
+    }
+
+    private func presentSharePicker() {
+        guard let image = cardImage, let anchorView = shareAnchor.view else { return }
+        let picker = NSSharingServicePicker(items: [image])
+        activePicker = picker
+        picker.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .minY)
     }
 }

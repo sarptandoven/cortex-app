@@ -3264,13 +3264,17 @@ enum RestoreProgress: Equatable {
     case restoring(recovered: Int)
     case done(recovered: Int)
     case empty
+    // Zero-access (E2EE) account whose synced memory is encrypted with a key this Mac doesn't hold
+    // yet. Restore can't apply anything until the user enters their recovery code (A4). Routes the
+    // onboarding restore stage into recovery-code entry rather than a bare "nothing to restore".
+    case needsRecoveryCode
     case failed(String)
 
     /// Captures recovered so far / in total, for the live "N memories recovered" line.
     var recovered: Int {
         switch self {
         case .restoring(let n), .done(let n): return n
-        case .idle, .empty, .failed: return 0
+        case .idle, .empty, .failed, .needsRecoveryCode: return 0
         }
     }
 
@@ -3281,9 +3285,25 @@ enum RestoreProgress: Equatable {
     }
 }
 
+/// Load state for the Constellation / Memory Map graph, so the Map can distinguish a still-loading
+/// or failed fetch from a genuinely empty graph (U-MAP5). Prevents masking a connection failure as
+/// "no memories yet."
+enum GraphLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
+}
+
 @MainActor
 final class AppState: ObservableObject {
     private static let apiKeyDefaultsKey = "localBetaAPIKey.v1"
+    static let hasPreviewedBeforeDefaultsKey = "cortexHasPreviewedBefore.v1"
+    static let recentQueriesDefaultsKey = "cortexRecentAskQueries.v1"
+    static let autoImportExportsEnabledDefaultsKey = "cortexAutoImportExports.v1"
+    static let importedExportIdentitiesDefaultsKey = "cortexImportedExportIdentities.v1"
+    static let exportRequestStateDefaultsKey = "cortexExportRequestState.v1"
+    private static let recentQueriesCap = 8
     private static let mcpAPIKeyDefaultsKey = "localBetaMCPAPIKey.v1"
     static let cloudRefreshTokenKey = "cortexCloudRefreshToken.v1"
     static let cloudAccountEmailDefaultsKey = "cortexCloudAccountEmail.v1"
@@ -3300,6 +3320,31 @@ final class AppState: ObservableObject {
     // local machine key on sign-out. Does not change local-mode behavior.
     static func restoreLocalAPIKey() -> String {
         loadOrCreateAPIKey()
+    }
+
+    // MARK: - Persistence helpers for the new UI state (recent queries, export de-dup, toggles)
+
+    static func loadRecentQueries() -> [String] {
+        UserDefaults.standard.stringArray(forKey: recentQueriesDefaultsKey) ?? []
+    }
+
+    static func loadAutoImportExportsEnabled() -> Bool {
+        // Default-on: return true unless the user has explicitly turned it off.
+        if UserDefaults.standard.object(forKey: autoImportExportsEnabledDefaultsKey) == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: autoImportExportsEnabledDefaultsKey)
+    }
+
+    static func loadImportedExportIdentities() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: importedExportIdentitiesDefaultsKey) ?? [])
+    }
+
+    static func loadExportRequestState() -> [String: Date] {
+        guard let raw = UserDefaults.standard.dictionary(forKey: exportRequestStateDefaultsKey) as? [String: Double] else {
+            return [:]
+        }
+        return raw.mapValues { Date(timeIntervalSince1970: $0) }
     }
 
     private static func loadOrCreateAPIKey() -> String {
@@ -3439,6 +3484,25 @@ final class AppState: ObservableObject {
     @Published var detectedExportSummary: String?
     @Published var importInFlight: Bool = false
     private var detectedExportPaths: [String] = []
+    // P6: identities (path|size|mtime) of exports already imported, so the detector + the Downloads
+    // watcher never re-import the same file. Persisted so it survives relaunch.
+    var importedExportIdentities: Set<String> = AppState.loadImportedExportIdentities()
+    // P1: hosted connector tokens minted for remote-MCP tools, cached per integration id so the same
+    // token the user pasted is what the P2 "test connection" probe authenticates with. In-memory only
+    // (a fresh mint each session is cheap and avoids persisting a live credential).
+    private var mintedHostedConnectorTokens: [String: String] = [:]
+    // C1: true once the bundled sample notes were loaded in local-preview mode. Sample memories are
+    // PREVIEW-ONLY (an ephemeral demo, never the user's real "memory of you"): on sign-in we purge the
+    // sample source BEFORE push-sync so demo captures never pollute a real account. Not persisted.
+    private var previewSampleNotesLoaded = false
+    // C1: the source name the sample notes distill under (they ride the obsidian connector sync).
+    static let sampleNotesSource = "obsidian"
+    // P5: Downloads / ~/CortexImports filesystem watcher. Retained so it stays alive; the debounce
+    // task coalesces bursty write/rename events into a single detect+import pass.
+    private var exportWatchers: [DispatchSourceFileSystemObject] = []
+    private var exportWatcherFDs: [Int32] = []
+    private var exportWatcherDebounceTask: Task<Void, Never>?
+    private var exportWatcherStarted = false
     @Published var mirrorInsight: MirrorInsight?
     @Published private var mirrorDismissedHeadlines: Set<String> = Set(
         UserDefaults.standard.stringArray(forKey: AppState.mirrorDismissedDefaultsKey) ?? []
@@ -3475,7 +3539,62 @@ final class AppState: ObservableObject {
     /// user who wants to try before signing up — dismiss the required-account wall and use the app
     /// fully LOCALLY (loopback engine + bundled sample notes). Never persisted (resets on relaunch),
     /// so it does not weaken the real account requirement; it only removes the reviewability blocker.
-    @Published var localPreviewUnlocked = false
+    @Published var localPreviewUnlocked = false {
+        didSet {
+            // A6: never persist the UNLOCK (that would defeat the required-account gate). Persist only
+            // a "has previewed before" flag so the return-visit sign-in wall can acknowledge it
+            // ("Pick up where you left off, or sign in to sync") instead of reading as a cold first-run.
+            if localPreviewUnlocked, !oldValue {
+                hasPreviewedBefore = true
+                UserDefaults.standard.set(true, forKey: AppState.hasPreviewedBeforeDefaultsKey)
+            }
+        }
+    }
+    /// A6: true once the user has ever used the local-preview escape hatch (persisted). Softens the
+    /// return-visit sign-in wall copy. Does NOT unlock anything — the account requirement still applies.
+    @Published var hasPreviewedBefore: Bool = UserDefaults.standard.bool(forKey: AppState.hasPreviewedBeforeDefaultsKey)
+    // MARK: - Ask history / recent queries (U-ASK2)
+    /// The last handful of Ask queries the user actually ran, most-recent first. Rendered as tappable
+    /// chips beneath the empty/focused Ask field. Appended (deduped, capped) in `search()`; persisted.
+    @Published var recentQueries: [String] = AppState.loadRecentQueries()
+    // MARK: - Memory Map / Constellation load state (U-MAP5)
+    /// Distinguishes "still loading the graph" and "graph failed to load" from a genuinely empty graph,
+    /// so the Map never masks a connection failure as "no memories yet." Set in `loadGraph()`.
+    @Published var graphLoadState: GraphLoadState = .idle
+    /// True while the Constellation overlay is on screen, so `refreshLiveCounts` keeps the graph fresh
+    /// while it is summoned (the overlay owner flips this in present/dismiss).
+    @Published var constellationOverlayVisible: Bool = false
+    // MARK: - Backup in-flight state (U-ONB1 / U-CONN8)
+    /// True while `createBackup()` is running so the onboarding "Back Up Now" row can show a spinner
+    /// and disable itself; `lastBackupError` carries the failure line for the retry banner.
+    @Published var backupInFlight: Bool = false
+    @Published var lastBackupError: String?
+    // MARK: - Tool "test connection" result cache (U-CONN3)
+    /// Last "Test connection" result per integration id, so the Connections rows can show a persisted
+    /// verdict (green/red) instead of losing it the moment the transient test spinner clears. Updated
+    /// in `testToolConnection`.
+    @Published var lastToolTestResults: [String: ConnectionTestResult] = [:]
+    // MARK: - Hosted OAuth broker (P3)
+    /// Providers the HOSTED broker actually has secrets configured for (GET {hosted}/oauth/broker/providers).
+    /// Once populated, "Available soon" connectors whose provider is in this list become one-click via the
+    /// broker with zero app rebuild. Loaded on launch by `loadBrokerProviders()`.
+    @Published var brokerConfiguredProviders: [String] = []
+    // MARK: - Downloads auto-import (P5 / P6)
+    /// Default-on: silently import chat exports the user downloads (direct builds only; the App Store
+    /// sandbox can't read Downloads). Toggled from Connections.
+    @Published var autoImportExportsEnabled: Bool = AppState.loadAutoImportExportsEnabled() {
+        didSet {
+            UserDefaults.standard.set(autoImportExportsEnabled, forKey: AppState.autoImportExportsEnabledDefaultsKey)
+        }
+    }
+    /// P6: per-vendor "requested export at" timestamps, so the import card can flip to a calm
+    /// "Waiting for your <vendor> export…" state after the user taps a per-vendor export button.
+    @Published var exportRequestState: [String: Date] = AppState.loadExportRequestState() {
+        didSet {
+            let raw = exportRequestState.mapValues { $0.timeIntervalSince1970 }
+            UserDefaults.standard.set(raw, forKey: AppState.exportRequestStateDefaultsKey)
+        }
+    }
     @Published var backendLogPath: String = BackendSupervisor.shared.logURL.path
     @Published var updateFeedURL: String = UserDefaults.standard.string(forKey: "updateFeedURL")
         ?? (Bundle.main.object(forInfoDictionaryKey: "CortexUpdateFeedURL") as? String ?? "")
@@ -4025,12 +4144,22 @@ final class AppState: ObservableObject {
         await loadRecallHeadline()
         refreshStoredConnectorConfigState()
         refreshIntegrationStates()
+        // P3: learn which providers the hosted OAuth broker can serve (public endpoint; safe pre-sign-in).
+        // Populate-only for now — the full broker start+exchange path needs local-backend glue that
+        // isn't present, so managedOAuthIsConfigured intentionally does NOT flip on this list. See the
+        // note on managedOAuthIsConfigured for why we degrade honestly to "Available soon."
+        await loadBrokerProviders()
         startConnectedSourceAutoSync()
+        // C1: if the user previewed with sample notes and has now signed in, purge the PREVIEW-ONLY
+        // sample source (tombstone-safe purge-by-source) BEFORE push-sync so demo memories never
+        // pollute their real "memory of you." Then drop the preview flag so the wall returns next launch.
+        await purgePreviewSampleNotesIfNeeded()
         startPushSync()
         startPullSync()
         startSyncProgressPolling()
         startActivityStream()
         startLiveRefresh()
+        startExportWatcher()
         activateQuickCaptureIfEnabled()
         presentOnboardingIfNeeded()
         // Fire a one-time "proof of life" notch so a new user actually sees the notch channel work
@@ -4697,6 +4826,10 @@ final class AppState: ObservableObject {
         askError = nil
         status = "Searching..."
         defer { isBusy = false }
+        // U-ASK2: record the query in the recent-query history (most-recent first, deduped, capped),
+        // so the Ask field can offer tappable recents. Recorded on intent (the moment we run it), not
+        // gated on a successful answer, so a query the user cares about isn't lost to a transient error.
+        recordRecentQuery(q)
         do {
             let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
             let data = try await request(path: "/v1/ask?query=\(encoded)&limit=12", method: "GET")
@@ -4733,14 +4866,45 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// U-ASK2: prepend a query to the recent-query history, deduping (a re-run bubbles to the top) and
+    /// capping the list, then persist. Trims whitespace and ignores empties.
+    func recordRecentQuery(_ query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var updated = recentQueries.filter { $0.caseInsensitiveCompare(trimmed) != .orderedSame }
+        updated.insert(trimmed, at: 0)
+        if updated.count > AppState.recentQueriesCap {
+            updated = Array(updated.prefix(AppState.recentQueriesCap))
+        }
+        recentQueries = updated
+        UserDefaults.standard.set(updated, forKey: AppState.recentQueriesDefaultsKey)
+    }
+
+    /// Clear the persisted Ask history (offered as a small "Clear" affordance under the recents).
+    func clearRecentQueries() {
+        recentQueries = []
+        UserDefaults.standard.removeObject(forKey: AppState.recentQueriesDefaultsKey)
+    }
+
     func loadGraph() async {
+        // U-MAP5: mark loading on the FIRST load so the Map shows a spinner instead of a false "empty";
+        // a background refresh (graph already loaded) leaves the state alone to avoid flicker.
+        if graphLoadState != .loaded { graphLoadState = .loading }
         do {
             let data = try await request(path: "/v1/graph?limit=160", method: "GET")
             let graph = try JSONDecoder().decode(GraphResponse.self, from: data)
             graphNodes = graph.nodes
             graphEdges = graph.edges
             graphAnalysis = graph.analysis
+            graphLoadState = .loaded
         } catch {
+            // Only surface a hard failure state if we have nothing to show; a transient failure over a
+            // previously-loaded graph keeps the last-good graph rather than blanking it to an error.
+            if graphNodes.isEmpty {
+                graphLoadState = .failed(CortexRecoveryText.failureStatus("Graph", error: error))
+            } else {
+                graphLoadState = .loaded
+            }
             status = CortexRecoveryText.failureStatus("Graph", error: error)
         }
     }
@@ -5003,19 +5167,28 @@ final class AppState: ObservableObject {
     func testToolConnection(_ integration: AIIntegration) async -> ConnectionTestResult {
         testingConnectionID = integration.id
         defer { testingConnectionID = nil }
+        let result = await runToolConnectionTest(integration)
+        // U-CONN3: persist the verdict so rows can show green/red after the spinner clears.
+        lastToolTestResults[integration.id] = result
+        return result
+    }
+
+    private func runToolConnectionTest(_ integration: AIIntegration) async -> ConnectionTestResult {
         do {
             switch integration.connectionKind {
             case .remoteMCP:
-                // The live path for web tools is the hosted connector, not a local pack. We can only
-                // honestly confirm the user is set up to be reachable: signed in with a sync target.
+                // P2: the live path for web tools is the hosted /mcp connector. A real test does an MCP
+                // initialize + tools/list against {base}/mcp with the SAME hosted token connectRemoteMCP
+                // hands out — only green on a 200 with tools, and the exact status/reason on failure.
                 guard isSignedIn else {
                     return ConnectionTestResult(ok: false, message: "Sign in and sync so \(integration.name) can reach your memory")
                 }
-                let base = cloudSyncBaseURL.isEmpty ? AppState.defaultHostedURL : cloudSyncBaseURL
-                guard !base.trimmingCharacters(in: CharacterSet(charactersIn: "/ ")).isEmpty else {
+                let base = (cloudSyncBaseURL.isEmpty ? AppState.defaultHostedURL : cloudSyncBaseURL)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+                guard !base.isEmpty else {
                     return ConnectionTestResult(ok: false, message: "Set up cloud sync so \(integration.name) has a connector to reach")
                 }
-                return ConnectionTestResult(ok: true, message: "Connector details ready. Paste them into \(integration.name) to go live")
+                return await probeRemoteMCPConnector(base: base, integration: integration)
             case .mcpConfig:
                 // Honest per-tool test: a generic self-ping used to report "Connected" even when
                 // THIS tool's config was missing or unverified. Check the integration's own state
@@ -5051,6 +5224,76 @@ final class AppState: ObservableObject {
             let detail = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
             return ConnectionTestResult(ok: false, message: detail.isEmpty ? generic : detail)
         }
+    }
+
+    /// P2: honestly probe the HOSTED remote-MCP connector. Mints (or reuses) the same hosted token the
+    /// user would paste, then POSTs a real MCP `initialize` followed by `tools/list` to {base}/mcp with
+    /// `Authorization: Bearer <token>`. Only reports success on a 200 that returns tools — otherwise it
+    /// surfaces the exact status/reason (401 = key not accepted, offline = unreachable), never a false
+    /// green. Mirrors the honest self-ping the mcpConfig/deeplink branches already do.
+    private func probeRemoteMCPConnector(base: String, integration: AIIntegration) async -> ConnectionTestResult {
+        // Reuse a token minted this session if present; otherwise mint one now.
+        // (Kept as two statements: `await` cannot appear on the right of `??`, which builds an autoclosure.)
+        var token = mintedHostedConnectorTokens[integration.id]
+        if token == nil || token?.isEmpty == true {
+            token = await mintHostedConnectorToken(base: base, integration: integration)
+        }
+        guard let token, !token.isEmpty else {
+            return ConnectionTestResult(
+                ok: false,
+                message: "Couldn't mint a hosted connector key yet. The hosted connector may not be enabled for your account."
+            )
+        }
+        guard let url = URL(string: "\(base)/mcp") else {
+            return ConnectionTestResult(ok: false, message: "The hosted connector URL is invalid.")
+        }
+
+        func rpc(_ body: [String: Any]) async -> (status: Int, json: [String: Any]?)? {
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.timeoutInterval = 20
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            guard let (data, response) = try? await URLSession.shared.data(for: req),
+                  let http = response as? HTTPURLResponse else {
+                return nil
+            }
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            return (http.statusCode, json)
+        }
+
+        // 1. initialize
+        let initBody: [String: Any] = [
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": [
+                "protocolVersion": "2025-06-18",
+                "capabilities": [:],
+                "clientInfo": ["name": integration.id, "version": "1.0"],
+            ],
+        ]
+        guard let initResult = await rpc(initBody) else {
+            return ConnectionTestResult(ok: false, message: "Couldn't reach the hosted connector at \(base). Check your connection and that the hosted server is live.")
+        }
+        guard initResult.status == 200 else {
+            let reason = initResult.status == 401
+                ? "the connector key was not accepted (401). The hosted connector may not be live for your account yet."
+                : "the hosted connector returned HTTP \(initResult.status)."
+            return ConnectionTestResult(ok: false, message: "\(integration.name) could not connect: \(reason)")
+        }
+
+        // 2. tools/list — confirm real tools are advertised.
+        let listBody: [String: Any] = ["jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": [:]]
+        guard let listResult = await rpc(listBody), listResult.status == 200 else {
+            return ConnectionTestResult(ok: false, message: "\(integration.name) connected but the tool list was unavailable. Try again in a moment.")
+        }
+        let tools = (listResult.json?["result"] as? [String: Any])?["tools"] as? [Any]
+        let count = tools?.count ?? 0
+        guard count > 0 else {
+            return ConnectionTestResult(ok: false, message: "\(integration.name) connected but no Cortex tools are advertised yet.")
+        }
+        return ConnectionTestResult(ok: true, message: "\(integration.name) is live: \(count) Cortex tool\(count == 1 ? "" : "s") reachable over the hosted connector.")
     }
 
     /// Count the function objects in a /v1/tools/schema?format=openai payload without decoding each of
@@ -5766,6 +6009,9 @@ final class AppState: ObservableObject {
                 return
             }
             syncedSomething = true
+            // C1: remember that PREVIEW-ONLY sample memories now exist locally, so a subsequent
+            // sign-in purges them before push-sync (they must never pollute a real account).
+            previewSampleNotesLoaded = true
 
             // 4. Mark the sample notes as a connected local notes source so onboarding advances
             //    and the "first source" bookkeeping matches the folder-pick path.
@@ -5787,6 +6033,28 @@ final class AppState: ObservableObject {
         } catch {
             status = CortexRecoveryText.failureStatus("Sample notes", error: error)
         }
+    }
+
+    /// C1: purge the PREVIEW-ONLY sample-notes source when a preview session transitions into a real
+    /// signed-in account. Runs BEFORE push-sync (called from bootstrap) so the demo captures are gone
+    /// with local tombstones — the same tombstone-safe purge-by-source path a manual "remove source"
+    /// uses — before anything is pushed to the account. Idempotent + a no-op unless a preview actually
+    /// loaded sample notes and the user is now signed in.
+    func purgePreviewSampleNotesIfNeeded() async {
+        guard previewSampleNotesLoaded, isSignedIn else { return }
+        // Clear the flag first so a failed purge doesn't loop forever on every bootstrap; the tombstone
+        // path is idempotent, and leaving demo notes is a far smaller harm than blocking sign-in.
+        previewSampleNotesLoaded = false
+        localPreviewUnlocked = false
+        // DATA-SAFETY (critical): sample notes distill under the SHARED "obsidian" source, so
+        // purgeSource("obsidian") would tombstone EVERY "obsidian" memory — including a real notes
+        // folder the user connected in the same session. loadSampleNotes never persists a vault
+        // bookmark, so `hasConnectedObsidianVault` is true ONLY when the user connected a real folder.
+        // If one is connected we must NOT purge: a few leftover demo notes are a vastly smaller harm
+        // than irreversibly deleting the user's real notes memories (and pushing that delete to their
+        // account + other devices). Only purge when the sample notes are the sole "obsidian" data.
+        guard !hasConnectedObsidianVault else { return }
+        _ = await purgeSource(AppState.sampleNotesSource)
     }
 
     private func syncConfiguredDirectConnectorsIfAvailable(automatic: Bool) async {
@@ -5827,9 +6095,10 @@ final class AppState: ObservableObject {
     /// Import an export from a local path (POST /v1/imports). Imported content is trusted, so it
     /// becomes usable immediately; on success we mark the first-source-connected flag so onboarding
     /// can advance, and refresh memory + import history.
-    func importFromPath(_ path: String, sourceHint: String = "", automatic: Bool = false) async {
+    @discardableResult
+    func importFromPath(_ path: String, sourceHint: String = "", automatic: Bool = false) async -> Bool {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !importInFlight else { return }
+        guard !trimmed.isEmpty, !importInFlight else { return false }
         importInFlight = true
         if !automatic { isBusy = true }
         beginMenuBarWork()
@@ -5927,6 +6196,19 @@ final class AppState: ObservableObject {
         } catch {
             status = CortexRecoveryText.failureStatus("Import", error: error)
         }
+        // #5: a successful export import satisfies any "Waiting for your export…" banner. Clear the
+        // matching vendor (keys are display-cased "ChatGPT"/"Claude"/"Gemini") derived from the source
+        // hint so the banner never re-appears after the file lands; if the vendor is unknown (auto
+        // detect / manual pick), a successful import still means an export arrived, so clear all.
+        if importSucceeded, !exportRequestState.isEmpty {
+            let hint = sourceHint.lowercased()
+            if let matched = exportRequestState.keys.first(where: { hint.contains($0.lowercased()) }) {
+                exportRequestState[matched] = nil
+            } else {
+                exportRequestState.removeAll()
+            }
+        }
+        return importSucceeded
     }
 
     /// App Store (sandboxed) helper: copy a user-picked import file/folder into the app
@@ -5964,9 +6246,15 @@ final class AppState: ObservableObject {
         do {
             let data = try await request(path: "/v1/imports/detect", method: "GET")
             let result = try JSONDecoder().decode(ExportDetectResponse.self, from: data)
-            detectedExportPaths = result.candidates.map { $0.path }
-            if let first = result.candidates.first {
-                let total = result.candidates.reduce(0) { $0 + $1.records_found }
+            // P6: skip candidates whose file identity was already imported so the pill and the
+            // one-tap import never re-surface a file we already ingested (also keeps the watcher safe).
+            let fresh = result.candidates.filter { candidate in
+                guard let identity = exportIdentity(forPath: candidate.path) else { return true }
+                return !importedExportIdentities.contains(identity)
+            }
+            detectedExportPaths = fresh.map { $0.path }
+            if let first = fresh.first {
+                let total = fresh.reduce(0) { $0 + $1.records_found }
                 let svc = first.service.replacingOccurrences(of: "chatgpt", with: "ChatGPT").capitalized
                 detectedExportSummary = "Found a \(svc) export (\(total) conversation\(total == 1 ? "" : "s")) in your Downloads."
             } else {
@@ -5986,9 +6274,89 @@ final class AppState: ObservableObject {
         let paths = detectedExportPaths
         guard !paths.isEmpty else { return }
         Task {
-            for path in paths { await importFromPath(path, sourceHint: "") }
+            for path in paths {
+                // P6: never re-import a file whose identity is already recorded; record it after a
+                // successful import so a later detect/watcher pass skips it.
+                let identity = exportIdentity(forPath: path)
+                if let identity, importedExportIdentities.contains(identity) { continue }
+                // #3: record the identity ONLY if the import actually succeeded, so a no-op import
+                // (skip/error) never permanently suppresses a real later import of that same file.
+                let imported = await importFromPath(path, sourceHint: "")
+                if imported, let identity {
+                    importedExportIdentities.insert(identity)
+                    UserDefaults.standard.set(Array(importedExportIdentities),
+                                              forKey: AppState.importedExportIdentitiesDefaultsKey)
+                }
+            }
             detectedExportPaths = []
         }
+    }
+
+    // MARK: - Downloads auto-import watcher (P5)
+    /// Watch ~/Downloads and ~/CortexImports so a chat export the user downloads is imported with no
+    /// click AFTER the download. Direct builds only (the App Store sandbox cannot read Downloads);
+    /// de-duped via importedExportIdentities so any one file imports at most once. This is the real
+    /// ceiling for ChatGPT/Claude/Gemini (no import API): the user still taps the vendor's export
+    /// button and waits for the emailed archive, but everything after the download is automatic.
+    func startExportWatcher() {
+        guard !DistributionMode.isAppStore, !exportWatcherStarted else { return }
+        exportWatcherStarted = true
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let dirs = [home.appendingPathComponent("Downloads", isDirectory: true),
+                    home.appendingPathComponent("CortexImports", isDirectory: true)]
+        for dir in dirs {
+            guard FileManager.default.fileExists(atPath: dir.path) else { continue }
+            let fd = open(dir.path, O_EVTONLY)
+            guard fd >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: fd, eventMask: [.write, .rename, .extend], queue: DispatchQueue.main)
+            source.setEventHandler { [weak self] in
+                Task { @MainActor in self?.scheduleExportAutoImport() }
+            }
+            source.setCancelHandler { close(fd) }
+            source.resume()
+            exportWatchers.append(source)
+            exportWatcherFDs.append(fd)
+        }
+    }
+
+    func stopExportWatcher() {
+        exportWatcherDebounceTask?.cancel()
+        exportWatcherDebounceTask = nil
+        for source in exportWatchers { source.cancel() }
+        exportWatchers.removeAll()
+        exportWatcherFDs.removeAll()
+        exportWatcherStarted = false
+    }
+
+    /// Debounced reaction to a Downloads/CortexImports change: coalesce bursty write/rename events,
+    /// re-detect (which also refreshes the pill), then silently import any NEW chat export.
+    private func scheduleExportAutoImport() {
+        exportWatcherDebounceTask?.cancel()
+        exportWatcherDebounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let self, !Task.isCancelled else { return }
+            await self.detectAvailableExports()
+            guard self.autoImportExportsEnabled, !DistributionMode.isAppStore else { return }
+            for path in self.detectedExportPaths {
+                guard let identity = self.exportIdentity(forPath: path) else { continue }
+                if self.importedExportIdentities.contains(identity) { continue }
+                // #3: only mark the file imported if the import actually succeeded, so a transient
+                // failure doesn't permanently suppress auto-importing it once it's readable.
+                guard await self.importFromPath(path, sourceHint: "", automatic: true) else { continue }
+                self.importedExportIdentities.insert(identity)
+                UserDefaults.standard.set(Array(self.importedExportIdentities),
+                                          forKey: AppState.importedExportIdentitiesDefaultsKey)
+            }
+        }
+    }
+
+    /// A cheap stable identity for an export file (path + size + mtime). Nil if unreadable.
+    private func exportIdentity(forPath path: String) -> String? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        let mtime = Int((attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)
+        return "\(path)|\(size)|\(mtime)"
     }
 
     func connectLocalNotesFolder(_ connector: SourceConnectorCatalogItem, chooseNew: Bool = false) {
@@ -6107,6 +6475,15 @@ final class AppState: ObservableObject {
             return false
         }
         let provider = setup.oauth_provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        // P3 HONESTY GUARD: we deliberately do NOT return true just because `provider` is in
+        // `brokerConfiguredProviders`. The hosted broker can build the authorize URL, but completing
+        // the flow needs the LOCAL backend (standalone_server.complete_managed_oauth) to exchange the
+        // callback code through {hosted}/oauth/broker/exchange — the local backend has no such path
+        // today and would instead try a direct provider exchange it lacks the client secret for. Until
+        // that local-backend glue exists, flipping this on the broker list would produce a tile that
+        // opens consent and then dead-ends. So we keep the honest "Available soon" and gate one-click
+        // strictly on a real Info.plist/env client_id below. `brokerConfiguredProviders` is populated
+        // for future use (and to inform copy) but is not load-bearing here.
         guard !configuredManagedOAuthClientID(provider: provider).isEmpty else {
             return false
         }
@@ -6323,7 +6700,7 @@ final class AppState: ObservableObject {
     /// Pair a browser extension: mint a fresh read-only token via /v1/pair and surface the
     /// connection info for the user to paste into the extension. Read-only by default; the user
     /// can widen scope later. Phase 9 of the outbound plan.
-    func pairBrowserExtension(label: String = "Browser extension") {
+    func pairBrowserExtension(label: String = "Browser extension", onPaired: (@MainActor () -> Void)? = nil) {
         guard !browserExtensionPairingInFlight else { return }
         Task {
             browserExtensionPairingInFlight = true
@@ -6336,6 +6713,8 @@ final class AppState: ObservableObject {
                 status = "Browser extension paired. Token copied to clipboard."
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(pairing.token, forType: .string)
+                // #6: confirm ONLY after the clipboard write actually happened, never eagerly on tap.
+                onPaired?()
                 let alert = NSAlert()
                 alert.messageText = "Browser extension paired"
                 alert.informativeText = "A read-only access token has been copied to your clipboard.\n\nIn the Cortex extension's Options:\n  • Base URL: \(pairing.base_url)\n  • Token: paste from clipboard\n\nThen click ◆ Cortex on a supported site to inject your cited context."
@@ -6350,7 +6729,7 @@ final class AppState: ObservableObject {
     /// Copy universal-API connection details for developers: mints a read-only token and puts the
     /// base URL, tool-schema endpoint, a runnable curl example, and the MCP endpoint on the
     /// clipboard so any function-calling app or the Cortex SDK can connect. Phase 9 connection UX.
-    func copyUniversalAPIConnectionInfo() {
+    func copyUniversalAPIConnectionInfo(onCopied: (@MainActor () -> Void)? = nil) {
         Task {
             do {
                 status = "Preparing API connection info..."
@@ -6377,6 +6756,8 @@ final class AppState: ObservableObject {
                 """
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(info, forType: .string)
+                // #6: confirm ONLY after the clipboard write actually happened, never eagerly on tap.
+                onCopied?()
                 let alert = NSAlert()
                 alert.messageText = "API connection info copied"
                 alert.informativeText = "A read-only token plus connection details (base URL, tool-schema endpoint, a curl example, and the MCP endpoint) were copied to your clipboard. Paste them into your app, the Cortex SDK, or an MCP client."
@@ -7432,9 +7813,18 @@ final class AppState: ObservableObject {
             status = "\(integration.name) install link is unavailable. Copied the config to paste instead."
             return
         }
-        NSWorkspace.shared.open(url)
-        markIntegrationConfigCopied(integration)
-        status = "Opening \(integration.name) to confirm the Cortex connection. Approve the prompt and you're live."
+        // P9: AWAIT token registration before opening the deeplink. The deeplink URL embeds this tool's
+        // MCP token, and Cursor/VS Code can fire its first call the instant the user approves — if the
+        // local backend hasn't registered the token yet, that first call 401s. Registering first (the
+        // backend upserts by token, so this is idempotent) eliminates the race. The deeplink URL was
+        // already built above with the same token, so registering here does not change what we open.
+        status = "Preparing \(integration.name) connection…"
+        Task { @MainActor in
+            _ = await registerMCPToken(for: integration)
+            NSWorkspace.shared.open(url)
+            markIntegrationConfigCopied(integration)
+            status = "Opening \(integration.name) to confirm the Cortex connection. Approve the prompt and you're live."
+        }
     }
 
     /// Terminates any running instances of the integration's apps and relaunches the first one that
@@ -7502,23 +7892,128 @@ final class AppState: ObservableObject {
             return
         }
         let connectorURL = "\(base)/mcp"
-        let token = AppState.loadOrCreateMCPToken(for: integration.id)
-        registerMCPTokenInBackground(for: integration)
-        // A SHORT connection-details string: a credential, not memory. Labeled so the user never
-        // mistakes it for their data.
-        let details = """
-        Cortex connector for \(integration.name) (a secure connection, not your data)
+        status = "Preparing your \(integration.name) connector…"
+        Task {
+            // P1: mint the connector token against the HOSTED backend (not the local endpoint), so the
+            // key actually authenticates against the hosted /mcp the web tool reaches. Falls back to a
+            // locally-registered token only if the mint fails, and says so, rather than silently handing
+            // out a key that would 401.
+            let hostedToken = await mintHostedConnectorToken(base: base, integration: integration)
+            let token = hostedToken ?? AppState.loadOrCreateMCPToken(for: integration.id)
+            if hostedToken == nil {
+                // Keep the local path working (older/self-hosted setups) but be honest about it.
+                registerMCPTokenInBackground(for: integration)
+            }
+            // A SHORT connection-details string: a credential, not memory. Labeled so the user never
+            // mistakes it for their data.
+            let details = """
+            Cortex connector for \(integration.name) (a secure connection, not your data)
 
-        Connector URL: \(connectorURL)
-        Connector key: \(token)
-        """
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(details, forType: .string)
-        markIntegrationConfigCopied(integration)
-        if let urlString = integration.browserURL, let url = URL(string: urlString) {
-            NSWorkspace.shared.open(url)
+            Connector URL: \(connectorURL)
+            Connector key: \(token)
+            """
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(details, forType: .string)
+            markIntegrationConfigCopied(integration)
+            if let urlString = integration.browserURL, let url = URL(string: urlString) {
+                NSWorkspace.shared.open(url)
+            }
+            if hostedToken != nil {
+                status = "Add Cortex as a connector in \(integration.name): paste the link and key (a secure connection, not your data)."
+            } else {
+                status = "Add Cortex as a connector in \(integration.name): paste the link and key. Note: the hosted connector may not be enabled yet, so this key can only reach a self-hosted Cortex."
+            }
         }
-        status = "Add Cortex as a connector in \(integration.name): paste the link and key (this is a secure connection, not your data). Note: this needs the hosted connector enabled, which may not be live yet."
+    }
+
+    /// P3: fetch the list of providers the HOSTED OAuth broker has secrets configured for and cache it
+    /// in `brokerConfiguredProviders`. GET {hosted}/oauth/broker/providers is PUBLIC, so this works
+    /// regardless of sign-in state (hostedRequest simply omits the Bearer when no token is present).
+    /// Never throws: on any failure the list is left as-is (empty), so connectors stay at the honest
+    /// "Available soon" state rather than showing a broken one-click tile.
+    func loadBrokerProviders() async {
+        let base = (cloudSyncBaseURL.isEmpty ? AppState.defaultHostedURL : cloudSyncBaseURL)
+        do {
+            let data = try await hostedRequest(base: base, path: "/oauth/broker/providers", method: "GET")
+            guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let providers = obj["providers"] as? [String] else {
+                return
+            }
+            let normalized = providers
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+            brokerConfiguredProviders = Array(Set(normalized)).sorted()
+        } catch {
+            // Leave brokerConfiguredProviders untouched; connectors stay honestly "Available soon".
+        }
+    }
+
+    /// P1/P7: mint a hosted MCP connector token for a remote-MCP tool. POSTs the signed-in user's
+    /// cxs_ access token to {base}/v1/integrations/tokens (audience=mcp, per-tool surface) and returns
+    /// the hosted-issued token (cached per integration id so the P2 probe uses the same key). Returns
+    /// nil on any failure so callers can degrade honestly to the local token. Never throws.
+    func mintHostedConnectorToken(base: String, integration: AIIntegration) async -> String? {
+        let normalizedBase = base.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        guard !normalizedBase.isEmpty, isSignedIn else { return nil }
+        let body: [String: Any] = [
+            "audience": "mcp",
+            "label": "\(integration.name) connector",
+            "scopes": ["read"],
+            "surface": mcpSurface(for: integration),
+        ]
+        do {
+            let data = try await hostedRequest(base: normalizedBase, path: "/v1/integrations/tokens", method: "POST", body: body)
+            guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let token = (obj["token"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !token.isEmpty else {
+                return nil
+            }
+            mintedHostedConnectorTokens[integration.id] = token
+            return token
+        } catch {
+            return nil
+        }
+    }
+
+    /// P7: the tool-advertisement surface a minted connector token should carry. ChatGPT gets the
+    /// trimmed 6-tool "chatgpt" surface it expects; every other remote client (Claude web, generic
+    /// remote MCP, Cursor-over-remote) gets the fuller "core" surface.
+    private func mcpSurface(for integration: AIIntegration) -> String {
+        integration.id == "chatgpt" ? "chatgpt" : "core"
+    }
+
+    /// Low-level authenticated POST/GET against the HOSTED backend (`base`) using the cxs_ access
+    /// token, refreshing it once on a 401. Separate from `request`/`performRequest` (which target the
+    /// LOCAL engine) so hosted connector/broker calls don't ride the local Bearer. Never used for the
+    /// memory data plane — only connector-token mint (P1) and broker calls (P3).
+    func hostedRequest(base: String, path: String, method: String = "POST", body: [String: Any]? = nil) async throws -> Data {
+        func send() async throws -> Data {
+            guard let url = URL(string: base.trimmingCharacters(in: CharacterSet(charactersIn: "/ ")) + path) else {
+                throw URLError(.badURL)
+            }
+            var req = URLRequest(url: url)
+            req.httpMethod = method
+            req.timeoutInterval = 30
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if !cloudAccessToken.isEmpty {
+                req.setValue("Bearer \(cloudAccessToken)", forHTTPHeaderField: "Authorization")
+            }
+            if let body { req.httpBody = try JSONSerialization.data(withJSONObject: body) }
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                throw CortexHTTPError(statusCode: http.statusCode, responseBody: String(data: data, encoding: .utf8))
+            }
+            return data
+        }
+        do {
+            return try await send()
+        } catch {
+            // Refresh the cxs_ token once on a 401 and retry (mirrors cloudRequest).
+            if isUnauthorizedError(error), await refreshCloudAccessToken() {
+                return try await send()
+            }
+            throw error
+        }
     }
 
     /// Builds and copies the exact terminal command that registers Cortex with a CLI-managed
@@ -8367,18 +8862,28 @@ final class AppState: ObservableObject {
     }
 
     func createBackup() {
+        // U-ONB1 / U-CONN8: expose in-flight + error state so the onboarding "Back Up Now" row and the
+        // Connections backup button can show a spinner and a "Try again" banner instead of a silent no-op.
+        guard !backupInFlight else { return }
+        backupInFlight = true
+        lastBackupError = nil
         Task {
+            defer { backupInFlight = false }
             do {
                 let data = try await request(path: "/v1/backups", method: "POST")
                 let backup = try JSONDecoder().decode(BackupResponse.self, from: data)
                 lastBackupPath = backup.backup_path
+                lastBackupError = nil
                 markBackupDecision("backed-up")
                 status = "Backup saved"
                 await loadDiagnostics()
                 await loadReliability()
+                // loadTrust reloads dataLifecycleReport so the "Last backup <relative>" line refreshes.
                 await loadTrust()
             } catch {
-                status = CortexRecoveryText.failureStatus("Backup", error: error)
+                let message = CortexRecoveryText.failureStatus("Backup", error: error)
+                lastBackupError = message
+                status = message
             }
         }
     }
@@ -8589,6 +9094,102 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// U-REV4: edit-before-approve. When `editedContent` is nil this is exactly the normal approve.
+    /// When non-nil, the user rewrote the memory before accepting it: there is no server-side capture
+    /// edit, so we save the edited text as a fresh (trusted) capture and archive the original review
+    /// item, so the corrected version is what lands in memory — never the un-edited draft.
+    func approveCapture(_ capture: CaptureItem, editedContent: String?) async {
+        let edited = editedContent?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let edited, !edited.isEmpty else {
+            // Normal path — reuse the existing single-item approve.
+            approveCapture(capture)
+            return
+        }
+        guard !inFlightCaptureIds.contains(capture.id) else { return }
+        inFlightCaptureIds.insert(capture.id)
+        captureActionErrors[capture.id] = nil
+        defer { inFlightCaptureIds.remove(capture.id) }
+        do {
+            // 1. Save the corrected text as a new capture under the same source.
+            let title = capture.title ?? String(edited.prefix(60))
+            _ = try await request(
+                path: "/v1/captures",
+                method: "POST",
+                body: ["content": edited, "source": capture.source, "title": title]
+            )
+            // 2. Archive the original draft so the un-edited version never enters memory.
+            _ = try await request(path: "/v1/captures/\(capture.id)/archive", method: "POST")
+            withAnimation(.easeOut(duration: 0.25)) {
+                inbox.removeAll { $0.id == capture.id }
+            }
+            status = "Saved your edited memory"
+            markFirstMemoryReviewed(capture: capture)
+            await drainQueuedMemoryJobs(automatic: true)
+            await loadInbox()
+            await loadRecent()
+            await loadStats()
+            await loadGraph()
+            await loadReview()
+            await loadProductLoop()
+            await loadDiagnostics()
+            await loadReliability()
+            await loadTrust()
+            await loadMirrorInsight()
+            await loadProfile()
+        } catch {
+            captureActionErrors[capture.id] = CortexRecoveryText.failureStatus("Save & approve", error: error)
+            status = CortexRecoveryText.failureStatus("Save & approve", error: error)
+        }
+    }
+
+    /// U-REV5: archive EVERY pending capture from one source in a single action (mirrors
+    /// `approveAllCaptures(source:)`). There is no bulk-archive endpoint, so this archives the known
+    /// pending captures for the source one by one (the same per-item path the row buttons use), then
+    /// refreshes every affected surface. Returns the number archived, or nil on total failure.
+    @discardableResult
+    func archiveAllCaptures(source: String) async -> Int? {
+        let trimmedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Collect the pending captures for this source from the loaded inbox (deduped by id).
+        var targets: [CaptureItem] = []
+        var seen = Set<String>()
+        for capture in inbox where capture.source == trimmedSource {
+            if seen.insert(capture.id).inserted { targets.append(capture) }
+        }
+        guard !targets.isEmpty else {
+            status = "Nothing from \(SourceDisplayName.label(trimmedSource)) to archive."
+            return 0
+        }
+        targets.forEach { inFlightCaptureIds.insert($0.id) }
+        defer { targets.forEach { inFlightCaptureIds.remove($0.id) } }
+        var archived = 0
+        var failed = 0
+        for capture in targets {
+            do {
+                _ = try await request(path: "/v1/captures/\(capture.id)/archive", method: "POST")
+                captureActionErrors[capture.id] = nil
+                archived += 1
+            } catch {
+                captureActionErrors[capture.id] = CortexRecoveryText.failureStatus("Archive", error: error)
+                failed += 1
+            }
+        }
+        if failed == 0 {
+            status = "Archived \(archived) from \(SourceDisplayName.label(trimmedSource))."
+        } else {
+            status = "Archived \(archived), \(failed) failed. See the item\(failed == 1 ? "" : "s") for details"
+        }
+        await loadInbox()
+        await loadRecent()
+        await loadStats()
+        await loadGraph()
+        await loadReview()
+        await loadProductLoop()
+        await loadDiagnostics()
+        await loadReliability()
+        await loadTrust()
+        return failed == targets.count ? nil : archived
+    }
+
     func deleteMemory(_ memory: MemoryItem) {
         guard !inFlightMemoryIds.contains(memory.id) else { return }
         inFlightMemoryIds.insert(memory.id)
@@ -8683,8 +9284,15 @@ final class AppState: ObservableObject {
     }
 
     func deleteAllUserData() {
-        Task {
-            do {
+        Task { _ = await performLocalDataWipe() }
+    }
+
+    /// Awaitable core of the local data wipe. Returns true iff the server-side DELETE succeeded, so
+    /// callers that must report honestly (e.g. delete-account with "also delete local memory on this
+    /// Mac") can branch their success copy on the real outcome instead of assuming it worked.
+    @discardableResult
+    func performLocalDataWipe() async -> Bool {
+        do {
                 _ = try await request(path: "/v1/user-data?include_backups=true", method: "DELETE")
                 inbox = []
                 recent = []
@@ -8721,10 +9329,11 @@ final class AppState: ObservableObject {
                 await loadTrust()
                 // Onboarding progress was reset above; bring the user back to first-run.
                 presentOnboardingIfNeeded()
+                return true
             } catch {
                 status = CortexRecoveryText.failureStatus("Delete all data", error: error)
+                return false
             }
-        }
     }
 
     func openExport(format: String) {
@@ -9167,12 +9776,13 @@ struct CortexView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             // The bottom Live Activity ticker floats above the tab content (self-hiding when idle).
-            // As an overlay it never shifts the tab layout, and hit-testing is off so it can't steal
-            // clicks from the content beneath it.
+            // As an overlay it never shifts the tab layout. Hit-testing stays ON so the ticker card
+            // is tappable (U-LIVE4: tap opens the relevant tab); the surrounding frame is transparent
+            // with no contentShape, so empty-area clicks still pass straight through to the content
+            // beneath and only the bounded card rect captures taps.
             .overlay(alignment: .bottom) {
                 LiveActivityTicker(state: state)
                     .padding(.bottom, 12)
-                    .allowsHitTesting(false)
             }
             footer
         }

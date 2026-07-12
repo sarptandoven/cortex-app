@@ -250,10 +250,15 @@ struct OnboardingView: View {
             // The connect-a-tool card carries this beat's emphasized (wax) call to action in-content;
             // the footer keeps a quiet forward path so a user who wants to wire tools later isn't
             // trapped on the payoff screen.
+            //
+            // U-ONB4: the old "Do this later" primary was self-defeating — it framed the payoff beat's
+            // forward path as skipping the payoff. The neutral "Continue" simply advances the
+            // walkthrough (the in-content hero card is the connect affordance), so moving on never
+            // reads as opting out.
             CortexButton(
-                title: state.connectedAIIntegrationCount > 0 ? "Continue" : "Do this later",
+                title: "Continue",
                 systemImage: "chevron.right",
-                role: state.connectedAIIntegrationCount > 0 ? .primary : .ghost,
+                role: state.connectedAIIntegrationCount > 0 ? .primary : .secondary,
                 size: .large
             ) {
                 advance()
@@ -855,6 +860,16 @@ private struct OnboardingWelcomeBackStep: View {
             await state.loadGraph()
             await state.loadRecallHeadline()
         }
+        // U-ONB3: keep the restored-graph preview live. A large restore applies captures over time,
+        // and the pull-sync surfaces through the same connector sync set; re-pull the graph + stats as
+        // that transitions so the "your memory is restored" preview grows instead of freezing on the
+        // first snapshot.
+        .onChange(of: state.connectorSyncingIDs) { _ in
+            Task {
+                await state.loadStats()
+                await state.loadGraph()
+            }
+        }
     }
 
     private var reconnectToolsCard: some View {
@@ -1049,6 +1064,30 @@ private struct OnboardingAddMemoryStep: View {
         state.sourceConnectorCatalog.first { $0.id == "obsidian" }
     }
 
+    /// U-ONB6: the notes-folder path must always connect IN onboarding, never bounce OUT to
+    /// Connections. The real folder-connect (`connectLocalNotesFolder`) keys only off `id == "obsidian"`
+    /// and runs its own folder picker + sync, so when the catalog hasn't surfaced an obsidian entry we
+    /// hand it a minimal synthesized one rather than routing away. All catalog fields but id/name are
+    /// optional, so this is a faithful stand-in for the local notes-folder connector.
+    private var resolvedNotesConnector: SourceConnectorCatalogItem {
+        obsidianConnector ?? SourceConnectorCatalogItem(
+            id: "obsidian",
+            name: "Notes folder",
+            category: nil, auth: nil, live_status: nil, readiness_status: nil,
+            scopes: nil, permissions_required: nil, first_100_note: nil, notes: nil,
+            import_status: nil, export_status: nil, source_ids: nil, source_aliases: nil,
+            import_label: nil, supports_import: nil, formats: nil, primary_beta: nil,
+            beta_status: nil, primary_beta_path: nil, show_in_primary_ui: nil,
+            baseline_10k: nil, service_baseline: nil, connection_setup: nil
+        )
+    }
+
+    /// True while the source catalog hasn't loaded yet AND we have no obsidian entry — the window where
+    /// the notes card should show a resolving spinner rather than act on a not-yet-known catalog.
+    private var notesCatalogResolving: Bool {
+        obsidianConnector == nil && state.sourceConnectorCatalog.isEmpty
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .top, spacing: 22) {
@@ -1095,8 +1134,9 @@ private struct OnboardingAddMemoryStep: View {
                 buttonSystemImage: connectButtonIcon,
                 // In flight while a folder connect / sync this card kicked off is running
                 // (state.isBusy) or any connector sync is active — so the primary can't be
-                // double-fired mid-connect.
-                isBusy: state.isBusy || !state.connectorSyncingIDs.isEmpty
+                // double-fired mid-connect. Also held while the source catalog is still resolving
+                // (U-ONB6) so we never act on a not-yet-known catalog or bounce out of onboarding.
+                isBusy: state.isBusy || !state.connectorSyncingIDs.isEmpty || notesCatalogResolving
             ) {
                 runConnectAction()
             }
@@ -1331,25 +1371,31 @@ private struct OnboardingAddMemoryStep: View {
 
     private var connectButtonTitle: String {
         if state.onboardingHasSource { return "Change source" }
+        if notesCatalogResolving { return "Preparing…" }
         if state.notesNeedContent { return "Choose notes" }
         if state.hasConnectedObsidianVault { return "Sync notes" }
-        if obsidianConnector != nil { return "Connect notes" }
-        return "Open Connections"
+        // Even with no catalog entry we now connect a local notes folder in-flow (U-ONB6), so this
+        // always reads as a real connect action, never "Open Connections".
+        return "Connect notes"
     }
 
     private var connectButtonIcon: String {
+        if notesCatalogResolving { return "hourglass" }
         if state.notesNeedContent { return "folder.badge.questionmark" }
         if state.hasConnectedObsidianVault { return "arrow.triangle.2.circlepath" }
-        if obsidianConnector != nil { return "folder.badge.plus" }
-        return "link.circle"
+        return "folder.badge.plus"
     }
 
     private func runConnectAction() {
-        if let connector = obsidianConnector {
-            state.connectLocalNotesFolder(connector, chooseNew: state.notesNeedContent)
-        } else {
-            state.openConnectionsPrivacy(statusMessage: "Choose a source to connect")
+        // U-ONB6: always connect the notes folder in-flow. If the catalog is still loading we hold off
+        // (the card is disabled + shows "Preparing…") and refresh connectivity; otherwise we use the
+        // real obsidian connector when present, else a synthesized local one, so this never routes the
+        // user OUT to Connections mid-onboarding.
+        guard !notesCatalogResolving else {
+            Task { await state.loadSourceConnectivity() }
+            return
         }
+        state.connectLocalNotesFolder(resolvedNotesConnector, chooseNew: state.notesNeedContent)
     }
 }
 
@@ -1487,39 +1533,69 @@ private struct OnboardingUseItStep: View {
                 .fontWeight(.semibold)
                 .foregroundColor(CortexDesign.inkSecondary)
             HStack(spacing: 10) {
-                OnboardingToolChip(name: "Claude", systemImage: "sparkle")
-                OnboardingToolChip(name: "ChatGPT", systemImage: "bubble.left.and.bubble.right")
-                OnboardingToolChip(name: "Cursor", systemImage: "cursorarrow.rays")
+                OnboardingToolChip(name: "Claude", systemImage: "sparkle") {
+                    state.presentConnectToolsWizard(statusMessage: "Connect Claude")
+                }
+                OnboardingToolChip(name: "ChatGPT", systemImage: "bubble.left.and.bubble.right") {
+                    state.presentConnectToolsWizard(statusMessage: "Connect ChatGPT")
+                }
+                OnboardingToolChip(name: "Cursor", systemImage: "cursorarrow.rays") {
+                    state.presentConnectToolsWizard(statusMessage: "Connect Cursor")
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-/// A compact, non-interactive chip naming a supported AI tool. Purely illustrative, so the "use your
-/// memory where you work" promise reads as concrete tools rather than an abstraction. The real wiring
-/// happens in the Connect-an-AI-tool wizard opened by the hero button above.
+/// A compact chip naming a supported AI tool. It reads as a concrete tool rather than an abstraction,
+/// and is now a live affordance: tapping it opens the shared Connect-an-AI-tool wizard pre-scoped to
+/// that tool (the same hero action the primary button drives), so the named tools aren't a dead
+/// read-out. It never claims a per-chip "connected" state it can't verify.
 private struct OnboardingToolChip: View {
     let name: String
     let systemImage: String
+    /// Optional connect action. When nil the chip stays purely illustrative (back-compat).
+    var action: (() -> Void)? = nil
+
+    @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: systemImage)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(CortexDesign.accent)
-            Text(name)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(CortexDesign.ink)
+        Button {
+            action?()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+                Text(name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(CortexDesign.ink)
+                if action != nil {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .opacity(hovering ? 1 : 0.5)
+                }
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity)
+            .background(CortexDesign.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                    .stroke(CortexDesign.accent.opacity(hovering && action != nil ? 0.4 : 0), lineWidth: 1)
+            )
+            .embossedBorder()
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity)
-        .background(CortexDesign.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
-        .embossedBorder()
+        .buttonStyle(.plain)
+        .disabled(action == nil)
+        .onHover { hovering = $0 }
+        .help(action != nil ? "Connect \(name)" : "Works with \(name)")
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Works with \(name)")
+        .accessibilityLabel(action != nil ? "Connect \(name)" : "Works with \(name)")
+        .accessibilityAddTraits(action != nil ? .isButton : [])
     }
 }
 
@@ -1568,7 +1644,15 @@ private struct OnboardingFinishStep: View {
             // The proof moment: waits for the first external AI read and flips to
             // "<app> just read your memory. Continuity, proven." Purely observational —
             // it polls only while this step is on screen and never blocks Finish.
-            RecallProofWatcher(state: state, waitingLine: "Waiting for your first external read…")
+            //
+            // U-ONB7: with no AI tool connected, nothing external will ever read, so the watcher would
+            // sit on "Waiting…" forever. In that case show an honest connect affordance instead of a
+            // dead spinner; once a tool is wired the real proof watcher takes over.
+            if state.connectedAIIntegrationCount > 0 {
+                RecallProofWatcher(state: state, waitingLine: "Waiting for your first external read…")
+            } else {
+                recallProofConnectFallback
+            }
 
             VStack(alignment: .leading, spacing: 10) {
                 OnboardingFlowRow(index: 1, title: "Review", detail: "Approve the memory worth keeping.", systemImage: "checklist")
@@ -1587,6 +1671,45 @@ private struct OnboardingFinishStep: View {
             // Fresh graph data for the real-data Constellation preview above.
             await state.loadGraph()
         }
+        // U-ONB3: the Constellation preview was a one-shot snapshot — if a connector's first sync
+        // landed AFTER this step appeared, the map stayed empty/stale. A connector finishing its sync
+        // removes its id from connectorSyncingIDs; observe that transition and re-pull the real graph
+        // + stats so the preview fills in live as the first memory arrives.
+        .onChange(of: state.connectorSyncingIDs) { _ in
+            Task {
+                await state.loadStats()
+                await state.loadGraph()
+            }
+        }
+    }
+
+    /// U-ONB7: the stand-in for RecallProofWatcher when no AI tool is connected. Rather than a
+    /// forever-"Waiting…" spinner, it names why there's nothing to prove yet and routes into the same
+    /// hero connect wizard, so the proof moment becomes reachable instead of a dead-end.
+    private var recallProofConnectFallback: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "sparkles.rectangle.stack")
+                .font(.title3)
+                .foregroundColor(CortexDesign.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("See your memory get used")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(CortexDesign.ink)
+                Text("Connect a tool to see this: the moment Claude, ChatGPT, or Cursor reads your memory, it shows up here as proof.")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            CortexButton(title: "Connect a tool", systemImage: "link", role: .secondary, size: .small) {
+                state.presentConnectToolsWizard(statusMessage: "Connect your AI tools")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CortexDesign.panelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     /// AI tools + the first-backup decision, as two compact rows with sensible defaults —
@@ -1652,22 +1775,51 @@ private struct OnboardingFinishStep: View {
                 color: CortexDesign.sealMoss
             )
         } else {
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Back up your memory")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(CortexDesign.ink)
-                    Text("Save a restorable snapshot now, or decide later in Settings.")
-                        .font(.caption)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Back up your memory")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(CortexDesign.ink)
+                        Text("Save a restorable snapshot now, or decide later in Settings.")
+                            .font(.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    // While a backup is in flight the button reflects it honestly (spinner + "Backing
+                    // up…") and disables, so an impatient second tap can't kick a duplicate backup.
+                    if state.backupInFlight { ProgressView().controlSize(.small) }
+                    CortexButton(
+                        title: state.backupInFlight ? "Backing up…" : "Back Up Now",
+                        systemImage: "archivebox",
+                        role: .secondary,
+                        size: .small
+                    ) {
+                        state.createBackup()
+                    }
+                    .disabled(state.backupInFlight)
+                    CortexButton(title: "Skip for now", role: .ghost, size: .small) {
+                        state.skipFirstBackup()
+                    }
+                    .disabled(state.backupInFlight)
                 }
-                Spacer(minLength: 8)
-                CortexButton(title: "Back Up Now", systemImage: "archivebox", role: .secondary, size: .small) {
-                    state.createBackup()
-                }
-                CortexButton(title: "Skip for now", role: .ghost, size: .small) {
-                    state.skipFirstBackup()
+
+                // On failure the backup is NOT silent: surface the exact error with a "Try again"
+                // affordance, mirroring OnboardingRestoringStep.failed. lastBackupError is cleared at
+                // the start of the next createBackup(), so a successful retry clears this banner.
+                if let backupError = state.lastBackupError, !state.backupInFlight {
+                    OnboardingNoticeBanner(
+                        notice: OnboardingNotice(
+                            severity: .warning,
+                            title: "Backup didn't finish",
+                            message: backupError
+                        ),
+                        onDismiss: nil
+                    )
+                    CortexButton(title: "Try again", systemImage: "arrow.clockwise", role: .secondary, size: .small) {
+                        state.createBackup()
+                    }
                 }
             }
         }
@@ -1746,10 +1898,15 @@ private struct OnboardingQuickCaptureRow: View {
                     KeybindRecorderView(combo: $state.quickCaptureKeybind)
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
+            }
 
-                // Pure-visual preview of the capture pill so the user experiences the notch during
-                // onboarding (no backend needed). Uses the same .captured style that a real quick
-                // capture surfaces. Direct-download only — deliberately absent from the MAS row.
+            // U-ONB5: the notch preview used to be buried inside the enabled block, so a user deciding
+            // WHETHER to turn quick capture on never got to see what it does. Surface it unconditionally
+            // (direct-download only — deliberately absent from the MAS row) so the notch demo helps that
+            // decision. Pure-visual: uses the same .captured style a real quick capture surfaces, no
+            // backend needed.
+            Divider().opacity(0.5)
+            HStack(alignment: .center, spacing: 8) {
                 CortexButton(title: "Show me the notch", systemImage: "bell.badge", role: .ghost, size: .small) {
                     NotchNotifier.shared.show(
                         title: "Saved to Cortex",
@@ -1757,6 +1914,10 @@ private struct OnboardingQuickCaptureRow: View {
                         style: .captured
                     )
                 }
+                Text("A quick preview of the capture pill.")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                Spacer(minLength: 0)
             }
         }
         .animation(.easeInOut(duration: 0.22), value: state.quickCaptureEnabled)

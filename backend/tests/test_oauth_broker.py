@@ -18,6 +18,10 @@ GOOGLE_ENV = {
     "CORTEX_BROKER_GOOGLE_CLIENT_ID": "goog-client-789",
     "CORTEX_BROKER_GOOGLE_CLIENT_SECRET": "goog-secret-012",
 }
+MICROSOFT_ENV = {
+    "CORTEX_BROKER_MICROSOFT_CLIENT_ID": "ms-client-345",
+    "CORTEX_BROKER_MICROSOFT_CLIENT_SECRET": "ms-secret-678",
+}
 LOOPBACK = "http://127.0.0.1:8766/v1/connectors/oauth/callback"
 GOOGLE_LOOPBACK = "http://127.0.0.1:8766/v1/connectors/google/oauth/callback"
 
@@ -180,6 +184,51 @@ class OAuthBrokerTests(unittest.TestCase):
     def test_google_unconfigured_is_503(self):
         with self.assertRaises(BrokerError) as ctx:
             OAuthBrokerRegistry(env={}).authorization_url("google", GOOGLE_LOOPBACK, "s")
+        self.assertEqual(ctx.exception.status, 503)
+
+    # --- Microsoft (Outlook / Microsoft 365; confidential client handled server-side like Notion) ---
+
+    def test_microsoft_is_configured_when_env_present(self):
+        self.assertIn("microsoft", OAuthBrokerRegistry(env=MICROSOFT_ENV).configured_providers())
+        self.assertFalse(OAuthBrokerRegistry(env={}).is_configured("microsoft"))
+
+    def test_microsoft_authorization_url_least_privilege_scopes_and_pkce(self):
+        broker = OAuthBrokerRegistry(env=MICROSOFT_ENV)
+        url = broker.authorization_url("microsoft", LOOPBACK, "st-ms", code_challenge="chal-ms")
+        self.assertTrue(url.startswith("https://login.microsoftonline.com/common/oauth2/v2.0/authorize?"))
+        self.assertIn("client_id=ms-client-345", url)
+        self.assertIn("response_type=code", url)
+        self.assertIn("response_mode=query", url)
+        self.assertIn("offline_access", url)  # earns a refresh_token
+        self.assertIn("User.Read", url)
+        self.assertIn("Mail.Read", url)
+        self.assertIn("code_challenge=chal-ms", url)  # Microsoft supports PKCE
+        self.assertIn("code_challenge_method=S256", url)
+        # The client secret is NEVER placed on the authorize URL.
+        self.assertNotIn("ms-secret-678", url)
+
+    def test_microsoft_exchange_posts_credentials_in_body(self):
+        cap = _Capture({
+            "access_token": "ms-access",
+            "refresh_token": "ms-refresh",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        })
+        broker = OAuthBrokerRegistry(env=MICROSOFT_ENV, token_request=cap)
+        out = broker.exchange("microsoft", "ms-code", LOOPBACK, code_verifier="ver-ms")
+        # post-style: creds in the body (the server holds the secret; the app never sees it).
+        self.assertEqual(cap.form.get("client_id"), "ms-client-345")
+        self.assertEqual(cap.form.get("client_secret"), "ms-secret-678")
+        self.assertEqual(cap.form.get("code"), "ms-code")
+        self.assertEqual(cap.form.get("code_verifier"), "ver-ms")
+        self.assertNotIn("Authorization", cap.headers)  # not basic-auth
+        self.assertEqual(out["access_token"], "ms-access")
+        self.assertEqual(out["refresh_token"], "ms-refresh")
+        self.assertIn("access_token_expires_at", out)
+
+    def test_microsoft_unconfigured_is_503(self):
+        with self.assertRaises(BrokerError) as ctx:
+            OAuthBrokerRegistry(env={}).authorization_url("microsoft", LOOPBACK, "s")
         self.assertEqual(ctx.exception.status, 503)
 
 

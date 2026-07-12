@@ -199,6 +199,16 @@ struct MenuBarQuickPanel: View {
                     }
                     .buttonStyle(.plain)
                     .help("Clear")
+                    // A visible submit affordance next to the clear glyph — pressing Return still works,
+                    // but the arrow makes "ask this" discoverable without a hidden keyboard step.
+                    Button { runAsk() } label: {
+                        Image(systemName: "arrow.right.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundColor(asking ? CortexDesign.inkFaint : CortexDesign.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(asking || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Ask")
                 }
             }
             .padding(.horizontal, 11)
@@ -255,11 +265,38 @@ struct MenuBarQuickPanel: View {
             }
             .transition(.opacity.combined(with: .move(edge: .top)))
         } else if let answer, answer.answer.isEmpty {
-            quietRow(icon: "sparkles", text: "No cited memory found. Try a different question, or connect more sources.")
-                .transition(.opacity)
+            VStack(alignment: .leading, spacing: 10) {
+                quietRow(icon: "sparkles", text: "No cited memory found. Try a different question, or connect more sources.")
+                HStack(spacing: 8) {
+                    // U-LIVE2: the "connect more sources" line used to be dead text. Make it an action:
+                    // more sources → more of your own memory Ask can cite.
+                    CortexButton(title: "Connect sources", role: .primary, size: .small) {
+                        connectSources()
+                    }
+                    CortexButton(title: "Ask the full app", role: .secondary, size: .small) {
+                        continueInCortex()
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .transition(.opacity)
         } else if let askError {
-            quietRow(icon: "exclamationmark.triangle", text: askError)
-                .transition(.opacity)
+            VStack(alignment: .leading, spacing: 10) {
+                quietRow(icon: "exclamationmark.triangle", text: askError)
+                HStack(spacing: 8) {
+                    // U-LIVE3: an errored Ask was a dead-end. Retry re-runs the same question; opening
+                    // the full app gives the user somewhere to go if the engine stays unreachable.
+                    CortexButton(title: "Retry", role: .primary, size: .small) {
+                        retryAsk()
+                    }
+                    .disabled(asking || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    CortexButton(title: "Open Cortex", role: .secondary, size: .small) {
+                        onOpenApp()
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .transition(.opacity)
         } else {
             idleContent
                 .transition(.opacity)
@@ -290,6 +327,26 @@ struct MenuBarQuickPanel: View {
             }
             if let pending = state.inbox.first {
                 pendingReviewCard(pending)
+                // U-LIVE6: the idle Ask surfaces only the top waiting item; when more are queued,
+                // give a one-tap path to the full Review queue instead of stranding the rest.
+                if state.inbox.count > 1 {
+                    Button { onOpenReview() } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checklist")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("Review \(state.inbox.count - 1) more")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                            Spacer(minLength: 0)
+                            Image(systemName: "arrow.up.forward")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                        .foregroundColor(CortexDesign.accent)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open the full Review queue")
+                }
             }
         }
     }
@@ -447,6 +504,13 @@ struct MenuBarQuickPanel: View {
             footerBadgeAction(
                 "Review", icon: "checklist", badge: pendingCount, action: onOpenReview
             )
+            // U-LIVE1: wire the dead screenshot-OCR path. It reads text off the screen and files it to
+            // Cortex — a real high-value capture path that previously had zero callers. Only shown on
+            // direct builds: Screen Recording is sandbox-incompatible, so the action is a no-op under
+            // the App Store build and must not be offered there (honesty invariant).
+            if !DistributionMode.isAppStore {
+                footerAction("Capture screen", icon: "text.viewfinder", action: captureScreenRegion)
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
@@ -493,6 +557,31 @@ struct MenuBarQuickPanel: View {
                     }
                 }
             }
+        }
+    }
+
+    /// U-LIVE3: re-run the last question after an error (or the empty-answer state). Clears the error
+    /// first so the skeleton shows immediately, then reuses the same `runAsk` machinery.
+    private func retryAsk() {
+        askError = nil
+        runAsk()
+    }
+
+    /// U-LIVE2: open the real connect-tools flow, then bring the main window forward so the wizard is
+    /// visible. More connected sources → more of the user's own memory that Ask can cite. This is the
+    /// honest path (no fabricated "connected" state — it opens the same wizard the app uses).
+    private func connectSources() {
+        state.presentConnectToolsWizard(statusMessage: "Connect more of your memory")
+        onOpenApp()
+    }
+
+    /// U-LIVE1: trigger the screenshot-OCR capture path (previously unreachable). QuickCapture handles
+    /// the Screen Recording permission prompt/deep-link and files the recognized text into Cortex,
+    /// showing its own notch confirmation. Close the panel so the capture reads the screen behind it.
+    private func captureScreenRegion() {
+        onClose()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            QuickCapture.shared.triggerScreenshotCapture()
         }
     }
 

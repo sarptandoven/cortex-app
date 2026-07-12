@@ -18,6 +18,10 @@ final class ConstellationOverlay {
     private var orderOutWork: DispatchWorkItem?
     private weak var state: AppState?
     private var onExplore: ((GraphNode) -> Void)?
+    /// U-MAP3: a periodic graph refresh that runs ONLY while the overlay is summoned, so a capture
+    /// or sync that lands while the constellation is open flows onto the live map. Cancelled on
+    /// dismiss so it never polls in the background.
+    private var liveRefreshTask: Task<Void, Never>?
 
     private init() {}
 
@@ -39,10 +43,27 @@ final class ConstellationOverlay {
         withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
             model.visible = true
         }
+        startLiveRefresh(state: state)
+    }
+
+    /// U-MAP3: poll `loadGraph()` every ~7s while summoned. The map view diffs `graphNodes` on
+    /// change, so a background refresh quietly updates the open constellation without a flash.
+    private func startLiveRefresh(state: AppState) {
+        liveRefreshTask?.cancel()
+        liveRefreshTask = Task { @MainActor [weak state] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 7_000_000_000)
+                if Task.isCancelled { break }
+                guard let state else { break }
+                await state.loadGraph()
+            }
+        }
     }
 
     func dismiss() {
         guard model.visible else { return }
+        liveRefreshTask?.cancel()
+        liveRefreshTask = nil
         withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
             model.visible = false
         }

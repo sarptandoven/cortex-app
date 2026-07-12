@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -18,7 +19,10 @@ struct ReviewTab: View {
                     ReviewLoadingCard()
                 } else {
                     if shouldShowSourceHealth {
-                        ReviewSourceHealthStrip(state: state)
+                        ReviewSourceHealthStrip(
+                            state: state,
+                            onSyncNow: { Task { await reload() } }
+                        )
                     }
                     ReviewProactiveAlertsSection(state: state)
                     ReviewTwinGradingSection(state: state)
@@ -37,6 +41,19 @@ struct ReviewTab: View {
         .onChange(of: state.selectedTab) { tab in
             guard tab == .review, initialLoadDone else { return }
             Task { await reload() }
+        }
+        // U-REV6: keep the proactive alerts + twin grading queue live while the Review tab is on
+        // screen. The app's global live-count refresh only re-pulls the inbox for Review, so without
+        // this the alert strip and grading queue silently go stale the moment they've loaded once.
+        // Scoped to the visible tab and cancelled automatically when the tab-owning view goes away.
+        .task(id: state.selectedTab) {
+            guard state.selectedTab == .review else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)   // ~8s
+                if Task.isCancelled || state.selectedTab != .review { break }
+                await state.loadProactiveAlerts()
+                await state.loadTwinScorecard()
+            }
         }
         .background(CortexDesign.appBackground)
     }
@@ -107,6 +124,8 @@ struct ReviewHeaderSection: View {
 
 struct ReviewSourceHealthStrip: View {
     @ObservedObject var state: AppState
+    // U-REV1: the tab owns the reload; the strip only surfaces the "Sync now" affordance.
+    var onSyncNow: (() -> Void)? = nil
 
     private var sources: [SourceReadinessItem] {
         state.sourceReadinessReport?.sources
@@ -176,6 +195,18 @@ struct ReviewSourceHealthStrip: View {
         return "circle"
     }
 
+    /// U-REV1: the first source actually flagged as needing attention, used to title the fix button
+    /// with its own concrete `next_action` and to target Connections at that exact source.
+    private var firstFailing: SourceReadinessItem? {
+        sources.first(where: \.needsAttention)
+    }
+
+    /// The fix button's title: the source's own next action when it names one, else a plain fallback.
+    private var fixTitle: String {
+        let action = firstFailing?.next_action.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return action.isEmpty ? "Fix source" : action
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
@@ -204,7 +235,18 @@ struct ReviewSourceHealthStrip: View {
             if !sources.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(Array(sources.prefix(3))) { source in
-                        ReviewSourceHealthChip(source: source)
+                        // U-REV7: the chip is now a real affordance — a failing source opens
+                        // Connections targeted at it; a healthy source triggers a fresh sync pull.
+                        ReviewSourceHealthChip(
+                            source: source,
+                            action: {
+                                if source.needsAttention {
+                                    state.openConnectionsPrivacy(statusMessage: "Fix \(source.name)")
+                                } else {
+                                    onSyncNow?()
+                                }
+                            }
+                        )
                     }
                     if sources.count > 3 {
                         Text("+\(sources.count - 3) more")
@@ -218,6 +260,26 @@ struct ReviewSourceHealthStrip: View {
                     Spacer(minLength: 0)
                 }
             }
+
+            // U-REV1: the strip is a dead read-out no longer. When a source needs attention we hand
+            // the reviewer the exact fix (titled from the source's own next_action); when the queue is
+            // simply pending/healthy we offer a "Sync now" pull so an impatient reviewer can refresh.
+            HStack(spacing: 10) {
+                if needsAttentionCount > 0 {
+                    CortexButton(title: fixTitle, systemImage: "wrench.and.screwdriver", role: .primary, size: .small) {
+                        let name = firstFailing?.name ?? "source"
+                        state.openConnectionsPrivacy(statusMessage: "Fix \(name)")
+                    }
+                    .help("Open Connections to fix \(firstFailing?.name ?? "the source that needs attention")")
+                }
+                if let onSyncNow, needsAttentionCount == 0, (pendingCount > 0 || !sources.isEmpty) {
+                    CortexButton(title: "Sync now", systemImage: "arrow.triangle.2.circlepath", role: .ghost, size: .small) {
+                        onSyncNow()
+                    }
+                    .help("Pull the latest synced memory into the review queue")
+                }
+                Spacer(minLength: 0)
+            }
         }
         .cortexCard(padding: CortexDesign.Space.md, background: CortexDesign.panelBackground)
     }
@@ -225,20 +287,39 @@ struct ReviewSourceHealthStrip: View {
 
 struct ReviewSourceHealthChip: View {
     let source: SourceReadinessItem
+    // U-REV7: the chip is now tappable — a failing source jumps to Connections, a healthy one syncs.
+    var action: (() -> Void)? = nil
+    @State private var hovering = false
 
     var body: some View {
-        Text(label)
-            .font(CortexDesign.Typography.caption)
-            .foregroundColor(CortexDesign.inkSecondary)
-            .lineLimit(1)
-            .truncationMode(.tail)
+        Button {
+            action?()
+        } label: {
+            HStack(spacing: 5) {
+                Text(label)
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(hovering ? CortexDesign.ink : CortexDesign.inkSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Image(systemName: source.needsAttention ? "arrow.up.right" : "arrow.triangle.2.circlepath")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundColor(source.needsAttention ? CortexDesign.accent : CortexDesign.inkFaint)
+            }
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
             .background(CortexDesign.quietBackground)
+            .overlay(
+                Capsule().stroke(CortexDesign.hairline.opacity(hovering ? 1 : 0), lineWidth: 1)
+            )
             .clipShape(Capsule())
-            .help(helpText)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(helpText)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .disabled(action == nil)
+        .help(helpText)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(helpText)
     }
 
     private var label: String {
@@ -644,6 +725,11 @@ struct ReviewInboxSection: View {
     @State private var previousCaptureCount = 0
     @State private var confirmApproveAll = false
     @State private var approveAllInFlight = false
+    // U-REV5: the in-line wax-seal confirm for "Archive N shown" (destructive, so it's guarded).
+    @State private var confirmArchiveShown = false
+    // U-REV8: triage the queue low-confidence first, so the items most likely to need a human eye
+    // float to the top. Off by default — the server order is the calm default.
+    @State private var lowConfidenceFirst = false
 
     // Sections earn their space only when they actually compress work: a backlog
     // bigger than one page, grouped into more than one section.
@@ -679,6 +765,20 @@ struct ReviewInboxSection: View {
                         withAnimation(CortexMotion.press) { confirmApproveAll = false }
                     }
                 )
+            } else if confirmArchiveShown {
+                // U-REV5: the destructive "Archive N shown" confirm — same wax-seal beat as approve-all.
+                let archiveBatch = Array(orderedVisibleCaptures.prefix(10))
+                ReviewWaxSealConfirm(
+                    message: "Archive \(archiveBatch.count) shown item\(archiveBatch.count == 1 ? "" : "s")? Cortex won't remember them; your original notes stay in your source.",
+                    confirmTitle: "Archive \(archiveBatch.count) shown",
+                    onConfirm: {
+                        withAnimation(CortexMotion.press) { confirmArchiveShown = false }
+                        state.archiveCaptures(archiveBatch)
+                    },
+                    onCancel: {
+                        withAnimation(CortexMotion.press) { confirmArchiveShown = false }
+                    }
+                )
             } else {
                 HStack(alignment: .center, spacing: 14) {
                     if showSections {
@@ -687,15 +787,35 @@ struct ReviewInboxSection: View {
                             .kerning(0.8)
                             .foregroundColor(CortexDesign.inkFaint)
                     }
+                    // U-REV8: a quiet "Low confidence first" triage sort. Only offered when the queue
+                    // actually carries a confidence signal to sort on, and never fabricates one.
+                    if showConfidenceSort {
+                        CortexButton(
+                            title: lowConfidenceFirst ? "Original order" : "Low confidence first",
+                            systemImage: lowConfidenceFirst ? "arrow.up.arrow.down" : "arrow.down.circle",
+                            role: .ghost,
+                            size: .small
+                        ) {
+                            withAnimation(CortexMotion.press) { lowConfidenceFirst.toggle() }
+                        }
+                        .help("Sort the queue so the least-certain items surface first")
+                    }
                     Spacer()
                     if showBatchApprove {
-                        // approveCaptures caps the batch at 10 server-side, so approve exactly that
-                        // slice and label the button with the true count — no promising more than we act on.
-                        let approveBatch = Array(visibleCaptures.prefix(10))
+                        // approveCaptures/archiveCaptures cap the batch at 10 server-side, so act on
+                        // exactly that slice and label the buttons with the true count.
+                        let approveBatch = Array(orderedVisibleCaptures.prefix(10))
                         if approveAllInFlight {
                             // Ghost skeleton stamp instead of the stock spinner.
                             ReviewGhostStamp()
                         }
+                        // U-REV5: the batch archive counterpart to "Approve N shown" — a quiet ghost so
+                        // the wax-red approve stays the one primary. Guarded by the wax-seal confirm.
+                        CortexButton(title: "Archive \(approveBatch.count) shown", systemImage: "archivebox", role: .ghost, size: .large) {
+                            withAnimation(CortexMotion.press) { confirmArchiveShown = true }
+                        }
+                        .disabled(approveAllInFlight || !state.inFlightCaptureIds.isEmpty)
+                        .help("Archive the \(approveBatch.count) items shown at the top")
                         if totalPendingCount > approveBatch.count {
                             // The power action for the 99+ backlog the 10-at-a-time batch can't clear.
                             // Secondary on purpose: "Approve N shown" keeps the wax-red primary because
@@ -723,7 +843,7 @@ struct ReviewInboxSection: View {
                 }
             } else {
                 LazyVStack(alignment: .leading, spacing: 20) {
-                    ForEach(visibleCaptures) { capture in
+                    ForEach(orderedVisibleCaptures) { capture in
                         ReviewQueueCaptureCard(
                             capture: capture,
                             isInFlight: state.inFlightCaptureIds.contains(capture.id),
@@ -736,7 +856,15 @@ struct ReviewInboxSection: View {
                             approveAllFromSource: pendingSourceCounts[capture.source, default: 0] > 1
                                 ? { approveAll(source: capture.source) }
                                 : nil,
-                            isTopItem: capture.id == visibleCaptures.first?.id
+                            // U-REV5: per-source archive-all, same gating and scope as approve-all.
+                            archiveAllFromSource: pendingSourceCounts[capture.source, default: 0] > 1
+                                ? { archiveAll(source: capture.source) }
+                                : nil,
+                            // U-REV4: edit-before-approve saves the corrected text and archives the draft.
+                            approveEdited: { edited in
+                                Task { await state.approveCapture(capture, editedContent: edited) }
+                            },
+                            isTopItem: capture.id == orderedVisibleCaptures.first?.id
                         )
                         .transition(.asymmetric(
                             insertion: .opacity,
@@ -763,6 +891,16 @@ struct ReviewInboxSection: View {
                             fetchMoreFromServer()
                         }
                         .disabled(loadingMoreFromServer)
+                    }
+
+                    // U-REV10: once the reviewer has expanded past the first page, let them re-collapse
+                    // the queue back to a calm single page instead of scrolling all the way up.
+                    if visibleLimit > Self.pageSize {
+                        CortexButton(title: "Show fewer", systemImage: "chevron.up", role: .ghost, size: .large, fullWidth: true) {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                visibleLimit = Self.pageSize
+                            }
+                        }
                     }
                 }
                 .animation(.spring(response: 0.35, dampingFraction: 0.8), value: captures.map(\.id))
@@ -794,8 +932,29 @@ struct ReviewInboxSection: View {
         Array(captures.prefix(visibleLimit))
     }
 
+    /// U-REV8: the visible page, optionally reordered low-confidence first. The reorder is a stable
+    /// sort over the SAME visible slice — it never fabricates a confidence signal (captures with no
+    /// seal keep their relative order) and never changes which items are on the page, only their order.
+    private var orderedVisibleCaptures: [CaptureItem] {
+        guard lowConfidenceFirst else { return visibleCaptures }
+        return visibleCaptures.enumerated().sorted { lhs, rhs in
+            let lp = reviewConfidenceSortRank(lhs.element)
+            let rp = reviewConfidenceSortRank(rhs.element)
+            if lp != rp { return lp < rp }
+            return lhs.offset < rhs.offset   // stable within a rank
+        }.map(\.element)
+    }
+
     private var visibleCount: Int {
         visibleCaptures.count
+    }
+
+    /// U-REV8: only offer the confidence sort when the visible queue actually carries a confidence
+    /// seal to sort on (mixed ranks) — never a no-op toggle on an all-equal queue.
+    private var showConfidenceSort: Bool {
+        guard visibleCount > 1 else { return false }
+        let ranks = Set(visibleCaptures.map(reviewConfidenceSortRank))
+        return ranks.count > 1
     }
 
     /// The whole backlog, not the loaded page: the inbox request caps at 30 items, so a 99+ queue
@@ -852,6 +1011,17 @@ struct ReviewInboxSection: View {
         approveAllInFlight = true
         Task {
             await state.approveAllCaptures(source: source)
+            approveAllInFlight = false
+        }
+    }
+
+    /// U-REV5: archive EVERY pending item from one source in a single action (the counterpart to
+    /// `approveAll(source:)`). Mirrors the same in-flight guard so the source's bulk actions never race.
+    private func archiveAll(source: String) {
+        guard !approveAllInFlight else { return }
+        approveAllInFlight = true
+        Task {
+            await state.archiveAllCaptures(source: source)
             approveAllInFlight = false
         }
     }
@@ -926,6 +1096,12 @@ struct ReviewEmptyState: View {
                     CortexButton(title: "Ask a question", systemImage: "magnifyingglass", role: .primary, size: .large) {
                         state.selectedTab = .ask
                         state.status = "Ask \(DistributionMode.appDisplayName)"
+                    }
+                    // U-REV9: the all-clear state was a dead-end — now the reviewer can jump straight
+                    // to the memories they just approved instead of only being pointed at Ask.
+                    CortexButton(title: "View recent memories", systemImage: "sparkles", role: .secondary, size: .large) {
+                        state.selectedTab = .model
+                        state.status = "Recent memories"
                     }
                 } else if state.hasConnectedObsidianVault, let connector = obsidianConnector {
                     CortexButton(
@@ -1106,9 +1282,19 @@ struct ReviewQueueCaptureCard: View {
     /// Present only when this capture's source repeats in the queue: approves EVERY pending item
     /// from the same source, not just this card.
     var approveAllFromSource: (() -> Void)? = nil
+    /// U-REV5: present only when this capture's source repeats in the queue — archives EVERY pending
+    /// item from the same source in one action.
+    var archiveAllFromSource: (() -> Void)? = nil
+    /// U-REV4: save an edited version of the memory before approving, instead of the raw draft.
+    var approveEdited: ((String) -> Void)? = nil
     var isTopItem: Bool = false
     @State private var confirmArchive = false
     @State private var isHovered = false
+    // U-REV3: reveals the full, untruncated summary + every proposed memory/task.
+    @State private var showDetail = false
+    // U-REV4: inline edit-before-approve.
+    @State private var isEditing = false
+    @State private var editedText = ""
     // Flips on the first confirmed archive so triage is one click after one informed consent.
     @AppStorage("cortex.review.archiveConfirmedOnce") private var archiveConfirmedOnce = false
 
@@ -1181,7 +1367,32 @@ struct ReviewQueueCaptureCard: View {
 
             ReviewQueuePreviewList(capture: capture)
 
+            // U-REV3: the full, untruncated detail — the whole summary and every proposed memory and
+            // task, not the two-line card preview. Kept inline so Approve/Archive stay reachable.
+            if showDetail {
+                ReviewCaptureDetail(capture: capture)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
             ReviewQueueSourceBox(capture: capture)
+
+            // U-REV4: the inline edit-before-approve editor — the reviewer rewrites the memory, then
+            // "Save & approve" saves the corrected text (the raw draft is archived, never remembered).
+            if isEditing {
+                ReviewInlineEditor(
+                    text: $editedText,
+                    onCancel: {
+                        withAnimation(CortexMotion.press) { isEditing = false }
+                    },
+                    onSave: {
+                        let trimmed = editedText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        withAnimation(CortexMotion.press) { isEditing = false }
+                        guard !trimmed.isEmpty else { return }
+                        approveEdited?(trimmed)
+                    }
+                )
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
 
             if let actionError, !actionError.isEmpty {
                 Label(actionError, systemImage: "exclamationmark.triangle.fill")
@@ -1221,6 +1432,30 @@ struct ReviewQueueCaptureCard: View {
                         .foregroundColor(CortexDesign.inkFaint)
                     }
                     Spacer()
+                    // U-REV3: reveal/hide the full detail — the whole summary and every proposed item,
+                    // untruncated. A quiet ghost so it never competes with Approve/Archive.
+                    if hasExpandableDetail {
+                        CortexButton(
+                            title: showDetail ? "Hide details" : "Details",
+                            systemImage: showDetail ? "chevron.up" : "text.magnifyingglass",
+                            role: .ghost,
+                            size: .large
+                        ) {
+                            withAnimation(CortexMotion.press) { showDetail.toggle() }
+                        }
+                        .disabled(isInFlight)
+                        .help("Show the full memory before deciding")
+                    }
+                    // U-REV4: rewrite the memory before approving. Seeds the editor with the best
+                    // single line of proposed content we have (summary → first proposed memory).
+                    if approveEdited != nil {
+                        CortexButton(title: "Edit", systemImage: "pencil", role: .ghost, size: .large) {
+                            editedText = editableSeed
+                            withAnimation(CortexMotion.press) { isEditing = true }
+                        }
+                        .disabled(isInFlight)
+                        .help("Edit this memory, then approve the corrected version")
+                    }
                     // Archive: a gold-spined ghost — the "set aside" gesture, quiet.
                     CortexButton(title: "Archive", systemImage: "archivebox", role: .ghost, size: .large) {
                         requestArchive()
@@ -1276,8 +1511,26 @@ struct ReviewQueueCaptureCard: View {
             } label: {
                 Label("Archive", systemImage: "archivebox")
             }
-            if let approveAllFromSource {
+            // U-REV2: open the underlying note/URL from the right-click menu too.
+            if let openURL = reviewOpenableSourceURL(capture) {
+                Button {
+                    NSWorkspace.shared.open(openURL)
+                } label: {
+                    Label("Open source", systemImage: "arrow.up.right.square")
+                }
+            }
+            // U-REV3: reveal the full detail from the menu.
+            if hasExpandableDetail {
+                Button {
+                    withAnimation(CortexMotion.press) { showDetail.toggle() }
+                } label: {
+                    Label(showDetail ? "Hide details" : "Show details", systemImage: "text.magnifyingglass")
+                }
+            }
+            if approveAllFromSource != nil || archiveAllFromSource != nil {
                 Divider()
+            }
+            if let approveAllFromSource {
                 Button {
                     approveAllFromSource()
                 } label: {
@@ -1288,7 +1541,47 @@ struct ReviewQueueCaptureCard: View {
                 // the cards on this page — so the label never over-promises or surprises the user.
                 .help("Approves every pending item from \(sourceDisplayName), including any not shown on this page")
             }
+            // U-REV5: the per-source archive counterpart — archives EVERY pending item from this
+            // source in one action, matching the approve-all scope so triage is symmetric.
+            if let archiveAllFromSource {
+                Button(role: .destructive) {
+                    archiveAllFromSource()
+                } label: {
+                    Label("Archive pending from \(sourceDisplayName)", systemImage: "archivebox.fill")
+                }
+                .disabled(isInFlight)
+                .help("Archives every pending item from \(sourceDisplayName), including any not shown on this page")
+            }
         }
+    }
+
+    /// U-REV3: whether there is more to show than the card's two-line preview — a long summary, extra
+    /// proposed memories/tasks past the previewed ones, or a source URL. Gates the Details affordance
+    /// so it never appears on a card that has nothing more to reveal.
+    private var hasExpandableDetail: Bool {
+        let memoryTotal = capture.preview_memories?.count ?? 0
+        let taskTotal = capture.preview_tasks?.count ?? 0
+        if memoryTotal + taskTotal > 1 { return true }
+        if let summary = capture.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+           summary.count > 160 {
+            return true
+        }
+        return false
+    }
+
+    /// U-REV4: the best single line of proposed content to seed the editor with — the summary if
+    /// present, else the first proposed memory, else the first proposed task. Never a raw id/path.
+    private var editableSeed: String {
+        if let summary = capture.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+            return MemoryText.normalizedProse(summary)
+        }
+        if let first = capture.preview_memories?.first?.content {
+            return MemoryText.normalizedProse(first)
+        }
+        if let first = capture.preview_tasks?.first?.content {
+            return MemoryText.normalizedProse(first)
+        }
+        return ""
     }
 
     private func requestArchive() {
@@ -1341,6 +1634,157 @@ struct ReviewQueueCaptureCard: View {
     /// The novelty/confidence seal — nil when the previews carry no signal.
     private var seal: CortexReviewSeal? {
         cortexCaptureSeal(capture)
+    }
+}
+
+/// U-REV3: the full, untruncated detail for a review card — the whole summary and every proposed
+/// memory and task, not the two-line card preview. Rendered inline beneath the card's preview so the
+/// reviewer never loses the Approve/Archive row while reading. Only real, backend-supplied content;
+/// nothing fabricated.
+struct ReviewCaptureDetail: View {
+    let capture: CaptureItem
+
+    private var fullSummary: String? {
+        guard let summary = capture.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !summary.isEmpty else { return nil }
+        return MemoryText.normalizedProse(summary)
+    }
+
+    private var memories: [MemoryItem] {
+        capture.preview_memories ?? []
+    }
+
+    private var tasks: [TaskItem] {
+        capture.preview_tasks ?? []
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let fullSummary {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Full summary".uppercased())
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
+                    Text(fullSummary)
+                        .font(CortexDesign.Typography.prose(13.5))
+                        .foregroundColor(CortexDesign.ink)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if !memories.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("All proposed memories".uppercased())
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
+                    ForEach(memories) { memory in
+                        ReviewDetailBullet(text: memory.content, tint: CortexDesign.accent)
+                    }
+                }
+            }
+
+            if !tasks.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("All proposed tasks".uppercased())
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
+                    ForEach(tasks) { task in
+                        ReviewDetailBullet(text: task.content, tint: CortexDesign.gold)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, CortexDesign.Space.md)
+        .padding(.vertical, CortexDesign.Space.sm)
+        .background(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .fill(CortexDesign.quietBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(CortexDesign.hairline, lineWidth: 1)
+        )
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// One untruncated bullet in the review detail — full prose, no line cap, so a reviewer reads the
+/// whole proposed memory before deciding.
+struct ReviewDetailBullet: View {
+    let text: String
+    let tint: Color
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Image(systemName: "circle.fill")
+                .font(.system(size: 6))
+                .foregroundColor(tint)
+            Text(MemoryText.normalizedProse(text))
+                .font(CortexDesign.Typography.prose(13))
+                .foregroundColor(CortexDesign.ink)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// U-REV4: the inline edit-before-approve editor. A plain multi-line field seeded with the proposed
+/// memory, a quiet Cancel, and a wax-red "Save & approve" that hands the corrected text back to the
+/// card — the raw draft is archived so only the reviewer's version enters memory.
+struct ReviewInlineEditor: View {
+    @Binding var text: String
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Edit before approving".uppercased())
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.inkFaint)
+
+            TextEditor(text: $text)
+                .font(CortexDesign.Typography.prose(13.5))
+                .foregroundColor(CortexDesign.ink)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 72, maxHeight: 160)
+                .padding(8)
+                .background(CortexDesign.panelBackground)
+                .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                        .stroke(CortexDesign.hairline, lineWidth: 1)
+                )
+                .focused($focused)
+
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+                CortexButton(title: "Cancel", role: .ghost, size: .small) { onCancel() }
+                CortexButton(title: "Save & approve", systemImage: "checkmark.seal", role: .primary, size: .small) {
+                    onSave()
+                }
+                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(.horizontal, CortexDesign.Space.md)
+        .padding(.vertical, CortexDesign.Space.sm)
+        .background(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .fill(CortexDesign.quietBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(CortexDesign.hairline, lineWidth: 1)
+        )
+        .onAppear { focused = true }
     }
 }
 
@@ -1473,6 +1917,19 @@ struct ReviewQueueSourceBox: View {
                     .truncationMode(.middle)
                     .help(capture.source_url ?? capture.source)
                 Spacer(minLength: 0)
+                // U-REV2: open the underlying source (a note file or the captured URL) so a reviewer
+                // can check provenance before approving. Only offered when there is a real, openable
+                // destination — never a dead button on a capture with no linkable source.
+                if let openURL = reviewOpenableSourceURL(capture) {
+                    CortexIconButton(
+                        systemImage: "arrow.up.right.square",
+                        role: .ghost,
+                        size: .small,
+                        help: "Open the original source"
+                    ) {
+                        NSWorkspace.shared.open(openURL)
+                    }
+                }
             }
         }
     }
@@ -1504,6 +1961,35 @@ struct ReviewQueueSourceBox: View {
         }
         return String(capturedAt.prefix(10))
     }
+}
+
+/// U-REV2: the openable destination for a review card's source, or nil when there's nothing real to
+/// open. Prefers an explicit `source_url` (a captured web page), then a path-like `source` string
+/// (a note file on disk). Only http/https and local file paths are honored — never a fabricated or
+/// non-openable scheme — so the "Open source" affordance is only shown when it actually resolves.
+func reviewOpenableSourceURL(_ capture: CaptureItem) -> URL? {
+    if let raw = capture.source_url?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !raw.isEmpty,
+       let url = URL(string: raw),
+       let scheme = url.scheme?.lowercased(),
+       scheme == "http" || scheme == "https" || scheme == "file" {
+        return url
+    }
+    let source = capture.source.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !source.isEmpty else { return nil }
+    if MemoryText.isPathLike(source) {
+        let expanded = (source as NSString).expandingTildeInPath
+        if FileManager.default.fileExists(atPath: expanded) {
+            return URL(fileURLWithPath: expanded)
+        }
+    }
+    // A bare http(s) URL that landed in `source` rather than `source_url`.
+    if let url = URL(string: source),
+       let scheme = url.scheme?.lowercased(),
+       scheme == "http" || scheme == "https" {
+        return url
+    }
+    return nil
 }
 
 private func reviewShortDate(_ value: String) -> String {
@@ -1594,6 +2080,21 @@ struct CortexReviewSeal {
     let label: String
     let color: Color
     let systemImage: String
+}
+
+/// U-REV8: a triage rank for the "Low confidence first" sort — smaller sorts earlier. Low-confidence
+/// captures rank first (they most need a human eye), then unknown/medium, then high-confidence (safest
+/// to keep). Derived deterministically from the same preview-memory confidence the seal reads; a
+/// capture with no confidence signal lands in the neutral middle rather than being treated as urgent.
+func reviewConfidenceSortRank(_ capture: CaptureItem) -> Int {
+    let confidences = (capture.preview_memories ?? []).compactMap { $0.confidence?.lowercased() }
+    if confidences.contains("low") { return 0 }
+    if confidences.isEmpty { return 1 }
+    if confidences.contains("high") && !confidences.contains("medium") && !confidences.contains("low") {
+        return 2
+    }
+    // Mixed or medium confidence sits between low and pure-high.
+    return 1
 }
 
 func cortexCaptureSeal(_ capture: CaptureItem) -> CortexReviewSeal? {

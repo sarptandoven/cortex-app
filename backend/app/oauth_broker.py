@@ -104,6 +104,22 @@ _PROVIDER_SPECS: dict[str, BrokerProviderSpec] = {
         token_accept_json=True,
         supports_pkce=True,
     ),
+    # Microsoft (Outlook / Microsoft 365). Like Google, Microsoft's web app is a confidential client:
+    # the token exchange requires the client secret, so it lives here in the broker rather than in the
+    # distributed app. offline_access earns a refresh_token; User.Read + Mail.Read is the least-
+    # privilege read set the Outlook connector needs. Microsoft supports PKCE, so the app still sends a
+    # code_challenge and the code_verifier never leaves the Mac. Override scopes with
+    # CORTEX_BROKER_MICROSOFT_SCOPES.
+    "microsoft": BrokerProviderSpec(
+        key="microsoft",
+        authorize_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        default_scopes="offline_access User.Read Mail.Read",
+        token_auth_style="post",
+        authorize_extra={"response_type": "code", "response_mode": "query"},
+        token_accept_json=True,
+        supports_pkce=True,
+    ),
 }
 
 

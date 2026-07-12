@@ -1191,6 +1191,24 @@ private struct AIChatsImportCard: View {
         state.importHistory.contains { $0.deleted_at == nil && $0.saved > 0 }
     }
 
+    /// P6: vendors the user has tapped an export for but whose file hasn't landed yet, newest first.
+    /// A request is considered "still waiting" for up to 24h — long enough to cover the provider's
+    /// email delay, short enough that a stale request from days ago doesn't linger.
+    private var waitingVendors: [(vendor: String, requestedAt: Date)] {
+        let cutoff = Date().addingTimeInterval(-24 * 60 * 60)
+        return state.exportRequestState
+            .filter { $0.value > cutoff }
+            .sorted { $0.value > $1.value }
+            .map { (vendor: $0.key, requestedAt: $0.value) }
+    }
+
+    /// A human "a few minutes ago"-style label for when the export was requested.
+    private func waitingRelative(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // FRONT AND CENTER: the auto-detected export. If Cortex already found the file in
@@ -1223,6 +1241,10 @@ private struct AIChatsImportCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).fill(CortexDesign.accentSoft))
                 .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.accent.opacity(0.3), lineWidth: 1))
+            } else if !waitingVendors.isEmpty {
+                // P6: after the user requested an export, flip to a calm "waiting" state until the file
+                // lands. The watcher imports it automatically, so there's nothing more to click here.
+                waitingBanner
             }
 
             // ONE TAP PER VENDOR: deep-link straight to each provider's export page. This is the step
@@ -1278,15 +1300,16 @@ private struct AIChatsImportCard: View {
 
             DisclosureGroup(isExpanded: $guideExpanded) {
                 // Guided walkthrough: the highlight strolls through the steps on a loop while the
-                // disclosure is open, and clicking a step jumps it there. Step 1 carries the same
-                // per-vendor deep-links so the first action is never more than one tap away.
+                // disclosure is open, and clicking a step jumps it there. U-CONN9: the per-vendor
+                // deep-links live once, in the prominent grid above — step 1 just points back up to
+                // them instead of repeating the same three links (which read as a second, competing
+                // export affordance).
                 GuidedStepWalkthrough(steps: steps, isActive: guideExpanded, textFont: .caption) { index in
                     if index == 0 {
-                        HStack(spacing: 16) {
-                            exportSettingsLink("ChatGPT export page", urlString: "https://chatgpt.com/#settings/DataControls")
-                            exportSettingsLink("Claude export page", urlString: "https://claude.ai/settings/data-privacy-controls")
-                            exportSettingsLink("Gemini via Takeout", urlString: "https://takeout.google.com/")
-                        }
+                        Text("Use the provider buttons above ↑")
+                            .font(CortexDesign.Typography.stamp)
+                            .kerning(0.5)
+                            .foregroundColor(CortexDesign.inkFaint)
                     }
                 }
                 .padding(.top, 6)
@@ -1319,32 +1342,19 @@ private struct AIChatsImportCard: View {
         }
     }
 
-    /// Quiet mono link straight to the provider's export page — the step users abandon.
-    private func exportSettingsLink(_ title: String, urlString: String) -> some View {
-        Button {
-            if let url = URL(string: urlString) {
-                NSWorkspace.shared.open(url)
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Text(title)
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 9, weight: .semibold))
-            }
-            .font(CortexDesign.Typography.stamp)
-            .foregroundColor(CortexDesign.inkSecondary)
-            .underline()
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// A prominent per-vendor deep-link tile: opens that provider's export page in one tap. The
-    /// biggest, most obvious action in the card, because requesting the export is where people stall.
+    /// A prominent per-vendor deep-link tile: opens that provider's export page in one tap AND records
+    /// the request (P6) so the card can flip to a calm "waiting for your <vendor> export" state until
+    /// the file lands and the watcher imports it. Requesting the export is where people stall, so this
+    /// is the biggest, most obvious action in the card.
     private func exportVendorButton(_ name: String, systemImage: String, urlString: String) -> some View {
-        Button {
+        let isWaiting = state.exportRequestState[name] != nil
+        return Button {
             if let url = URL(string: urlString) {
                 NSWorkspace.shared.open(url)
             }
+            // P6: remember we asked for this vendor's export, keyed by the display name so the pill and
+            // the waiting banner can name it. The watcher imports the file automatically once it lands.
+            state.exportRequestState[name] = Date()
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: systemImage)
@@ -1354,9 +1364,11 @@ private struct AIChatsImportCard: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(CortexDesign.ink)
                 Spacer(minLength: 4)
-                Image(systemName: "arrow.up.right")
+                // P6: once requested, the tile shows a quiet "waiting" hourglass instead of the
+                // open-page arrow, so the user knows Cortex is watching for that vendor's file.
+                Image(systemName: isWaiting ? "hourglass" : "arrow.up.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(CortexDesign.inkSecondary)
+                    .foregroundColor(isWaiting ? CortexDesign.accent : CortexDesign.inkSecondary)
             }
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
@@ -1364,8 +1376,68 @@ private struct AIChatsImportCard: View {
             .embossedBorder(radius: CortexDesign.Radius.md)
         }
         .buttonStyle(.plain)
-        .help("Open the \(name) export page in your browser")
-        .accessibilityLabel("Open the \(name) export page")
+        .help(isWaiting
+              ? "Waiting for your \(name) export. Reopen the export page any time; Cortex imports the file automatically when it lands."
+              : "Open the \(name) export page in your browser")
+        .accessibilityLabel(isWaiting ? "Waiting for your \(name) export; reopen the export page" : "Open the \(name) export page")
+    }
+
+    /// P6: the calm "waiting for your export" banner shown after a per-vendor export request, until
+    /// the file lands (at which point the detected-export card takes over). Names each pending vendor
+    /// and reassures the user that Cortex imports it automatically, so there's nothing more to click.
+    private var waitingBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "hourglass")
+                .font(.title3)
+                .foregroundColor(CortexDesign.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(waitingHeadline)
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("We will import it automatically when it lands. The provider usually emails the link within a few minutes; nothing else to do here.")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let first = waitingVendors.first {
+                    Text("Requested \(waitingRelative(first.requestedAt))")
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.6)
+                        .foregroundColor(CortexDesign.inkFaint)
+                }
+            }
+            Spacer(minLength: 8)
+            // A quiet way to dismiss a request that never produced a file (e.g. the user changed
+            // their mind), so the waiting state can't get stuck.
+            CortexButton(title: "Not waiting", systemImage: "xmark", role: .ghost, size: .small) {
+                for entry in waitingVendors {
+                    state.exportRequestState[entry.vendor] = nil
+                }
+            }
+            .help("Stop waiting for the export you requested.")
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).fill(CortexDesign.accentSoft.opacity(0.6)))
+        .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.accent.opacity(0.25), lineWidth: 1))
+    }
+
+    /// "Waiting for your ChatGPT export…" — names one vendor, or lists a couple when several are
+    /// pending, so the per-vendor detail the plan calls for is right in the headline.
+    private var waitingHeadline: String {
+        let names = waitingVendors.map(\.vendor)
+        switch names.count {
+        case 0:
+            return "Waiting for your export…"
+        case 1:
+            return "Waiting for your \(names[0]) export…"
+        case 2:
+            return "Waiting for your \(names[0]) and \(names[1]) exports…"
+        default:
+            let head = names.dropLast().joined(separator: ", ")
+            return "Waiting for your \(head), and \(names[names.count - 1]) exports…"
+        }
     }
 }
 
@@ -2744,6 +2816,29 @@ private struct ConnectionsAIToolsSection: View {
     @State private var testResults: [String: ConnectionTestResult] = [:]
     /// Context-file ("Sync to CLAUDE.md") block-preview disclosure state.
     @State private var contextBlockPreviewExpanded = false
+    /// U-CONN3: whether to show every connected tool row or just the first few.
+    @State private var showAllConnected = false
+    /// U-CONN4: which copy button most recently fired, so its label can flip to "Copied" for 2s.
+    @State private var copiedCluster: CopiedCluster?
+    /// U-CONN6: a pre-targeted Connect-an-app wizard, presented locally so "Add a connector" can land
+    /// straight on the remote-connector path without touching the shared wizard's presentation.
+    @State private var remoteConnectorWizard = false
+
+    /// U-CONN3: how many connected rows to show collapsed before "Show all N".
+    private static let connectedPreviewLimit = 3
+
+    /// U-CONN4: the copy clusters that show an inline "Copied" confirmation.
+    private enum CopiedCluster: Equatable { case toolConfig, extensionPairing, apiDetails }
+
+    private func flashCopied(_ cluster: CopiedCluster) {
+        withAnimation(.easeOut(duration: 0.15)) { copiedCluster = cluster }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if copiedCluster == cluster {
+                withAnimation(.easeOut(duration: 0.2)) { copiedCluster = nil }
+            }
+        }
+    }
 
     private var connectedCount: Int {
         state.integrations.filter { state.integrationState(for: $0).configured }.count
@@ -2791,11 +2886,39 @@ private struct ConnectionsAIToolsSection: View {
 
             if !connectedIntegrations.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(connectedIntegrations.prefix(3)) { integration in
+                    // U-CONN3: don't silently cap connected tools at 3. Show a preview, then let the
+                    // user reveal the rest so a 4th-plus connected tool isn't invisible here.
+                    let shown = showAllConnected
+                        ? connectedIntegrations
+                        : Array(connectedIntegrations.prefix(Self.connectedPreviewLimit))
+                    ForEach(shown) { integration in
                         connectedIntegrationRow(integration)
+                    }
+                    if connectedIntegrations.count > Self.connectedPreviewLimit {
+                        CortexButton(
+                            title: showAllConnected
+                                ? "Show fewer"
+                                : "Show all \(connectedIntegrations.count) connected",
+                            systemImage: showAllConnected ? "chevron.up" : "chevron.down",
+                            role: .ghost,
+                            size: .small
+                        ) {
+                            withAnimation(CortexMotion.press) { showAllConnected.toggle() }
+                        }
                     }
                 }
             }
+        }
+        // U-CONN3: seed the inline test badges from the app-wide cache so a connected tool that was
+        // tested earlier (here or in the wizard) still shows its last result after the sheet reopens.
+        .onAppear {
+            for (id, result) in state.lastToolTestResults where testResults[id] == nil {
+                testResults[id] = result
+            }
+        }
+        // U-CONN6: the pre-targeted Connect-an-app wizard for the web-chat / remote-connector path.
+        .sheet(isPresented: $remoteConnectorWizard) {
+            ConnectAppWizard(state: state, preselectToolID: "chatgpt", preselectKind: .remoteMCP)
         }
     }
 
@@ -2839,15 +2962,37 @@ private struct ConnectionsAIToolsSection: View {
                     state.installDetectedIntegrations()
                 }
             } else if !detectedConnectable.isEmpty {
-                CortexButton(title: "Copy setup config", systemImage: "doc.on.doc", role: .secondary, size: .large) {
+                // U-CONN4: confirm the copy in place, so a silent clipboard write isn't the only feedback.
+                CortexButton(
+                    title: copiedCluster == .toolConfig ? "Copied" : "Copy setup config",
+                    systemImage: copiedCluster == .toolConfig ? "checkmark" : "doc.on.doc",
+                    role: .secondary,
+                    size: .large
+                ) {
                     state.copyMCPConfig()
+                    flashCopied(.toolConfig)
                 }
                 .help("Copies the tool configuration to paste into your AI app's settings.")
             } else {
-                CortexButton(title: "Copy tool config", systemImage: "doc.on.doc", role: .secondary, size: .large) {
-                    state.copyMCPConfig()
+                // U-CONN7: nothing detected or connected yet. Handing out a config blob with no
+                // destination was a dead end, so lead with the guided wizard (pick → connect →
+                // verify) and keep the raw config copy as a quiet secondary for power users.
+                VStack(alignment: .trailing, spacing: 8) {
+                    CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .primary, size: .large) {
+                        state.presentConnectToolsWizard()
+                    }
+                    .help("Opens the guided wizard: pick a tool, connect it, and verify it can reach your memory.")
+                    CortexButton(
+                        title: copiedCluster == .toolConfig ? "Copied" : "Copy tool config",
+                        systemImage: copiedCluster == .toolConfig ? "checkmark" : "doc.on.doc",
+                        role: .ghost,
+                        size: .small
+                    ) {
+                        state.copyMCPConfig()
+                        flashCopied(.toolConfig)
+                    }
+                    .help("Copies the Cortex MCP configuration to paste into Claude Desktop or another compatible tool.")
                 }
-                .help("Copies the Cortex MCP configuration to paste into Claude Desktop or another compatible tool.")
             }
         }
         .padding(14)
@@ -2924,43 +3069,73 @@ private struct ConnectionsAIToolsSection: View {
     /// right-click menu — invisible to anyone who never right-clicks the status item. Surfacing
     /// them here puts every "use Cortex anywhere" path on the same screen as MCP + memory packs.
     private var universalReachRow: some View {
-        HStack(alignment: .center, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(CortexDesign.sealMoss.opacity(0.13))
-                Image(systemName: "puzzlepiece.extension")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundColor(CortexDesign.sealMoss)
-            }
-            .frame(width: 56, height: 56)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Browser extension & any other app".uppercased())
-                    .font(CortexDesign.Typography.stamp)
-                    .kerning(0.8)
-                    .foregroundColor(CortexDesign.inkFaint)
-                Text("Use your memory anywhere")
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundColor(CortexDesign.ink)
-                Text("Pair the browser extension for one-click context on chat sites, or copy API details for SDKs and self-hosted tools.")
-                    .font(.callout)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 8)
-
-            VStack(alignment: .trailing, spacing: 8) {
-                CortexButton(title: "Connect extension", systemImage: "puzzlepiece.extension", role: .secondary, size: .small) {
-                    state.pairBrowserExtension()
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(CortexDesign.sealMoss.opacity(0.13))
+                    Image(systemName: "puzzlepiece.extension")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(CortexDesign.sealMoss)
                 }
-                .help("Mints a read-only pairing token and copies it for the Cortex browser extension.")
+                .frame(width: 56, height: 56)
 
-                CortexButton(title: "Copy API details", systemImage: "curlybraces", role: .secondary, size: .small) {
-                    state.copyUniversalAPIConnectionInfo()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Browser extension & any other app".uppercased())
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
+                    Text("Use your memory anywhere")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Pair the browser extension for one-click context on chat sites, or copy API details for SDKs and self-hosted tools.")
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .help("Copies the base URL, token, and tool-schema endpoints for SDKs and any function-calling app.")
+
+                Spacer(minLength: 8)
+
+                // U-CONN4: confirm each copy in place (mirrors the device-code sheet's "Copied" flip),
+                // and add an explicit paste next-step for the browser-extension pairing token.
+                VStack(alignment: .trailing, spacing: 8) {
+                    CortexButton(
+                        title: copiedCluster == .extensionPairing ? "Token copied" : "Connect extension",
+                        systemImage: copiedCluster == .extensionPairing ? "checkmark" : "puzzlepiece.extension",
+                        role: .secondary,
+                        size: .small
+                    ) {
+                        // #6: only flip to "Token copied" after the token is actually minted + copied.
+                        state.pairBrowserExtension(onPaired: { flashCopied(.extensionPairing) })
+                    }
+                    .help("Mints a read-only pairing token and copies it for the Cortex browser extension.")
+
+                    CortexButton(
+                        title: copiedCluster == .apiDetails ? "Copied" : "Copy API details",
+                        systemImage: copiedCluster == .apiDetails ? "checkmark" : "curlybraces",
+                        role: .secondary,
+                        size: .small
+                    ) {
+                        // #6: only flip to "Copied" after the details are actually on the clipboard.
+                        state.copyUniversalAPIConnectionInfo(onCopied: { flashCopied(.apiDetails) })
+                    }
+                    .help("Copies the base URL, token, and tool-schema endpoints for SDKs and any function-calling app.")
+                }
+            }
+
+            // The concrete next-step for the paired extension, shown once the pairing token is copied.
+            if copiedCluster == .extensionPairing {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(CortexDesign.accent)
+                    Text("Paste this token into the Cortex browser extension's Options, then click Cortex on a supported site.")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
             }
         }
         .padding(14)
@@ -3241,7 +3416,8 @@ private struct ConnectionsAIToolsSection: View {
                 Spacer(minLength: 8)
 
                 CortexButton(title: "Add a connector", systemImage: "cloud", role: .secondary, size: .large) {
-                    state.presentConnectToolsWizard()
+                    // U-CONN6: land directly on the remote-connector path instead of the generic pick grid.
+                    remoteConnectorWizard = true
                 }
                 .help("Opens the wizard to add Cortex as a live connector in ChatGPT or Claude web. It reads your memory on demand; nothing is copied out.")
             }
@@ -3289,6 +3465,13 @@ struct ConnectAppWizard: View {
     @ObservedObject var state: AppState
     @Environment(\.dismiss) private var dismiss
 
+    /// U-CONN6/7: an optional pre-target. When a caller already knows which tool (or which kind of
+    /// tool) the user wants, the wizard opens on the connect step with that tool selected, so "Add a
+    /// connector" lands on the remote-connector path instead of the generic pick grid. Defaults keep
+    /// the plain `ConnectAppWizard(state:)` call site working unchanged.
+    var preselectToolID: String? = nil
+    var preselectKind: IntegrationConnectionKind? = nil
+
     @State private var step: ConnectAppWizardStep = .pick
     @State private var selected: AIIntegration?
     /// True once the user copied the config / command / pack for the selected tool (drives
@@ -3315,6 +3498,26 @@ struct ConnectAppWizard: View {
         }
         .frame(minWidth: 560, minHeight: 560)
         .background(connectionsSheetBackground)
+        .onAppear { applyPreselectIfNeeded() }
+    }
+
+    /// U-CONN6/7: honor a caller's pre-target. Prefers an exact tool id, else the first tool of the
+    /// requested connection kind (e.g. the remote-connector tool for "Add a connector"). Only fires
+    /// while still on the pick step and nothing is selected yet, so it never yanks the user back.
+    private func applyPreselectIfNeeded() {
+        guard step == .pick, selected == nil else { return }
+        // Prefer the exact tool id; if it isn't in the catalog, fall back to the first non-reference
+        // tool of the requested kind (e.g. the remote-connector tool for "Add a connector").
+        var target: AIIntegration?
+        if let id = preselectToolID {
+            target = state.integrations.first { $0.id == id }
+        }
+        if target == nil, let kind = preselectKind {
+            target = state.integrations.first { $0.connectionKind == kind && !$0.referenceOnly }
+        }
+        guard let target else { return }
+        selectTool(target)
+        step = .connect
     }
 
     // MARK: Chrome
@@ -3690,38 +3893,14 @@ struct ConnectAppWizard: View {
         }
     }
 
-    /// Remote-connector path (ChatGPT / Claude web): one button copies the connector link + key (a
-    /// credential, never your data) and opens the tool's connector settings. Requires sign-in so the
-    /// hosted connector can actually reach the user's memory.
+    /// Remote-connector path (ChatGPT / Claude web): P8. The connector URL and key are shown as two
+    /// SEPARATE labeled rows, each with its own copy button, because these web forms have separate
+    /// fields — one combined blob meant a second copy wiped the key. A combined copy stays as a
+    /// secondary. Concrete, per-host guided steps run through the shared GuidedStepWalkthrough so the
+    /// user knows exactly where developer mode lives and which field the key goes in. Requires sign-in
+    /// so the hosted connector can actually reach the user's memory.
     private func remoteMCPConnectBody(_ tool: AIIntegration) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if !state.isSignedIn {
-                HStack(alignment: .top, spacing: 7) {
-                    Image(systemName: "person.crop.circle.badge.exclamationmark")
-                        .foregroundColor(CortexDesign.gold)
-                    Text("Sign in and sync first so \(tool.name) can reach your memory through the hosted connector. Nothing is copied out of Cortex.")
-                        .font(.callout)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            pasteInstructions([
-                "Click Add Cortex to \(tool.name) below.",
-                "\(tool.name)'s connector settings open and the link and key are on your clipboard.",
-                "Paste them as a new connector, then save. This is a secure connection, not your data."
-            ])
-            CortexButton(title: "Add Cortex to \(tool.name)", systemImage: "cloud", role: .primary, size: .large) {
-                state.connectRemoteMCP(for: tool)
-                if state.isSignedIn { didCopy = true }
-            }
-            .disabled(!state.isSignedIn)
-            .help("Copies the Cortex connector link and key for \(tool.name) and opens its connector settings. Your memory stays in Cortex, served live.")
-            Text("A fully live \(tool.name) connection needs the hosted connector enabled, which may not be live yet.")
-                .font(.caption)
-                .foregroundColor(CortexDesign.inkFaint)
-                .fixedSize(horizontal: false, vertical: true)
-            actionConfirmation("Connector details copied. Paste them into \(tool.name), then continue.")
-        }
+        RemoteMCPConnectBody(state: state, tool: tool, didCopy: $didCopy)
     }
 
     /// Reference-only tools (Perplexity, Copilot web, Grok, Poe, NotebookLM): no live path yet, so
@@ -4068,6 +4247,267 @@ struct ConnectAppWizard: View {
     }
 }
 
+/// P8 — the remote-connector connect body (ChatGPT / Claude web). Custom remote connectors have no
+/// one-click deeplink anywhere, so the ceiling is precise guided steps plus a copy affordance that
+/// actually fits the destination form. The connector URL and key are rendered as two SEPARATE
+/// labeled rows, each with its own copy button, so pasting the key never clobbers the URL (their
+/// forms have distinct fields). A combined "Copy both" stays as a secondary. Concrete per-host
+/// steps run through the shared GuidedStepWalkthrough. Everything the user pastes is a credential,
+/// never their memory.
+private struct RemoteMCPConnectBody: View {
+    @ObservedObject var state: AppState
+    let tool: AIIntegration
+    @Binding var didCopy: Bool
+
+    /// The minted connector URL + key for this tool, fetched once sign-in is present. nil until the
+    /// user taps "Prepare connector" (minting a hosted key can round-trip, so it isn't done eagerly).
+    @State private var connectorURL: String?
+    @State private var connectorKey: String?
+    @State private var preparing = false
+    @State private var prepareError: String?
+    @State private var copiedField: CopiedField?
+
+    private enum CopiedField: Equatable { case url, key, both }
+
+    private var hostedBase: String {
+        (state.cloudSyncBaseURL.isEmpty ? AppState.defaultHostedURL : state.cloudSyncBaseURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if !state.isSignedIn {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "person.crop.circle.badge.exclamationmark")
+                        .foregroundColor(CortexDesign.gold)
+                    Text("Sign in and sync first so \(tool.name) can reach your memory through the hosted connector. Nothing is copied out of Cortex.")
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            // Concrete, per-host steps: where developer mode lives and which field each value goes in.
+            GuidedStepWalkthrough(steps: guidedSteps, isActive: true, textFont: .callout) { _ in
+                EmptyView()
+            }
+
+            if connectorURL != nil {
+                connectorRows
+            } else {
+                CortexButton(title: "Prepare connector", systemImage: "cloud", role: .primary, size: .large) {
+                    prepare()
+                }
+                .disabled(!state.isSignedIn || preparing)
+                .help("Mints the Cortex connector URL and key for \(tool.name). Paste each into its own field in \(tool.name).")
+                if preparing {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Preparing your \(tool.name) connector…")
+                            .font(.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                    }
+                }
+            }
+
+            if let prepareError {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(CortexDesign.gold)
+                    Text(prepareError)
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Text("A fully live \(tool.name) connection needs the hosted connector enabled, which may not be live yet.")
+                .font(.caption)
+                .foregroundColor(CortexDesign.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The two separate credential rows, each with its own copy button, plus a combined copy and a
+    /// button to open the tool's connector settings.
+    @ViewBuilder
+    private var connectorRows: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            credentialRow(
+                label: "Connector URL",
+                value: connectorURL ?? "",
+                field: .url,
+                systemImage: "link"
+            )
+            credentialRow(
+                label: "Connector key",
+                value: connectorKey ?? "",
+                field: .key,
+                systemImage: "key.fill",
+                secret: true
+            )
+
+            HStack(spacing: 10) {
+                CortexButton(
+                    title: copiedField == .both ? "Copied both" : "Copy both",
+                    systemImage: copiedField == .both ? "checkmark" : "doc.on.doc",
+                    role: .ghost,
+                    size: .regular
+                ) {
+                    copyBoth()
+                }
+                .help("Copies the URL and key together. Some forms take them as one block.")
+
+                if let urlString = tool.browserURL, let url = URL(string: urlString) {
+                    CortexButton(title: "Open \(tool.name)", systemImage: "arrow.up.right.square", role: .secondary, size: .regular) {
+                        NSWorkspace.shared.open(url)
+                        didCopy = true
+                    }
+                    .help("Opens \(tool.name)'s connector settings so you can paste each value into its own field.")
+                }
+                Spacer(minLength: 0)
+            }
+
+            // The moss mark — the archive's private-by-default signature.
+            HStack(alignment: .top, spacing: 7) {
+                Circle()
+                    .fill(CortexDesign.sealMoss)
+                    .frame(width: 7, height: 7)
+                    .padding(.top, 3)
+                Text("The key is a secure connection, not your data. Your memory stays in Cortex and is served on demand.")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// One labeled credential row: a mono value (secret keys are masked until copied) and a dedicated
+    /// copy button that flips to "Copied" for 2s.
+    @ViewBuilder
+    private func credentialRow(label: String, value: String, field: CopiedField, systemImage: String, secret: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label.uppercased())
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.inkFaint)
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .frame(width: 18)
+                Text(secret ? maskedKey(value) : value)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(CortexDesign.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                CortexButton(
+                    title: copiedField == field ? "Copied" : "Copy",
+                    systemImage: copiedField == field ? "checkmark" : "doc.on.doc",
+                    role: .secondary,
+                    size: .small
+                ) {
+                    copy(value, field: field)
+                }
+                .help("Copies the \(label.lowercased()) on its own, so pasting one value never overwrites the other.")
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.quietBackground))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
+        }
+    }
+
+    /// Masks all but the last 4 characters of a secret so the row can be shown without exposing the
+    /// full key on screen; the copy button still copies the real value.
+    private func maskedKey(_ value: String) -> String {
+        guard value.count > 4 else { return String(repeating: "•", count: max(value.count, 4)) }
+        return String(repeating: "•", count: 6) + String(value.suffix(4))
+    }
+
+    /// Concrete per-host connect steps. ChatGPT and Claude web get their exact settings path; anything
+    /// else gets a precise generic remote-connector recipe. No host offers a one-click deeplink here,
+    /// so exact steps are the honest ceiling.
+    private var guidedSteps: [String] {
+        switch tool.id {
+        case "chatgpt":
+            return [
+                "In ChatGPT, open Settings, then Connectors, then Advanced, and turn on Developer mode.",
+                "Choose Create, then paste the Connector URL below into the URL field.",
+                "Set Authentication to API key (Bearer), then paste the Connector key below into the key field.",
+                "Choose Create. Cortex appears as a connector ChatGPT can read on demand.",
+            ]
+        case "claude":
+            return [
+                "In Claude on the web, open Settings, then Connectors, and choose Add custom connector.",
+                "Paste the Connector URL below into the remote MCP server URL field.",
+                "Choose API key or Bearer token authentication, then paste the Connector key below.",
+                "Save. Cortex is now a connector Claude reaches live.",
+            ]
+        default:
+            return [
+                "Open \(tool.name)'s custom or remote connector settings.",
+                "Paste the Connector URL below as the remote MCP server URL.",
+                "Choose Bearer or API key authentication, then paste the Connector key below.",
+                "Save the connector. Cortex is served live; nothing is copied out.",
+            ]
+        }
+    }
+
+    private func prepare() {
+        guard state.isSignedIn, !preparing else { return }
+        preparing = true
+        prepareError = nil
+        Task { @MainActor in
+            defer { preparing = false }
+            let base = hostedBase
+            guard !base.isEmpty else {
+                prepareError = "Set up cloud sync first so \(tool.name) has a hosted connector to reach."
+                return
+            }
+            let token = await state.mintHostedConnectorToken(base: base, integration: tool)
+            guard let token, !token.isEmpty else {
+                prepareError = "Couldn't mint a hosted connector key yet. The hosted connector may not be enabled for your account."
+                return
+            }
+            connectorURL = "\(base)/mcp"
+            connectorKey = token
+        }
+    }
+
+    private func copy(_ value: String, field: CopiedField) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        markCopied(field)
+    }
+
+    private func copyBoth() {
+        let details = """
+        Cortex connector for \(tool.name) (a secure connection, not your data)
+
+        Connector URL: \(connectorURL ?? "")
+        Connector key: \(connectorKey ?? "")
+        """
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(details, forType: .string)
+        markCopied(.both)
+    }
+
+    private func markCopied(_ field: CopiedField) {
+        withAnimation(.easeOut(duration: 0.15)) { copiedField = field }
+        // The connect action has fired: the wizard can advance to verify.
+        didCopy = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if copiedField == field {
+                withAnimation(.easeOut(duration: 0.2)) { copiedField = nil }
+            }
+        }
+    }
+}
+
 /// Guided manual MCP setup for local-first (App Store) builds. The sandbox blocks writing into
 /// other apps' config files, so instead of automating the connection we hand the user the exact
 /// server JSON in a copyable block plus numbered steps. The visible block shows the shape with a
@@ -4155,6 +4595,17 @@ private struct ConnectionsPrivacyDefaultsSection: View {
         state.dataLifecycleReport?.backups.count ?? 0
     }
 
+    /// U-CONN8: a relative "Last backup …" line from the lifecycle report, so the button reports a
+    /// real result instead of silently firing. createBackup reloads dataLifecycleReport (via
+    /// loadTrust) so this refreshes on its own once a backup lands.
+    private var lastBackupLabel: String? {
+        guard let created = state.dataLifecycleReport?.backups.latest_backup?.created_at,
+              let relative = relativeCapturedLabel(created) else {
+            return nil
+        }
+        return "Last backup \(relative)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center) {
@@ -4174,18 +4625,56 @@ private struct ConnectionsPrivacyDefaultsSection: View {
                     }
                 }
                 Spacer(minLength: 12)
-                CortexButton(
-                    title: backupCount > 0 ? "Back Up Again" : "Back Up Now",
-                    systemImage: "archivebox",
-                    role: .secondary,
-                    size: .large
-                ) {
-                    state.createBackup()
+                if state.backupInFlight {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(minWidth: 132, minHeight: 44)
+                } else {
+                    CortexButton(
+                        title: backupCount > 0 ? "Back Up Again" : "Back Up Now",
+                        systemImage: "archivebox",
+                        role: .secondary,
+                        size: .large
+                    ) {
+                        state.createBackup()
+                    }
+                    .help("Writes a local backup of your memory folder on this Mac.")
                 }
-                .help("Writes a local backup of your memory folder on this Mac.")
+            }
+
+            // The result of the last backup: an error to retry, or the relative time it landed.
+            if let error = state.lastBackupError {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(CortexDesign.gold)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    CortexButton(title: "Try again", systemImage: "arrow.clockwise", role: .ghost, size: .small) {
+                        state.createBackup()
+                    }
+                }
+            } else if let lastBackupLabel {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.seal")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(CortexDesign.sealMoss)
+                    Text(lastBackupLabel)
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                    Spacer(minLength: 0)
+                }
             }
         }
         .connectionsSubCard()
+        .onAppear {
+            // Ensure the "Last backup …" line has data even before the first backup this session.
+            if state.dataLifecycleReport == nil {
+                Task { await state.loadTrust() }
+            }
+        }
     }
 }
 
@@ -4251,31 +4740,50 @@ private struct ConnectionsMCPAccessSection: View {
                 Spacer(minLength: 12)
             }
 
+            // U-CONN1: each tile is a live control now. Tapping flips the matching agent-permission
+            // in appSettings and persists it through the existing settings-save path, so the four
+            // permissions are directly editable here instead of only reflecting the policy section.
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
                 ConnectionsTrustTile(
                     title: settings.allow_agent_reads ? "Read" : "Read off",
                     detail: settings.allow_agent_reads ? "reviewed memory" : "blocked",
                     systemImage: settings.allow_agent_reads ? "eye.fill" : "eye.slash.fill",
-                    color: settings.allow_agent_reads ? CortexDesign.sealMoss : CortexDesign.inkSecondary
-                )
+                    color: settings.allow_agent_reads ? CortexDesign.sealMoss : CortexDesign.inkSecondary,
+                    isOn: settings.allow_agent_reads
+                ) {
+                    state.appSettings.allow_agent_reads.toggle()
+                    state.saveMemorySettings()
+                }
                 ConnectionsTrustTile(
                     title: settings.allow_agent_writes ? "Save" : "Save off",
                     detail: settings.allow_agent_writes ? "new memory to Review" : "blocked",
                     systemImage: settings.allow_agent_writes ? "square.and.pencil" : "pencil.slash",
-                    color: settings.allow_agent_writes ? CortexDesign.accent : CortexDesign.inkSecondary
-                )
+                    color: settings.allow_agent_writes ? CortexDesign.accent : CortexDesign.inkSecondary,
+                    isOn: settings.allow_agent_writes
+                ) {
+                    state.appSettings.allow_agent_writes.toggle()
+                    state.saveMemorySettings()
+                }
                 ConnectionsTrustTile(
                     title: settings.allow_agent_exports ? "Export on" : "Export off",
                     detail: settings.allow_agent_exports ? "redacted exports" : "blocked",
                     systemImage: "square.and.arrow.up",
-                    color: settings.allow_agent_exports ? CortexDesign.accent : CortexDesign.inkSecondary
-                )
+                    color: settings.allow_agent_exports ? CortexDesign.accent : CortexDesign.inkSecondary,
+                    isOn: settings.allow_agent_exports
+                ) {
+                    state.appSettings.allow_agent_exports.toggle()
+                    state.saveMemorySettings()
+                }
                 ConnectionsTrustTile(
                     title: settings.allow_agent_maintenance ? "Maintenance on" : "Maintenance off",
                     detail: settings.allow_agent_destructive_actions ? "delete allowed" : "no deletion",
                     systemImage: settings.allow_agent_maintenance ? "wrench.and.screwdriver.fill" : "wrench.and.screwdriver",
-                    color: settings.allow_agent_maintenance ? CortexDesign.accent : CortexDesign.inkSecondary
-                )
+                    color: settings.allow_agent_maintenance ? CortexDesign.accent : CortexDesign.inkSecondary,
+                    isOn: settings.allow_agent_maintenance
+                ) {
+                    state.appSettings.allow_agent_maintenance.toggle()
+                    state.saveMemorySettings()
+                }
             }
 
             HStack(alignment: .center, spacing: 12) {
@@ -4331,15 +4839,28 @@ private struct ConnectionsMCPAccessSection: View {
                 }
                 .padding(.top, 8)
             } label: {
-                Text("Recent tool activity")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(CortexDesign.inkSecondary)
+                // U-CONN5: a manual Refresh next to the label so recent tool activity can be pulled
+                // on demand (mirrors the audit section's refresh); it also reloads on expand below.
+                HStack(spacing: 8) {
+                    Text("Recent tool activity")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                    Spacer(minLength: 0)
+                    CortexIconButton(systemImage: "arrow.clockwise", role: .ghost, size: .small, help: "Refresh recent tool activity") {
+                        Task { await state.loadTrust() }
+                    }
+                }
             }
             .padding(12)
             .background(CortexDesign.cardBackground)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .onChange(of: recentActivityExpanded) { expanded in
+                if expanded {
+                    Task { await state.loadTrust() }
+                }
+            }
         }
         .padding(14)
         .background(connectionsPanelBackground)
@@ -4348,6 +4869,17 @@ private struct ConnectionsMCPAccessSection: View {
         .onAppear {
             Task {
                 await state.loadIntegrationTokens()
+            }
+        }
+        // U-CONN2: keep the token + audit summary fresh while the sheet is open. A tool that reads
+        // memory (or a newly minted/reset token) shows up within a few seconds instead of only after
+        // reopening the sheet. The loop ends when the view leaves the hierarchy (task cancellation).
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                if Task.isCancelled { break }
+                await state.loadIntegrationTokens()
+                await state.loadTrust()
             }
         }
     }
@@ -4533,13 +5065,45 @@ private func relativeCapturedLabel(_ value: String?) -> String? {
     return String(raw.prefix(10))
 }
 
+/// U-CONN1: a permission tile that is a real control, not a dead read-out. When `isOn` and `toggle`
+/// are supplied the whole tile is a button that flips the matching agent-permission and persists it;
+/// an on/off pip and a hover lift make the interactivity legible. Passing no `toggle` renders the
+/// original static tile (kept for any read-only callers).
 private struct ConnectionsTrustTile: View {
     let title: String
     let detail: String
     let systemImage: String
     let color: Color
+    var isOn: Bool? = nil
+    var toggle: (() -> Void)? = nil
+    @State private var hovering = false
+
+    private var isInteractive: Bool { toggle != nil }
 
     var body: some View {
+        Group {
+            if let toggle {
+                Button(action: toggle) { tileContent }
+                    .buttonStyle(.plain)
+                    .onHover { hovering = $0 }
+                    .animation(.easeOut(duration: 0.12), value: hovering)
+                    .help(helpText)
+                    .accessibilityLabel(title)
+                    .accessibilityValue((isOn ?? false) ? "On" : "Off")
+                    .accessibilityHint("Toggles this permission for connected AI tools.")
+            } else {
+                tileContent
+            }
+        }
+    }
+
+    private var helpText: String {
+        (isOn ?? false)
+            ? "On. Tap to turn this off for connected AI tools."
+            : "Off. Tap to allow this for connected AI tools."
+    }
+
+    private var tileContent: some View {
         HStack(spacing: 10) {
             Image(systemName: systemImage)
                 .font(.title3)
@@ -4557,12 +5121,19 @@ private struct ConnectionsTrustTile: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 0)
+            if let isOn {
+                // A small state pip so the tile reads on/off at a glance.
+                Circle()
+                    .fill(isOn ? color : CortexDesign.inkFaint.opacity(0.4))
+                    .frame(width: 9, height: 9)
+            }
         }
         .padding(12)
         .frame(minHeight: 72, alignment: .leading)
-        .background(CortexDesign.cardBackground)
+        .background(hovering && isInteractive ? CortexDesign.accentSoft : CortexDesign.cardBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

@@ -337,12 +337,12 @@ extension AppState {
     /// Guideline 5.1.1(v): an app that offers account creation must also offer in-app account
     /// deletion. `password` is required by the server ONLY for email/password accounts (blank is
     /// fine for Apple/Google/GitHub accounts).
-    func deleteCloudAccount(password: String) {
+    func deleteCloudAccount(password: String, alsoDeleteLocal: Bool) {
         guard isCloudAuthAvailable else {
             cloudAuthMessage = AppState.cloudAuthUnavailableMessage
             return
         }
-        Task { await performDeleteCloudAccount(password: password) }
+        Task { await performDeleteCloudAccount(password: password, alsoDeleteLocal: alsoDeleteLocal) }
     }
 
     func openCloudSignup(hostedURL: String) {
@@ -546,15 +546,25 @@ extension AppState {
         // Refresh the in-memory access token first: after an app restart it is empty (in-memory
         // only), so without this the server-side session would never actually be revoked.
         let base = cloudSyncBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        // Track whether the remote session was actually ended. Discarding this with `try?` (the old
+        // behavior) let a failed logout POST still claim a clean "Signed out" — dishonest when the
+        // server session is in fact still live and will only expire on its own. (A5a)
+        var remoteSessionEnded = true
         if !base.isEmpty {
             _ = await refreshCloudAccessToken()
-            _ = try? await cloudPost(base: base, path: "/v1/auth/logout", body: [:], bearer: cloudAccessToken)
+            do {
+                _ = try await cloudPost(base: base, path: "/v1/auth/logout", body: [:], bearer: cloudAccessToken)
+            } catch {
+                remoteSessionEnded = false
+            }
         }
         resetToLocalDefaults()
-        cloudAuthMessage = "Signed out of Cortex Cloud."
+        cloudAuthMessage = remoteSessionEnded
+            ? "Signed out of Cortex Cloud."
+            : "Signed out on this Mac. Could not reach Cortex Cloud to end the session remotely, so it will expire automatically."
     }
 
-    private func performDeleteCloudAccount(password: String) async {
+    private func performDeleteCloudAccount(password: String, alsoDeleteLocal: Bool) async {
         guard isSignedIn, !cloudSyncBaseURL.isEmpty else {
             cloudAuthMessage = "You are not signed into a Cortex account."
             return
@@ -570,8 +580,21 @@ extension AppState {
             var body: [String: Any] = [:]
             if !password.isEmpty { body["password"] = password }  // not trimmed: passwords may hold spaces
             _ = try await cloudPost(base: base, path: "/v1/auth/account", body: body, bearer: cloudAccessToken, method: "DELETE")
+            // If the user asked to also erase this Mac's local memory, do it NOW (still signed in, wall
+            // still down) and OBSERVE the result, so the success copy can never claim an erase that did
+            // not actually happen and never points at the now-unreachable "Delete All Local Data".
+            var localWiped = false
+            if alsoDeleteLocal {
+                localWiped = await performLocalDataWipe()
+            }
             resetToLocalDefaults()
-            cloudAuthMessage = "Your Cortex Cloud account and its synced copy were permanently deleted. Your memory on this Mac stays local. Use \"Delete All Local Data\" to erase it from this device."
+            if alsoDeleteLocal && localWiped {
+                cloudAuthMessage = "Your Cortex Cloud account, its synced copy, and this Mac's local memory were permanently deleted. Nothing recoverable remains."
+            } else if alsoDeleteLocal {
+                cloudAuthMessage = "Your Cortex Cloud account and its synced copy were deleted, but erasing this Mac's local memory did not finish. Open \"Delete All Local Data\" in settings to remove it."
+            } else {
+                cloudAuthMessage = "Your Cortex Cloud account and its synced copy were permanently deleted. Your memory on this Mac stays local. Use \"Delete All Local Data\" to erase it from this device."
+            }
         } catch {
             cloudAuthMessage = CortexCloudAuth.describe(error)
         }
@@ -738,6 +761,11 @@ struct CortexCloudSection: View {
     @State private var password: String = ""
     @State private var showDeleteConfirm = false
     @State private var deletePassword = ""
+    // A2: default-ON so deleting the account also wipes the local copy. Deleting the account signs the
+    // user out, which (in an accountRequired build) slams the sign-in wall shut — leaving no way to
+    // reach "Delete All Local Data" in Settings afterward. So the local purge must run in the SAME
+    // action, before sign-out drops the wall, or the delete-success promise is unreachable.
+    @State private var alsoDeleteLocalMemory = true
 
     // Zero-access ("Own your encryption key") local UI state. The key + crypto live entirely in
     // CortexE2EE (Keychain); these only drive the disclosure / force-save-once / restore surfaces.
@@ -747,6 +775,18 @@ struct CortexCloudSection: View {
     @State private var showRestoreField = false
     @State private var restoreCodeInput = ""
     @State private var restoreError = ""
+
+    // A3/A4: "Rebuild this Mac from your account" restore, reachable from the signed-in section (not
+    // just onboarding). `restoreRequested` gates the live progress/result copy so an idle section
+    // isn't cluttered; `showRecoveryCodeForRestore` routes a zero-access account (encrypted synced
+    // memory, no local key) into recovery-code entry instead of a bare "nothing to restore".
+    @State private var restoreRequested = false
+    @State private var restoreTask: Task<Void, Never>? = nil
+    // A4: recovery-code entry surfaced by the "Rebuild this Mac" restore (kept distinct from the
+    // zero-access section's own `showRestoreField` so the two never double-render the same entry).
+    @State private var showRebuildRecoveryEntry = false
+    @State private var rebuildRecoveryInput = ""
+    @State private var rebuildRecoveryError = ""
 
     private static var defaultHostedURL: String { AppState.defaultHostedURL }
 
@@ -784,6 +824,14 @@ struct CortexCloudSection: View {
         state.isSignedIn && !state.cloudSyncBaseURL.isEmpty && !state.requiresSignIn
     }
 
+    /// True only when sync is GENUINELY broken: the user holds a session but the sync target base URL
+    /// is missing, so push-sync can never run and the user really does need to sign in again. Any
+    /// other not-yet-syncing case (freshly signed in, nothing captured yet) is calm/neutral, not a
+    /// fault — so we never show the alarming "Sign in again" prompt for a brand-new account. (A5b)
+    private var syncGenuinelyBroken: Bool {
+        state.isSignedIn && state.cloudSyncBaseURL.isEmpty && !state.requiresSignIn
+    }
+
     /// Live background-sync status (Phase 2), one quiet row covering BOTH directions: push (this
     /// Mac → the account, state on AppState) and pull (the account → this Mac, state on
     /// PullSyncCenter). In-flight work first, then errors, then the combined synced summary.
@@ -813,11 +861,18 @@ struct CortexCloudSection: View {
             Label("Synced ✓ · pulled \(CortexCloudSection.relativeShort(pulled))", systemImage: "checkmark.icloud")
                 .font(.caption).foregroundColor(.secondary)
         } else if canActuallyPushSync {
-            Label("Your memory stays on this Mac and syncs to your account.", systemImage: "icloud")
+            Label("Ready to sync. Your memory will back up to your account as it's captured.", systemImage: "icloud")
                 .font(.caption).foregroundColor(.secondary)
-        } else {
+        } else if syncGenuinelyBroken {
+            // Signed in but the sync target is missing — the session persisted without a base URL, so
+            // push-sync can never run. This is the ONLY case that warrants the alarming orange prompt.
             Label("Sync is unavailable. Sign in again to reconnect your account.", systemImage: "exclamationmark.icloud")
                 .font(.caption).foregroundColor(.orange)
+        } else {
+            // Freshly signed in / nothing synced yet is NOT a fault: don't cry wolf. Show a calm,
+            // neutral "ready" line so a brand-new account doesn't read as broken. (A5b)
+            Label("Ready to sync. Your memory will back up to your account as it's captured.", systemImage: "icloud")
+                .font(.caption).foregroundColor(.secondary)
         }
     }
 
@@ -842,7 +897,10 @@ struct CortexCloudSection: View {
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Sign in, then setup will help you connect memory sources and wire Cortex into Claude Desktop, ChatGPT, or other AI tools.")
+                // A6: a user who already explored the preview isn't a cold first-run. When they've
+                // previewed before but aren't signed in, acknowledge it so the surface reads as
+                // "pick up where you left off" rather than a fresh introduction.
+                Text(returnVisitIntroCopy)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -886,6 +944,10 @@ struct CortexCloudSection: View {
 
             Divider().padding(.vertical, 2)
 
+            restoreSection
+
+            Divider().padding(.vertical, 2)
+
             zeroAccessSection
 
             Divider().padding(.vertical, 2)
@@ -911,9 +973,24 @@ struct CortexCloudSection: View {
                         secure: true,
                         textContentType: .password
                     )
+                    // A2: erase this Mac's local copy in the SAME action. Once the account delete signs
+                    // the user out, an accountRequired build re-raises the sign-in wall and Settings'
+                    // "Delete All Local Data" becomes unreachable — so if we don't purge here, the local
+                    // memory is stranded. Default ON; the user can uncheck to keep their local copy.
+                    CortexToggle(title: "Also delete local memory on this Mac", isOn: $alsoDeleteLocalMemory)
+                    Text(alsoDeleteLocalMemory
+                         ? "This Mac's local copy will be erased too. Nothing recoverable remains."
+                         : "Your local copy on this Mac stays. You can keep using Cortex locally on this device.")
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 8) {
                         CortexButton(title: "Delete my account permanently", systemImage: "trash", role: .destructive) {
-                            state.deleteCloudAccount(password: deletePassword)
+                            // deleteCloudAccount runs the account delete and, when requested, erases this
+                            // Mac's local memory in the SAME action (in order, while still signed in and
+                            // the wall is down) and reports the real result, so the success copy stays
+                            // honest about exactly what was removed and never strands the local purge.
+                            state.deleteCloudAccount(password: deletePassword, alsoDeleteLocal: alsoDeleteLocalMemory)
                             deletePassword = ""
                             showDeleteConfirm = false
                         }
@@ -932,6 +1009,186 @@ struct CortexCloudSection: View {
                 .disabled(state.cloudAuthBusy)
             }
         }
+    }
+
+    // MARK: Rebuild this Mac from your account (A3 / A4)
+
+    /// "Rebuild this Mac from your account" — the new-machine restore, previously reachable only from
+    /// onboarding. Pure reuse of `restoreFromAccount()` + the published `restoreProgress` states, so a
+    /// user who set up a fresh Mac (or wiped local data) can pull their synced memory back down from
+    /// Settings. A zero-access account (encrypted synced memory, no key on this Mac) short-circuits to
+    /// recovery-code entry rather than reporting a bare "nothing to restore" (A4).
+    @ViewBuilder private var restoreSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.clockwise.icloud")
+                    .foregroundColor(.secondary)
+                Text("Rebuild this Mac")
+                    .font(.subheadline)
+            }
+            Text("Pull your synced memory back down to this Mac: for a new machine, or after erasing local data.")
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if restoreRequested {
+                restoreProgressView
+            }
+
+            // A4: a zero-access account needs the recovery code before anything can be decrypted. Once
+            // routed here, show a recovery-code entry (distinct from the zero-access section's own).
+            if showRebuildRecoveryEntry {
+                rebuildRecoveryEntry
+            } else {
+                CortexButton(
+                    title: "Rebuild this Mac from your account",
+                    systemImage: "arrow.clockwise.icloud",
+                    role: .secondary
+                ) {
+                    beginAccountRestore()
+                }
+                .disabled(state.cloudAuthBusy || restoreInFlight)
+            }
+        }
+    }
+
+    /// Recovery-code entry surfaced by the "Rebuild this Mac" restore for a zero-access account. On a
+    /// valid code it imports the key (reusing `restoreZeroAccessFromRecoveryCode`, which also nudges a
+    /// pull), then re-runs the account restore so the now-decryptable memory actually applies.
+    private var rebuildRecoveryEntry: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Your synced memory is encrypted with a key only your devices hold. Paste your recovery code to unlock and rebuild it on this Mac.")
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            CortexField(
+                placeholder: "XXXX-XXXX-…",
+                text: $rebuildRecoveryInput,
+                mono: true,
+                disableAutocorrection: true
+            )
+            if !rebuildRecoveryError.isEmpty {
+                Text(rebuildRecoveryError)
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                CortexButton(title: "Unlock and rebuild", systemImage: "checkmark.shield", role: .primary) {
+                    if let err = state.restoreZeroAccessFromRecoveryCode(rebuildRecoveryInput) {
+                        rebuildRecoveryError = err
+                    } else {
+                        rebuildRecoveryError = ""
+                        rebuildRecoveryInput = ""
+                        showRebuildRecoveryEntry = false
+                        // Key is now on this Mac; run the real restore so decrypted memory applies.
+                        restoreRequested = true
+                        restoreTask?.cancel()
+                        restoreTask = Task { @MainActor in
+                            await state.restoreFromAccount()
+                            restoreTask = nil
+                        }
+                    }
+                }
+                .disabled(rebuildRecoveryInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.cloudAuthBusy)
+                CortexButton(title: "Cancel", role: .ghost) {
+                    showRebuildRecoveryEntry = false
+                    rebuildRecoveryInput = ""
+                    rebuildRecoveryError = ""
+                }
+            }
+        }
+    }
+
+    /// Live progress / terminal result for the account restore, mirroring the onboarding restore
+    /// stage's honest states: never claims "restored" until ≥1 item genuinely applied.
+    @ViewBuilder private var restoreProgressView: some View {
+        switch state.restoreProgress {
+        case .idle:
+            EmptyView()
+        case .restoring(let recovered):
+            Label(recovered > 0 ? "Restoring… \(recovered) recovered" : "Restoring your memory…",
+                  systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption).foregroundColor(.secondary)
+        case .done(let recovered):
+            Label("Restored \(recovered) \(recovered == 1 ? "memory" : "memories") to this Mac.",
+                  systemImage: "checkmark.icloud")
+                .font(.caption).foregroundColor(.secondary)
+        case .empty:
+            Label("Nothing to restore yet. Your account has no memory to pull down.",
+                  systemImage: "icloud")
+                .font(.caption).foregroundColor(.secondary)
+        case .needsRecoveryCode:
+            Label("This account's synced memory is encrypted. Enter your recovery code to unlock it on this Mac.",
+                  systemImage: "lock.shield")
+                .font(.caption).foregroundColor(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.icloud")
+                .font(.caption).foregroundColor(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// True while an account restore is actively running, so the trigger button disables itself.
+    private var restoreInFlight: Bool {
+        if case .restoring = state.restoreProgress { return true }
+        return false
+    }
+
+    /// Kick the restore. A4: if this is a zero-access account whose synced memory is encrypted and
+    /// this Mac has no key, we can never decrypt what we pull — so route straight to recovery-code
+    /// entry instead of running a restore that would apply 0 items and report a confusing `.empty`.
+    /// Otherwise run the real restore, and if it lands on a zero-access decrypt failure, surface the
+    /// recovery-code path then too.
+    private func beginAccountRestore() {
+        rebuildRecoveryError = ""
+        // Zero-access account, no on-device key: nothing pulled can be decrypted. Ask for the code up
+        // front rather than pulling ciphertext that would apply 0 items.
+        if accountLikelyZeroAccessWithoutKey {
+            state.restoreProgress = .needsRecoveryCode
+            restoreRequested = true
+            showRebuildRecoveryEntry = true
+            rebuildRecoveryInput = ""
+            return
+        }
+        restoreRequested = true
+        showRebuildRecoveryEntry = false
+        restoreTask?.cancel()
+        restoreTask = Task { @MainActor in
+            await state.restoreFromAccount()
+            // If the pull failed because encrypted items could not be decrypted on this Mac (zero-
+            // access, missing/incorrect key), route into recovery-code entry rather than leaving a
+            // bare error. Detect it from the pull center's decrypt-failure signal.
+            if restorePulledEncryptedButCouldNotDecrypt {
+                state.restoreProgress = .needsRecoveryCode
+                showRebuildRecoveryEntry = true
+                rebuildRecoveryInput = ""
+            }
+            restoreTask = nil
+        }
+    }
+
+    /// Whether the signed-in account is (best-effort) a zero-access account this Mac can't decrypt:
+    /// the local device holds NO encryption key. We can't see the server's E2EE flag directly, but if
+    /// the user had ever set up zero-access on THIS Mac they'd have a key — so "no key + already saw a
+    /// decrypt failure" is the honest trigger, handled by `restorePulledEncryptedButCouldNotDecrypt`.
+    /// For the pre-flight check we only short-circuit when a prior pull already surfaced the decrypt
+    /// error, so we never wrongly demand a code from a plaintext account.
+    private var accountLikelyZeroAccessWithoutKey: Bool {
+        !state.hasZeroAccessKey && restorePulledEncryptedButCouldNotDecrypt
+    }
+
+    /// True when the background pull reported that encrypted memory could not be decrypted on this
+    /// Mac — the precise, honest signal that a recovery code is required. (Matches the pull worker's
+    /// decrypt-failure error, CortexPullSync → CortexE2EEError.decryptFailed.)
+    private var restorePulledEncryptedButCouldNotDecrypt: Bool {
+        guard !state.hasZeroAccessKey else { return false }
+        if case .error(let message) = PullSyncCenter.shared.state {
+            let lower = message.lowercased()
+            return lower.contains("decrypt") || lower.contains("recovery code")
+        }
+        return false
     }
 
     // MARK: Zero-access ("Own your encryption key")
@@ -1137,6 +1394,12 @@ struct CortexCloudSection: View {
     /// is an error. "cancelled" is treated as progress (neutral), not a failure.
     private func authBannerSeverity(_ message: String) -> AuthBannerSeverity {
         let lower = message.lowercased()
+        // A sign-out where the remote session could NOT be ended is not a clean success — it's a
+        // qualified outcome the user should notice. Classify it as an error tint (not green) even
+        // though it contains "signed out". (A5a — keep the honesty visible.)
+        if lower.contains("could not reach cortex cloud to end the session") {
+            return .error
+        }
         if lower.contains("signed in") || lower.contains("signed out")
             || lower.contains("permanently deleted") {
             return .success
@@ -1375,6 +1638,16 @@ struct CortexCloudSection: View {
     /// offer a Cancel that would claim to stop a request it cannot. (Functionality fix.)
     private var canOfferCancel: Bool {
         state.cloudBrowserSignInTask != nil
+    }
+
+    /// A6: intro copy that softens the sign-in surface for a returning previewer. A user who already
+    /// explored the app with sample notes (`hasPreviewedBefore`) should not be greeted as a cold
+    /// first-run — acknowledge the return so signing in reads as "pick up where you left off."
+    private var returnVisitIntroCopy: String {
+        if state.hasPreviewedBefore && !isSignedIn {
+            return "Welcome back. Pick up where you left off, or sign in to sync your memory across your devices."
+        }
+        return "Sign in, then setup will help you connect memory sources and wire Cortex into Claude Desktop, ChatGPT, or other AI tools."
     }
 
     /// The hosted API the sign-in targets: the user's entry if present, else the default.

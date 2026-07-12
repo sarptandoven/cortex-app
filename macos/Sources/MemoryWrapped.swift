@@ -410,7 +410,14 @@ private struct WrappedShareAnchorView: NSViewRepresentable {
 /// exits — the system share picker (the one primary action), copy, and save-as-PNG. Mirrors
 /// `ConstellationShareSheet` exactly, so the two share flows behave identically.
 struct MemoryWrappedShareSheet: View {
-    let headline: RecallHeadline
+    @ObservedObject var state: AppState
+    /// The headline snapshot at the moment the sheet was opened, used only until (and if) a live
+    /// refresh lands. The live `state.recallHeadline` is always preferred when present.
+    let fallbackHeadline: RecallHeadline
+
+    /// U-DIFF7: always render the freshest headline. Prefer the live published value; fall back to
+    /// the snapshot the caller handed in so the card never renders empty during a refresh.
+    private var headline: RecallHeadline { state.recallHeadline ?? fallbackHeadline }
 
     @Environment(\.dismiss) private var dismiss
 
@@ -423,6 +430,10 @@ struct MemoryWrappedShareSheet: View {
     /// The weekly-notification opt-in, mirrored from `MemoryWrappedNotifier` so the toggle actually
     /// flips the persisted flag (the flag was never being set, so the weekly nudge could never fire).
     @State private var notifyWeekly = MemoryWrappedNotifier.isOptedIn
+    /// U-DIFF11: true when the user opted in but macOS notification permission is denied — so the
+    /// toggle can honestly say the weekly nudge can't fire yet and point at System Settings, rather
+    /// than silently flipping a flag that will never deliver.
+    @State private var notificationsDenied = false
     /// Held so the picker isn't deallocated out from under its own popover.
     @State private var activePicker: NSSharingServicePicker?
     @State private var shareAnchor = WrappedShareAnchor()
@@ -471,7 +482,18 @@ struct MemoryWrappedShareSheet: View {
         // opt-in row sits beneath the exits.
         .frame(minWidth: 684, minHeight: 600)
         .background(CortexDesign.appBackground)
-        .task { renderCard() }
+        // U-DIFF7: render immediately from whatever headline we have, then pull the freshest one so
+        // the shared card reflects the latest recalls rather than a snapshot from when it was opened.
+        .task {
+            renderCard()
+            await state.loadRecallHeadline()
+        }
+        // When the live headline lands (or changes), re-rasterize the card so the shared image is
+        // never stale. `rerenderCard()` forces a fresh raster (the initial `renderCard` no-ops once a
+        // card exists).
+        .onChange(of: state.recallHeadline) { _ in
+            rerenderCard()
+        }
     }
 
     /// The opt-in the weekly notification was ALWAYS missing: `MemoryWrappedNotifier.setOptedIn` had
@@ -483,12 +505,35 @@ struct MemoryWrappedShareSheet: View {
         VStack(alignment: .leading, spacing: 3) {
             CortexToggle(title: "Notify me weekly", isOn: $notifyWeekly)
             Text(notifyWeekly
-                 ? "On. You'll get one nudge a week when a new card is ready, and only on weeks with real recalls."
+                 ? (notificationsDenied
+                    ? "Notifications are off for Cortex. Turn them on in System Settings to get your weekly nudge when a new card is ready."
+                    : "On. You'll get one nudge a week when a new card is ready, and only on weeks with real recalls.")
                  : "Off. Turn this on for one nudge a week when a new card is ready, only on weeks with real recalls.")
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 42) // aligns under the toggle title, past the switch
+
+            // U-DIFF11: don't quietly flip a flag that can't deliver. When the user opts in but macOS
+            // notification permission is denied, say so and offer a jump to System Settings.
+            if notifyWeekly && notificationsDenied {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundColor(CortexDesign.gold)
+                    Text("Notifications are off for Cortex, so this nudge can't be delivered yet.")
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    CortexButton(title: "Open Settings", role: .ghost, size: .small) {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+                .padding(.leading, 42)
+                .padding(.top, 2)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(CortexDesign.Space.sm)
@@ -497,12 +542,59 @@ struct MemoryWrappedShareSheet: View {
                 .fill(CortexDesign.quietBackground)
         )
         .embossedBorder()
+        // U-DIFF11 (returning user): the on-open honesty check. `notifyWeekly` initializes from the
+        // persisted opt-in, so a returning user who opted in lands here already `true`. Without this,
+        // `notificationsDenied` stays false and the row would claim "On. You'll get one nudge a week…"
+        // even when macOS permission is actually denied. Read the current authorization WITHOUT ever
+        // requesting it (mere appearance must never prompt) and reflect it honestly.
+        .task {
+            if notifyWeekly {
+                checkNotificationPermissionOnAppear()
+            }
+        }
         // The single place the persisted opt-in flag is written — reads `isOptedIn` on open (State
         // initializer above), writes on every change here.
         .onChange(of: notifyWeekly) { value in
             MemoryWrappedNotifier.setOptedIn(value)
+            if value {
+                requestNotificationPermissionFeedback()
+            } else {
+                notificationsDenied = false
+            }
         }
         .accessibilityHint("Turns on a once-a-week notification when your Memory Wrapped card is ready.")
+    }
+
+    /// U-DIFF11: on opt-in, check macOS notification permission. If it's never been asked, request it
+    /// now (so the weekly nudge can fire); if it's denied, surface the honest "can't deliver yet"
+    /// notice with a jump to System Settings. All state updates hop back to the main actor.
+    private func requestNotificationPermissionFeedback() {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .denied:
+                DispatchQueue.main.async { notificationsDenied = true }
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    DispatchQueue.main.async { notificationsDenied = !granted }
+                }
+            default:
+                DispatchQueue.main.async { notificationsDenied = false }
+            }
+        }
+    }
+
+    /// U-DIFF11 (returning user): a CHECK-ONLY companion to `requestNotificationPermissionFeedback`.
+    /// Runs on sheet appear for the already-opted-in case. It reads the current authorization status
+    /// and NEVER calls `requestAuthorization` — mere appearance must not throw a system prompt. Both
+    /// `.denied` and `.notDetermined` mean the weekly nudge can't be delivered right now, so the row
+    /// flips to the honest "notifications are off" copy with the jump to System Settings.
+    private func checkNotificationPermissionOnAppear() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            let denied = settings.authorizationStatus == .denied
+                || settings.authorizationStatus == .notDetermined
+            DispatchQueue.main.async { notificationsDenied = denied }
+        }
     }
 
     @ViewBuilder
@@ -541,6 +633,16 @@ struct MemoryWrappedShareSheet: View {
         let image = NSImage(size: rep.size)
         image.addRepresentation(rep)
         cardImage = image
+    }
+
+    /// U-DIFF7: force a fresh raster when the live headline changes. `renderCard` deliberately no-ops
+    /// once a card exists (so the initial `.task` render isn't redone); this clears that guard first
+    /// so the newest recall numbers actually make it onto the shared image.
+    @MainActor
+    private func rerenderCard() {
+        cardImage = nil
+        cardPNG = nil
+        renderCard()
     }
 
     /// PNG straight onto the general pasteboard (plus TIFF for older paste targets).
@@ -625,16 +727,36 @@ struct MemoryWrappedEntry: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             if model.isFirstWeek {
-                Text("Your shareable weekly card appears here once a week of recalls has passed. Check back after a week of use.")
+                Text("Your shareable weekly card appears here once a week of recalls has passed. Connect an AI to start filling it in.")
                     .font(.callout)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                // U-DIFF4: the first-week card is no longer a dead-end at activation. The primary
+                // action gets the user to the one thing that starts filling the card in — connecting
+                // an AI — and a quiet secondary lets a curious user preview the (empty) card so the
+                // firstWeek card states are reachable rather than dead code (U-DIFF10).
+                HStack(spacing: CortexDesign.Space.sm) {
+                    CortexButton(title: "Connect an AI", systemImage: "link", role: .primary, size: .small) {
+                        state.showConnectionsPrivacy = true
+                    }
+                    CortexButton(title: "Preview my card", systemImage: "sparkles.rectangle.stack", role: .ghost, size: .small) {
+                        showSheet = true
+                    }
+                    .help("Preview the shareable card. It fills in with real recalls as your AIs read your memory.")
+                }
             } else {
                 CortexButton(title: "Open your card", systemImage: "sparkles.rectangle.stack", role: .secondary, size: .small) {
                     showSheet = true
                 }
                 .help("Opens a shareable, screenshot-native card of this week's recall stats: Share, Copy, or Save PNG.")
             }
+        }
+        // U-DIFF6: the whole card is tappable to open the share sheet (the button stays the visible
+        // affordance). Kept off the first-week card so a tap doesn't skip past the "Connect an AI"
+        // primary — first-week users open the preview via the explicit ghost button above.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if !model.isFirstWeek { showSheet = true }
         }
         // Behind the entry, a LIVE downscaled peek of the ACTUAL Wrapped card (only once there's a
         // real card to show) — the exact night-sky object the "Open your card" button reveals,
@@ -650,7 +772,10 @@ struct MemoryWrappedEntry: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Memory Wrapped. \(model.compactSummary)")
         .sheet(isPresented: $showSheet) {
-            MemoryWrappedShareSheet(headline: headline)
+            // U-DIFF7: hand the sheet the live AppState (plus the headline snapshot as a fallback) so
+            // it re-reads the freshest recall headline and refreshes on open instead of freezing a
+            // stale number at the moment the card was tapped.
+            MemoryWrappedShareSheet(state: state, fallbackHeadline: headline)
         }
     }
 
