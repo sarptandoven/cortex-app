@@ -167,7 +167,9 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         self.assertIn("Use your memory in AI apps", source)
         self.assertIn("Connect Claude Desktop, ChatGPT, Cursor, and other AI apps", source)
         self.assertIn("Copy tool config", source)
-        self.assertIn("ChatGPT web cannot read local memory directly yet", source)
+        # Web chats (ChatGPT/Claude web) can't run a local server, so they reach memory through a
+        # LIVE remote connector — never a copied-out blob. The sheet says so plainly.
+        self.assertIn("ChatGPT and Claude web reach it through a live connector", source)
         self.assertNotIn("if detectedAIToolCount > 0 || state.connectedAIIntegrationCount > 0", source)
 
     def test_ask_surface_shows_memory_freshness_and_citation_confidence(self) -> None:

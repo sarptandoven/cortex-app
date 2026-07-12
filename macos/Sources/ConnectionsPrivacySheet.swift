@@ -201,7 +201,7 @@ private struct ConnectionsPrivacyOverview: View {
         return "\(connectedSourceCount) source\(connectedSourceCount == 1 ? "" : "s") connected: notes, chat imports, more"
     }
 
-    // MARK: Group 1 — AI apps (the hero: MCP setup, memory packs, tool permissions)
+    // MARK: Group 1 — AI apps (the hero: MCP setup, live connectors, tool permissions)
 
     private var aiAppsGroup: some View {
         CortexDisclosure(
@@ -209,7 +209,7 @@ private struct ConnectionsPrivacyOverview: View {
             systemImage: "wand.and.stars",
             title: "Use your memory in AI apps",
             detail: aiAppsGroupDetail,
-            help: "Connect Claude Desktop, Cursor, or any MCP app to read reviewed memory with citations, or copy a memory pack to paste into ChatGPT and Claude on the web."
+            help: "Connect Claude Desktop, Cursor, or any MCP app to read reviewed memory with citations. ChatGPT and Claude web reach it through a live connector. Cortex never copies your memory out."
         ) {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
                 ConnectionsAIToolsSection(state: state)
@@ -222,7 +222,7 @@ private struct ConnectionsPrivacyOverview: View {
 
     /// Live subtitle for the hero group, driven by the app-wide contract counts (kept fresh by the
     /// app's live-refresh loop). Leads with what's connected, then nudges toward detected apps, and
-    /// otherwise pitches the two ways in: MCP for desktop apps, a memory pack for web chats.
+    /// otherwise pitches the live paths: MCP for desktop apps, a live connector for web chats.
     private var aiAppsGroupDetail: String {
         let connected = state.connectedAIIntegrationCount
         if connected > 0 {
@@ -232,7 +232,7 @@ private struct ConnectionsPrivacyOverview: View {
         if detected > 0 {
             return "\(detected) AI app\(detected == 1 ? "" : "s") detected on this Mac. Connect Claude Desktop, ChatGPT, Cursor, or web chats."
         }
-        return "Connect Claude Desktop, ChatGPT, Cursor, and other AI apps. Or copy a memory pack for the web."
+        return "Connect Claude Desktop, ChatGPT, Cursor, and other AI apps live. Your memory stays in Cortex."
     }
 
     // MARK: Group 3 — Privacy & data (permissions, stored data, backups, export)
@@ -2312,8 +2312,6 @@ private struct ConnectionsAIToolsSection: View {
     @ObservedObject var state: AppState
     /// Local "Test connection" results, keyed by integration id. Set from testToolConnection.
     @State private var testResults: [String: ConnectionTestResult] = [:]
-    /// Memory-pack preview disclosure state for the browser-assistant row.
-    @State private var packPreviewExpanded = false
     /// Context-file ("Sync to CLAUDE.md") block-preview disclosure state.
     @State private var contextBlockPreviewExpanded = false
 
@@ -2337,15 +2335,15 @@ private struct ConnectionsAIToolsSection: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "AI tools & permissions",
-                detail: "Two ways in: connect a desktop app, or copy a memory pack for the web."
+                detail: "Every connection is live: your tools read Cortex on demand. Your memory only ever lives here."
             )
-            .help("Claude Desktop and other MCP apps can read reviewed memory with citations. For ChatGPT or Claude on the web, copy a memory pack and paste it at the start of a chat.")
+            .help("Claude Desktop, Cursor and other MCP apps read reviewed memory with citations. ChatGPT and Claude web reach it through a live connector. Cortex never copies your memory out.")
 
             // The hero front door, first: the guided wizard opens as a top-level sheet.
             connectWizardEntry
 
-            // Two clearly named paths right under the wizard, so a user who isn't on a desktop
-            // app sees the web memory-pack route immediately instead of scrolling past MCP setup.
+            // The web-chat live path right under the wizard, so a user who isn't on a desktop app
+            // sees the ChatGPT/Claude-web connector route immediately instead of scrolling past MCP.
             browserAssistantRow
 
             desktopAppsStatusRow
@@ -2643,9 +2641,8 @@ private struct ConnectionsAIToolsSection: View {
         }
     }
 
-    /// A lightweight preview of the rendered managed block — the same idiom as
-    /// memoryPackPreview above (expandable, read-only, monospaced excerpt) so a user sees exactly
-    /// what will be written before they hit "Sync now" on any file.
+    /// A lightweight preview of the rendered managed block — an expandable, read-only, monospaced
+    /// excerpt so a user sees exactly what will be written before they hit "Sync now" on any file.
     @ViewBuilder
     private var contextBlockPreview: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -2778,35 +2775,34 @@ private struct ConnectionsAIToolsSection: View {
         if !detectedConnectable.isEmpty {
             return "Enable this only when you want reviewed memory available outside Cortex."
         }
-        return "Use Copy tool config for Claude Desktop or any MCP-compatible app. ChatGPT web cannot read local memory directly yet; import exported chats as sources."
+        return "Connect Claude Desktop, Cursor, or any MCP app with one click. ChatGPT and Claude web reach your memory through a live connector; nothing is copied out of Cortex."
     }
 
-    /// The ChatGPT / Claude-web path, given equal footing with MCP installs: one tap builds a
-    /// cited memory pack from the same context engine and opens the site. Preview shows exactly
-    /// what will land on the clipboard before you copy it. This is how browser assistants actually
-    /// use Cortex data today.
+    /// The ChatGPT / Claude-web path, given equal footing with MCP installs: opens the wizard to add
+    /// Cortex as a LIVE remote connector (a link + key, a credential). Your memory stays in Cortex
+    /// and is served on demand; nothing is ever copied out. This replaces the old memory-pack export.
     private var browserAssistantRow: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 14) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(CortexDesign.accent.opacity(0.13))
-                    Image(systemName: "doc.on.clipboard")
+                    Image(systemName: "cloud")
                         .font(.system(size: 24, weight: .semibold))
                         .foregroundColor(CortexDesign.accent)
                 }
                 .frame(width: 56, height: 56)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("ChatGPT, Claude web & other chats".uppercased())
+                    Text("ChatGPT & Claude on the web".uppercased())
                         .font(CortexDesign.Typography.stamp)
                         .kerning(0.8)
                         .foregroundColor(CortexDesign.inkFaint)
-                    Text("Copy a memory pack")
+                    Text("Add Cortex as a live connector")
                         .font(.title3)
                         .fontWeight(.semibold)
                         .foregroundColor(CortexDesign.ink)
-                    Text("Puts your reviewed, cited memory on the clipboard. Paste it at the start of any chat.")
+                    Text("Hand the web chat a connector link and key so it reads your memory on demand. Your memory stays in Cortex, never copied out.")
                         .font(.callout)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2814,13 +2810,11 @@ private struct ConnectionsAIToolsSection: View {
 
                 Spacer(minLength: 8)
 
-                CortexButton(title: "Copy memory pack", systemImage: "doc.on.clipboard", role: .secondary, size: .large) {
-                    state.copyMemoryPack()
+                CortexButton(title: "Add a connector", systemImage: "cloud", role: .secondary, size: .large) {
+                    state.presentConnectToolsWizard()
                 }
-                .help("Builds a cited pack of your approved memory and copies it for ChatGPT, Claude web, Gemini, or any other assistant.")
+                .help("Opens the wizard to add Cortex as a live connector in ChatGPT or Claude web. It reads your memory on demand; nothing is copied out.")
             }
-
-            memoryPackPreview
         }
         .padding(14)
         .background(connectionsPanelBackground)
@@ -2828,61 +2822,6 @@ private struct ConnectionsAIToolsSection: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    /// A lightweight preview of the memory pack: "N memories ready · M characters" plus an
-    /// expandable, read-only, monospaced excerpt of the first ~600 characters so the user sees
-    /// exactly what they'll paste before copying it.
-    @ViewBuilder
-    private var memoryPackPreview: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                CortexButton(
-                    title: state.memoryPackPreview == nil ? "Preview" : "Refresh preview",
-                    systemImage: "eye",
-                    role: .ghost,
-                    size: .small
-                ) {
-                    Task { await state.loadMemoryPackPreview() }
-                }
-                .help("See exactly what Cortex will copy before you paste it into a chat.")
-
-                if let preview = state.memoryPackPreview {
-                    Text("\(preview.itemCount) memor\(preview.itemCount == 1 ? "y" : "ies") ready · \(preview.characterCount) characters")
-                        .font(.caption)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                }
-                Spacer(minLength: 0)
-            }
-
-            if let preview = state.memoryPackPreview {
-                DisclosureGroup(isExpanded: $packPreviewExpanded) {
-                    ScrollView {
-                        Text(memoryPackExcerpt(preview.text))
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(CortexDesign.ink)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(12)
-                    }
-                    .frame(maxHeight: 180)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.quietBackground))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
-                    .padding(.top, 6)
-                } label: {
-                    Text(packPreviewExpanded ? "Hide preview" : "Show what will be copied")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                }
-            }
-        }
-    }
-
-    /// First ~600 characters of the pack, with an ellipsis when there's more. Kept read-only —
-    /// this is a preview, not an editor.
-    private func memoryPackExcerpt(_ text: String) -> String {
-        guard text.count > 600 else { return text }
-        return String(text.prefix(600)) + "…"
-    }
 }
 
 // MARK: - Connect an app wizard
@@ -2982,16 +2921,21 @@ struct ConnectAppWizard: View {
         .background(connectionsSheetBackground)
     }
 
-    /// Whether the honest "finish anyway" escape applies: a memory-pack tool whose paste connection is
-    /// wired (copied) but whose test can't pass only because there's no reviewed memory to share yet.
-    /// Scoped to that exact case so a genuine connection failure (offline) or an unset mcpConfig tool
-    /// never gets a skip — the connect-wizard's honesty gate stays intact for everything else.
-    private var canFinishWithoutMemory: Bool {
-        guard let tool = selected, tool.connectionKind == .memoryPack else { return false }
-        guard didCopy, let result = testResult, !result.ok else { return false }
-        // Only the "no memory" failure — never an offline/unreachable failure (which would mean the
-        // pack path itself isn't working, not that there's simply nothing to share).
-        return result.message.localizedCaseInsensitiveContains("no memory")
+    /// Whether the honest "finish once the action fired" escape applies. Some live paths can't be
+    /// verified by a local probe: a deeplink install happens INSIDE the tool (Cursor/VS Code confirm
+    /// it, Cortex can't read their state); a remote connector needs the hosted side; a reference-only
+    /// tool has no live path yet. For those, once the connect action fired (didCopy) the user isn't
+    /// trapped — they can finish. The config/cli/http paths keep the strict test-passes gate, so the
+    /// honesty invariant holds for everything Cortex can actually verify.
+    private var canFinishWithoutProbe: Bool {
+        guard let tool = selected, didCopy else { return false }
+        if tool.referenceOnly { return true }
+        switch tool.connectionKind {
+        case .mcpDeeplink, .remoteMCP:
+            return true
+        case .mcpConfig, .cliCommand, .httpAPI:
+            return false
+        }
     }
 
     private var headerSubtitle: String {
@@ -3095,27 +3039,26 @@ struct ConnectAppWizard: View {
                 withAnimation(.easeInOut(duration: 0.2)) { step = .verify }
             }
             .disabled(!didCopy)
-            .help(didCopy ? "" : "Copy the connection first.")
+            .help(didCopy ? "" : "Run the connect action first.")
         case .verify:
             HStack(spacing: 10) {
-                // The honest escape for a brand-new user: a memory-pack tool (ChatGPT web) can never
-                // pass the test until there's memory to share — testToolConnection returns ok:false
-                // ("No memory to share yet"). The pasteable connection IS wired (the copy step ran),
-                // so trapping the user with no path to Done is the bug. Offer "finish anyway" ONLY for
-                // a memory-pack tool whose test failed for the no-memory reason (the wiring is fine) —
-                // an mcpConfig tool whose config isn't set still can't skip (its failure means "not
-                // set up," not "nothing to share"), so the honesty invariant holds.
-                if canFinishWithoutMemory {
-                    CortexButton(title: "I'll add memory later, finish anyway", role: .secondary, size: .large) {
+                // The honest escape for the paths Cortex can't verify locally: a deeplink install
+                // happens inside the tool (Cursor/VS Code confirm it), a remote connector needs the
+                // hosted side, and a reference-only tool has no live path yet. For those, once the
+                // connect action fired the user isn't trapped. The config/cli/http paths keep the
+                // strict test-passes gate, so the honesty invariant holds for anything verifiable.
+                if canFinishWithoutProbe {
+                    CortexButton(title: "Finish", systemImage: "checkmark", role: .primary, size: .large) {
                         withAnimation(.easeInOut(duration: 0.2)) { step = .done }
                     }
-                    .help("The connection is set up; there's just no reviewed memory to share yet. Add a source and it'll be available here automatically.")
+                    .help("The connection is set up on Cortex's side. This tool confirms it on its own end.")
+                } else {
+                    CortexButton(title: "Finish", systemImage: "checkmark", role: .primary, size: .large) {
+                        withAnimation(.easeInOut(duration: 0.2)) { step = .done }
+                    }
+                    .disabled(!(testResult?.ok ?? false))
+                    .help((testResult?.ok ?? false) ? "" : "Run the test and pass it first.")
                 }
-                CortexButton(title: "Finish", systemImage: "checkmark", role: .primary, size: .large) {
-                    withAnimation(.easeInOut(duration: 0.2)) { step = .done }
-                }
-                .disabled(!(testResult?.ok ?? false))
-                .help((testResult?.ok ?? false) ? "" : "Run the test and pass it first.")
             }
         case .done:
             CortexButton(title: "Close", role: .primary, size: .large) {
@@ -3199,24 +3142,32 @@ struct ConnectAppWizard: View {
         .buttonStyle(.plain)
     }
 
-    // Step 2 — Connect: the tool's real connection path (mcpConfig / cliCommand / memoryPack /
-    // httpAPI), with one big primary that reuses the existing per-kind copy action and, for the
-    // config path, marks the tool connected via markIntegrationConfigCopied.
+    // Step 2 — Connect: ONE primary button per tool that does the right LIVE thing by kind. Every
+    // path is a live connection back into Cortex; none exports a copy of your data. Deeplink tools
+    // open the tool's own one-click install; config tools write + relaunch (DMG) or copy-config
+    // (App Store); remote tools get the hosted connector credential; cliCommand/httpAPI tools copy
+    // their command / API details. Reference-only tools have no live path yet and just open the site.
     @ViewBuilder
     private var connectStep: some View {
         if let tool = selected {
             VStack(alignment: .leading, spacing: 16) {
                 selectedToolBanner(tool)
 
-                switch tool.connectionKind {
-                case .mcpConfig:
-                    mcpConnectBody(tool)
-                case .cliCommand:
-                    commandConnectBody(tool)
-                case .memoryPack:
-                    memoryPackConnectBody(tool)
-                case .httpAPI:
-                    httpAPIConnectBody(tool)
+                if tool.referenceOnly {
+                    referenceOnlyConnectBody(tool)
+                } else {
+                    switch tool.connectionKind {
+                    case .mcpDeeplink:
+                        deeplinkConnectBody(tool)
+                    case .mcpConfig:
+                        mcpConnectBody(tool)
+                    case .cliCommand:
+                        commandConnectBody(tool)
+                    case .remoteMCP:
+                        remoteMCPConnectBody(tool)
+                    case .httpAPI:
+                        httpAPIConnectBody(tool)
+                    }
                 }
 
                 privacyNote
@@ -3224,26 +3175,111 @@ struct ConnectAppWizard: View {
         }
     }
 
-    /// The MCP config path. On DMG we offer the one-click file merge (installIntegration via
-    /// connectIntegration) AND the copy path; on MAS the sandbox can't write other apps' files, so
-    /// only the copy+paste path is honest (and copyMCPConfig records the connected-state signal).
+    /// Native one-click deeplink (Cursor / VS Code): a single button opens the tool, which pops up
+    /// to confirm. No copy, no manual paste, no restart on our side.
+    private func deeplinkConnectBody(_ tool: AIIntegration) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            pasteInstructions([
+                "Click Install in \(tool.name) below.",
+                "\(tool.name) pops up to confirm the Cortex connection. Approve it.",
+                "That's it. \(tool.name) is connected live."
+            ])
+            CortexButton(title: "Install in \(tool.name)", systemImage: "arrow.down.app", role: .primary, size: .large) {
+                state.connectViaDeeplink(for: tool)
+                didCopy = true
+            }
+            .help("Opens \(tool.name) with a one-click install link. It confirms, and you're live. No file editing.")
+            actionConfirmation("\(tool.name) will pop up to confirm. Approve it, then continue.")
+        }
+    }
+
+    /// Remote-connector path (ChatGPT / Claude web): one button copies the connector link + key (a
+    /// credential, never your data) and opens the tool's connector settings. Requires sign-in so the
+    /// hosted connector can actually reach the user's memory.
+    private func remoteMCPConnectBody(_ tool: AIIntegration) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if !state.isSignedIn {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "person.crop.circle.badge.exclamationmark")
+                        .foregroundColor(CortexDesign.gold)
+                    Text("Sign in and sync first so \(tool.name) can reach your memory through the hosted connector. Nothing is copied out of Cortex.")
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            pasteInstructions([
+                "Click Add Cortex to \(tool.name) below.",
+                "\(tool.name)'s connector settings open and the link and key are on your clipboard.",
+                "Paste them as a new connector, then save. This is a secure connection, not your data."
+            ])
+            CortexButton(title: "Add Cortex to \(tool.name)", systemImage: "cloud", role: .primary, size: .large) {
+                state.connectRemoteMCP(for: tool)
+                if state.isSignedIn { didCopy = true }
+            }
+            .disabled(!state.isSignedIn)
+            .help("Copies the Cortex connector link and key for \(tool.name) and opens its connector settings. Your memory stays in Cortex, served live.")
+            Text("A fully live \(tool.name) connection needs the hosted connector enabled, which may not be live yet.")
+                .font(.caption)
+                .foregroundColor(CortexDesign.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+            actionConfirmation("Connector details copied. Paste them into \(tool.name), then continue.")
+        }
+    }
+
+    /// Reference-only tools (Perplexity, Copilot web, Grok, Poe, NotebookLM): no live path yet, so
+    /// we say so honestly and offer to open the site alongside Cortex. Never exports data.
+    private func referenceOnlyConnectBody(_ tool: AIIntegration) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 7) {
+                Image(systemName: "clock.badge.questionmark")
+                    .foregroundColor(CortexDesign.inkSecondary)
+                Text("A live Cortex connection for \(tool.name) is not supported yet. Cortex never copies your memory out, so there's nothing to paste here. Open \(tool.name) alongside Cortex in the meantime.")
+                    .font(.callout)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let urlString = tool.browserURL, let url = URL(string: urlString) {
+                CortexButton(title: "Open \(tool.name)", systemImage: "arrow.up.right.square", role: .secondary, size: .large) {
+                    NSWorkspace.shared.open(url)
+                    didCopy = true
+                }
+            }
+        }
+    }
+
+    /// The MCP config path. On DMG the primary is one-click LIVE: write the Cortex server into the
+    /// tool's config, then relaunch the tool so it picks it up (connectAndRelaunch) — no manual
+    /// restart. A copy-config fallback stays for anyone who prefers to paste. On MAS the sandbox
+    /// can't write other apps' files, so only the copy+paste path is honest (and copyMCPConfig
+    /// records the connected-state signal).
     private func mcpConnectBody(_ tool: AIIntegration) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            configPreview
-            pasteInstructions(configPasteSteps(tool))
-            HStack(spacing: 10) {
+            if DistributionMode.isAppStore {
+                configPreview
+                pasteInstructions(configPasteSteps(tool))
                 CortexButton(title: "Copy config", systemImage: "doc.on.doc", role: .primary, size: .large) {
                     state.copyMCPConfig(for: tool)
                     didCopy = true
                 }
-                if tool.supportsInstall && !DistributionMode.isAppStore {
-                    CortexButton(title: "Connect automatically", systemImage: "link.circle", role: .secondary, size: .large) {
-                        state.connectIntegration(tool)
+            } else {
+                pasteInstructions([
+                    "Click Connect & restart \(tool.name) below.",
+                    "Cortex writes the connection into \(tool.name) and restarts it for you (a backup is saved first).",
+                    "\(tool.name) reopens with Cortex live."
+                ])
+                HStack(spacing: 10) {
+                    CortexButton(title: "Connect & restart \(tool.name)", systemImage: "link.circle", role: .primary, size: .large) {
+                        state.connectAndRelaunch(for: tool)
                         didCopy = true
                     }
-                    .help("Writes the Cortex server into \(tool.name)'s config file for you (a backup is saved first).")
+                    .help("Writes the Cortex server into \(tool.name)'s config file and restarts it for you.")
+                    CortexButton(title: "Copy config instead", systemImage: "doc.on.doc", role: .ghost, size: .large) {
+                        state.copyMCPConfig(for: tool)
+                        didCopy = true
+                    }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
             }
             copiedConfirmation
         }
@@ -3261,31 +3297,6 @@ struct ConnectAppWizard: View {
             CortexButton(title: "Copy command", systemImage: "terminal", role: .primary, size: .large) {
                 state.copyCLICommand(for: tool)
                 didCopy = true
-            }
-            copiedConfirmation
-        }
-    }
-
-    /// Browser assistants can't run tools; copyMemoryPack puts a cited, reviewed pack on the
-    /// clipboard (and opens the site) to paste at the start of a chat.
-    private func memoryPackConnectBody(_ tool: AIIntegration) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            pasteInstructions([
-                "Copy your reviewed memory pack.",
-                "Open \(tool.name) and start a new chat.",
-                tool.restartHint
-            ])
-            HStack(spacing: 10) {
-                CortexButton(title: "Copy memory pack", systemImage: "doc.on.clipboard", role: .primary, size: .large) {
-                    state.copyMemoryPack(for: tool, openSite: true)
-                    didCopy = true
-                }
-                CortexButton(title: "Connect extension", systemImage: "puzzlepiece.extension", role: .secondary, size: .large) {
-                    state.pairBrowserExtension()
-                    didCopy = true
-                }
-                .help("For a one-click browser path, pair the Cortex extension instead of pasting a pack each time.")
-                Spacer(minLength: 0)
             }
             copiedConfirmation
         }
@@ -3375,6 +3386,23 @@ struct ConnectAppWizard: View {
                 Text("Copied. Paste it, then continue to verify.")
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
+            }
+        }
+    }
+
+    /// Like copiedConfirmation but for the non-copy live paths (deeplink / remote connector): a
+    /// green mark with a custom line once the action has fired, so the wizard can advance without
+    /// implying "copied".
+    @ViewBuilder
+    private func actionConfirmation(_ message: String) -> some View {
+        if didCopy {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(CortexDesign.sealMoss)
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -3469,10 +3497,10 @@ struct ConnectAppWizard: View {
 
             // The payoff, given room to breathe: the proof moment scoped to the tool just connected.
             // It waits for ITS first read (per-app token label == tool name) and flips to "<tool>
-            // just read your memory. Continuity, proven." Memory-pack tools are excluded honestly —
-            // a pasted pack never produces an attributable read call, so a watcher there could never
-            // flip. Additive; never blocks Close / Connect another app.
-            if let tool = selected, tool.connectionKind != .memoryPack {
+            // just read your memory. Continuity, proven." Reference-only tools (no live path) and
+            // remote-connector tools (whose hosted connector may not be live yet) are excluded
+            // honestly — a watcher there could never flip. Additive; never blocks Close.
+            if let tool = selected, !tool.referenceOnly, tool.connectionKind != .remoteMCP {
                 RecallProofWatcher(
                     state: state,
                     toolLabel: tool.name,

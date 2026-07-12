@@ -1852,19 +1852,24 @@ enum IntegrationCategory: String, CaseIterable, Hashable {
     case local = "Local and team stacks"
 }
 
-/// How a tool actually connects to Cortex — every integration gets a REAL action, not a
-/// "reference" dead end:
-/// - `mcpConfig`: Cortex writes/merges the tool's local MCP config file (one-click).
+/// How a tool actually connects to Cortex — every integration gets a REAL, LIVE connection, not a
+/// data-blob export. Cortex holds the data and serves it on demand; it only ever lives here.
+/// - `mcpDeeplink`: the tool has a native one-click MCP install deeplink (Cursor, VS Code). Cortex
+///   opens the URL and the tool itself pops up to confirm — no file write, no manual restart.
+/// - `mcpConfig`: Cortex writes/merges the tool's local MCP config file and relaunches it (one-click
+///   live). On the sandboxed App Store build (no file write) it falls back to copy-config.
 /// - `cliCommand`: the tool registers MCP servers from its own CLI; Cortex builds the exact
 ///   command (with this tool's scoped token) for the user to paste into a terminal.
-/// - `memoryPack`: browser assistants with no local config; Cortex copies a cited, token-budgeted
-///   memory pack to paste into the chat (and can open the site).
+/// - `remoteMCP`: web tools that can only reach a public HTTPS connector (ChatGPT, Claude web).
+///   Cortex hands them the hosted connector URL + a scoped token — a CREDENTIAL for a live
+///   connection back into your memory, never a copy of your data.
 /// - `httpAPI`: self-hosted/local stacks that call tools over HTTP; Cortex copies base URL +
 ///   scoped token + schema endpoints.
 enum IntegrationConnectionKind: Hashable {
+    case mcpDeeplink
     case mcpConfig
     case cliCommand
-    case memoryPack
+    case remoteMCP
     case httpAPI
 }
 
@@ -1915,6 +1920,10 @@ struct AIIntegration: Identifiable, Hashable {
     /// For `.cliCommand` tools: the command template. `{CONFIG}` is replaced with the single-line
     /// server JSON, `{TOKEN}` with the tool's scoped token, `{BASE_URL}` with the local endpoint.
     let cliCommandTemplate: String?
+    /// Browser tabs Cortex has no live path into yet (Perplexity, Copilot web, Grok, Poe,
+    /// NotebookLM). These are catalog references only — they never offer a broken "connect" that
+    /// would leak data out; the UI says "not yet supported" and offers to open the site.
+    let referenceOnly: Bool
 
     init(
         id: String,
@@ -1929,7 +1938,8 @@ struct AIIntegration: Identifiable, Hashable {
         setupHint: String,
         browserURL: String?,
         connectionKind: IntegrationConnectionKind? = nil,
-        cliCommandTemplate: String? = nil
+        cliCommandTemplate: String? = nil,
+        referenceOnly: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -1942,13 +1952,20 @@ struct AIIntegration: Identifiable, Hashable {
         self.requiresExistingConfigTarget = requiresExistingConfigTarget
         self.setupHint = setupHint
         self.browserURL = browserURL
-        self.connectionKind = connectionKind ?? (configTargets.isEmpty ? .memoryPack : .mcpConfig)
+        // Benign default: config-file tools write/merge locally; everything else defaults to the
+        // remote connector credential path (a live connection, never a data blob). Reference-only
+        // tools override the action UI separately (referenceOnly), so no broken connect is offered.
+        self.connectionKind = connectionKind ?? (configTargets.isEmpty ? .remoteMCP : .mcpConfig)
         self.cliCommandTemplate = cliCommandTemplate
+        self.referenceOnly = referenceOnly
     }
 
     var supportsInstall: Bool {
         !configTargets.isEmpty
     }
+
+    /// The one-click deeplink kinds (Cursor / VS Code) whose "connect" opens the tool itself.
+    var usesDeeplink: Bool { connectionKind == .mcpDeeplink }
 }
 
 struct AIIntegrationState: Hashable {
@@ -1982,13 +1999,14 @@ enum AIIntegrationCatalog {
             category: .oneClick,
             systemImage: "cursorarrow.rays",
             summary: "Gives Cursor agent sessions access to Cortex project memory and adaptation signals.",
-            restartHint: "Restart Cursor, then enable the Cortex connection in Cursor settings if prompted.",
+            restartHint: "Cursor pops up to confirm the Cortex connection. Approve it and you're live.",
             bundleIdentifiers: ["com.todesktop.230313mzl4w4u92", "com.cursor.Cursor"],
             configTargets: [
                 IntegrationConfigTarget(label: "Cursor connection", root: .home, relativePath: ".cursor/mcp.json")
             ],
             setupHint: "Use Cortex before implementation tasks: search memory for project decisions, people, and follow-ups.",
-            browserURL: "https://cursor.com"
+            browserURL: "https://cursor.com",
+            connectionKind: .mcpDeeplink
         ),
         AIIntegration(
             id: "windsurf",
@@ -2040,12 +2058,12 @@ enum AIIntegrationCatalog {
             category: .developer,
             systemImage: "rectangle.connected.to.line.below",
             summary: "Connect Cortex to VS Code user or workspace AI tools.",
-            restartHint: "Run the command in a terminal, then reload the VS Code window.",
+            restartHint: "VS Code pops up to confirm the Cortex MCP server. Approve it and you're live.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [],
-            setupHint: "VS Code registers MCP servers with `code --add-mcp`; Cortex builds the exact command.",
+            setupHint: "VS Code installs the Cortex MCP server from a one-click link; approve the prompt.",
             browserURL: "https://code.visualstudio.com",
-            connectionKind: .cliCommand,
+            connectionKind: .mcpDeeplink,
             cliCommandTemplate: "code --add-mcp '{\"name\":\"cortex\",{CONFIG_FIELDS}}'"
         ),
         AIIntegration(
@@ -2067,42 +2085,41 @@ enum AIIntegrationCatalog {
             name: "ChatGPT",
             category: .browser,
             systemImage: "message.badge",
-            summary: "Copy a cited memory pack into any ChatGPT chat, and import exported chats back as sources.",
-            restartHint: "Paste the memory pack at the start of a ChatGPT chat.",
+            summary: "Add Cortex as a live connector so ChatGPT can reach your reviewed memory on demand.",
+            restartHint: "In ChatGPT connector settings, paste the Cortex link and key, then save.",
             bundleIdentifiers: ["com.openai.chat"],
             configTargets: [],
-            setupHint: "ChatGPT web cannot read local memory directly yet. Copy a memory pack into the chat, and import exported chats back into Cortex.",
-            browserURL: "https://chatgpt.com",
-            connectionKind: .memoryPack
+            setupHint: "ChatGPT reaches Cortex through a remote connector. Add the Cortex link and key in its connector settings. Your memory stays in Cortex and is served live, never copied out.",
+            browserURL: "https://chatgpt.com/#settings/connectors",
+            connectionKind: .remoteMCP
         ),
         AIIntegration(
             id: "claude-web",
             name: "Claude Web",
             category: .browser,
             systemImage: "sparkle.magnifyingglass",
-            summary: "Copy a cited memory pack into a Claude web chat, or use Claude Desktop for the live connection.",
-            restartHint: "Paste the memory pack at the start of a Claude chat.",
+            summary: "Add Cortex as a live connector so Claude web can reach your reviewed memory on demand.",
+            restartHint: "In Claude connector settings, paste the Cortex link and key, then save.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Claude Desktop connects live. On the web, copy a memory pack into the chat instead.",
-            browserURL: "https://claude.ai",
-            connectionKind: .memoryPack
+            setupHint: "Claude Desktop connects live over MCP. On the web, add the Cortex remote connector: paste the link and key. Your memory stays in Cortex, served live.",
+            browserURL: "https://claude.ai/settings/connectors",
+            connectionKind: .remoteMCP
         ),
         AIIntegration(
             id: "gemini",
             name: "Gemini",
             category: .browser,
             systemImage: "diamond",
-            summary: "Copy a cited memory pack into Gemini. The Gemini CLI can also connect over MCP.",
-            restartHint: "Paste the memory pack at the start of a Gemini chat.",
+            summary: "Connect the Gemini CLI to Cortex over MCP so it reads your reviewed memory live.",
+            restartHint: "Restart the Gemini CLI so it picks up the Cortex connection.",
             bundleIdentifiers: [],
             configTargets: [
                 IntegrationConfigTarget(label: "Gemini CLI settings", root: .home, relativePath: ".gemini/settings.json")
             ],
             requiresExistingConfigTarget: true,
-            setupHint: "Gemini web uses memory packs. The Gemini CLI connects directly once its settings file exists.",
-            browserURL: "https://gemini.google.com",
-            connectionKind: .memoryPack
+            setupHint: "The Gemini CLI connects to Cortex over MCP once its settings file exists.",
+            browserURL: "https://gemini.google.com"
         ),
         AIIntegration(
             id: "perplexity",
@@ -2113,8 +2130,9 @@ enum AIIntegrationCatalog {
             restartHint: "Open Perplexity when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use direct connectors when available; Cortex memory remains local and review-first.",
-            browserURL: "https://www.perplexity.ai"
+            setupHint: "A live Cortex connection for Perplexity is not supported yet. Open it alongside Cortex in the meantime.",
+            browserURL: "https://www.perplexity.ai",
+            referenceOnly: true
         ),
         AIIntegration(
             id: "copilot-web",
@@ -2125,8 +2143,9 @@ enum AIIntegrationCatalog {
             restartHint: "Open Copilot when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use direct connectors when available; browser chat is not the primary memory path.",
-            browserURL: "https://copilot.microsoft.com"
+            setupHint: "A live Cortex connection for Microsoft Copilot is not supported yet. Open it alongside Cortex in the meantime.",
+            browserURL: "https://copilot.microsoft.com",
+            referenceOnly: true
         ),
         AIIntegration(
             id: "grok",
@@ -2137,8 +2156,9 @@ enum AIIntegrationCatalog {
             restartHint: "Open Grok when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use direct connectors when available; browser chat is not the primary memory path.",
-            browserURL: "https://grok.com"
+            setupHint: "A live Cortex connection for Grok is not supported yet. Open it alongside Cortex in the meantime.",
+            browserURL: "https://grok.com",
+            referenceOnly: true
         ),
         AIIntegration(
             id: "poe",
@@ -2149,8 +2169,9 @@ enum AIIntegrationCatalog {
             restartHint: "Open Poe when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use direct connectors when available; browser bots are not the primary memory path.",
-            browserURL: "https://poe.com"
+            setupHint: "A live Cortex connection for Poe is not supported yet. Open it alongside Cortex in the meantime.",
+            browserURL: "https://poe.com",
+            referenceOnly: true
         ),
         AIIntegration(
             id: "notebooklm",
@@ -2161,8 +2182,9 @@ enum AIIntegrationCatalog {
             restartHint: "Open NotebookLM when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use connected Cortex sources as the system of record; NotebookLM is not the primary memory path.",
-            browserURL: "https://notebooklm.google.com"
+            setupHint: "A live Cortex connection for NotebookLM is not supported yet. Open it alongside Cortex in the meantime.",
+            browserURL: "https://notebooklm.google.com",
+            referenceOnly: true
         ),
         AIIntegration(
             id: "lm-studio",
@@ -4898,25 +4920,25 @@ final class AppState: ObservableObject {
     }
 
     /// One-shot "Test connection" probe for an AI integration. Sets `testingConnectionID` (cleared in
-    /// a defer) so the row can spin. For memory-pack tools we confirm the context pack is non-empty;
-    /// for the tool-calling paths we confirm the tools schema is reachable and report the tool count.
-    /// Any thrown error becomes a friendly, actionable failure message.
+    /// a defer) so the row can spin. For remote-connector tools we confirm the hosted MCP endpoint is
+    /// reachable; for the tool-calling paths we confirm the tools schema is reachable and report the
+    /// tool count. Any thrown error becomes a friendly, actionable failure message.
     func testToolConnection(_ integration: AIIntegration) async -> ConnectionTestResult {
         testingConnectionID = integration.id
         defer { testingConnectionID = nil }
         do {
             switch integration.connectionKind {
-            case .memoryPack:
-                let data = try await request(path: "/v1/context-pack?limit=8", method: "GET")
-                let text = String(data: data, encoding: .utf8) ?? ""
-                // The pack is ALWAYS a non-empty scaffold, so a blank-string check never fires. "Empty"
-                // really means "no cited memories inside it": no "- [" bullet, or the explicit
-                // "No active memories" placeholder the context engine emits when it has nothing.
-                let hasMemoryBullet = text.contains("\n- [") || text.hasPrefix("- [")
-                if !hasMemoryBullet || text.contains("No active memories") {
-                    return ConnectionTestResult(ok: false, message: "No memory to share yet. Add a source first")
+            case .remoteMCP:
+                // The live path for web tools is the hosted connector, not a local pack. We can only
+                // honestly confirm the user is set up to be reachable: signed in with a sync target.
+                guard isSignedIn else {
+                    return ConnectionTestResult(ok: false, message: "Sign in and sync so \(integration.name) can reach your memory")
                 }
-                return ConnectionTestResult(ok: true, message: "Memory pack ready: your memory is reachable")
+                let base = cloudSyncBaseURL.isEmpty ? AppState.defaultHostedURL : cloudSyncBaseURL
+                guard !base.trimmingCharacters(in: CharacterSet(charactersIn: "/ ")).isEmpty else {
+                    return ConnectionTestResult(ok: false, message: "Set up cloud sync so \(integration.name) has a connector to reach")
+                }
+                return ConnectionTestResult(ok: true, message: "Connector details ready. Paste them into \(integration.name) to go live")
             case .mcpConfig:
                 // Honest per-tool test: a generic self-ping used to report "Connected" even when
                 // THIS tool's config was missing or unverified. Check the integration's own state
@@ -4933,9 +4955,10 @@ final class AppState: ObservableObject {
                 let data = try await request(path: "/v1/tools/schema?format=openai", method: "GET")
                 let count = Self.toolSchemaCount(data)
                 return ConnectionTestResult(ok: true, message: "\(integration.name) config verified: \(count) Cortex tools available")
-            case .cliCommand, .httpAPI:
-                // These live outside any file we can inspect (a CLI registration / another app's
-                // settings), so the test verifies Cortex's side and says exactly that.
+            case .mcpDeeplink, .cliCommand, .httpAPI:
+                // These live outside any file we can inspect (a deeplink install inside the tool, a
+                // CLI registration, or another app's settings), so the test verifies Cortex's side
+                // and says exactly that.
                 let data = try await request(path: "/v1/tools/schema?format=openai", method: "GET")
                 let count = Self.toolSchemaCount(data)
                 return ConnectionTestResult(ok: true, message: "Cortex is reachable: \(count) tools available to \(integration.name)")
@@ -7245,21 +7268,176 @@ final class AppState: ObservableObject {
         refreshIntegrationStates()
     }
 
-    /// One entry point for "make this tool work": dispatches on the integration's real
-    /// connection path. mcpConfig tools install; cliCommand tools get their exact terminal
-    /// command copied; memoryPack tools get a cited context pack on the clipboard (and the
-    /// site opened); httpAPI tools get base URL + scoped token + schema endpoints.
+    /// One entry point for "make this tool work — LIVE": dispatches on the integration's real
+    /// connection path. Every path is a live connection back into Cortex; none exports a copy of
+    /// your data. Deeplink tools open the tool's own one-click install; config tools write + relaunch
+    /// (DMG) or copy-config (App Store); cliCommand tools get their exact terminal command copied;
+    /// remoteMCP tools get the hosted connector credential; httpAPI tools get base URL + token +
+    /// schema endpoints. Reference-only tools have no live path yet, so they just open the site.
     func connectIntegration(_ integration: AIIntegration) {
+        guard !integration.referenceOnly else {
+            if let urlString = integration.browserURL, let url = URL(string: urlString) {
+                NSWorkspace.shared.open(url)
+            }
+            status = "A live \(integration.name) connection is not supported yet. Opened it alongside Cortex."
+            return
+        }
         switch integration.connectionKind {
+        case .mcpDeeplink:
+            connectViaDeeplink(for: integration)
         case .mcpConfig:
-            installIntegration(integration)
+            if DistributionMode.isAppStore {
+                installIntegration(integration)
+            } else {
+                connectAndRelaunch(for: integration)
+            }
         case .cliCommand:
             copyCLICommand(for: integration)
-        case .memoryPack:
-            copyMemoryPack(for: integration, openSite: true)
+        case .remoteMCP:
+            connectRemoteMCP(for: integration)
         case .httpAPI:
             copyHTTPAPIDetails(for: integration)
         }
+    }
+
+    // MARK: - One-click LIVE connections
+    //
+    // Every connection Cortex offers is a LIVE relationship: the tool reaches back into Cortex on
+    // demand and the data only ever lives here. There is no "export a memory pack" path — copying a
+    // blob out is anti-moat (it leaks your data permanently and there is no live link). The four
+    // paths below are, in decreasing order of automation: native install deeplink, config-write +
+    // auto-relaunch, remote-connector credential, and CLI command.
+
+    /// Builds the tool's native one-click MCP install deeplink (Cursor / VS Code), or nil if this
+    /// tool has no such deeplink. The single server object is `mcpServerDefinition(for:)` — the
+    /// stdio {command,args,env} on the DMG build (what a local MCP server looks like), or the
+    /// streamable-HTTP shape on the App Store build.
+    func mcpInstallDeeplink(for integration: AIIntegration) -> URL? {
+        ensureUsableMCPAPIKey()
+        registerMCPTokenInBackground(for: integration)
+        let server = mcpServerDefinition(for: integration)
+        switch integration.id {
+        case "cursor":
+            // cursor://anysphere.cursor-deeplink/mcp/install?name=cortex&config=BASE64
+            // where BASE64 = base64(UTF-8 JSON of the single server object).
+            guard let serverData = try? JSONSerialization.data(withJSONObject: server, options: [.sortedKeys]) else {
+                return nil
+            }
+            let base64 = serverData.base64EncodedString()
+            let encoded = base64.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? base64
+            return URL(string: "cursor://anysphere.cursor-deeplink/mcp/install?name=cortex&config=\(encoded)")
+        case "vscode-copilot":
+            // vscode:mcp/install?ENCODED where ENCODED = percent-encoded JSON of
+            // {"name":"cortex", ...server object fields...}.
+            var payload = server
+            payload["name"] = "cortex"
+            guard let payloadData = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+                  let json = String(data: payloadData, encoding: .utf8),
+                  let encoded = json.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+                return nil
+            }
+            return URL(string: "vscode:mcp/install?\(encoded)")
+        default:
+            return nil
+        }
+    }
+
+    /// One-click deeplink connect (Cursor / VS Code): builds the native install URL and opens it.
+    /// The tool itself pops up to confirm — no file write, no manual restart on our side.
+    func connectViaDeeplink(for integration: AIIntegration) {
+        guard let url = mcpInstallDeeplink(for: integration) else {
+            // No deeplink resolvable — fall back to the copy-config path so the user is never stuck.
+            copyMCPConfig(for: integration)
+            status = "\(integration.name) install link is unavailable. Copied the config to paste instead."
+            return
+        }
+        NSWorkspace.shared.open(url)
+        markIntegrationConfigCopied(integration)
+        status = "Opening \(integration.name) to confirm the Cortex connection. Approve the prompt and you're live."
+    }
+
+    /// Terminates any running instances of the integration's apps and relaunches the first one that
+    /// resolves, so a freshly written MCP config is picked up without the user quitting/reopening.
+    /// No-ops safely when nothing is running and nothing resolves.
+    func relaunchIntegrationApp(for integration: AIIntegration) {
+        let running = integration.bundleIdentifiers.flatMap { bundleID in
+            NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+        }
+        // The first bundle id that actually resolves to an installed app — used for relaunch.
+        let launchURL = integration.bundleIdentifiers.lazy
+            .compactMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+            .first
+
+        func launch(_ url: URL) {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in }
+        }
+
+        guard !running.isEmpty else {
+            // Nothing running — just launch it if it's installed, so the config is live now.
+            if let launchURL { launch(launchURL) }
+            return
+        }
+        for app in running {
+            app.terminate()
+        }
+        // Give the apps a moment to quit before relaunching the same executable.
+        guard let launchURL else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            launch(launchURL)
+        }
+    }
+
+    /// The one-click-live path for config-file tools (Claude Desktop / Windsurf / Cline / Roo /
+    /// Gemini CLI): write the Cortex MCP server into the tool's config, then relaunch the tool so it
+    /// picks the connection up. On the App Store build no file write is possible, so
+    /// `installIntegration` copies the config as a fallback (see connectIntegration's dispatch).
+    func connectAndRelaunch(for integration: AIIntegration) {
+        installIntegration(integration)
+        // On the App Store build installIntegration can't write another app's file (it copies a
+        // guide instead), so there is nothing to pick up on relaunch — skip it there.
+        guard !DistributionMode.isAppStore else { return }
+        relaunchIntegrationApp(for: integration)
+        if !integration.bundleIdentifiers.isEmpty {
+            status = "\(integration.name) connected. Restarting it so Cortex is live."
+        }
+    }
+
+    /// Remote-connector path for web tools (ChatGPT / Claude web) that can only reach a public HTTPS
+    /// endpoint. Hands the tool the hosted connector URL + a scoped token — a CREDENTIAL for a live
+    /// connection into your memory, never a copy of your data. Requires sign-in + sync so the hosted
+    /// connector can actually reach the user's memory; never copies a memory pack.
+    func connectRemoteMCP(for integration: AIIntegration) {
+        guard isSignedIn else {
+            status = "Sign in and sync first so \(integration.name) can reach your memory through the hosted connector. Nothing is copied out."
+            return
+        }
+        let base = (cloudSyncBaseURL.isEmpty ? AppState.defaultHostedURL : cloudSyncBaseURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !base.isEmpty else {
+            status = "Set up cloud sync first so \(integration.name) has a hosted connector to reach."
+            return
+        }
+        let connectorURL = "\(base)/mcp"
+        let token = AppState.loadOrCreateMCPToken(for: integration.id)
+        registerMCPTokenInBackground(for: integration)
+        // A SHORT connection-details string: a credential, not memory. Labeled so the user never
+        // mistakes it for their data.
+        let details = """
+        Cortex connector for \(integration.name) (a secure connection, not your data)
+
+        Connector URL: \(connectorURL)
+        Connector key: \(token)
+        """
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(details, forType: .string)
+        markIntegrationConfigCopied(integration)
+        if let urlString = integration.browserURL, let url = URL(string: urlString) {
+            NSWorkspace.shared.open(url)
+        }
+        status = "Add Cortex as a connector in \(integration.name): paste the link and key (this is a secure connection, not your data). Note: this needs the hosted connector enabled, which may not be live yet."
     }
 
     /// Builds and copies the exact terminal command that registers Cortex with a CLI-managed
@@ -9611,19 +9789,23 @@ struct IntegrationCard: View {
 
     /// The action verb for non-config connection paths.
     private var actionTitle: String {
+        if integration.referenceOnly { return "Open site" }
         switch integration.connectionKind {
+        case .mcpDeeplink: return "Install in \(integration.name)"
         case .mcpConfig: return "Connect"
         case .cliCommand: return "Copy connect command"
-        case .memoryPack: return "Copy memory pack"
+        case .remoteMCP: return "Add Cortex to \(integration.name)"
         case .httpAPI: return "Copy API details"
         }
     }
 
     private var actionIcon: String {
+        if integration.referenceOnly { return "arrow.up.right.square" }
         switch integration.connectionKind {
+        case .mcpDeeplink: return "arrow.down.app"
         case .mcpConfig: return "link.circle"
         case .cliCommand: return "terminal"
-        case .memoryPack: return "doc.on.clipboard"
+        case .remoteMCP: return "cloud"
         case .httpAPI: return "network"
         }
     }
@@ -9648,11 +9830,12 @@ struct IntegrationCard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                if integration.connectionKind == .memoryPack, let browserURL = integration.browserURL, let url = URL(string: browserURL) {
+                if integration.connectionKind == .remoteMCP, !integration.referenceOnly,
+                   let browserURL = integration.browserURL, let url = URL(string: browserURL) {
                     Button {
                         NSWorkspace.shared.open(url)
                     } label: {
-                        Label("Open site", systemImage: "arrow.up.right.square")
+                        Label("Open settings", systemImage: "arrow.up.right.square")
                             .frame(minHeight: 40)
                     }
                     .buttonStyle(.bordered)
@@ -9680,12 +9863,17 @@ struct IntegrationCard: View {
                 return "Cortex will show a Connect action after the app is installed."
             }
         }
+        if integration.referenceOnly {
+            return "A live Cortex connection for this tool is not supported yet."
+        }
         if !integration.supportsInstall {
             switch integration.connectionKind {
+            case .mcpDeeplink:
+                return "\(integration.name) will pop up to confirm the Cortex connection. One click, no restart."
             case .cliCommand:
                 return "Copies the exact terminal command that registers Cortex with this tool."
-            case .memoryPack:
-                return "Copies reviewed, cited memory to paste into the chat. Nothing syncs without you."
+            case .remoteMCP:
+                return "Hands \(integration.name) a live connector link and key. Your memory stays in Cortex, served on demand."
             case .httpAPI:
                 return "Copies the local API address and a scoped token for this stack."
             case .mcpConfig:
@@ -9722,8 +9910,9 @@ struct IntegrationStatusBadge: View {
         if supportsInstall && state.configExists { return "Config" }
         if supportsInstall { return "Ready" }
         switch connectionKind {
+        case .mcpDeeplink: return "One click"
         case .cliCommand: return "Terminal"
-        case .memoryPack: return "Copy & paste"
+        case .remoteMCP: return "Connector"
         case .httpAPI: return "Local API"
         case .mcpConfig: return "Ready"
         }
