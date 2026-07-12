@@ -21,7 +21,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.2.0</string>
 	<key>CFBundleVersion</key>
-	<string>27</string>
+	<string>28</string>
 	<key>CortexDistributionMode</key>
 	<string>direct</string>
 	<key>CortexGitHubOAuthClientID</key>
@@ -41,7 +41,7 @@
 	<key>CortexReleaseChannel</key>
 	<string>local-beta</string>
 	<key>CortexRequireAccount</key>
-	<string>true</string>
+	<string>false</string>
 	<key>CortexUpdateFeedURL</key>
 	<string></string>
 	<key>ITSAppUsesNonExemptEncryption</key>
