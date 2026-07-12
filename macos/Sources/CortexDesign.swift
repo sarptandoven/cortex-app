@@ -18,12 +18,40 @@ private func cortexHex(_ hex: UInt32, alpha: CGFloat = 1) -> NSColor {
     )
 }
 
+/// Physical-craft depth is procedural: the wax seal's sheen and rim are derived from the accent by
+/// nudging luminance in sRGB, so they stay coherent across a light/dark repalette with no hand-tuned
+/// second color. `amount > 0` lightens toward white, `< 0` darkens toward black.
+private extension Color {
+    func cortexAdjustBrightness(_ amount: CGFloat) -> Color {
+        Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+            let resolved = NSColor(self).usingColorSpace(.sRGB) ?? .clear
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            _ = appearance // resolution happens via the parent dynamic color; kept for parity.
+            resolved.getRed(&r, green: &g, blue: &b, alpha: &a)
+            let mix: (CGFloat) -> CGFloat = { channel in
+                amount >= 0
+                    ? channel + (1 - channel) * amount
+                    : channel * (1 + amount)
+            }
+            return NSColor(srgbRed: mix(r), green: mix(g), blue: mix(b), alpha: a)
+        }))
+    }
+
+    /// Lighten toward white by `amount` (0…1).
+    func cortexLightened(_ amount: CGFloat) -> Color { cortexAdjustBrightness(amount) }
+    /// Darken toward black by `amount` (0…1).
+    func cortexDarkened(_ amount: CGFloat) -> Color { cortexAdjustBrightness(-amount) }
+}
+
 /// "The Archive" — Cortex's visual identity. A personal archive you'd trust with your life's
 /// marginalia: warm paper, iron-gall ink, sealing-wax red, index cards with margin rules, and
 /// card-catalog metadata in tiny monospaced caps. Three type voices with strict roles (serif =
 /// the archive's voice, SF = the app's working voice, mono = the catalog stamp). Guardrails are
-/// contractual: no textures or skeuomorphism, gold is a fill (never small text), destructive
-/// actions stay system red, max weight .semibold app-wide.
+/// contractual: restrained physical craft — procedural depth (two-layer shadows, edge-light,
+/// seeded ±1.5% grain), letterpress embossed edges, one wax-seal moment per surface; never bitmap
+/// textures; never on the live-activity surfaces. Gold is a fill (never small text), destructive
+/// actions stay system red, serif/SF/mono typography and destructive-red are untouched, max
+/// weight .semibold app-wide.
 enum CortexDesign {
     // MARK: Palette — iron-gall ink on warm paper, one decisive wax-red accent.
 
@@ -120,6 +148,36 @@ enum CortexDesign {
 
     static let controlHeight: CGFloat = 40
 
+    // MARK: Elevation — how far a surface floats off the paper desk.
+    //
+    // A formal scale so cards, sheets, and hover-lifts share one language of depth instead of
+    // ad-hoc `.shadow` calls. Each level is a TWO-layer shadow: a soft ambient (the object's cast
+    // shadow across the desk) plus a tight contact shadow (where it actually touches). This is the
+    // procedural-depth half of "restrained physical craft" — real light, no bitmap texture.
+    enum Elevation {
+        case rest      // lying flat on the paper — the default card
+        case raised    // lifted a little — hovered/interactive card
+        case floating  // a sheet or popover sitting above the surface
+
+        /// Soft ambient shadow (the wide, faint cast).
+        var ambient: (color: Color, radius: CGFloat, y: CGFloat) {
+            switch self {
+            case .rest:     return (CortexDesign.ink.opacity(0.05), 10, 4)
+            case .raised:   return (CortexDesign.ink.opacity(0.05), 14, 6)
+            case .floating: return (CortexDesign.ink.opacity(0.08), 24, 12)
+            }
+        }
+
+        /// Tight contact shadow (the crisp line where the card meets the desk).
+        var contact: (color: Color, radius: CGFloat, y: CGFloat) {
+            switch self {
+            case .rest:     return (CortexDesign.ink.opacity(0.08), 2, 1)
+            case .raised:   return (CortexDesign.ink.opacity(0.08), 2, 1)
+            case .floating: return (CortexDesign.ink.opacity(0.10), 3, 2)
+            }
+        }
+    }
+
     // MARK: Typography — three voices, strict roles.
     //
     // SERIF (New York) is the archive's voice: display, titles, memory/answer prose. Floor 13pt.
@@ -145,6 +203,143 @@ enum CortexDesign {
         static let stamp = Font.system(size: 11, weight: .medium, design: .monospaced)
         /// Keyboard hints and micro-telemetry.
         static let hint = Font.system(size: 10.5, weight: .medium, design: .monospaced)
+    }
+}
+
+// MARK: - Motion — one small vocabulary of physically-plausible timings.
+//
+// Tokenized so every primitive animates on the SAME curves: a control never fights itself with two
+// competing durations (the pre-overhaul hover/press stutter). Springs read as weight; the press
+// "sets into the paper", the seal cools, numbers roll like a counter wheel.
+enum CortexMotion {
+    /// Hover in/out and press for buttons — one spring for both layers (kills the stutter).
+    static let press = Animation.spring(response: 0.18, dampingFraction: 0.7)
+    static let hover = Animation.spring(response: 0.18, dampingFraction: 0.7)
+    /// The wax seal "sets into the paper" — sheen/edge-light drop on press.
+    static let settle = Animation.easeOut(duration: 0.09)
+    /// Card hover-lift — a touch slower so the shadow spread reads.
+    static let lift = Animation.easeOut(duration: 0.16)
+    /// Stat count-up / roll on value change.
+    static let rollNumber = Animation.easeOut(duration: 0.55)
+    /// Focus ring bloom on a field.
+    static let focus = Animation.easeOut(duration: 0.14)
+}
+
+// MARK: - Physical-craft primitives (letterpress edges, seeded grain, wax seal)
+//
+// The three procedural moves that make warm paper real instead of asserted — all deterministic,
+// all zero-bitmap, none permitted on the live-activity surfaces.
+
+extension View {
+    /// Letterpress embossed edge: a two-stop gradient stroke — a faint highlight at the top-left,
+    /// a slightly heavier ink shadow at the bottom-right — so a rectangle reads as a pressed edge
+    /// catching light rather than a default rounded-rect outline. The cheapest move that kills the
+    /// "stock control" tell, with no texture. Layer it OVER a fill/clip.
+    func embossedBorder(radius: CGFloat = CortexDesign.Radius.md, lineWidth: CGFloat = 1) -> some View {
+        overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            CortexDesign.ink.opacity(0.06),  // top-left: light catching the raised edge
+                            CortexDesign.hairline,           // mid: settles into the plain hairline
+                            CortexDesign.ink.opacity(0.10),  // bottom-right: the pressed shadow
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: lineWidth
+                )
+        )
+    }
+
+    /// Procedural paper grain: a faint ±1.5% luminance noise drawn in a Canvas, deterministic
+    /// (FNV-1a-seeded per cell — the same constellation "no `.random`" contract), so warm paper has
+    /// real tooth. PANELS ONLY — never on cards-in-lists (too busy) and never on live-activity
+    /// surfaces. Draws behind content; the size is sampled from the Canvas, so it tiles any panel.
+    func paperGrain(intensity: Double = 0.015, cell: CGFloat = 3) -> some View {
+        background(PaperGrain(intensity: intensity, cell: cell).allowsHitTesting(false))
+    }
+}
+
+/// The seeded grain field. A grid of `cell`-sized squares, each nudged ± a seeded luminance delta —
+/// no bitmap, no randomness (FNV-1a over the cell's grid coordinate, matching MemoryMap/Wrapped).
+private struct PaperGrain: View {
+    let intensity: Double
+    let cell: CGFloat
+
+    var body: some View {
+        Canvas { context, size in
+            let cols = Int((size.width / cell).rounded(.up))
+            let rows = Int((size.height / cell).rounded(.up))
+            guard cols > 0, rows > 0 else { return }
+            for row in 0..<rows {
+                for col in 0..<cols {
+                    // FNV-1a over "col,row" → a stable per-cell hash (deterministic; no `.random`).
+                    var hash: UInt64 = 0xcbf29ce484222325
+                    for byte in "\(col),\(row)".utf8 {
+                        hash ^= UInt64(byte)
+                        hash = hash &* 0x100000001b3
+                    }
+                    // Map the hash to a signed delta in [-intensity, +intensity].
+                    let unit = Double(hash % 1000) / 999.0        // 0…1, stable
+                    let delta = (unit * 2 - 1) * intensity        // ±intensity
+                    // Ink darkens, paper-white lightens; alpha carries the tiny luminance change.
+                    let color: Color = delta >= 0
+                        ? CortexDesign.ink.opacity(abs(delta) * 1.4)
+                        : CortexDesign.panelBackground.opacity(abs(delta) * 1.4)
+                    let rect = CGRect(x: CGFloat(col) * cell, y: CGFloat(row) * cell, width: cell, height: cell)
+                    context.fill(Path(rect), with: .color(color))
+                }
+            }
+        }
+    }
+}
+
+/// A wax-red domed seal — the one physical "moment" per surface. Built from four procedural layers,
+/// no bitmap: a base `accent` fill, a top-left radial sheen (accent lightened ~12% at ~0.18 alpha),
+/// a 1px inner rim (accent darkened ~18%), and a hairline white ~0.10 top edge-light. `pressed`
+/// drives the "sets into the paper" state: the sheen and edge-light fade so the dome flattens.
+///
+/// Used as the fill for `role == .primary` buttons; also a standalone surface (recovery envelope,
+/// hero disc) via `CortexSealSurface(cornerRadius:pressed:)`.
+struct CortexSealSurface: View {
+    var cornerRadius: CGFloat = CortexDesign.Radius.md
+    var pressed: Bool = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        ZStack {
+            // 1. Base wax fill.
+            shape.fill(CortexDesign.accent)
+
+            // 2. Top-left radial sheen — where light domes off the wax. Drops on press.
+            shape.fill(
+                RadialGradient(
+                    colors: [
+                        CortexDesign.accent.cortexLightened(0.12).opacity(pressed ? 0 : 0.18),
+                        Color.clear,
+                    ],
+                    center: .init(x: 0.3, y: 0.25),
+                    startRadius: 0,
+                    endRadius: 120
+                )
+            )
+
+            // 3. Inner rim — the darkened lip of the seal (always present, reads as thickness).
+            shape.strokeBorder(CortexDesign.accent.cortexDarkened(0.18), lineWidth: 1)
+
+            // 4. Hairline top edge-light — the crisp catch along the upper edge. Drops on press.
+            shape
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(pressed ? 0 : 0.10), Color.clear],
+                        startPoint: .top,
+                        endPoint: .center
+                    ),
+                    lineWidth: 1
+                )
+        }
     }
 }
 
@@ -260,11 +455,14 @@ struct CortexButton: View {
         .buttonStyle(CortexPressStyle(
             background: hovering ? role.hoverBackground : role.background,
             foreground: role.foreground,
-            border: role.border
+            border: role.border,
+            role: role,
+            hovering: hovering
         ))
         .onHover { hovering = $0 }
         .opacity(isEnabled ? 1 : 0.4)
-        .animation(.easeOut(duration: 0.12), value: hovering)
+        // Hover is animated once inside the press style (single spring) — no second hover animation
+        // here, which is what caused the press-during-hover stutter.
     }
 }
 
@@ -289,94 +487,287 @@ struct CortexIconButton: View {
         .buttonStyle(CortexPressStyle(
             background: hovering ? role.hoverBackground : role.background,
             foreground: role.foreground,
-            border: role.border
+            border: role.border,
+            role: role,
+            hovering: hovering
         ))
         .onHover { hovering = $0 }
         .opacity(isEnabled ? 1 : 0.4)
-        .animation(.easeOut(duration: 0.12), value: hovering)
+        // Single hover/press spring lives in the press style (no stutter).
         .help(help)
     }
 }
 
-/// Press physics shared by both button components: fill + hairline + a 0.98 press scale.
+/// Press physics shared by both button components. ONE spring (`CortexMotion.press`) drives hover
+/// AND press so a press-during-hover no longer double-animates (the old split `.easeOut(0.12)` on
+/// hover + `.easeOut(0.1)` on press stuttered). Rendering is role-aware:
+///   • `.primary` fills with a `CortexSealSurface` that "sets into the paper" on press — scale 0.97
+///     and its sheen/edge-light drop over `CortexMotion.settle` (~0.09s).
+///   • `.secondary`/`.ghost` gain an `embossedBorder` (letterpress edge) instead of a flat stroke.
+///   • `.destructive` keeps the system-red bordered shape untouched (guardrail).
+/// The legacy `init(background:foreground:border:)` remains for any plain call site; the primary
+/// path uses `init(role:hovering:)`.
 struct CortexPressStyle: ButtonStyle {
     let background: Color
     let foreground: Color
     let border: Color
+    /// When set, rendering follows the role's physical treatment (seal / emboss). When nil, the
+    /// legacy flat fill+stroke is used (source-compatible with the old three-arg init).
+    var role: CortexButtonRole? = nil
+    /// Hover state, so the fill can be resolved once and animated on the single press spring.
+    var hovering: Bool = false
+
+    private var radius: CGFloat { CortexDesign.Radius.md }
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
+        let pressed = configuration.isPressed
+        return configuration.label
             .foregroundColor(foreground)
-            .background(background)
-            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
-                    .stroke(border, lineWidth: 1)
-            )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+            .background(fill(pressed: pressed))
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(edge)
+            .scaleEffect(pressScale(pressed: pressed))
+            .animation(CortexMotion.press, value: pressed)
+            .animation(CortexMotion.press, value: hovering)
+    }
+
+    /// Primary presses a touch deeper into the paper (0.97); everything else 0.98.
+    private func pressScale(pressed: Bool) -> CGFloat {
+        guard pressed else { return 1 }
+        return role == .primary ? 0.97 : 0.98
+    }
+
+    @ViewBuilder
+    private func fill(pressed: Bool) -> some View {
+        if role == .primary {
+            // The wax seal is the primary fill; press drops the sheen/edge-light (settle curve).
+            CortexSealSurface(cornerRadius: radius, pressed: pressed)
+                .animation(CortexMotion.settle, value: pressed)
+        } else {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(background)
+        }
+    }
+
+    @ViewBuilder
+    private var edge: some View {
+        switch role {
+        case .secondary, .ghost:
+            // Letterpress edge — kills the flat rounded-rect tell. Ghost's is barely-there until
+            // its hover fill lifts it; both read as a pressed paper edge, not a stock outline.
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            CortexDesign.ink.opacity(0.06),
+                            CortexDesign.hairline,
+                            CortexDesign.ink.opacity(0.10),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        case .primary:
+            EmptyView() // the seal draws its own rim + edge-light.
+        default:
+            // Legacy / destructive: the plain stroke.
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .stroke(border, lineWidth: 1)
+        }
+    }
+}
+
+// MARK: - Animatable number
+
+/// A serif numeral that ROLLS to a new value on change (a counter-wheel count-up), instead of
+/// snapping. `SwiftUI`'s `animatableData` interpolates the underlying `Double` on the
+/// `CortexMotion.rollNumber` curve; a formatter turns each intermediate frame back into a string so
+/// prefixes/suffixes/grouping ("1,204", "3.2k", "87%") are preserved. Purely a render — the wheel
+/// spins toward the passed value and stops there.
+struct AnimatableNumber: View, Animatable {
+    /// The current (animating) value.
+    var value: Double
+    var font: Font = CortexDesign.Typography.stat
+    var color: Color = CortexDesign.ink
+    /// Turns a frame's Double into the shown string. Defaults to a grouped integer.
+    var format: (Double) -> String = { AnimatableNumber.groupedInteger($0) }
+
+    var animatableData: Double {
+        get { value }
+        set { value = newValue }
+    }
+
+    var body: some View {
+        Text(format(value))
+            .font(font)
+            .monospacedDigit()
+            .foregroundColor(color)
+    }
+
+    /// Default formatter: a grouped integer ("1,204"). Rounds the animating frame.
+    static func groupedInteger(_ n: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        return formatter.string(from: NSNumber(value: n.rounded())) ?? "\(Int(n.rounded()))"
     }
 }
 
 // MARK: - Stat
 
-/// One consistent treatment for headline numbers (Home stats, counts): serif numerals over a
-/// small SF label — replaces the mixed .title3/.stat ad-hoc shapes.
+/// One consistent treatment for headline numbers (Home stats, counts): serif numerals over a small
+/// SF label — replaces the mixed .title3/.stat ad-hoc shapes. If the value's leading run is numeric
+/// it ROLLS on change (count-up wheel, `AnimatableNumber`), preserving any suffix ("k", "%", " days")
+/// — otherwise it renders the string verbatim. The `value: String` API is unchanged, so all call
+/// sites keep working; the roll is automatic on whatever they pass.
 struct CortexStatView: View {
     let value: String
     let label: String
 
+    /// The rolling target parsed from `value`; nil when `value` has no leading number.
+    @State private var animatedNumber: Double = 0
+
+    /// Splits "3.2k" → (3.2, "k"), "1,204" → (1204, ""), "—" → nil.
+    private var parsed: (number: Double, suffix: String)? {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard let first = trimmed.first, first.isNumber || first == "-" || first == "." else { return nil }
+        var numberPart = ""
+        var suffixPart = ""
+        var inNumber = true
+        for char in trimmed {
+            if inNumber, char.isNumber || char == "." || char == "," || char == "-" {
+                if char != "," { numberPart.append(char) }
+            } else {
+                inNumber = false
+                suffixPart.append(char)
+            }
+        }
+        guard let number = Double(numberPart) else { return nil }
+        return (number, suffixPart)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(value)
-                .font(CortexDesign.Typography.stat)
-                .monospacedDigit()
-                .foregroundColor(CortexDesign.ink)
+            if let parsed {
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    AnimatableNumber(
+                        value: animatedNumber,
+                        format: { Self.format($0, like: parsed.number) }
+                    )
+                    if !parsed.suffix.isEmpty {
+                        Text(parsed.suffix)
+                            .font(CortexDesign.Typography.stat)
+                            .monospacedDigit()
+                            .foregroundColor(CortexDesign.ink)
+                    }
+                }
+                .onAppear { animatedNumber = parsed.number }
+                .onChange(of: value) { _ in
+                    withAnimation(CortexMotion.rollNumber) { animatedNumber = parsed.number }
+                }
+            } else {
+                Text(value)
+                    .font(CortexDesign.Typography.stat)
+                    .monospacedDigit()
+                    .foregroundColor(CortexDesign.ink)
+            }
             Text(label)
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkSecondary)
         }
     }
+
+    /// Format a rolling frame to match the target's precision (keep one decimal if the target had
+    /// one, else grouped integer) so "3.2k" rolls through "1.4"→"3.2", not "3".
+    private static func format(_ n: Double, like target: Double) -> String {
+        if target != target.rounded() {
+            return String(format: "%.1f", n)
+        }
+        return AnimatableNumber.groupedInteger(n)
+    }
 }
 
 // MARK: - Index card
 
-/// The index-card recipe: solid card surface, crisp 8pt corners, hairline ink border, and a
-/// whisper of contact shadow — cards read as physical cards lying on the paper desk.
+/// The index-card recipe: solid card surface, crisp 8pt corners, a letterpress edge, and TWO-layer
+/// paper depth (a soft ambient cast + a tight contact shadow) plus a top-40% edge-light — cards
+/// read as physical cards lying on the paper desk, catching light along their top edge. When
+/// `interactive` is set, the card lifts on hover (ambient spreads, it rises 1pt) — the affordance
+/// for a whole-card tap target.
 struct CortexCard: ViewModifier {
     var padding: CGFloat = CortexDesign.Space.lg
     var background: Color = CortexDesign.cardBackground
+    var interactive: Bool = false
+
+    @State private var hovering = false
+
+    private var elevation: CortexDesign.Elevation {
+        interactive && hovering ? .raised : .rest
+    }
 
     func body(content: Content) -> some View {
-        content
+        let shape = RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+        let ambient = elevation.ambient
+        let contact = elevation.contact
+        return content
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(background)
-            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+            .clipShape(shape)
             .overlay(
-                RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
-                    .stroke(CortexDesign.hairline, lineWidth: 1)
+                // Top-40% edge-light: a hairline highlight fading down the upper part of the card,
+                // so light reads as coming from above the desk.
+                shape
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                CortexDesign.panelBackground.cortexLightened(0.6).opacity(0.35),
+                                Color.clear,
+                            ],
+                            startPoint: .top,
+                            endPoint: UnitPoint(x: 0.5, y: 0.4)
+                        ),
+                        lineWidth: 1
+                    )
             )
-            .shadow(color: CortexDesign.ink.opacity(0.06), radius: 3, y: 1)
+            .overlay(shape.stroke(CortexDesign.hairline, lineWidth: 1))
+            // Two-layer shadow: ambient cast + tight contact line.
+            .shadow(color: ambient.color, radius: ambient.radius, y: ambient.y)
+            .shadow(color: contact.color, radius: contact.radius, y: contact.y)
+            .offset(y: interactive && hovering ? -1 : 0)
+            .animation(CortexMotion.lift, value: hovering)
+            .onHover { if interactive { hovering = $0 } }
     }
 }
 
 extension View {
+    /// Wrap a view in the index-card recipe. `interactive` is additive (defaults off) so all 37
+    /// existing `cortexCard(...)` call sites stay source-compatible while new tappable cards opt in.
     func cortexCard(
         padding: CGFloat = CortexDesign.Space.lg,
-        background: Color = CortexDesign.cardBackground
+        background: Color = CortexDesign.cardBackground,
+        interactive: Bool = false
     ) -> some View {
-        modifier(CortexCard(padding: padding, background: background))
+        modifier(CortexCard(padding: padding, background: background, interactive: interactive))
     }
 
     /// The margin spine rule — the app's most recognizable mark. A 3pt vertical rule inset in the
-    /// leading margin of a card, like the red margin line of an index card. Semantic colors:
-    /// gold = unreviewed, wax red = kept/cited, ink 20% = raw source.
+    /// leading margin of a card, like the red margin line of an index card. Now a vertical gradient
+    /// with a ~0.5px feathered shadow so the rule reads as INK BLED into the paper, not a flat bar.
+    /// Semantic colors: gold = unreviewed, wax red = kept/cited, ink 20% = raw source.
     func archiveSpine(_ color: Color) -> some View {
         overlay(alignment: .leading) {
             RoundedRectangle(cornerRadius: 1)
-                .fill(color)
+                .fill(
+                    LinearGradient(
+                        colors: [color.cortexLightened(0.08), color, color.cortexDarkened(0.10)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
                 .frame(width: 3)
+                .shadow(color: color.opacity(0.35), radius: 0.5, x: 0.5) // ink bleeding into paper
                 .padding(.vertical, 10)
                 .padding(.leading, 12)
         }
@@ -393,10 +784,16 @@ struct SectionHeader: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(title)
                     .font(CortexDesign.Typography.title)
                     .foregroundColor(CortexDesign.ink)
+                // The wax tick — a small 6×3 sealing-wax rect that opens the rule (the doc-promised
+                // mark that was missing). Reads as a stamp pressed at the head of the line.
+                RoundedRectangle(cornerRadius: 0.5)
+                    .fill(CortexDesign.accent)
+                    .frame(width: 6, height: 3)
+                    .offset(y: -3)
                 Rectangle()
                     .fill(
                         LinearGradient(
