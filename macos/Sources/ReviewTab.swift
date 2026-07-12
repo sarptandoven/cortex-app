@@ -105,16 +105,6 @@ struct ReviewSourceHealthStrip: View {
         state.sourceReadinessReport?.summary.needs_attention ?? 0
     }
 
-    private var dueCount: Int {
-        sources.filter { $0.sync_plan?.due_now == true }.count
-    }
-
-    // Contract-kept: no longer rendered since the metric tiles were removed, but a contract test
-    // asserts this identifier exists in this file.
-    private var latestSync: String? {
-        sources.compactMap { $0.sync_plan?.last_completed_at ?? $0.last_seen_at }.sorted().last
-    }
-
     private var title: String {
         if needsAttentionCount > 0 { return "Check source health before approving" }
         if pendingCount > 0 { return "Review synced memory with source context" }
@@ -204,21 +194,6 @@ struct ReviewSourceHealthStrip: View {
         }
         .cortexCard(padding: CortexDesign.Space.md, background: CortexDesign.panelBackground)
     }
-
-    // Contract-kept: no longer rendered since the metric tiles were removed, but a contract test
-    // asserts this identifier exists in this file.
-    private var sourceHealthLabel: String {
-        if needsAttentionCount > 0 {
-            return "\(needsAttentionCount) needs attention"
-        }
-        if dueCount > 0 {
-            return "\(dueCount) sync due"
-        }
-        if !sources.isEmpty {
-            return "Healthy"
-        }
-        return "Not connected"
-    }
 }
 
 struct ReviewSourceHealthChip: View {
@@ -257,12 +232,72 @@ struct ReviewSourceHealthChip: View {
     }
 }
 
+/// The in-card wax-seal morph confirm — replaces the native `confirmationDialog`. When a destructive
+/// action is armed, the card's action row morphs INTO this panel: a wax seal "sets into the paper" on
+/// the confirm press. One line of consequence copy, a quiet Cancel, and a wax-red primary that stamps
+/// the decision. No modal, no system sheet — the confirm happens where the eyes already are.
+struct ReviewWaxSealConfirm: View {
+    let message: String
+    let confirmTitle: String
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            // The wax disc: a domed seal surface with an embossed serif mark, the "are you sure" beat.
+            ZStack {
+                Circle().fill(CortexDesign.accent)
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [Color.white.opacity(0.18), .clear],
+                            center: .init(x: 0.3, y: 0.25),
+                            startRadius: 0,
+                            endRadius: 18
+                        )
+                    )
+                Circle().strokeBorder(CortexDesign.accent.opacity(0.55), lineWidth: 1)
+                Image(systemName: "exclamationmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(CortexDesign.panelBackground)
+            }
+            .frame(width: 26, height: 26)
+            .accessibilityHidden(true)
+
+            Text(message)
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 8)
+
+            CortexButton(title: "Cancel", role: .ghost, size: .small) { onCancel() }
+                .keyboardShortcut(.cancelAction)
+            CortexButton(title: confirmTitle, systemImage: "seal.fill", role: .primary, size: .small) {
+                onConfirm()
+            }
+        }
+        .padding(.horizontal, CortexDesign.Space.md)
+        .padding(.vertical, CortexDesign.Space.sm)
+        .background(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .fill(CortexDesign.accentSoft)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(CortexDesign.accent.opacity(0.3), lineWidth: 1)
+        )
+        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .trailing)))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(message)
+    }
+}
+
 /// The section board: a large backlog rendered as at most 15 one-decision groups.
 /// Each card is a project/folder ("Magic Agent Demo Codex Launch · 1,238 notes") with
 /// sample titles for a sniff test, and Approve/Archive act on the WHOLE section server-side.
 struct ReviewSectionsBoard: View {
     @ObservedObject var state: AppState
-    @State private var confirmArchiveSection: ReviewSection?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -277,32 +312,16 @@ struct ReviewSectionsBoard: View {
             }
             LazyVStack(alignment: .leading, spacing: 10) {
                 ForEach(state.reviewSections) { section in
+                    // The archive confirm now morphs IN-CARD (no native confirmationDialog): the card
+                    // owns its own armed state and calls archive only on the sealed confirm.
                     ReviewSectionCard(
                         section: section,
                         isInFlight: state.inFlightSectionIds.contains(section.section_id),
                         approve: { state.approveReviewSection(section) },
-                        archive: { confirmArchiveSection = section }
+                        archive: { state.archiveReviewSection(section) }
                     )
                 }
             }
-        }
-        .confirmationDialog(
-            "Archive \(confirmArchiveSection?.capture_count ?? 0) items in “\(confirmArchiveSection?.label ?? "")”?",
-            isPresented: Binding(
-                get: { confirmArchiveSection != nil },
-                set: { if !$0 { confirmArchiveSection = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Archive section", role: .destructive) {
-                if let section = confirmArchiveSection {
-                    state.archiveReviewSection(section)
-                }
-                confirmArchiveSection = nil
-            }
-            Button("Cancel", role: .cancel) { confirmArchiveSection = nil }
-        } message: {
-            Text("Cortex won't remember archived items. Your original notes stay in your source.")
         }
     }
 }
@@ -313,6 +332,8 @@ struct ReviewSectionCard: View {
     let approve: () -> Void
     let archive: () -> Void
     @State private var isHovered = false
+    // Armed = the in-card wax-seal archive confirm is showing (replaces the native dialog).
+    @State private var armed = false
 
     private var countLine: String {
         var parts = ["\(section.capture_count) note\(section.capture_count == 1 ? "" : "s")"]
@@ -326,42 +347,68 @@ struct ReviewSectionCard: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(section.label)
-                        .font(CortexDesign.Typography.title)
-                        .foregroundColor(CortexDesign.ink)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text(countLine)
-                        .font(CortexDesign.Typography.caption)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(section.label)
+                            .font(CortexDesign.Typography.title)
+                            .foregroundColor(CortexDesign.ink)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Text(countLine)
+                            .font(CortexDesign.Typography.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                            .lineLimit(1)
+                    }
+                    // The kind-distribution bar: memories vs tasks as a proportioned rule so the mix
+                    // reads at a glance. Only when the section actually carries countable items.
+                    if section.memory_count + section.task_count > 0 {
+                        ReviewKindDistributionBar(
+                            memoryCount: section.memory_count,
+                            taskCount: section.task_count
+                        )
+                        .frame(maxWidth: 220)
+                    }
                 }
-                if !section.sample_titles.isEmpty {
-                    Text(section.sample_titles.joined(separator: "  ·  "))
-                        .font(CortexDesign.Typography.caption)
-                        .foregroundColor(CortexDesign.inkFaint)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .help(section.sample_titles.joined(separator: "\n"))
+                Spacer(minLength: 12)
+                if !armed {
+                    if isInFlight {
+                        // Ghost skeleton stamp instead of the stock spinner while acting.
+                        ReviewGhostStamp()
+                    }
+                    CortexButton(title: "Archive", systemImage: "archivebox", role: .ghost) {
+                        withAnimation(CortexMotion.press) { armed = true }
+                    }
+                    .disabled(isInFlight)
+                    .help("Archives the \(section.capture_count) items in this section")
+                    CortexButton(title: "Approve", systemImage: "checkmark.seal", role: .primary) {
+                        approve()
+                    }
+                    .disabled(isInFlight)
+                    .help("Approves the \(section.capture_count) items in this section")
                 }
             }
-            Spacer(minLength: 12)
-            if isInFlight {
-                ProgressView().controlSize(.small)
+
+            // Peeking sample mini-cards: a sniff test of what's inside, as tiny stacked index cards.
+            if !armed, !section.sample_titles.isEmpty {
+                ReviewSampleMiniCards(titles: section.sample_titles)
             }
-            CortexButton(title: "Archive", systemImage: "archivebox", role: .ghost) {
-                archive()
+
+            // The in-card wax-seal archive confirm, morphing in over the action row.
+            if armed {
+                ReviewWaxSealConfirm(
+                    message: "Archive \(section.capture_count) items in “\(section.label)”? Your original notes stay in your source.",
+                    confirmTitle: "Archive section",
+                    onConfirm: {
+                        withAnimation(CortexMotion.press) { armed = false }
+                        archive()
+                    },
+                    onCancel: {
+                        withAnimation(CortexMotion.press) { armed = false }
+                    }
+                )
             }
-            .disabled(isInFlight)
-            .help("Archives the \(section.capture_count) items in this section")
-            CortexButton(title: "Approve", systemImage: "checkmark.seal", role: .primary) {
-                approve()
-            }
-            .disabled(isInFlight)
-            .help("Approves the \(section.capture_count) items in this section")
         }
         .padding(.horizontal, CortexDesign.Space.md)
         .padding(.vertical, CortexDesign.Space.sm)
@@ -372,6 +419,108 @@ struct ReviewSectionCard: View {
         .onHover { isHovered = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(section.label): \(countLine)")
+    }
+}
+
+/// A proportioned two-segment rule showing a section's memory-vs-task mix — the archive's
+/// kind-distribution bar. Wax red = memories (kept knowledge), gold = tasks (open loops). No labels
+/// clutter the rule; a tooltip carries the exact counts.
+struct ReviewKindDistributionBar: View {
+    let memoryCount: Int
+    let taskCount: Int
+
+    private var total: Int { max(memoryCount + taskCount, 1) }
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            let memoryWidth = width * CGFloat(memoryCount) / CGFloat(total)
+            HStack(spacing: 0) {
+                if memoryCount > 0 {
+                    Rectangle()
+                        .fill(CortexDesign.accent.opacity(0.8))
+                        .frame(width: memoryWidth)
+                }
+                if taskCount > 0 {
+                    Rectangle()
+                        .fill(CortexDesign.gold.opacity(0.85))
+                }
+            }
+        }
+        .frame(height: 4)
+        .clipShape(Capsule())
+        .help("\(memoryCount) memor\(memoryCount == 1 ? "y" : "ies") · \(taskCount) task\(taskCount == 1 ? "" : "s")")
+        .accessibilityLabel("\(memoryCount) memories, \(taskCount) tasks")
+    }
+}
+
+/// The peeking sample mini-cards: up to three sample titles rendered as tiny stacked index cards, a
+/// physical "riffle the stack" preview of what a section holds. Never fabricated — omitted when the
+/// backend supplied no sample titles.
+struct ReviewSampleMiniCards: View {
+    let titles: [String]
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(Array(titles.prefix(3).enumerated()), id: \.offset) { _, title in
+                Text(title)
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .frame(maxWidth: 180, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                            .fill(CortexDesign.quietBackground)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                            .stroke(CortexDesign.hairline, lineWidth: 1)
+                    )
+                    // A gold hairline rail on the leading edge — a pending index card in miniature.
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(CortexDesign.gold.opacity(0.7))
+                            .frame(width: 2)
+                            .padding(.vertical, 5)
+                    }
+                    .help(title)
+            }
+            if titles.count > 3 {
+                Text("+\(titles.count - 3)")
+                    .font(CortexDesign.Typography.hint)
+                    .foregroundColor(CortexDesign.inkFaint)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// A quiet ghost index-card skeleton stamp shown in place of the stock spinner while a section or
+/// capture action is in flight — a small pulsing mono "sealing…" mark on a quiet ground.
+struct ReviewGhostStamp: View {
+    @State private var pulse = false
+
+    var body: some View {
+        Text("SEALING")
+            .font(CortexDesign.Typography.hint)
+            .kerning(0.8)
+            .foregroundColor(CortexDesign.inkFaint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                    .fill(CortexDesign.quietBackground)
+            )
+            .opacity(pulse ? 0.5 : 1)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            }
+            .accessibilityLabel("Working")
     }
 }
 
@@ -395,50 +544,54 @@ struct ReviewInboxSection: View {
             if showSections {
                 ReviewSectionsBoard(state: state)
             }
-            HStack(alignment: .center, spacing: 14) {
-                if showSections {
-                    Text("Or review one at a time".uppercased())
-                        .font(CortexDesign.Typography.stamp)
-                        .kerning(0.8)
-                        .foregroundColor(CortexDesign.inkFaint)
-                }
-                Spacer()
-                if visibleCount > 3 {
-                    // approveCaptures caps the batch at 10 server-side, so approve exactly that
-                    // slice and label the button with the true count — no promising more than we act on.
-                    let approveBatch = Array(visibleCaptures.prefix(10))
-                    if approveAllInFlight {
-                        ProgressView()
-                            .controlSize(.small)
+            // The approve-all confirm now morphs in-line here (no native confirmationDialog): a
+            // wax-seal panel replaces the action row while armed.
+            if confirmApproveAll {
+                ReviewWaxSealConfirm(
+                    message: "Approve all \(totalPendingCount) items? Everything waiting becomes usable memory — you can still archive or forget individual memories later.",
+                    confirmTitle: "Approve all",
+                    onConfirm: {
+                        withAnimation(CortexMotion.press) { confirmApproveAll = false }
+                        approveAll(source: nil)
+                    },
+                    onCancel: {
+                        withAnimation(CortexMotion.press) { confirmApproveAll = false }
                     }
-                    if totalPendingCount > approveBatch.count {
-                        // The power action for the 99+ backlog the 10-at-a-time batch can't clear.
-                        // Secondary on purpose: "Approve N shown" keeps the wax-red primary because
-                        // it only approves what the user has actually looked at.
-                        CortexButton(title: "Approve all \(totalPendingCount)", systemImage: "checkmark.seal.fill", role: .secondary, size: .large) {
-                            confirmApproveAll = true
+                )
+            } else {
+                HStack(alignment: .center, spacing: 14) {
+                    if showSections {
+                        Text("Or review one at a time".uppercased())
+                            .font(CortexDesign.Typography.stamp)
+                            .kerning(0.8)
+                            .foregroundColor(CortexDesign.inkFaint)
+                    }
+                    Spacer()
+                    if visibleCount > 3 {
+                        // approveCaptures caps the batch at 10 server-side, so approve exactly that
+                        // slice and label the button with the true count — no promising more than we act on.
+                        let approveBatch = Array(visibleCaptures.prefix(10))
+                        if approveAllInFlight {
+                            // Ghost skeleton stamp instead of the stock spinner.
+                            ReviewGhostStamp()
+                        }
+                        if totalPendingCount > approveBatch.count {
+                            // The power action for the 99+ backlog the 10-at-a-time batch can't clear.
+                            // Secondary on purpose: "Approve N shown" keeps the wax-red primary because
+                            // it only approves what the user has actually looked at.
+                            CortexButton(title: "Approve all \(totalPendingCount)", systemImage: "checkmark.seal.fill", role: .secondary, size: .large) {
+                                withAnimation(CortexMotion.press) { confirmApproveAll = true }
+                            }
+                            .disabled(approveAllInFlight || !state.inFlightCaptureIds.isEmpty)
+                            .help("Approve every pending item, including \(totalPendingCount - approveBatch.count) not shown here")
+                        }
+                        CortexButton(title: "Approve \(approveBatch.count) shown", systemImage: "checkmark.seal", role: .primary, size: .large) {
+                            state.approveCaptures(approveBatch)
                         }
                         .disabled(approveAllInFlight || !state.inFlightCaptureIds.isEmpty)
-                        .help("Approve every pending item, including \(totalPendingCount - approveBatch.count) not shown here")
+                        .help("Approve the \(approveBatch.count) items shown at the top")
                     }
-                    CortexButton(title: "Approve \(approveBatch.count) shown", systemImage: "checkmark.seal", role: .primary, size: .large) {
-                        state.approveCaptures(approveBatch)
-                    }
-                    .disabled(approveAllInFlight || !state.inFlightCaptureIds.isEmpty)
-                    .help("Approve the \(approveBatch.count) items shown at the top")
                 }
-            }
-            .confirmationDialog(
-                "Approve all \(totalPendingCount) items?",
-                isPresented: $confirmApproveAll,
-                titleVisibility: .visible
-            ) {
-                Button("Approve all") {
-                    approveAll(source: nil)
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Everything waiting for review becomes usable memory. You can still archive or forget individual memories later.")
             }
 
             if captures.isEmpty {
@@ -617,20 +770,58 @@ struct ReviewAllClearState: View {
     }
 }
 
+/// A ghost index-card skeleton in place of the stock spinner: two stacked review-card silhouettes
+/// (gold pending rail, a title bar, two preview lines, an action stub) breathing on a slow pulse, so
+/// the wait previews the queue that's coming. Deterministic; no `.random`.
 struct ReviewLoadingCard: View {
     var body: some View {
-        HStack(spacing: 12) {
-            ProgressView()
-                .controlSize(.small)
-            Text("Loading review queue…")
-                .font(CortexDesign.Typography.body)
-                .foregroundColor(CortexDesign.inkSecondary)
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 20) {
+            ReviewGhostCard()
+            ReviewGhostCard()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .background(CortexDesign.panelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement()
+        .accessibilityLabel("Loading review queue")
+    }
+}
+
+/// One ghost review card — the silhouette a real `ReviewQueueCaptureCard` casts while loading.
+struct ReviewGhostCard: View {
+    @State private var pulse = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            skeletonBar(width: 0.6, height: 14)   // title
+            VStack(alignment: .leading, spacing: 8) {
+                skeletonBar(width: 0.92, height: 10)
+                skeletonBar(width: 0.78, height: 10)
+            }
+            HStack {
+                Spacer()
+                skeletonBar(width: 0.18, height: 24)   // action stub
+                    .frame(width: 76)
+                skeletonBar(width: 0.22, height: 24)   // action stub
+                    .frame(width: 92)
+            }
+        }
+        .padding(.leading, 10)
+        .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.panelBackground)
+        .archiveSpine(CortexDesign.gold.opacity(0.5))
+        .opacity(pulse ? 0.65 : 1)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
+    }
+
+    private func skeletonBar(width: CGFloat, height: CGFloat) -> some View {
+        GeometryReader { geo in
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(CortexDesign.ink.opacity(0.06))
+                .frame(width: geo.size.width * width, height: height)
+        }
+        .frame(height: height)
     }
 }
 
@@ -660,8 +851,8 @@ struct ReviewServiceStartingState: View {
                         .font(.headline)
                         .foregroundColor(CortexDesign.accent)
                 } else {
-                    ProgressView()
-                        .controlSize(.small)
+                    // Ghost stamp instead of the stock spinner while the engine reconnects.
+                    ReviewGhostStamp()
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
@@ -713,17 +904,55 @@ struct ReviewQueueCaptureCard: View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 12) {
-                    Text(title)
-                        .font(CortexDesign.Typography.title)
-                        .foregroundColor(CortexDesign.ink)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
+                    // The memory-kind glyph chip — a colored type mark echoing the left rail.
+                    Image(systemName: cortexMemoryKindGlyph(dominantKind))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(railColor)
+                        .frame(width: 24, height: 24)
+                        .background(
+                            RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                                .fill(railColor.opacity(0.12))
+                        )
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title)
+                            .font(CortexDesign.Typography.title)
+                            .foregroundColor(CortexDesign.ink)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                        // The type name in the archive stamp voice.
+                        if !dominantKind.isEmpty {
+                            Text(cortexFriendlyMemoryKind(dominantKind).uppercased())
+                                .font(CortexDesign.Typography.hint)
+                                .kerning(0.8)
+                                .foregroundColor(railColor)
+                        }
+                    }
                     Spacer(minLength: 12)
-                    Text(reviewSizeLabel.uppercased())
-                        .font(CortexDesign.Typography.stamp)
-                        .kerning(0.8)
-                        .foregroundColor(CortexDesign.inkFaint)
-                        .lineLimit(1)
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Text(reviewSizeLabel.uppercased())
+                            .font(CortexDesign.Typography.stamp)
+                            .kerning(0.8)
+                            .foregroundColor(CortexDesign.inkFaint)
+                            .lineLimit(1)
+                        // The novelty/confidence seal — a small tinted stamp, never fabricated.
+                        if let seal {
+                            HStack(spacing: 4) {
+                                Image(systemName: seal.systemImage)
+                                    .font(.system(size: 9, weight: .medium))
+                                Text(seal.label.uppercased())
+                                    .font(CortexDesign.Typography.hint)
+                                    .kerning(0.6)
+                            }
+                            .foregroundColor(seal.color)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(
+                                Capsule().fill(seal.color.opacity(0.12))
+                            )
+                            .help("Confidence and novelty are derived from the proposed memory, not fabricated.")
+                        }
+                    }
                 }
 
                 if let summary = cleanedSummary {
@@ -749,45 +978,76 @@ struct ReviewQueueCaptureCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(alignment: .center, spacing: 12) {
-                if isInFlight {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Spacer()
-                CortexButton(title: "Archive", systemImage: "archivebox", role: .ghost, size: .large) {
-                    requestArchive()
-                }
-                .disabled(isInFlight)
-                // Optional-shortcut overload (macOS 12.3+): only the top card answers ⌘⌫.
-                .keyboardShortcut(isTopItem ? KeyboardShortcut(.delete, modifiers: .command) : nil)
-                .help("Archive (⌘⌫ archives the top item)")
-                .confirmationDialog(
-                    "Archive this review item?",
-                    isPresented: $confirmArchive,
-                    titleVisibility: .visible
-                ) {
-                    Button("Archive", role: .destructive) {
+            if confirmArchive {
+                // The in-card wax-seal archive confirm (replaces the native confirmationDialog).
+                ReviewWaxSealConfirm(
+                    message: "Archive this review item? Cortex won't remember it; your original note stays in your source. We'll only ask this once.",
+                    confirmTitle: "Archive",
+                    onConfirm: {
                         archiveConfirmedOnce = true
+                        withAnimation(CortexMotion.press) { confirmArchive = false }
                         archive()
+                    },
+                    onCancel: {
+                        withAnimation(CortexMotion.press) { confirmArchive = false }
                     }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("Cortex won't remember archived items. Your original note stays in your source. We'll only ask this once.")
+                )
+            } else {
+                HStack(alignment: .center, spacing: 12) {
+                    if isInFlight {
+                        // Ghost stamp instead of the stock spinner.
+                        ReviewGhostStamp()
+                    }
+                    // The active top card advertises its physical keyboard triage.
+                    if isTopItem, !isInFlight {
+                        HStack(spacing: 6) {
+                            Image(systemName: "return")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("⌘↩ approve · ⌘⌫ archive")
+                                .font(CortexDesign.Typography.hint)
+                        }
+                        .foregroundColor(CortexDesign.inkFaint)
+                    }
+                    Spacer()
+                    // Archive: a gold-spined ghost — the "set aside" gesture, quiet.
+                    CortexButton(title: "Archive", systemImage: "archivebox", role: .ghost, size: .large) {
+                        requestArchive()
+                    }
+                    .disabled(isInFlight)
+                    // Optional-shortcut overload (macOS 12.3+): only the top card answers ⌘⌫.
+                    .keyboardShortcut(isTopItem ? KeyboardShortcut(.delete, modifiers: .command) : nil)
+                    .help("Archive (⌘⌫ archives the top item)")
+                    // Approve: the moss checkmark-seal — the "kept" gesture, the wax-red primary.
+                    CortexButton(title: "Approve", systemImage: "checkmark.seal", role: .primary, size: .large) {
+                        approve()
+                    }
+                    .disabled(isInFlight)
+                    .keyboardShortcut(isTopItem ? KeyboardShortcut(.return, modifiers: .command) : nil)
+                    .help("Approve (⌘↩ approves the top item)")
                 }
-                CortexButton(title: "Approve", systemImage: "checkmark.seal", role: .primary, size: .large) {
-                    approve()
-                }
-                .disabled(isInFlight)
-                .keyboardShortcut(isTopItem ? KeyboardShortcut(.return, modifiers: .command) : nil)
-                .help("Approve (⌘↩ approves the top item)")
             }
         }
-        // The unreviewed index card: content clears the gold margin rule by 10pt.
+        // The unreviewed index card: content clears the kind-colored margin rule by 10pt. The top
+        // card is "active" — a hairline wax top edge-light lifts it above the queue.
         .padding(.leading, 10)
         .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.panelBackground)
-        .archiveSpine(CortexDesign.gold)
-        .shadow(color: CortexDesign.ink.opacity(isHovered ? 0.07 : 0), radius: 10, y: 3)
+        .archiveSpine(railColor)
+        .overlay(alignment: .top) {
+            if isTopItem {
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [CortexDesign.accent.opacity(0.45), CortexDesign.accent.opacity(0)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(height: 2)
+                    .clipShape(RoundedRectangle(cornerRadius: 1))
+                    .padding(.horizontal, 2)
+            }
+        }
+        .shadow(color: CortexDesign.ink.opacity((isHovered || isTopItem) ? 0.07 : 0), radius: 10, y: 3)
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.15)) { isHovered = hovering }
         }
@@ -851,6 +1111,22 @@ struct ReviewQueueCaptureCard: View {
         }
         return total == 1 ? "1 item" : "\(total) items"
     }
+
+    /// The dominant memory kind driving the left rail + glyph, derived from the proposed memories.
+    private var dominantKind: String {
+        cortexCaptureDominantKind(capture)
+    }
+
+    /// The left-edge rail color: the kind's tint when known, otherwise the unreviewed-gold default —
+    /// so a pending card without previews still reads as "not yet reviewed".
+    private var railColor: Color {
+        dominantKind.isEmpty ? CortexDesign.gold : cortexMemoryKindColor(dominantKind)
+    }
+
+    /// The novelty/confidence seal — nil when the previews carry no signal.
+    private var seal: CortexReviewSeal? {
+        cortexCaptureSeal(capture)
+    }
 }
 
 struct ReviewQueuePreviewList: View {
@@ -891,21 +1167,61 @@ struct ReviewQueuePreviewList: View {
                 }
 
                 if previewTexts.count > 1 {
-                    DisclosureGroup(isExpanded: $showRest) {
+                    // Custom serif hairline expander (no native DisclosureGroup).
+                    ReviewHairlineExpander(
+                        title: "\(previewTexts.count - 1) more",
+                        collapseTitle: "Show fewer",
+                        isExpanded: $showRest
+                    ) {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(Array(previewTexts.dropFirst().enumerated()), id: \.offset) { _, text in
                                 ReviewQueuePlainPreviewRow(text: text)
                             }
                         }
                         .padding(.top, 6)
-                    } label: {
-                        Text("\(previewTexts.count - 1) more")
-                            .font(CortexDesign.Typography.caption)
-                            .foregroundColor(CortexDesign.inkSecondary)
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// A custom serif hairline expander for the review surfaces — the archive's disclosure affordance,
+/// replacing the native `DisclosureGroup`. A serif label with a wax-red chevron that rotates on
+/// toggle; the disclosed content springs open beneath it.
+struct ReviewHairlineExpander<Content: View>: View {
+    let title: String
+    let collapseTitle: String
+    @Binding var isExpanded: Bool
+    @ViewBuilder var content: () -> Content
+
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(CortexDesign.accent)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    Text(isExpanded ? collapseTitle : title)
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(hovering ? CortexDesign.ink : CortexDesign.inkSecondary)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+
+            if isExpanded {
+                content()
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
     }
 }
@@ -981,184 +1297,6 @@ private func reviewShortDate(_ value: String) -> String {
     return String(trimmed.prefix(10))
 }
 
-struct ReviewCaptureCard: View {
-    let capture: CaptureItem
-    let approve: () -> Void
-    let archive: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(CortexDesign.Typography.title)
-                        .foregroundColor(CortexDesign.ink)
-                        .lineLimit(2)
-                }
-                Spacer()
-            }
-
-            if let summary = capture.summary, !summary.isEmpty {
-                Text(MemoryText.displayProse(summary, maxLength: 360))
-                    .font(CortexDesign.Typography.prose(14))
-                    .foregroundColor(CortexDesign.ink)
-                    .lineSpacing(3)
-                    .lineLimit(4)
-                    .truncationMode(.tail)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .help(MemoryText.normalizedProse(summary))
-            } else {
-                Text("No summary yet.")
-                    .font(CortexDesign.Typography.body)
-                    .foregroundColor(CortexDesign.inkSecondary)
-            }
-
-            ReviewPreviewList(capture: capture)
-
-            HStack(alignment: .center, spacing: 10) {
-                if !sourceSegments.isEmpty {
-                    AccessionStamp(segments: sourceSegments)
-                        .truncationMode(.middle)
-                        .help(sourceDetail)
-                }
-                Spacer()
-                CortexButton(title: "Archive", systemImage: "archivebox", role: .ghost, size: .small) {
-                    archive()
-                }
-                CortexButton(title: "Approve", systemImage: "checkmark.seal", role: .primary, size: .small) {
-                    approve()
-                }
-            }
-        }
-        // A pending index card: content clears the gold (unreviewed) margin rule.
-        .padding(.leading, 10)
-        .cortexCard(padding: 12, background: CortexDesign.panelBackground)
-        .archiveSpine(CortexDesign.gold)
-    }
-
-    private var title: String {
-        cortexCaptureTitle(capture)
-    }
-
-    private var sourceSegments: [String] {
-        var parts: [String] = []
-        let source = capture.source.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !source.isEmpty {
-            parts.append(SourceDisplayName.label(source))
-        }
-        if let date = capture.captured_at?.trimmingCharacters(in: .whitespacesAndNewlines), !date.isEmpty {
-            parts.append(String(date.prefix(10)))
-        }
-        if let citation = CitationDisplay.label(sourceURL: capture.source_url) {
-            parts.append(citation)
-        }
-        return parts
-    }
-
-    private var sourceDetail: String {
-        sourceSegments.joined(separator: " · ")
-    }
-}
-
-struct ReviewPreviewList: View {
-    let capture: CaptureItem
-
-    private var memories: [MemoryItem] {
-        cortexDedupedMemories(capture.preview_memories ?? [], limit: 5)
-    }
-
-    private var tasks: [TaskItem] {
-        Array((capture.preview_tasks ?? []).prefix(3))
-    }
-
-    var body: some View {
-        if memories.isEmpty && tasks.isEmpty {
-            HStack(spacing: 6) {
-                Image(systemName: "hourglass")
-                Text("Cortex is still preparing proposed memory for this item.")
-            }
-            .font(CortexDesign.Typography.caption)
-            .foregroundColor(CortexDesign.inkSecondary)
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("What Cortex will remember".uppercased())
-                    .font(CortexDesign.Typography.stamp)
-                    .kerning(0.8)
-                    .foregroundColor(CortexDesign.inkFaint)
-
-                ForEach(memories) { memory in
-                    ReviewMemoryPreviewRow(memory: memory)
-                }
-
-                if !tasks.isEmpty {
-                    Divider()
-                    ForEach(tasks) { task in
-                        ReviewTaskPreviewRow(task: task)
-                    }
-                }
-            }
-            .padding(.vertical, 2)
-        }
-    }
-}
-
-struct ReviewMemoryPreviewRow: View {
-    let memory: MemoryItem
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(display.headline)
-                    .font(CortexDesign.Typography.prose(13.5))
-                    .foregroundColor(CortexDesign.ink)
-                    .lineLimit(display.path == nil ? 4 : 2)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let path = display.path {
-                    Text(path)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(CortexDesign.inkFaint)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(MemoryText.unwrap(memory.content))
-                }
-                if let citation = CitationDisplay.label(sourceURL: memory.source_url) {
-                    Label(citation, systemImage: "quote.bubble")
-                        .font(.caption2)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(memory.source_url ?? citation)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var display: (headline: String, path: String?) {
-        MemoryText.displayContent(memory.content)
-    }
-}
-
-struct ReviewTaskPreviewRow: View {
-    let task: TaskItem
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(task.content)
-                .font(CortexDesign.Typography.prose(13.5))
-                .foregroundColor(CortexDesign.ink)
-                .lineLimit(3)
-                .truncationMode(.tail)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-    }
-}
-
 /// A short, human-friendly name for a memory kind — shown in the review pills instead of the raw
 /// backend kind/layer (e.g. "event · episodic" → "Event"). Users shouldn't see internal jargon.
 func cortexFriendlyMemoryKind(_ kind: String) -> String {
@@ -1177,6 +1315,94 @@ func cortexFriendlyMemoryKind(_ kind: String) -> String {
     case "": return "Memory"
     default: return kind.prefix(1).uppercased() + kind.dropFirst()
     }
+}
+
+/// The memory-kind color rail token: each friendly kind gets one coherent ink from the palette so
+/// the left edge of a review card reads its type at a glance (the archive's colored spine). Kept
+/// inside the existing three-color guardrail — wax red, gold, moss, and quiet inks only, never new
+/// hues. Deterministic; no `.random`.
+func cortexMemoryKindColor(_ kind: String) -> Color {
+    switch kind.lowercased() {
+    case "decision":                 return CortexDesign.accent
+    case "preference", "style":      return CortexDesign.gold
+    case "negative":                 return CortexDesign.accent
+    case "procedure", "procedural",
+         "action", "task":           return CortexDesign.sealMoss
+    case "event", "episodic":        return CortexDesign.gold
+    case "semantic", "fact",
+         "question":                 return CortexDesign.inkSecondary
+    case "source":                   return CortexDesign.inkFaint
+    default:                          return CortexDesign.inkSecondary
+    }
+}
+
+/// The memory-kind glyph shown on the rail — the same friendly-kind vocabulary as the Ask source
+/// margin, so a type reads identically across surfaces.
+func cortexMemoryKindGlyph(_ kind: String) -> String {
+    switch kind.lowercased() {
+    case "decision":                 return "signpost.right"
+    case "preference":               return "heart.text.square"
+    case "style":                    return "paintbrush.pointed"
+    case "negative":                 return "hand.thumbsdown"
+    case "procedure", "procedural":  return "list.number"
+    case "action", "task":           return "checklist"
+    case "event", "episodic":        return "calendar"
+    case "semantic", "fact":         return "text.quote"
+    case "question":                 return "questionmark.circle"
+    case "source":                   return "doc.text"
+    default:                         return "square.text.square"
+    }
+}
+
+/// The dominant memory kind of a capture, derived from its preview memories (never fabricated). Picks
+/// the most frequent `kind` among previews; ties break on the kind that sorts first so the rail is
+/// deterministic across renders. Returns "" (→ neutral) when there are no previews yet.
+func cortexCaptureDominantKind(_ capture: CaptureItem) -> String {
+    let kinds = (capture.preview_memories ?? []).map { $0.kind.lowercased() }
+        .filter { !$0.isEmpty }
+    guard !kinds.isEmpty else {
+        // A tasks-only capture still has a kind.
+        return (capture.task_count ?? 0) > 0 && (capture.memory_count ?? 0) == 0 ? "task" : ""
+    }
+    var counts: [String: Int] = [:]
+    for k in kinds { counts[k, default: 0] += 1 }
+    return counts.sorted { lhs, rhs in
+        lhs.value != rhs.value ? lhs.value > rhs.value : lhs.key < rhs.key
+    }.first?.key ?? ""
+}
+
+/// A capture's novelty/confidence seal: a short mono word + tint derived deterministically from the
+/// preview memories' string `confidence` ("high"/"medium"/"low") and importance. Novelty is inferred
+/// from importance (the backend's per-memory priority) — never a random value. Returns nil when there
+/// is no signal to show, so the seal is never fabricated.
+struct CortexReviewSeal {
+    let label: String
+    let color: Color
+    let systemImage: String
+}
+
+func cortexCaptureSeal(_ capture: CaptureItem) -> CortexReviewSeal? {
+    let memories = capture.preview_memories ?? []
+    guard !memories.isEmpty else { return nil }
+
+    // Confidence: the strongest signal the previews carry.
+    let confidences = memories.compactMap { $0.confidence?.lowercased() }
+    if confidences.contains("high") {
+        return CortexReviewSeal(label: "High confidence", color: CortexDesign.sealMoss, systemImage: "checkmark.seal")
+    }
+    if confidences.contains("low") {
+        return CortexReviewSeal(label: "Low confidence", color: CortexDesign.gold, systemImage: "exclamationmark.circle")
+    }
+
+    // Novelty proxy: a high-importance memory is a notable, worth-keeping item.
+    let importances = memories.compactMap { $0.importance }
+    if let peak = importances.max(), peak >= 4 {
+        return CortexReviewSeal(label: "Notable", color: CortexDesign.accent, systemImage: "sparkle")
+    }
+    if !confidences.isEmpty {
+        return CortexReviewSeal(label: "Medium confidence", color: CortexDesign.inkSecondary, systemImage: "seal")
+    }
+    return nil
 }
 
 /// Collapse near-identical preview memories (e.g. a folder of near-identical file paths) so a

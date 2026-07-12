@@ -417,6 +417,12 @@ struct MemoryWrappedShareSheet: View {
     @State private var cardImage: NSImage?
     @State private var cardPNG: Data?
     @State private var copied = false
+    /// True once a render attempt produced no bitmap — drives the retry state instead of an
+    /// infinite spinner with Copy/Save/Share stuck disabled forever.
+    @State private var renderFailed = false
+    /// The weekly-notification opt-in, mirrored from `MemoryWrappedNotifier` so the toggle actually
+    /// flips the persisted flag (the flag was never being set, so the weekly nudge could never fire).
+    @State private var notifyWeekly = MemoryWrappedNotifier.isOptedIn
     /// Held so the picker isn't deallocated out from under its own popover.
     @State private var activePicker: NSSharingServicePicker?
     @State private var shareAnchor = WrappedShareAnchor()
@@ -457,45 +463,76 @@ struct MemoryWrappedShareSheet: View {
                 .disabled(cardImage == nil)
                 .background(WrappedShareAnchorView(anchor: shareAnchor))
             }
+
+            weeklyNotifyRow
         }
         .padding(CortexDesign.Space.lg)
-        .frame(minWidth: 684, minHeight: 470)
+        // Taller than the bare thumbnail: the trophy adds a stamp above and a seal below, and the
+        // opt-in row sits beneath the exits.
+        .frame(minWidth: 684, minHeight: 600)
         .background(CortexDesign.appBackground)
         .task { renderCard() }
     }
 
+    /// The opt-in the weekly notification was ALWAYS missing: `MemoryWrappedNotifier.setOptedIn` had
+    /// no caller anywhere, so `isOptedIn` was permanently false and `maybeNotify` returned at its
+    /// opt-in guard every time — the headline weekly nudge could never fire. This design-system
+    /// `CortexToggle` is the caller: flipping it writes the persisted flag (via `.onChange`), so the
+    /// next headline refresh can actually deliver the "your Memory Wrapped is ready" notification.
+    private var weeklyNotifyRow: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            CortexToggle(title: "Notify me weekly", isOn: $notifyWeekly)
+            Text(notifyWeekly
+                 ? "You'll get a nudge when a new card is ready — only on weeks with real recalls."
+                 : "Get a once-a-week nudge when your card is ready. Off by default.")
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 42) // aligns under the toggle title, past the switch
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(CortexDesign.Space.sm)
+        .background(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .fill(CortexDesign.quietBackground)
+        )
+        .embossedBorder()
+        // The single place the persisted opt-in flag is written — reads `isOptedIn` on open (State
+        // initializer above), writes on every change here.
+        .onChange(of: notifyWeekly) { value in
+            MemoryWrappedNotifier.setOptedIn(value)
+        }
+        .accessibilityHint("Turns on a once-a-week notification when your Memory Wrapped card is ready.")
+    }
+
     @ViewBuilder
     private var preview: some View {
-        ZStack {
-            if let cardImage {
-                Image(nsImage: cardImage)
-                    .resizable()
-                    .scaledToFit()
-                    .accessibilityLabel("Preview of your Memory Wrapped card")
-            } else {
-                Rectangle()
-                    .fill(CortexDesign.quietBackground)
-                ProgressView()
-                    .controlSize(.small)
-            }
-        }
-        .frame(width: 640, height: 336)
-        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
-                .stroke(CortexDesign.hairline, lineWidth: 1)
+        ConstellationTrophy(
+            image: cardImage,
+            failed: renderFailed,
+            stampText: "MEMORY WRAPPED",
+            sealText: "Cortex",
+            onRetry: { Task { @MainActor in renderCard() } }
         )
     }
 
     /// Build the model and rasterize at 2× — all of it deferred to sheet-open, so nothing on Home
     /// pays a cost for the card's existence.
+    ///
+    /// Render can fail (ImageRenderer returns no bitmap under memory pressure): instead of returning
+    /// silently and leaving Copy/Save/Share disabled forever behind an endless spinner, it flips
+    /// `renderFailed` so the trophy preview offers a Retry.
     @MainActor
     private func renderCard() {
         guard cardImage == nil else { return }
+        renderFailed = false
         let model = MemoryWrappedModel.build(from: headline)
         let renderer = ImageRenderer(content: MemoryWrappedCard(model: model))
         renderer.scale = 2
-        guard let cgImage = renderer.cgImage else { return }
+        guard let cgImage = renderer.cgImage else {
+            renderFailed = true
+            return
+        }
         let rep = NSBitmapImageRep(cgImage: cgImage)
         // Point size stays 1200×630 while the pixel grid is 2400×1260 — crisp on retina, correct
         // dimensions everywhere else.
@@ -599,6 +636,15 @@ struct MemoryWrappedEntry: View {
                 .help("Opens a shareable, screenshot-native card of this week's recall stats — Share, Copy, or Save PNG.")
             }
         }
+        // Behind the entry, a LIVE downscaled peek of the ACTUAL Wrapped card (only once there's a
+        // real card to show) — the exact night-sky object the "Open your card" button reveals,
+        // tucked into the trailing edge with a fade so it teases without fighting the ink text. It's
+        // the real card view (not a stock graphic), rendered live and deterministically.
+        .background(alignment: .trailing) {
+            if !model.isFirstWeek {
+                cardThumbnail(model: model)
+            }
+        }
         .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.goldSoft)
         .frame(maxWidth: 620, alignment: .leading)
         .accessibilityElement(children: .contain)
@@ -606,6 +652,40 @@ struct MemoryWrappedEntry: View {
         .sheet(isPresented: $showSheet) {
             MemoryWrappedShareSheet(headline: headline)
         }
+    }
+
+    /// A live, downscaled peek of the REAL `MemoryWrappedCard` — the actual view the share sheet
+    /// exports, drawn small behind the entry. Because it's the live SwiftUI card (not a raster or a
+    /// stand-in graphic) it stays deterministic (FNV star-dust) and always matches what would leave
+    /// the machine. Faded left→right and tucked past the trailing edge so it reads as the card
+    /// tucked behind the entry, never as clutter under the text.
+    @ViewBuilder
+    private func cardThumbnail(model: MemoryWrappedModel) -> some View {
+        // The thumbnail's on-screen box; the 1200×630 card is scaled to fit it exactly.
+        let thumbW: CGFloat = 208
+        let thumbH = thumbW * (MemoryWrappedCard.size.height / MemoryWrappedCard.size.width)
+        MemoryWrappedCard(model: model)
+            .frame(width: MemoryWrappedCard.size.width, height: MemoryWrappedCard.size.height)
+            .scaleEffect(thumbW / MemoryWrappedCard.size.width, anchor: .topLeading)
+            .frame(width: thumbW, height: thumbH, alignment: .topLeading)
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                    .stroke(CortexDesign.ink.opacity(0.12), lineWidth: 1)
+            )
+            .rotationEffect(.degrees(-3))
+            .shadow(color: CortexDesign.ink.opacity(0.14), radius: 6, y: 3)
+            .padding(.trailing, -34)
+            // Fade the left edge into the gold ground so it never collides with the ink text.
+            .mask(
+                LinearGradient(
+                    colors: [Color.clear, Color.black.opacity(0.55), Color.black],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
@@ -687,3 +767,4 @@ enum MemoryWrappedNotifier {
         }
     }
 }
+

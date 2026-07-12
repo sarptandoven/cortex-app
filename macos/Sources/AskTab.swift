@@ -299,7 +299,12 @@ struct AskMemoryContextStrip: View {
                 Spacer(minLength: 0)
             }
 
-            DisclosureGroup(isExpanded: $detailsExpanded) {
+            // The telemetry tucks behind the custom serif hairline expander (no native disclosure).
+            AskHairlineExpander(
+                title: "Details",
+                collapseTitle: "Hide details",
+                isExpanded: $detailsExpanded
+            ) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         AskContextMetric(
@@ -338,10 +343,6 @@ struct AskMemoryContextStrip: View {
                     }
                 }
                 .padding(.top, 6)
-            } label: {
-                Text("Details")
-                    .font(CortexDesign.Typography.caption)
-                    .foregroundColor(CortexDesign.inkSecondary)
             }
         }
         .cortexCard(padding: CortexDesign.Space.sm, background: CortexDesign.panelBackground)
@@ -450,17 +451,91 @@ private func shortDate(_ value: String) -> String {
     return String(trimmed.prefix(10))
 }
 
+/// A wax-red scan line sweeping a skeleton citation ledger — replaces the stock spinner. No
+/// bitmap, no `.random`: the sweep is a repeatForever offset on a single soft wax-red band, and
+/// the ledger rows are quiet hairline blocks shaped like the real answer (a title bar, prose
+/// lines, then three numbered footnote stubs) so the wait previews the page that's coming.
 struct AskLoadingCard: View {
+    @State private var sweep: CGFloat = -0.35
+
     var body: some View {
-        HStack(spacing: 12) {
-            ProgressView()
-                .controlSize(.small)
-            Text("Finding a cited answer…")
-                .font(CortexDesign.Typography.body)
-                .foregroundColor(CortexDesign.ink)
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(verbatim: "ANSWER")
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
+                Spacer()
+                Text("Finding a cited answer…")
+                    .font(CortexDesign.Typography.hint)
+                    .foregroundColor(CortexDesign.inkFaint)
+            }
+
+            // The prose skeleton: three ruled lines of decreasing width.
+            VStack(alignment: .leading, spacing: 10) {
+                skeletonBar(width: 0.94, height: 11)
+                skeletonBar(width: 0.86, height: 11)
+                skeletonBar(width: 0.52, height: 11)
+            }
+
+            Rectangle()
+                .fill(CortexDesign.hairline)
+                .frame(width: 56, height: 1)
+
+            // The citation ledger skeleton: a stamp label + three numbered footnote stubs.
+            VStack(alignment: .leading, spacing: 8) {
+                Text(verbatim: "CITATIONS")
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
+                ForEach(0..<3, id: \.self) { i in
+                    HStack(spacing: 8) {
+                        Text("\(i + 1).")
+                            .font(CortexDesign.Typography.stamp)
+                            .foregroundColor(CortexDesign.accent.opacity(0.5))
+                        skeletonBar(width: [0.6, 0.72, 0.48][i], height: 9)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
         }
-        .cortexCard(padding: 18, background: CortexDesign.panelBackground)
+        .padding(CortexDesign.Space.lg)
+        .background(CortexDesign.panelBackground)
+        // The wax-red scan line sweeps left→right across the whole ledger, on a soft gradient band.
+        .overlay(
+            GeometryReader { geo in
+                let bandWidth = geo.size.width * 0.28
+                LinearGradient(
+                    colors: [.clear, CortexDesign.accent.opacity(0.14), .clear],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: bandWidth)
+                .offset(x: sweep * geo.size.width)
+                .allowsHitTesting(false)
+            }
+        )
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(CortexDesign.hairline, lineWidth: 1)
+        )
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.15).repeatForever(autoreverses: false)) {
+                sweep = 1.05
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Finding a cited answer")
+    }
+
+    private func skeletonBar(width: CGFloat, height: CGFloat) -> some View {
+        GeometryReader { geo in
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(CortexDesign.ink.opacity(0.06))
+                .frame(width: geo.size.width * width, height: height)
+        }
+        .frame(height: height)
     }
 }
 
@@ -532,22 +607,24 @@ struct AskResponseSection: View {
             } else {
                 AskQuietState(
                     title: "Matching memory found",
-                    detail: "Related memory found, but no direct answer. Open sources below."
+                    detail: "Related memory found, but no direct answer. Open the retrieved set below."
                 )
             }
 
-            // Only when the answer lacks its own citation ledger — beneath a cited answer this
-            // list merely duplicates the footnotes, so the page ends at them instead.
-            if !state.searchResults.isEmpty && (state.askAnswer.isEmpty || state.askCitations.isEmpty) {
-                // Quiet secondary label on the toggle only — the rows inside keep full contrast.
-                DisclosureGroup(isExpanded: $citedMemoriesExpanded) {
+            // ALWAYS expose the fuller retrieved set when there is one — even beneath a cited
+            // answer. The footnote ledger only shows the citations the model chose; the raw matched
+            // memories (state.searchResults) are the retrieved context, and hiding them when a
+            // cited answer exists silently dropped everything the answer didn't footnote. The custom
+            // serif hairline expander replaces the old native DisclosureGroup.
+            if !state.searchResults.isEmpty {
+                AskHairlineExpander(
+                    title: "Show all \(state.searchResults.count) retrieved source\(state.searchResults.count == 1 ? "" : "s")",
+                    collapseTitle: "Hide retrieved sources",
+                    isExpanded: $citedMemoriesExpanded
+                ) {
                     AskResultsSection(state: state)
-                        .frame(maxHeight: 280)
-                        .padding(.top, 8)
-                } label: {
-                    Text(memoryDisclosureTitle)
-                        .font(.callout)
-                        .foregroundColor(CortexDesign.inkSecondary)
+                        .frame(maxHeight: 320)
+                        .padding(.top, 10)
                 }
             }
         }
@@ -558,9 +635,55 @@ struct AskResponseSection: View {
             askedQuestion = state.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
+}
 
-    private var memoryDisclosureTitle: String {
-        "Related memory (\(state.searchResults.count))"
+/// A custom serif hairline expander — the archive's "Show all N sources" affordance, replacing the
+/// native `DisclosureGroup`. A serif label opens a hairline rule running to the trailing edge, with a
+/// wax-red chevron that rotates on toggle. The disclosed content springs open beneath the rule.
+struct AskHairlineExpander<Content: View>: View {
+    let title: String
+    let collapseTitle: String
+    @Binding var isExpanded: Bool
+    @ViewBuilder var content: () -> Content
+
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(CortexDesign.accent)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    Text(isExpanded ? collapseTitle : title)
+                        .font(CortexDesign.Typography.prose(13))
+                        .foregroundColor(hovering ? CortexDesign.ink : CortexDesign.inkSecondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                    Rectangle()
+                        .fill(
+                            LinearGradient(
+                                colors: [CortexDesign.hairline, CortexDesign.hairline.opacity(0)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(height: 1)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+
+            if isExpanded {
+                content()
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
     }
 }
 
@@ -787,6 +910,82 @@ struct AskSourceDetailRow: View {
     }
 }
 
+// MARK: - Inline [n] citation parsing
+
+/// One run of the answer prose: either plain text or a citation marker `[n]`. The backend embeds
+/// literal `[1]`, `[2]` … tokens in the answer (storage.py:11885); this splits the string into an
+/// ordered run list so the prose can render each marker as a tappable wax-red mono superscript
+/// while the surrounding text stays serif. Deterministic, no regex, no `.random`.
+enum AskAnswerRun: Hashable {
+    case text(String)
+    case marker(Int)
+}
+
+enum AskAnswerParser {
+    /// Split `answer` into text/marker runs. A marker is a `[` immediately followed by one or more
+    /// digits and a `]` (e.g. `[12]`); anything else — including `[note]` or a lone `[` — stays as
+    /// literal text so we never eat non-citation brackets. `validIndices` gates which numbers count
+    /// as real citations; an out-of-range `[9]` with no citation 9 renders as plain text.
+    static func runs(_ answer: String, validIndices: Set<Int>) -> [AskAnswerRun] {
+        var runs: [AskAnswerRun] = []
+        var pending = ""
+        let chars = Array(answer)
+        var i = 0
+        while i < chars.count {
+            if chars[i] == "[" {
+                var j = i + 1
+                var digits = ""
+                while j < chars.count, chars[j].isNumber {
+                    digits.append(chars[j])
+                    j += 1
+                }
+                if !digits.isEmpty, j < chars.count, chars[j] == "]",
+                   let n = Int(digits), validIndices.contains(n) {
+                    if !pending.isEmpty { runs.append(.text(pending)); pending = "" }
+                    runs.append(.marker(n))
+                    i = j + 1
+                    continue
+                }
+            }
+            pending.append(chars[i])
+            i += 1
+        }
+        if !pending.isEmpty { runs.append(.text(pending)) }
+        return runs
+    }
+}
+
+/// A source-type glyph derived from a citation's `kind`/`source_type` — the same friendly-kind
+/// vocabulary the review cards use, mapped to an SF Symbol. Never fabricated; falls back to a neutral
+/// document mark.
+func askSourceGlyph(kind: String, sourceType: String?) -> String {
+    switch kind.lowercased() {
+    case "decision": return "signpost.right"
+    case "preference": return "heart.text.square"
+    case "style": return "paintbrush.pointed"
+    case "negative": return "hand.thumbsdown"
+    case "procedure", "procedural": return "list.number"
+    case "action", "task": return "checklist"
+    case "event", "episodic": return "calendar"
+    case "semantic", "fact": return "text.quote"
+    case "question": return "questionmark.circle"
+    case "source": return "doc.text"
+    default:
+        // Fall back on the source medium when the kind is unknown.
+        switch (sourceType ?? "").lowercased() {
+        case "web", "url", "http", "https": return "link"
+        case "file", "note", "markdown", "obsidian": return "doc.text"
+        default: return "quote.bubble"
+        }
+    }
+}
+
+/// The cited answer as an annotated ARCHIVE PAGE. Left column is the prose with real tappable
+/// wax-red mono superscript `[n]` markers parsed out of the answer text; the right column is a live
+/// "source margin" where each citation shows its ACTUAL excerpt, a source-type glyph, and a
+/// line-range / date leader. A shared `selectedCitation` binds claim ↔ receipt: hovering or tapping
+/// a superscript highlights its margin card and vice-versa. An always-on provenance stamp sits above
+/// the answer.
 struct AskAnswerPanel: View {
     let answer: String
     let citations: [AskCitationItem]
@@ -794,14 +993,21 @@ struct AskAnswerPanel: View {
     /// bare result. Defaults nil so existing call sites render unchanged.
     var question: String? = nil
 
-    @State private var showAllCitations = false
+    /// The claim↔receipt link. Set from either side (a superscript in the prose or a margin card);
+    /// the other side highlights to match.
+    @State private var selectedCitation: Int? = nil
     @State private var justCopied = false
-    @State private var hovering = false
 
-    private static let collapsedCitationCount = 3
+    private var citationsByIndex: [Int: AskCitationItem] {
+        Dictionary(citations.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
+    }
 
-    private var visibleCitations: [AskCitationItem] {
-        showAllCitations ? citations : Array(citations.prefix(Self.collapsedCitationCount))
+    private var validIndices: Set<Int> {
+        Set(citations.map(\.index))
+    }
+
+    private var runs: [AskAnswerRun] {
+        AskAnswerParser.runs(answer, validIndices: validIndices)
     }
 
     private var echoedQuestion: String? {
@@ -810,71 +1016,48 @@ struct AskAnswerPanel: View {
         return trimmed
     }
 
+    /// One always-on provenance line above the answer: how many reviewed sources back it, in the
+    /// mono catalog voice. Never fabricated — omitted when there are no citations.
+    private var provenanceSegments: [String]? {
+        guard !citations.isEmpty else { return nil }
+        var segs = ["CITED ANSWER", "\(citations.count) SOURCE\(citations.count == 1 ? "" : "S")"]
+        let openable = citations.filter {
+            CitationDisplay.openableURL(path: $0.citation_path, sourceURL: $0.source_url) != nil
+        }.count
+        if openable > 0 { segs.append("\(openable) OPENABLE") }
+        return segs
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(verbatim: "ANSWER")
-                    .font(CortexDesign.Typography.stamp)
-                    .kerning(0.8)
-                    .foregroundColor(CortexDesign.inkFaint)
-                Spacer()
-                // Copy is a post-reading action — revealed only while the pointer is over the
-                // panel, so the answer opens as prose instead of chrome.
-                CortexButton(
-                    title: justCopied ? "Copied" : "Copy",
-                    systemImage: justCopied ? "checkmark" : "doc.on.doc",
-                    role: .ghost,
-                    size: .small
-                ) {
-                    copyAnswerWithSources()
-                }
-                .disabled(justCopied)
-                .help("Copy the answer with its sources")
-                .opacity(hovering || justCopied ? 1 : 0)
-                .animation(.easeOut(duration: 0.12), value: hovering)
+        VStack(alignment: .leading, spacing: 14) {
+            header
+            // The always-on provenance stamp — the catalog line that says this is a cited answer.
+            if let provenanceSegments {
+                AccessionStamp(segments: provenanceSegments, emphasisIndex: 0)
+                    .help("This answer is drawn only from reviewed memory, cited below.")
             }
             if let echoedQuestion {
-                // The asked question, echoed quietly above the answer so the prose has context.
                 Text(echoedQuestion)
                     .font(.system(size: 14, design: .serif))
                     .italic()
                     .foregroundColor(CortexDesign.inkSecondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .truncationMode(.tail)
                     .help(echoedQuestion)
-                    .frame(maxWidth: 620, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Text(answer)
-                .font(CortexDesign.Typography.prose(14.5))
-                .lineSpacing(3.5)
-                .foregroundColor(CortexDesign.ink)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 620, alignment: .leading)
-            if !citations.isEmpty {
-                // The footnote ledger: a short divider rule ends the page the way a book does,
-                // then numbered footnotes with dotted leaders out to their line ranges.
-                Rectangle()
-                    .fill(CortexDesign.hairline)
-                    .frame(width: 56, height: 1)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(verbatim: "CITATIONS")
-                        .font(CortexDesign.Typography.stamp)
-                        .kerning(0.8)
-                        .foregroundColor(CortexDesign.inkFaint)
-                    ForEach(visibleCitations) { citation in
-                        AskCitationRow(citation: citation)
-                    }
-                    if citations.count > Self.collapsedCitationCount {
-                        CortexButton(
-                            title: showAllCitations ? "Show fewer citations" : "Show all \(citations.count) citations",
-                            role: .ghost,
-                            size: .small
-                        ) {
-                            showAllCitations.toggle()
-                        }
-                    }
-                }
+
+            if citations.isEmpty {
+                // No citations to annotate — render the answer as plain prose (still selectable).
+                Text(answer)
+                    .font(CortexDesign.Typography.prose(14.5))
+                    .lineSpacing(3.5)
+                    .foregroundColor(CortexDesign.ink)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                annotatedPage
             }
         }
         .padding(CortexDesign.Space.lg)
@@ -884,10 +1067,52 @@ struct AskAnswerPanel: View {
                 .stroke(CortexDesign.hairline, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
-        .onHover { hovering = $0 }
         .onChange(of: answer) { _ in
-            showAllCitations = false
             justCopied = false
+            selectedCitation = nil
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(verbatim: "ANSWER")
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.inkFaint)
+            Spacer()
+            // Copy stays reachable at all times (no hover gate) and answers ⌘⇧C — so keyboard and
+            // VoiceOver users can reach it too. A ghost button keeps it quiet until used.
+            CortexButton(
+                title: justCopied ? "Copied" : "Copy",
+                systemImage: justCopied ? "checkmark" : "doc.on.doc",
+                role: .ghost,
+                size: .small
+            ) {
+                copyAnswerWithSources()
+            }
+            .disabled(justCopied)
+            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .help("Copy the answer with its sources (⌘⇧C)")
+        }
+    }
+
+    /// The two-column archive page: prose left, source margin right. On a narrow width the margin
+    /// stacks beneath the prose so it never squeezes the reading column.
+    private var annotatedPage: some View {
+        HStack(alignment: .top, spacing: CortexDesign.Space.lg) {
+            AskAnnotatedProse(
+                runs: runs,
+                selectedCitation: $selectedCitation
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
+
+            AskSourceMargin(
+                citations: citations,
+                citationsByIndex: citationsByIndex,
+                selectedCitation: $selectedCitation
+            )
+            .frame(width: 260)
         }
     }
 
@@ -913,90 +1138,227 @@ struct AskAnswerPanel: View {
     }
 }
 
-struct AskCitationRow: View {
-    let citation: AskCitationItem
-    @State private var hovering = false
+/// The left column: the answer prose with real inline `[n]` markers rendered as tappable wax-red
+/// mono superscripts. Text runs use SwiftUI concatenation so the markers flow inline with the serif
+/// prose (a true footnote superscript), and a transparent overlay of tap targets sits over the
+/// markers so a click/hover updates `selectedCitation` — SwiftUI `Text` can't carry per-run gestures,
+/// so the tap layer is separate but positionally faithful via a wrapping flow of the same runs.
+struct AskAnnotatedProse: View {
+    let runs: [AskAnswerRun]
+    @Binding var selectedCitation: Int?
 
-    /// The user-openable source for this citation, if any. Internal-only provenance
-    /// (e.g. cortex-capture://) returns nil and the row stays plain text.
+    var body: some View {
+        // The runs are laid out as a wrapping paragraph: plain runs are serif prose, marker runs are
+        // small interactive superscript chips. `AskFlowLayout` wraps them like text so the markers sit
+        // inline where the [n] token appeared.
+        AskFlowLayout(spacing: 0, lineSpacing: 6) {
+            ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
+                switch run {
+                case .text(let string):
+                    // Break plain text into word chunks so the flow layout can wrap on spaces.
+                    ForEach(Array(wordChunks(string).enumerated()), id: \.offset) { _, chunk in
+                        Text(chunk)
+                            .font(CortexDesign.Typography.prose(14.5))
+                            .foregroundColor(CortexDesign.ink)
+                            .textSelection(.enabled)
+                    }
+                case .marker(let n):
+                    AskCitationMarker(
+                        index: n,
+                        isSelected: selectedCitation == n
+                    ) {
+                        selectedCitation = (selectedCitation == n) ? nil : n
+                    } onHover: { inside in
+                        if inside { selectedCitation = n }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Split a text run into wrappable chunks, keeping trailing spaces attached so word spacing is
+    /// preserved in the flow layout.
+    private func wordChunks(_ s: String) -> [String] {
+        guard !s.isEmpty else { return [] }
+        var chunks: [String] = []
+        var current = ""
+        for ch in s {
+            current.append(ch)
+            if ch == " " || ch == "\n" {
+                chunks.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+}
+
+/// One inline citation superscript: a small wax-red mono numeral raised like a footnote marker. Taps
+/// and hovers drive the shared `selectedCitation`; when selected it fills with the wax wash so the
+/// reader sees which claim they've pinned.
+struct AskCitationMarker: View {
+    let index: Int
+    let isSelected: Bool
+    let onTap: () -> Void
+    let onHover: (Bool) -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            Text("\(index)")
+                .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                .foregroundColor(CortexDesign.accent)
+                .padding(.horizontal, 3)
+                .padding(.vertical, 0.5)
+                .background(
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(isSelected ? CortexDesign.accentSoft : Color.clear)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .stroke(CortexDesign.accent.opacity(isSelected ? 0.5 : 0.2), lineWidth: 0.75)
+                )
+                .baselineOffset(5)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover(perform: onHover)
+        .help("Citation \(index)")
+        .accessibilityLabel("Citation \(index)")
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// The right column: a live source margin. One card per citation showing the ACTUAL excerpt, a
+/// source-type glyph, its source label, and a line-range / date leader. The card matching
+/// `selectedCitation` lifts to wax emphasis so hovering/tapping a prose marker reveals its receipt.
+struct AskSourceMargin: View {
+    let citations: [AskCitationItem]
+    let citationsByIndex: [Int: AskCitationItem]
+    @Binding var selectedCitation: Int?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(verbatim: "SOURCE MARGIN")
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.inkFaint)
+            ForEach(citations) { citation in
+                AskMarginCitationCard(
+                    citation: citation,
+                    isSelected: selectedCitation == citation.index
+                ) {
+                    selectedCitation = (selectedCitation == citation.index) ? nil : citation.index
+                } onHover: { inside in
+                    if inside { selectedCitation = citation.index }
+                    else if selectedCitation == citation.index { selectedCitation = nil }
+                }
+            }
+        }
+    }
+}
+
+/// A single margin card — the "receipt" for one claim. Real excerpt, source-type glyph, source
+/// label, and a dotted leader out to the line range / date. Tapping opens the source when openable.
+struct AskMarginCitationCard: View {
+    let citation: AskCitationItem
+    let isSelected: Bool
+    let onTap: () -> Void
+    let onHover: (Bool) -> Void
+
     private var openableURL: URL? {
         CitationDisplay.openableURL(path: citation.citation_path, sourceURL: citation.source_url)
     }
 
     var body: some View {
-        if let url = openableURL {
-            Button {
-                NSWorkspace.shared.open(url)
-            } label: {
-                rowContent(openable: true)
-            }
-            .buttonStyle(.plain)
-            .help(helpText(openable: true))
-            .accessibilityAddTraits(.isLink)
-        } else {
-            rowContent(openable: false)
-                .help(helpText(openable: false))
-        }
-    }
-
-    private func rowContent(openable: Bool) -> some View {
-        // One clean footnote line: mono wax-red numeral, source label + short title in ink,
-        // then the line range/date as a quiet right-aligned stamp. The excerpt tucks into the
-        // tooltip so each citation stays a single readable line.
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("\(citation.index).")
-                .font(CortexDesign.Typography.stamp)
-                .foregroundColor(CortexDesign.accent)
-            Text(compactTitle)
-                .font(.system(size: 12))
-                .foregroundColor(CortexDesign.ink)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            if openable {
-                Image(systemName: "arrow.up.right.square")
-                    .font(.caption2)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("\(citation.index)")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundColor(CortexDesign.accent)
-            }
-            Spacer(minLength: 8)
-            if let trailing = leaderLabel {
-                Text(trailing.uppercased())
-                    .font(CortexDesign.Typography.stamp)
-                    .kerning(0.8)
-                    .foregroundColor(CortexDesign.inkFaint)
+                    .frame(minWidth: 12, alignment: .leading)
+                Image(systemName: askSourceGlyph(kind: citation.kind, sourceType: citation.source_type))
+                    .font(.system(size: 10))
+                    .foregroundColor(CortexDesign.inkSecondary)
+                Text(sourceLabel)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundColor(CortexDesign.ink)
                     .lineLimit(1)
-                    .layoutPriority(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 2)
+                if openableURL != nil {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 9))
+                        .foregroundColor(CortexDesign.accent)
+                }
+            }
+
+            if !excerpt.isEmpty {
+                // The actual excerpt — the receipt text the tooltip used to hide.
+                Text(excerpt)
+                    .font(CortexDesign.Typography.prose(11.5))
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .lineSpacing(2)
+                    .lineLimit(4)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(excerpt)
+            }
+
+            if let leader = leaderLabel {
+                // Dotted leader → line range / date, like a footnote's rule out to its locator.
+                HStack(spacing: 5) {
+                    Line()
+                        .stroke(style: StrokeStyle(lineWidth: 1, dash: [1.5, 2.5]))
+                        .foregroundColor(CortexDesign.hairline)
+                        .frame(height: 1)
+                    Text(leader.uppercased())
+                        .font(CortexDesign.Typography.hint)
+                        .kerning(0.5)
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                }
             }
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(hovering && openable ? CortexDesign.accentSoft : Color.clear)
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                .fill(isSelected ? CortexDesign.accentSoft : CortexDesign.quietBackground)
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                .stroke(isSelected ? CortexDesign.accent.opacity(0.45) : CortexDesign.hairline, lineWidth: 1)
+        )
+        // A wax-red edge rail on the selected card — the receipt "lights up" for the pinned claim.
+        .overlay(alignment: .leading) {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(CortexDesign.accent)
+                    .frame(width: 2)
+                    .padding(.vertical, 6)
+            }
+        }
         .contentShape(Rectangle())
-        .onHover { inside in
-            hovering = inside
+        .onTapGesture {
+            if let url = openableURL {
+                NSWorkspace.shared.open(url)
+            } else {
+                onTap()
+            }
         }
-    }
-
-    /// Source label plus its short title (section/scope) on one line, separated by a middle dot.
-    private var compactTitle: String {
-        guard let detail = sourceDetail else { return sourceLabel }
-        return "\(sourceLabel) · \(detail)"
-    }
-
-    /// Tooltip carries the tucked excerpt (when present) so no citation data is lost to the
-    /// one-line layout; otherwise it names the click affordance.
-    private func helpText(openable: Bool) -> String {
-        if !excerpt.isEmpty {
-            return openable ? "\(excerpt)\n\nClick to open source" : excerpt
-        }
-        return openable ? "Open source" : compactTitle
+        .onHover(perform: onHover)
+        .animation(CortexMotion.hover, value: isSelected)
+        .help(helpText)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Citation \(citation.index): \(sourceLabel). \(excerpt.isEmpty ? "" : excerpt)")
     }
 
     private var sourceLabel: String {
-        // Line numbers are NOT passed here — sourceDetail owns the line label in all cases, so the
-        // range can never print twice ("file.md - line 12" + "Line 12").
+        // Line numbers are owned by the leader, so the range never prints twice.
         CitationDisplay.label(
             path: citation.citation_path,
             sourceURL: citation.source_url,
@@ -1004,19 +1366,23 @@ struct AskCitationRow: View {
         ) ?? citation.source
     }
 
-    /// The right end of the dotted leader: the line range where available, else the memory's
-    /// date — never fabricated, omitted entirely when neither is known.
+    private var helpText: String {
+        let base = openableURL != nil ? "Click to open source" : sourceLabel
+        return excerpt.isEmpty ? base : "\(excerpt)\n\n\(base)"
+    }
+
     private var leaderLabel: String? {
         if let lineLabel { return lineLabel }
         let date = (citation.occurred_at ?? citation.captured_at)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let date, !date.isEmpty else { return nil }
+        guard let date, !date.isEmpty else {
+            // Fall back on the section/scope so the leader isn't empty when there's no locator.
+            return sectionDetail
+        }
         return shortDate(date)
     }
 
-    private var sourceDetail: String? {
-        // The dotted leader owns the line label (leaderLabel above), so the range can never
-        // print twice ("file.md - line 12" + a "LINE 12" leader).
+    private var sectionDetail: String? {
         let pieces = [
             citation.section_title?.trimmingCharacters(in: .whitespacesAndNewlines),
             citation.record_scope?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1024,7 +1390,7 @@ struct AskCitationRow: View {
         let detail = pieces.compactMap { value -> String? in
             guard let value, !value.isEmpty else { return nil }
             return value
-        }.joined(separator: " - ")
+        }.joined(separator: " · ")
         return detail.isEmpty ? nil : detail
     }
 
@@ -1038,8 +1404,70 @@ struct AskCitationRow: View {
 
     private var excerpt: String {
         let raw = citation.excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
-        // A bare file path adds nothing under a row that already names the source — suppress it.
+        // A bare file path adds nothing under a card that already names the source — suppress it.
         if MemoryText.isPathLike(raw) { return "" }
         return raw
+    }
+}
+
+/// A one-segment horizontal line, used for the dotted leader.
+private struct Line: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        return path
+    }
+}
+
+/// A minimal flow (wrapping) layout so inline `[n]` markers sit within the serif prose paragraph and
+/// wrap like text. Uses SwiftUI's `Layout` (macOS 13+) — places each subview left-to-right, wrapping
+/// to the next line when it would overflow the proposed width. Deterministic; no `.random`.
+struct AskFlowLayout: Layout {
+    var spacing: CGFloat = 0
+    var lineSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var maxLineWidth: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                maxLineWidth = max(maxLineWidth, x - spacing)
+                x = 0
+                y += lineHeight + lineSpacing
+                lineHeight = 0
+            }
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+        maxLineWidth = max(maxLineWidth, x - spacing)
+        let totalWidth = proposal.width ?? max(maxLineWidth, 0)
+        return CGSize(width: totalWidth, height: y + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
+        let maxWidth = bounds.width
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0
+                y += lineHeight + lineSpacing
+                lineHeight = 0
+            }
+            subview.place(
+                at: CGPoint(x: bounds.minX + x, y: bounds.minY + y),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(size)
+            )
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
     }
 }

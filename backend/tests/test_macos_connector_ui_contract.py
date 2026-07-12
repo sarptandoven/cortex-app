@@ -184,8 +184,9 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
 
         self.assertIn("ReviewSourceHealthStrip", source)
         self.assertIn("sourceReadinessReport", source)
-        self.assertIn("sourceHealthLabel", source)
-        self.assertIn("latestSync", source)
+        # (The UI-overhaul redesign folded the per-source label/latest-sync into
+        # ReviewSourceHealthChip, which reads sourceReadinessReport directly; the old
+        # sourceHealthLabel/latestSync computed props were contract-only and are gone.)
         self.assertIn("ReviewSourceHealthChip", source)
         self.assertIn("Approve useful items, archive noise", source)
         self.assertIn('Label("Approve", systemImage: "checkmark.seal")', source)

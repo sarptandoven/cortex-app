@@ -74,7 +74,7 @@ enum RecallHeadlineText {
 // MARK: - Home headline card
 
 /// The north-star headline card at the top of Home. Three honest shapes:
-///   - distinct AIs read memory this window → the headline + recalls + per-client stamp;
+///   - distinct AIs read memory this window → the giant serif count + a "ledger of readers";
 ///   - only shared/untokened reads happened → the recall count, attributed to shared connections;
 ///   - nothing read memory → a purposeful nudge into the Connect-an-app wizard, not a sad zero.
 /// Hidden entirely until the endpoint has answered once (state.recallHeadline != nil), so a cold
@@ -105,29 +105,43 @@ struct RecallHeadlineCard: View {
             .accessibilityHidden(true)
     }
 
-    /// The full headline: N distinct AIs read memory this window.
+    /// The full headline, promoted to the giant New York numeral: N distinct AIs read memory this
+    /// window, rendered as a display(64) serif count over a caption, with a horizontal ledger of
+    /// readers (per-client name + rolling count) below a hairline rule. The number ROLLS on change
+    /// via `AnimatableNumber`, so a live read (RecallProofWatcher polling) spins the wheel up.
     private func activeCard(_ headline: RecallHeadline) -> some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
             stampHeader
 
-            Text(RecallHeadlineText.headline(distinctAIs: headline.distinct_ais, windowDays: headline.window_days))
-                .font(CortexDesign.Typography.display(22))
-                .foregroundColor(CortexDesign.ink)
-                .fixedSize(horizontal: false, vertical: true)
-
-            AccessionStamp(segments: RecallHeadlineText.stampSegments(
-                totalRecalls: headline.total_recalls,
-                clients: headline.clients
-            ))
+            // The giant north-star numeral + its caption. The number is the hero; the words are the
+            // gloss beside it, not the headline.
+            HStack(alignment: .firstTextBaseline, spacing: CortexDesign.Space.md) {
+                AnimatableNumber(
+                    value: Double(headline.distinct_ais),
+                    font: CortexDesign.Typography.display(64),
+                    color: CortexDesign.ink
+                )
+                .animation(CortexMotion.rollNumber, value: headline.distinct_ais)
+                Text("AI\(headline.distinct_ais == 1 ? "" : "s") read your memory\n\(RecallHeadlineText.windowPhrase(headline.window_days))")
+                    .font(CortexDesign.Typography.prose(15))
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(clientAccessibilitySummary(headline))
+            .accessibilityLabel(RecallHeadlineText.headline(distinctAIs: headline.distinct_ais, windowDays: headline.window_days))
+
+            // The ledger of readers: a hairline rule, then a per-client row (name · rolling count),
+            // so the abstract "3 AIs" becomes a legible register of who actually read.
+            if !headline.clients.isEmpty {
+                Rectangle()
+                    .fill(CortexDesign.hairline)
+                    .frame(height: 1)
+                readersLedger(headline)
+            }
 
             if let top = headline.top_memories.first {
-                Text("Most recalled: \(MemoryText.displayProse(top.title_or_summary, maxLength: 80))")
-                    .font(.callout)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                mostRecalledRow(top)
             }
 
             if let footnote = RecallHeadlineText.unattributedFootnote(headline.unattributed_calls) {
@@ -141,6 +155,84 @@ struct RecallHeadlineCard: View {
         .frame(maxWidth: 620, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(RecallHeadlineText.headline(distinctAIs: headline.distinct_ais, windowDays: headline.window_days))
+    }
+
+    /// The horizontal register of who read memory: total recalls, then each client as name over a
+    /// rolling count. gold = "live/this week" — the counts sit in the gold register.
+    private func readersLedger(_ headline: RecallHeadline) -> some View {
+        HStack(alignment: .top, spacing: CortexDesign.Space.lg) {
+            ledgerColumn(
+                label: "Total recalls",
+                value: headline.total_recalls,
+                tint: CortexDesign.gold
+            )
+            ForEach(headline.clients.prefix(4)) { client in
+                ledgerColumn(
+                    label: client.label,
+                    value: client.read_calls,
+                    tint: CortexDesign.ink
+                )
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(clientAccessibilitySummary(headline))
+    }
+
+    /// One reader column: a rolling numeral over a small SF label. `AnimatableNumber` rolls the
+    /// count on change (a poll that lands a new read spins the wheel).
+    private func ledgerColumn(label: String, value: Int, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            AnimatableNumber(
+                value: Double(value),
+                font: CortexDesign.Typography.stat,
+                color: tint
+            )
+            .animation(CortexMotion.rollNumber, value: value)
+            Text(label)
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
+                .lineLimit(1)
+        }
+    }
+
+    /// "Most recalled" — the app's most-served memory this window. FIX: was dead non-interactive
+    /// text; now a tappable row that explores that memory in Ask (the same "explore this" affordance
+    /// the Constellation node tap uses: seed the query, switch to Ask, run the search — surfacing the
+    /// memory's content with citations). No dedicated open-memory-by-id surface exists; this reuses
+    /// the shipped search path. accentSoft wash = "Cortex noticed / here is a thread to pull".
+    private func mostRecalledRow(_ top: RecallTopMemory) -> some View {
+        let title = MemoryText.displayProse(top.title_or_summary, maxLength: 80)
+        return Button {
+            state.searchQuery = top.title_or_summary
+            state.selectedTab = .ask
+            state.runSearch()
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: CortexDesign.Space.sm) {
+                Text("Most recalled")
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
+                Text(title)
+                    .font(.callout)
+                    .foregroundColor(CortexDesign.ink)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.forward")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(CortexDesign.accent)
+            }
+            .padding(.vertical, CortexDesign.Space.xs)
+            .padding(.horizontal, CortexDesign.Space.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CortexDesign.accentSoft)
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Most recalled: \(title). Explore in Ask.")
+        .accessibilityHint("Opens Ask and searches for this memory")
     }
 
     /// Reads happened, but only through shared/untokened connections — say exactly that instead

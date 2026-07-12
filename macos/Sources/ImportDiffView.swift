@@ -188,6 +188,15 @@ struct ImportDiffView: View {
             case .gemini: return "Gemini"
             }
         }
+        /// A vendor glyph for the pill segmented control — the archive's stamp for each source.
+        var glyph: String {
+            switch self {
+            case .auto: return "sparkle.magnifyingglass"
+            case .chatgpt: return "bubble.left.and.text.bubble.right"
+            case .claude: return "a.square"
+            case .gemini: return "diamond"
+            }
+        }
         /// The wire value; nil for auto (the server sniffs).
         var wireValue: String? { self == .auto ? nil : rawValue }
     }
@@ -200,6 +209,8 @@ struct ImportDiffView: View {
     /// Facts the user has already added this session, so the "Add to Cortex" button can confirm
     /// per-row without re-fetching. Keyed by the fact's stable id.
     @State private var addedFactIDs: Set<String> = []
+    /// Highlight state for the drop zone while a file hovers over it.
+    @State private var dropTargeted = false
 
     private var trimmedInput: String {
         pasted.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -258,14 +269,7 @@ struct ImportDiffView: View {
     private var inputSection: some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
             HStack(spacing: CortexDesign.Space.sm) {
-                Picker("Export from", selection: $vendor) {
-                    ForEach(VendorChoice.allCases) { choice in
-                        Text(choice.label).tag(choice)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(maxWidth: 200)
+                vendorPicker
 
                 Spacer(minLength: CortexDesign.Space.sm)
 
@@ -275,27 +279,9 @@ struct ImportDiffView: View {
                 .disabled(comparing)
             }
 
-            ZStack(alignment: .topLeading) {
-                if pasted.isEmpty {
-                    Text("Paste your export here — the raw text or JSON is fine.")
-                        .font(CortexDesign.Typography.prose(13))
-                        .foregroundColor(CortexDesign.inkFaint)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 10)
-                        .allowsHitTesting(false)
-                }
-                TextEditor(text: $pasted)
-                    .font(CortexDesign.Typography.prose(13))
-                    .scrollContentBackground(.hidden)
-                    .padding(4)
-                    .frame(minHeight: 120, maxHeight: 200)
-            }
-            .background(CortexDesign.quietBackground)
-            .overlay(
-                RoundedRectangle(cornerRadius: CortexDesign.Radius.md)
-                    .stroke(CortexDesign.hairline, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
+            pasteWell
+
+            dropZone
 
             HStack(spacing: CortexDesign.Space.sm) {
                 CortexButton(
@@ -328,6 +314,101 @@ struct ImportDiffView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// A pill segmented control carrying each vendor's glyph — replaces the stock menu Picker so the
+    /// source choice reads as a stamp shelf, not a System-Settings dropdown. One tap sets the hint.
+    private var vendorPicker: some View {
+        HStack(spacing: 0) {
+            ForEach(VendorChoice.allCases) { choice in
+                let selected = vendor == choice
+                Button {
+                    vendor = choice
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: choice.glyph)
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(choice.label)
+                            .font(.system(size: 12, weight: selected ? .semibold : .medium))
+                    }
+                    .foregroundColor(selected ? CortexDesign.panelBackground : CortexDesign.inkSecondary)
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                            .fill(selected ? CortexDesign.accent : Color.clear)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(comparing)
+            }
+        }
+        .padding(3)
+        .background(CortexDesign.quietBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .embossedBorder(radius: CortexDesign.Radius.md)
+        .animation(CortexMotion.press, value: vendor)
+    }
+
+    /// The paste well in the CortexField idiom: a quiet recessed ground, letterpress edge, and a wax
+    /// focus ring — the multiline sibling of the design-system text field (TextEditor has no styled
+    /// variant, so the field chrome is applied around it here).
+    private var pasteWell: some View {
+        ZStack(alignment: .topLeading) {
+            if pasted.isEmpty {
+                Text("Paste your export here — the raw text or JSON is fine.")
+                    .font(CortexDesign.Typography.prose(13))
+                    .foregroundColor(CortexDesign.inkFaint)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 12)
+                    .allowsHitTesting(false)
+            }
+            TextEditor(text: $pasted)
+                .font(CortexDesign.Typography.prose(13))
+                .foregroundColor(CortexDesign.ink)
+                .scrollContentBackground(.hidden)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .frame(minHeight: 120, maxHeight: 200)
+        }
+        .background(CortexDesign.quietBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .embossedBorder(radius: CortexDesign.Radius.md)
+    }
+
+    /// A dashed drop zone matching the ChatGPT/Claude importer's affordance: drop the export file
+    /// (a .zip, .json, .jsonl, or plain text) and its contents load into the paste well. This is the
+    /// path a user who "downloaded the .zip" actually takes.
+    private var dropZone: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
+            .foregroundColor(dropTargeted ? CortexDesign.accent : CortexDesign.hairline)
+            .frame(height: 54)
+            .overlay(
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.down.doc")
+                        .foregroundColor(dropTargeted ? CortexDesign.accent : CortexDesign.inkFaint)
+                    Text("Drop your export file here — a .zip is fine")
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                }
+            )
+            .animation(CortexMotion.press, value: dropTargeted)
+            .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+                guard let provider = providers.first else { return false }
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    var url: URL?
+                    if let data = item as? Data {
+                        url = URL(dataRepresentation: data, relativeTo: nil)
+                    } else if let dropped = item as? URL {
+                        url = dropped
+                    }
+                    guard let resolved = url?.standardizedFileURL else { return }
+                    Task { @MainActor in loadExportFile(at: resolved) }
+                }
+                return true
+            }
     }
 
     // MARK: Empty / transient states
@@ -389,41 +470,78 @@ struct ImportDiffView: View {
         }
     }
 
+    /// The hero verdict band: two ledgers, side by side. On the left, the export's ink field — the
+    /// serif count it confirms and disputes; on the right, the moss field — what Cortex already
+    /// remembered that the export forgot. Large New York numerals read as a headline, not a chip row.
     private func summaryHeader(_ result: ImportDiffResult) -> some View {
-        VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
-            let n = result.factsRead
+        let summary = result.summary
+        let confirms = summary?.confirmed ?? 0
+        let disputes = (summary?.conflicting ?? 0) + (summary?.stale ?? 0)
+        let remembers = summary?.cortex_only ?? 0
+        let missing = summary?.missing ?? 0
+        let n = result.factsRead
+
+        return VStack(alignment: .leading, spacing: 0) {
             Text("We read \(n) fact\(n == 1 ? "" : "s") from your \(result.displayVendorLabel) export.")
                 .font(CortexDesign.Typography.prose(15))
                 .foregroundColor(CortexDesign.ink)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(CortexDesign.Space.lg)
 
-            if let summary = result.summary {
-                HStack(spacing: CortexDesign.Space.md) {
-                    summaryChip(count: summary.confirmed, label: "confirmed", tone: CortexDesign.sealMoss)
-                    summaryChip(count: (summary.conflicting ?? 0) + (summary.stale ?? 0), label: "to check", tone: CortexDesign.gold)
-                    summaryChip(count: summary.missing, label: "new", tone: ImportDiffStatus.missing.tone)
-                    summaryChip(count: summary.cortex_only, label: "you already had", tone: CortexDesign.inkSecondary)
-                    Spacer(minLength: 0)
-                }
+            // Split ink/moss field: what the export got right/wrong vs. what your Cortex already held.
+            HStack(spacing: 0) {
+                verdictLedger(
+                    title: "Your export",
+                    stats: [
+                        (confirms, "confirms", CortexDesign.sealMoss),
+                        (disputes, "disputes", CortexDesign.gold),
+                        (missing, "new to Cortex", ImportDiffStatus.missing.tone),
+                    ],
+                    ground: CortexDesign.quietBackground
+                )
+                Rectangle()
+                    .fill(CortexDesign.hairline)
+                    .frame(width: 1)
+                verdictLedger(
+                    title: "Your Cortex",
+                    stats: [
+                        (remembers, "it already knew your export forgot", CortexDesign.sealMoss),
+                    ],
+                    ground: CortexDesign.sealMoss.opacity(0.08)
+                )
             }
         }
-        .cortexCard()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CortexDesign.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .embossedBorder(radius: CortexDesign.Radius.md)
+        .shadow(color: CortexDesign.Elevation.rest.ambient.color, radius: CortexDesign.Elevation.rest.ambient.radius, y: CortexDesign.Elevation.rest.ambient.y)
         .archiveSpine(CortexDesign.accent)
     }
 
-    @ViewBuilder
-    private func summaryChip(count: Int?, label: String, tone: Color) -> some View {
-        if let count, count > 0 {
-            HStack(spacing: 5) {
-                Text("\(count)")
-                    .font(CortexDesign.Typography.stat)
-                    .monospacedDigit()
-                    .foregroundColor(tone)
-                Text(label)
-                    .font(CortexDesign.Typography.caption)
-                    .foregroundColor(CortexDesign.inkSecondary)
+    /// One column of the verdict band: a mono field title over a stack of large serif numerals.
+    private func verdictLedger(title: String, stats: [(count: Int, label: String, tone: Color)], ground: Color) -> some View {
+        VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
+            Text(title.uppercased())
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.inkFaint)
+            ForEach(Array(stats.enumerated()), id: \.offset) { _, stat in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("\(stat.count)")
+                        .font(.system(size: 34, weight: .semibold, design: .serif))
+                        .monospacedDigit()
+                        .foregroundColor(stat.tone)
+                    Text(stat.label)
+                        .font(CortexDesign.Typography.body)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(CortexDesign.Space.lg)
+        .background(ground)
     }
 
     @ViewBuilder
@@ -540,27 +658,153 @@ struct ImportDiffView: View {
     private func openExportFile() {
         let panel = NSOpenPanel()
         panel.title = "Open export file"
-        panel.message = "Open a ChatGPT, Claude, or Gemini memory export — its .json, .jsonl, or a plain-text file."
+        panel.message = "Open a ChatGPT, Claude, or Gemini memory export — the .zip, its .json/.jsonl, or a plain-text file."
         panel.prompt = "Open"
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [
+            .zip,
             .json,
             .plainText,
             .text,
             UTType(filenameExtension: "jsonl") ?? .data,
         ]
         if panel.runModal() == .OK, let url = panel.url {
-            let started = url.startAccessingSecurityScopedResource()
-            defer { if started { url.stopAccessingSecurityScopedResource() } }
-            if let text = try? String(contentsOf: url, encoding: .utf8) {
+            loadExportFile(at: url)
+        }
+    }
+
+    /// Load a picked/dropped export into the paste well. Accepts a plain-text/JSON file directly, and
+    /// — this is the fix for the .zip the sibling importer tells users to download — accepts a .zip by
+    /// extracting it to a temp dir and pulling the memory/export JSON text out. There is no reachable
+    /// Swift-side unzip utility in the app (the chat-import path unzips on the backend, which takes a
+    /// path; import-diff takes text), so extraction shells out to `/usr/bin/ditto` (always present on
+    /// macOS). REPORTED to the caller: a central `AppState.extractExportText(fromZip:)` would be the
+    /// cleaner home for this.
+    private func loadExportFile(at url: URL) {
+        let started = url.startAccessingSecurityScopedResource()
+        defer { if started { url.stopAccessingSecurityScopedResource() } }
+
+        let isZip = url.pathExtension.lowercased() == "zip"
+        if isZip {
+            switch ImportDiffZipExtractor.extractExportText(fromZip: url) {
+            case .success(let text):
                 pasted = text
                 errorText = nil
-            } else {
-                errorText = "Couldn't read that file as text. Paste the export contents instead."
+            case .failure(let message):
+                errorText = message
+            }
+            return
+        }
+
+        if let text = try? String(contentsOf: url, encoding: .utf8) {
+            pasted = text
+            errorText = nil
+        } else {
+            errorText = "Couldn't read that file as text. If it's a .zip, drop it here to unzip it, or paste the export contents instead."
+        }
+    }
+}
+
+// MARK: - Zip export extraction
+
+/// Pulls the readable export text out of a ChatGPT/Claude/Gemini memory-export .zip. These exports
+/// bundle the actual data as JSON (conversations.json, chat.json, memory.json, user.json…) inside a
+/// zip; import-diff wants that text, not a path. There is no reachable in-app unzip helper (the chat
+/// importer hands the .zip path to the backend, which unzips server-side), so this extracts with
+/// `/usr/bin/ditto -x -k` (bundled on every macOS) into a scratch dir, then joins the export-ish
+/// text files it finds. Deterministic file ordering (sorted by relevance then path — no reliance on
+/// filesystem order). Best-effort and self-cleaning; never crashes the surface.
+enum ImportDiffZipExtractor {
+    enum Result {
+        case success(String)
+        case failure(String)
+    }
+
+    /// Names (case-insensitive substrings) that mark a file as the export's memory/chat payload —
+    /// preferred first so the compare reads the richest file even when a zip carries several JSONs.
+    private static let preferredNameHints = ["memory", "conversation", "chat", "message", "user", "export"]
+    private static let textExtensions: Set<String> = ["json", "jsonl", "txt", "md", "ndjson"]
+    /// Guardrail: don't try to load an unreasonably large blob into the paste well / request body.
+    private static let maxTotalBytes = 12 * 1024 * 1024
+
+    static func extractExportText(fromZip zipURL: URL) -> Result {
+        let fm = FileManager.default
+        let scratch = fm.temporaryDirectory
+            .appendingPathComponent("cortex-import-diff", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fm.removeItem(at: scratch) }
+        do {
+            try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+        } catch {
+            return .failure("Couldn't open that .zip — no room to unzip it. Paste the export contents instead.")
+        }
+
+        // /usr/bin/ditto -x -k <zip> <dest> extracts a PKZip archive. It ships with macOS, so no
+        // third-party dependency is added.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["-x", "-k", zipURL.path, scratch.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return .failure("Couldn't unzip that export. Paste the export contents instead.")
+        }
+        guard process.terminationStatus == 0 else {
+            return .failure("That .zip couldn't be read. Try re-downloading the export, or paste its contents instead.")
+        }
+
+        // Collect candidate text files.
+        var candidates: [(url: URL, size: Int)] = []
+        if let walker = fm.enumerator(at: scratch, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]) {
+            for case let fileURL as URL in walker {
+                guard textExtensions.contains(fileURL.pathExtension.lowercased()) else { continue }
+                let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                guard values?.isRegularFile == true else { continue }
+                candidates.append((fileURL, values?.fileSize ?? 0))
             }
         }
+        guard !candidates.isEmpty else {
+            return .failure("No readable export was found in that .zip. Open the export's conversations.json or memory file instead.")
+        }
+
+        // Deterministic priority: preferred-name files first (in hint order), then everything else,
+        // each group ordered by descending size then path so the ordering never depends on the
+        // filesystem's enumeration order.
+        func priority(_ url: URL) -> Int {
+            let name = url.lastPathComponent.lowercased()
+            for (index, hint) in preferredNameHints.enumerated() where name.contains(hint) {
+                return index
+            }
+            return preferredNameHints.count
+        }
+        let ordered = candidates.sorted { lhs, rhs in
+            let pl = priority(lhs.url), pr = priority(rhs.url)
+            if pl != pr { return pl < pr }
+            if lhs.size != rhs.size { return lhs.size > rhs.size }
+            return lhs.url.path < rhs.url.path
+        }
+
+        var pieces: [String] = []
+        var total = 0
+        for candidate in ordered {
+            guard total < maxTotalBytes else { break }
+            guard let text = try? String(contentsOf: candidate.url, encoding: .utf8) else { continue }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            pieces.append(trimmed)
+            total += trimmed.utf8.count
+        }
+
+        let joined = pieces.joined(separator: "\n\n")
+        guard !joined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .failure("That .zip had no readable text export inside. Open the export's conversations.json or memory file instead.")
+        }
+        return .success(joined)
     }
 }
 

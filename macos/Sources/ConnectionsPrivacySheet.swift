@@ -165,7 +165,13 @@ private struct ConnectionsPrivacyOverview: View {
     // MARK: Group 1 — Sources (notes, chat imports, connector library)
 
     private var sourcesGroup: some View {
-        DisclosureGroup(isExpanded: $sourcesExpanded) {
+        CortexDisclosure(
+            isExpanded: $sourcesExpanded,
+            systemImage: "tray.and.arrow.down",
+            title: "Sources",
+            detail: sourcesGroupDetail,
+            help: "Notes, ChatGPT/Claude chat exports, and optional read-only connectors feed your memory."
+        ) {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
                 ConnectionsObsidianSection(state: state)
                 AIChatsImportCard(state: state)
@@ -177,13 +183,6 @@ private struct ConnectionsPrivacyOverview: View {
                 }
             }
             .padding(.top, 12)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "tray.and.arrow.down",
-                title: "Sources",
-                detail: sourcesGroupDetail
-            )
-            .help("Notes, ChatGPT/Claude chat exports, and optional read-only connectors feed your memory.")
         }
         .connectionsGroupCard()
     }
@@ -198,18 +197,17 @@ private struct ConnectionsPrivacyOverview: View {
     // MARK: Group 2 — AI apps (MCP setup, memory packs, tool permissions)
 
     private var aiAppsGroup: some View {
-        DisclosureGroup(isExpanded: $advancedExpanded) {
+        CortexDisclosure(
+            isExpanded: $advancedExpanded,
+            systemImage: "wand.and.stars",
+            title: "AI apps",
+            detail: "Use your memory in Claude Desktop, ChatGPT, Cursor & other AI apps"
+        ) {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
                 ConnectionsAIToolsSection(state: state)
                 ConnectionsMCPAccessSection(state: state)
             }
             .padding(.top, 12)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "wand.and.stars",
-                title: "AI apps",
-                detail: "Use your memory in Claude Desktop, ChatGPT, Cursor & other AI apps"
-            )
         }
         .connectionsGroupCard()
     }
@@ -217,7 +215,12 @@ private struct ConnectionsPrivacyOverview: View {
     // MARK: Group 3 — Privacy & data (permissions, stored data, backups, export)
 
     private func privacyDataGroup(summary: TrustSummaryResponse) -> some View {
-        DisclosureGroup(isExpanded: $privacyDataExpanded) {
+        CortexDisclosure(
+            isExpanded: $privacyDataExpanded,
+            systemImage: "lock.shield",
+            title: "Privacy & data",
+            detail: "Permissions, stored data, backups & export"
+        ) {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
                 ConnectionsPrivacyDefaultsSection(state: state, summary: summary)
                 privacySettings(summary: summary)
@@ -225,12 +228,6 @@ private struct ConnectionsPrivacyOverview: View {
                 recoveryTools
             }
             .padding(.top, 12)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "lock.shield",
-                title: "Privacy & data",
-                detail: "Permissions, stored data, backups & export"
-            )
         }
         .connectionsGroupCard()
     }
@@ -238,34 +235,32 @@ private struct ConnectionsPrivacyOverview: View {
     // MARK: Group 4 — Advanced (metrics, audit history, diagnostics)
 
     private func advancedGroup(summary: TrustSummaryResponse) -> some View {
-        DisclosureGroup(isExpanded: $advancedGroupExpanded) {
+        CortexDisclosure(
+            isExpanded: $advancedGroupExpanded,
+            systemImage: "wrench.and.screwdriver",
+            title: "Advanced",
+            detail: "Activity metrics, audit history, developer diagnostics"
+        ) {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
                 activityMetrics
                 auditHistory(summary: summary)
                 developerDetails
             }
             .padding(.top, 12)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "wrench.and.screwdriver",
-                title: "Advanced",
-                detail: "Activity metrics, audit history, developer diagnostics"
-            )
         }
         .connectionsGroupCard()
     }
 
     private var otherSourceConnections: some View {
-        DisclosureGroup(isExpanded: $advancedSourcesExpanded) {
+        CortexDisclosure(
+            isExpanded: $advancedSourcesExpanded,
+            systemImage: "square.grid.2x2",
+            title: "Add more sources",
+            detail: advancedSourceDisclosureDetail,
+            accessibilityTitle: "Add more sources — Connections library"
+        ) {
             ConnectionsDirectSourcesSection(state: state)
                 .padding(.top, 10)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "square.grid.2x2",
-                title: "Add more sources",
-                detail: advancedSourceDisclosureDetail
-            )
-            .accessibilityLabel("Add more sources — Connections library")
         }
         .connectionsSubCard()
     }
@@ -279,31 +274,29 @@ private struct ConnectionsPrivacyOverview: View {
     }
 
     private func privacySettings(summary: TrustSummaryResponse) -> some View {
-        DisclosureGroup(isExpanded: $privacySettingsExpanded) {
+        CortexDisclosure(
+            isExpanded: $privacySettingsExpanded,
+            systemImage: "shield.lefthalf.filled",
+            title: "Memory permissions",
+            detail: "Reviewed memory reads, new AI saves go to Review"
+        ) {
             VStack(alignment: .leading, spacing: 14) {
                 TrustPolicySection(state: state)
             }
             .padding(.top, 10)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "shield.lefthalf.filled",
-                title: "Memory permissions",
-                detail: "Reviewed memory reads, new AI saves go to Review"
-            )
         }
         .connectionsSubCard()
     }
 
     private var connectedNow: some View {
-        DisclosureGroup(isExpanded: $connectedExpanded) {
+        CortexDisclosure(
+            isExpanded: $connectedExpanded,
+            systemImage: "checkmark.seal",
+            title: "Connection status",
+            detail: connectionStatusDetail
+        ) {
             ConnectionsActiveSourcesSection(state: state)
                 .padding(.top, 10)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "checkmark.seal",
-                title: "Connection status",
-                detail: connectionStatusDetail
-            )
         }
         .connectionsSubCard()
     }
@@ -311,15 +304,14 @@ private struct ConnectionsPrivacyOverview: View {
     /// Manage stored data: once memory exists, removing all of it from a single source is a
     /// first-class privacy action, so it lives in Privacy & data — not buried in diagnostics.
     private var storedData: some View {
-        DisclosureGroup(isExpanded: $storedDataExpanded) {
+        CortexDisclosure(
+            isExpanded: $storedDataExpanded,
+            systemImage: "tray.full",
+            title: "Manage stored data",
+            detail: "See what each source has saved, delete it by source in one step"
+        ) {
             ConnectionsStoredDataSection(state: state)
                 .padding(.top, 10)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "tray.full",
-                title: "Manage stored data",
-                detail: "See what each source has saved, delete it by source in one step"
-            )
         }
         .connectionsSubCard()
         .onChange(of: storedDataExpanded) { expanded in
@@ -330,7 +322,12 @@ private struct ConnectionsPrivacyOverview: View {
     }
 
     private var recoveryTools: some View {
-        DisclosureGroup(isExpanded: $recoveryToolsExpanded) {
+        CortexDisclosure(
+            isExpanded: $recoveryToolsExpanded,
+            systemImage: "arrow.counterclockwise.circle",
+            title: "Backups, recovery & export",
+            detail: "Back up, restore, repair, or export your local memory"
+        ) {
             VStack(alignment: .leading, spacing: 14) {
                 SettingsDataRecoverySection(state: state)
                 Divider()
@@ -339,12 +336,6 @@ private struct ConnectionsPrivacyOverview: View {
                 SettingsStatsSection(state: state)
             }
             .padding(.top, 10)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "arrow.counterclockwise.circle",
-                title: "Backups, recovery & export",
-                detail: "Back up, restore, repair, or export your local memory"
-            )
         }
         .connectionsSubCard()
         .onChange(of: recoveryToolsExpanded) { expanded in
@@ -359,15 +350,14 @@ private struct ConnectionsPrivacyOverview: View {
     }
 
     private var activityMetrics: some View {
-        DisclosureGroup(isExpanded: $activityMetricsExpanded) {
+        CortexDisclosure(
+            isExpanded: $activityMetricsExpanded,
+            systemImage: "gauge.with.needle",
+            title: "Activity & alerts",
+            detail: "How tools use memory, and how often Cortex may interrupt"
+        ) {
             ConnectionsToolUsageSection(state: state)
                 .padding(.top, 10)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "gauge.with.needle",
-                title: "Activity & alerts",
-                detail: "How tools use memory, and how often Cortex may interrupt"
-            )
         }
         .connectionsSubCard()
     }
@@ -375,7 +365,12 @@ private struct ConnectionsPrivacyOverview: View {
     /// Privacy history (per-source trust decisions + the audit log), hoisted out of the old
     /// developer mega-disclosure so nothing in a group nests more than one level deep.
     private func auditHistory(summary: TrustSummaryResponse) -> some View {
-        DisclosureGroup(isExpanded: $sourceAuditExpanded) {
+        CortexDisclosure(
+            isExpanded: $sourceAuditExpanded,
+            systemImage: "clock.arrow.circlepath",
+            title: "Privacy history",
+            detail: "Per-source trust decisions and the audit log"
+        ) {
             VStack(alignment: .leading, spacing: 14) {
                 TrustSourceSection(state: state, summary: summary)
                 TrustAuditSection(events: state.auditEvents, refresh: {
@@ -383,18 +378,17 @@ private struct ConnectionsPrivacyOverview: View {
                 })
             }
             .padding(.top, 10)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "clock.arrow.circlepath",
-                title: "Privacy history",
-                detail: "Per-source trust decisions and the audit log"
-            )
         }
         .connectionsSubCard()
     }
 
     private var developerDetails: some View {
-        DisclosureGroup(isExpanded: $developerDetailsExpanded) {
+        CortexDisclosure(
+            isExpanded: $developerDetailsExpanded,
+            systemImage: "wrench.and.screwdriver",
+            title: "Developer & diagnostics",
+            detail: "Support details, engine status, updates"
+        ) {
             VStack(alignment: .leading, spacing: 14) {
                 Group {
                     IntegrationTokensSection(state: state)
@@ -434,12 +428,6 @@ private struct ConnectionsPrivacyOverview: View {
                 }
             }
             .padding(.top, 10)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "wrench.and.screwdriver",
-                title: "Developer & diagnostics",
-                detail: "Support details, engine status, updates"
-            )
         }
         .connectionsSubCard()
         .onChange(of: developerDetailsExpanded) { expanded in
@@ -471,6 +459,69 @@ private extension View {
             .background(CortexDesign.cardBackground)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
             .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// A CortexDesign-styled disclosure — the archive's answer to the stock `DisclosureGroup` that made
+/// the whole sheet read as System Settings. A serif header with a wax tick and a connector glyph
+/// opens a hairline rule; a wax-red chevron rotates as it expands. The content lives below the rule.
+/// One reusable shape for all ~14 groups so the hierarchy speaks the app's language, not AppKit's.
+private struct CortexDisclosure<Content: View>: View {
+    @Binding var isExpanded: Bool
+    let systemImage: String
+    let title: String
+    let detail: String
+    /// Rendered next to the disclosure label (e.g. a per-connector brand mark). Defaults to the glyph.
+    var help: String = ""
+    var accessibilityTitle: String? = nil
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(CortexMotion.press) { isExpanded.toggle() }
+            } label: {
+                HStack(alignment: .center, spacing: 12) {
+                    Image(systemName: systemImage)
+                        .font(.title3)
+                        .foregroundColor(CortexDesign.accent)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(title)
+                                .font(CortexDesign.Typography.title)
+                                .foregroundColor(CortexDesign.ink)
+                            // The wax tick — a small sealing-wax rect that opens the header rule.
+                            RoundedRectangle(cornerRadius: 0.5)
+                                .fill(CortexDesign.accent)
+                                .frame(width: 6, height: 3)
+                                .offset(y: -2)
+                        }
+                        if !detail.isEmpty {
+                            Text(detail)
+                                .font(CortexDesign.Typography.caption)
+                                .foregroundColor(CortexDesign.inkSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .multilineTextAlignment(.leading)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .rotationEffect(.degrees(isExpanded ? 0 : -90))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(help)
+            .accessibilityLabel(accessibilityTitle ?? title)
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+
+            if isExpanded {
+                content()
+            }
+        }
     }
 }
 
@@ -812,12 +863,21 @@ private struct ConnectorLibraryTile: View {
     let action: () -> Void
     @State private var hovering = false
 
+    private var tint: Color { connectorBrandTint(connector.id) }
+
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 8) {
-                Image(systemName: connectorLibraryIcon(connector.id))
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundColor(CortexDesign.accent)
+                // A real per-connector brand mark: the connector glyph in its brand tint, pressed
+                // into a soft brand-tinted well, so the shelf reads as a catalog of distinct services.
+                ZStack {
+                    RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                        .fill(tint.opacity(0.14))
+                    Image(systemName: connectorLibraryIcon(connector.id))
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(tint)
+                }
+                .frame(width: 34, height: 34)
                 Text(connector.name)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(CortexDesign.ink)
@@ -830,10 +890,10 @@ private struct ConnectorLibraryTile: View {
                     .foregroundColor(CortexDesign.accent)
             }
             .padding(14)
-            .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: 130, alignment: .topLeading)
             .background(hovering ? CortexDesign.accentSoft : CortexDesign.panelBackground)
-            .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.hairline, lineWidth: 1))
-            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+            .embossedBorder(radius: CortexDesign.Radius.md)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -856,6 +916,27 @@ private func connectorLibraryIcon(_ id: String) -> String {
     case "raindrop": return "bookmark.fill"
     case "linear", "jira": return "checklist.checked"
     default: return "link.circle.fill"
+    }
+}
+
+/// A per-connector brand tint for the library tiles — a real brand mark, not a wall of identical
+/// wax-red glyphs. Deterministic (a fixed table keyed on connector id, never `.random`); connectors
+/// with no known brand fall back to the archive's ink so the tile still reads calm and on-palette.
+private func connectorBrandTint(_ id: String) -> Color {
+    switch id {
+    case "calendar": return Color(red: 0.85, green: 0.28, blue: 0.24)   // red
+    case "gmail": return Color(red: 0.83, green: 0.19, blue: 0.16)      // gmail red
+    case "outlook": return Color(red: 0.00, green: 0.44, blue: 0.78)    // outlook blue
+    case "google-drive": return Color(red: 0.13, green: 0.52, blue: 0.29) // drive green
+    case "zotero": return Color(red: 0.80, green: 0.20, blue: 0.16)     // zotero red
+    case "notion": return CortexDesign.ink                              // notion mono
+    case "slack": return Color(red: 0.36, green: 0.16, blue: 0.42)      // aubergine
+    case "github": return CortexDesign.ink                             // github mono
+    case "readwise": return Color(red: 0.20, green: 0.44, blue: 0.86)   // readwise blue
+    case "raindrop": return Color(red: 0.13, green: 0.53, blue: 0.90)   // raindrop blue
+    case "linear": return Color(red: 0.36, green: 0.40, blue: 0.90)     // linear indigo
+    case "jira": return Color(red: 0.14, green: 0.44, blue: 0.90)       // jira blue
+    default: return CortexDesign.accent
     }
 }
 
@@ -1089,15 +1170,14 @@ private struct AIChatsImportCard: View {
         .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.hairline, lineWidth: 1))
         .onAppear {
             Task {
-                // The detector scans Downloads/Desktop/~/CortexImports, and on first run macOS
-                // fires one TCC permission prompt PER folder — opening Connections used to greet
-                // the user with a cascade of "Cortex would like to access…" dialogs before they
-                // asked for anything. Only scan silently once the user has already granted the
-                // folders (a prior import) — otherwise wait for an explicit import action, whose
-                // prompt is then expected and in context.
-                if hasCompletedImport {
-                    await state.detectAvailableExports()
-                }
+                // Auto-detect is the whole point of this card — a first-time user with a ChatGPT
+                // export sitting in Downloads should get the one-tap "Found your export → Import"
+                // path WITHOUT having imported once already (the old `hasCompletedImport` gate made
+                // that path unreachable for exactly the first-timer it's for). `detectAvailableExports`
+                // is a no-op under the App Store sandbox (it early-returns), so the sandboxed
+                // TCC-prompt cascade the gate was guarding against cannot happen there; on a direct
+                // build the detector scan is the expected, in-context action for opening this card.
+                await state.detectAvailableExports()
                 // Collapse the walkthrough only once an export exists or chats have landed;
                 // otherwise it stays open so the path in is visible without a click.
                 if state.detectedExportSummary != nil || hasCompletedImport {
@@ -1253,6 +1333,14 @@ private struct ConnectionsDirectSourceRow: View {
         }
     }
 
+    /// Whether there is a real connection to fully disconnect/forget: an attached backend account
+    /// (active OR paused) or a stored credential. This backs the always-available disconnect path so
+    /// a token/OAuth source that synced zero items — which has no removableImport — can still be
+    /// fully removed instead of only paused.
+    private var canDisconnect: Bool {
+        activeAccount != nil || pausedAccount != nil || hasStoredConfig
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
             ZStack {
@@ -1364,6 +1452,33 @@ private struct ConnectionsDirectSourceRow: View {
                     Button("Cancel", role: .cancel) {}
                 } message: {
                     Text("This removes the review items and memory Cortex synced from \(connector.name). Approved memory from this connection is deleted and can only be recovered from a backup. To stop syncing while keeping memory, use Pause instead.")
+                }
+            } else if canDisconnect {
+                // A connector that's connected/configured but has no deletable import (an OAuth or
+                // token source that synced zero items yet) still needs a full disconnect — Pause
+                // alone leaves the account attached and the credential stored, so the user could
+                // never truly forget the source. This disconnects the backend account (if any) AND
+                // forgets the saved credential so the source is fully removed. Any memory it did
+                // sync is removed from Privacy & data → Manage stored data (delete by source).
+                CortexButton(title: "Disconnect", systemImage: "xmark.circle", role: .destructive, size: .regular) {
+                    confirmRemove = true
+                }
+                .help("Fully disconnect this source and forget its saved connection. To stop syncing while keeping the connection, use Pause instead.")
+                .disabled(state.isBusy || isSyncing || isOAuthStarting)
+                .confirmationDialog(
+                    "Disconnect \(connector.name)?",
+                    isPresented: $confirmRemove,
+                    titleVisibility: .visible
+                ) {
+                    Button("Disconnect \(connector.name)", role: .destructive) {
+                        if activeAccount != nil {
+                            state.pauseDirectConnectorSync(connector)
+                        }
+                        state.forgetDirectConnectorConfig(connector)
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Cortex stops syncing \(connector.name) and forgets its saved connection, so it won't resume on its own. Memory already synced from this source is kept — remove it from Privacy & data → Manage stored data. To pause without forgetting the connection, use Pause instead.")
                 }
             }
         }
@@ -2736,6 +2851,16 @@ private enum ConnectAppWizardStep: Int, CaseIterable {
 
     var index: Int { rawValue }
     static var count: Int { allCases.count }
+
+    /// The catalog-stamp label under each seal on the wax step rail.
+    var stampLabel: String {
+        switch self {
+        case .pick: return "Pick"
+        case .connect: return "Connect"
+        case .verify: return "Verify"
+        case .done: return "Done"
+        }
+    }
 }
 
 /// Self-contained sheet: pick a tool, copy its ready-to-paste connection, test that the tool can
@@ -2808,6 +2933,18 @@ struct ConnectAppWizard: View {
         .background(connectionsSheetBackground)
     }
 
+    /// Whether the honest "finish anyway" escape applies: a memory-pack tool whose paste connection is
+    /// wired (copied) but whose test can't pass only because there's no reviewed memory to share yet.
+    /// Scoped to that exact case so a genuine connection failure (offline) or an unset mcpConfig tool
+    /// never gets a skip — the connect-wizard's honesty gate stays intact for everything else.
+    private var canFinishWithoutMemory: Bool {
+        guard let tool = selected, tool.connectionKind == .memoryPack else { return false }
+        guard didCopy, let result = testResult, !result.ok else { return false }
+        // Only the "no memory" failure — never an offline/unreachable failure (which would mean the
+        // pack path itself isn't working, not that there's simply nothing to share).
+        return result.message.localizedCaseInsensitiveContains("no memory")
+    }
+
     private var headerSubtitle: String {
         switch step {
         case .pick: return "Pick the tool you want to give access to your reviewed memory."
@@ -2817,22 +2954,56 @@ struct ConnectAppWizard: View {
         }
     }
 
-    /// The 1..4 of 4 affordance: a filled pip per completed/current step, a hairline pill per
-    /// upcoming one, plus a plain "Step N of 4" label for screen readers and small windows.
+    /// The wax-sealed stamped step rail: each step is a small sealing-wax disc — a check once
+    /// stamped (completed), a domed wax seal for the current step, a hairline ring for what's ahead —
+    /// joined by a rule that fills wax-red as you advance, with the step name in the catalog-stamp
+    /// voice beneath. Replaces the four flat capsules; a plain "Step N of 4" line stays for a11y.
     private var progressBar: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                ForEach(ConnectAppWizardStep.allCases, id: \.self) { s in
-                    Capsule()
-                        .fill(s.index <= step.index ? CortexDesign.accent : CortexDesign.hairline)
-                        .frame(height: 4)
-                        .frame(maxWidth: .infinity)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 0) {
+                ForEach(Array(ConnectAppWizardStep.allCases.enumerated()), id: \.element) { index, s in
+                    stepStamp(s)
+                    if index < ConnectAppWizardStep.count - 1 {
+                        Rectangle()
+                            .fill(s.index < step.index ? CortexDesign.accent : CortexDesign.hairline)
+                            .frame(height: 2)
+                            .frame(maxWidth: .infinity)
+                            .padding(.horizontal, 4)
+                            .offset(y: -8)
+                    }
                 }
             }
             Text("Step \(step.index + 1) of \(ConnectAppWizardStep.count) · \(stepTitle)")
                 .font(CortexDesign.Typography.stamp)
                 .kerning(0.6)
                 .foregroundColor(CortexDesign.inkFaint)
+        }
+    }
+
+    @ViewBuilder
+    private func stepStamp(_ s: ConnectAppWizardStep) -> some View {
+        let done = s.index < step.index
+        let current = s.index == step.index
+        VStack(spacing: 5) {
+            ZStack {
+                if done || current {
+                    // A domed sealing-wax disc for the reached steps.
+                    CortexSealSurface(cornerRadius: 9)
+                        .clipShape(Circle())
+                        .frame(width: 18, height: 18)
+                    Image(systemName: done ? "checkmark" : "circle.fill")
+                        .font(.system(size: done ? 9 : 5, weight: .bold))
+                        .foregroundColor(CortexDesign.panelBackground)
+                } else {
+                    Circle()
+                        .strokeBorder(CortexDesign.hairline, lineWidth: 1.5)
+                        .frame(width: 18, height: 18)
+                }
+            }
+            Text(s.stampLabel.uppercased())
+                .font(CortexDesign.Typography.hint)
+                .kerning(0.5)
+                .foregroundColor(current ? CortexDesign.accent : CortexDesign.inkFaint)
         }
     }
 
@@ -2877,11 +3048,26 @@ struct ConnectAppWizard: View {
             .disabled(!didCopy)
             .help(didCopy ? "" : "Copy the connection first.")
         case .verify:
-            CortexButton(title: "Finish", systemImage: "checkmark", role: .primary, size: .large) {
-                withAnimation(.easeInOut(duration: 0.2)) { step = .done }
+            HStack(spacing: 10) {
+                // The honest escape for a brand-new user: a memory-pack tool (ChatGPT web) can never
+                // pass the test until there's memory to share — testToolConnection returns ok:false
+                // ("No memory to share yet"). The pasteable connection IS wired (the copy step ran),
+                // so trapping the user with no path to Done is the bug. Offer "finish anyway" ONLY for
+                // a memory-pack tool whose test failed for the no-memory reason (the wiring is fine) —
+                // an mcpConfig tool whose config isn't set still can't skip (its failure means "not
+                // set up," not "nothing to share"), so the honesty invariant holds.
+                if canFinishWithoutMemory {
+                    CortexButton(title: "I'll add memory later — finish anyway", role: .secondary, size: .large) {
+                        withAnimation(.easeInOut(duration: 0.2)) { step = .done }
+                    }
+                    .help("The connection is set up; there's just no reviewed memory to share yet. Add a source and it'll be available here automatically.")
+                }
+                CortexButton(title: "Finish", systemImage: "checkmark", role: .primary, size: .large) {
+                    withAnimation(.easeInOut(duration: 0.2)) { step = .done }
+                }
+                .disabled(!(testResult?.ok ?? false))
+                .help((testResult?.ok ?? false) ? "" : "Run the test and pass it first.")
             }
-            .disabled(!(testResult?.ok ?? false))
-            .help((testResult?.ok ?? false) ? "" : "Run the test and pass it first.")
         case .done:
             CortexButton(title: "Close", role: .primary, size: .large) {
                 dismiss()
@@ -3212,37 +3398,39 @@ struct ConnectAppWizard: View {
     @ViewBuilder
     private var doneStep: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 12) {
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 36, weight: .semibold))
-                    .foregroundColor(CortexDesign.sealMoss)
+            // The seal is set: a wax-seal hero over the confirmation, the archive's "it's done" mark
+            // rather than a stock SF checkmark.
+            HStack(spacing: 14) {
+                CortexWaxSeal(size: 48)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(selected.map { "\($0.name) is connected" } ?? "Connected")
-                        .font(.title3)
-                        .fontWeight(.semibold)
+                        .font(CortexDesign.Typography.display(20))
                         .foregroundColor(CortexDesign.ink)
                     Text(selected?.setupHint ?? "Your reviewed memory is now available to this app.")
                         .font(.callout)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Spacer(minLength: 0)
             }
-            .padding(14)
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.sealMoss.opacity(0.1)))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous).fill(CortexDesign.sealMoss.opacity(0.1)))
+            .embossedBorder(radius: CortexDesign.Radius.md)
 
-            // The proof moment, scoped to the tool that was just connected: waits for ITS first
-            // read (per-app token label == tool name) and flips to "<tool> just read your memory.
-            // Continuity, proven." Memory-pack tools are excluded honestly — pasted packs never
-            // produce an attributable read call, so a watcher there could never flip. Additive
-            // over the done-step content and never blocks Close / Connect another app.
+            // The payoff, given room to breathe: the proof moment scoped to the tool just connected.
+            // It waits for ITS first read (per-app token label == tool name) and flips to "<tool>
+            // just read your memory. Continuity, proven." Memory-pack tools are excluded honestly —
+            // a pasted pack never produces an attributable read call, so a watcher there could never
+            // flip. Additive; never blocks Close / Connect another app.
             if let tool = selected, tool.connectionKind != .memoryPack {
                 RecallProofWatcher(
                     state: state,
                     toolLabel: tool.name,
                     waitingLine: "Waiting for \(tool.name) to read your memory — ask it anything about you."
                 )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, CortexDesign.Space.sm)
             }
 
             CortexButton(title: "Connect another app", systemImage: "plus", role: .secondary, size: .large) {
@@ -3331,7 +3519,12 @@ private struct ConnectionsGuidedMCPSetup: View {
     }
 
     var body: some View {
-        DisclosureGroup(isExpanded: $setupExpanded) {
+        CortexDisclosure(
+            isExpanded: $setupExpanded,
+            systemImage: "text.and.command.macwindow",
+            title: "Connect an AI tool manually",
+            detail: "Copy the connection and paste it into Claude, Cursor & other AI apps"
+        ) {
             VStack(alignment: .leading, spacing: 12) {
                 GuidedStepWalkthrough(steps: steps, isActive: setupExpanded, textFont: .callout) { _ in
                     EmptyView()
@@ -3375,12 +3568,6 @@ private struct ConnectionsGuidedMCPSetup: View {
                 }
             }
             .padding(.top, 10)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "text.and.command.macwindow",
-                title: "Connect an AI tool manually",
-                detail: "Copy the connection and paste it into Claude, Cursor & other AI apps"
-            )
         }
         .connectionsSubCard()
     }
@@ -3853,31 +4040,6 @@ private struct ConnectionsActiveSourcesSection: View {
                     )
                 }
             }
-        }
-    }
-}
-
-private struct ConnectionsDisclosureLabel: View {
-    let systemImage: String
-    let title: String
-    let detail: String
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.title3)
-                .foregroundColor(CortexDesign.accent)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.headline)
-                    .foregroundColor(CortexDesign.ink)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
         }
     }
 }

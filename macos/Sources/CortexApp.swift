@@ -8888,45 +8888,104 @@ struct CortexView: View {
 struct CortexSignInWall: View {
     @ObservedObject var state: AppState
 
+    // The dark vault door. The app stays light warm-paper, but THIS one surface is pinned to the
+    // iron-gall ground so opening Cortex feels like unsealing a private archive. These are the dark
+    // side of the CortexDesign palette, hardcoded because the app is pinned to `.light` (so the
+    // adaptive tokens resolve light here); the signed-in card below is a LIT paper card on the dark
+    // desk — the intentional contrast, not an oversight.
+    private let vaultGround = Color(nsColor: NSColor(srgbRed: 0x1C / 255, green: 0x1A / 255, blue: 0x17 / 255, alpha: 1))
+    private let vaultGroundLow = Color(nsColor: NSColor(srgbRed: 0x15 / 255, green: 0x13 / 255, blue: 0x11 / 255, alpha: 1))
+    private let vaultInk = Color(nsColor: NSColor(srgbRed: 0xE8 / 255, green: 0xE3 / 255, blue: 0xD9 / 255, alpha: 1))
+    private let vaultInkFaint = Color(nsColor: NSColor(srgbRed: 0x8C / 255, green: 0x85 / 255, blue: 0x7A / 255, alpha: 1))
+
     var body: some View {
         ZStack {
-            CortexDesign.appBackground.ignoresSafeArea()
+            // A soft top-down gradient on the iron-gall ground so the door catches a little light.
+            LinearGradient(
+                colors: [vaultGround, vaultGroundLow],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
             ScrollView {
-                VStack(spacing: 18) {
-                    Image(systemName: "brain.head.profile")
-                        .font(.system(size: 42, weight: .semibold))
-                        .foregroundColor(CortexDesign.accent)
-                    Text("Sign in to \(DistributionMode.appDisplayName)")
-                        .font(.system(size: 26, weight: .bold, design: .serif))
-                        .foregroundColor(CortexDesign.ink)
-                    Text("Create your account or sign in. \(DistributionMode.appDisplayName) then walks you through connecting memory sources and using them in Claude Desktop, ChatGPT, and other AI tools.")
-                        .font(.callout)
-                        .foregroundColor(CortexDesign.inkSecondary)
+                VStack(spacing: 22) {
+                    // The wax-seal mark replaces the stock brain SF Symbol — the archive's own mark.
+                    CortexWaxSeal(size: 72)
+                        .padding(.bottom, 2)
+
+                    // Serif display title + ONE subtitle line (the triple-redundant next-steps copy is
+                    // gone — setup itself walks the user through the rest).
+                    Text("Unseal \(DistributionMode.appDisplayName)")
+                        .font(CortexDesign.Typography.display(30))
+                        .foregroundColor(vaultInk)
                         .multilineTextAlignment(.center)
-                        .frame(maxWidth: 480)
+                    Text("Your private archive. Sign in to open it and sync it across your devices.")
+                        .font(.system(size: 14))
+                        .foregroundColor(vaultInkFaint)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 440)
                         .fixedSize(horizontal: false, vertical: true)
-                    nextStepsCard
+
+                    // A quiet three-line value ledger — the two killer value props (connect a source,
+                    // reach every AI tool) plus the ownership promise. This wall SUPPRESSES onboarding
+                    // when it appears, so it is the only place a required-account user learns what
+                    // Cortex does before committing. Kept tight (mono stamp + one line each) so it
+                    // teaches without the old triple-redundant next-steps card the redesign cut.
+                    VStack(alignment: .leading, spacing: 11) {
+                        Text("What happens after sign-in".uppercased())
+                            .font(CortexDesign.Typography.stamp)
+                            .kerning(0.8)
+                            .foregroundColor(vaultInkFaint)
+                            .padding(.bottom, 1)
+                        VaultTeachRow(
+                            glyph: "tray.and.arrow.down",
+                            text: "Connect a memory source: local notes, ChatGPT/Claude export, or a live app.",
+                            ink: vaultInk)
+                        VaultTeachRow(
+                            glyph: "circle.hexagongrid.fill",
+                            text: "Cortex builds one private, cited memory of you — on your Mac, never on ours.",
+                            ink: vaultInk)
+                        VaultTeachRow(
+                            glyph: "sparkles",
+                            text: "Wire it into Claude Desktop, ChatGPT, Cursor — every AI tool remembers you.",
+                            ink: vaultInk)
+                    }
+                    .frame(maxWidth: 440, alignment: .leading)
+                    .padding(.top, 2)
+
+                    // The lit paper sign-in card, resting on the dark desk.
                     CortexCloudSection(state: state)
                         .frame(maxWidth: 480)
                         .padding(22)
                         .background(CortexDesign.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(CortexDesign.hairline))
+                        .embossedBorder(radius: 14)
+                        .shadow(color: Color.black.opacity(0.45), radius: 26, y: 14)
+                        .shadow(color: Color.black.opacity(0.30), radius: 3, y: 2)
 
                     // Try-before-you-sign-up / reviewer path: use the app fully LOCALLY with bundled
                     // sample notes, no account and no network. Keeps a required-account build
                     // reviewable (App Store 2.1) and lets any user preview first.
-                    VStack(spacing: 4) {
-                        Button {
+                    VStack(spacing: 6) {
+                        // CortexButton(.ghost) — the quiet reviewer path. Its ink is the light-app's
+                        // inkSecondary (fixed inside the button style), so on the dark ground it sits on
+                        // a faint lit plate that gives that ink enough contrast to read, keeping the
+                        // primitive intact rather than hand-rolling a Button.
+                        CortexButton(
+                            title: "Explore with sample notes — no account needed",
+                            systemImage: "sparkles",
+                            role: .ghost
+                        ) {
                             state.unlockLocalPreview()
-                        } label: {
-                            Label("Explore with sample notes — no account needed", systemImage: "sparkles")
-                                .font(.system(size: 13, weight: .medium))
                         }
-                        .buttonStyle(.link)
+                        .background(
+                            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                                .fill(Color.white.opacity(0.82))
+                        )
                         Text("Everything runs on your Mac. Sign in later to sync across devices.")
-                            .font(.caption2)
-                            .foregroundColor(CortexDesign.inkFaint)
+                            .font(CortexDesign.Typography.hint)
+                            .foregroundColor(vaultInkFaint)
                     }
                     .frame(maxWidth: 480)
                 }
@@ -8937,25 +8996,34 @@ struct CortexSignInWall: View {
         .preferredColorScheme(.light)
         .accentColor(CortexDesign.accent)
     }
+}
 
-    private var nextStepsCard: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Label("What happens after sign-in", systemImage: "map")
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundColor(CortexDesign.ink)
-            Text("1. Connect a memory source: local notes, ChatGPT/Claude export, or a service connector.")
-            Text("2. Review what \(DistributionMode.appDisplayName) learned so only approved memory is used.")
-            Text("3. Open Connections to wire Claude Desktop, ChatGPT exports, Cursor, or another AI tool.")
+// One line of the vault door's value ledger: a mono-cue glyph in a faint wax well + one SF line.
+// Dark-ground variant of the app's row idiom — its own colors, passed in, because the wall is pinned
+// to the iron-gall palette while the rest of the app resolves light.
+private struct VaultTeachRow: View {
+    let glyph: String
+    let text: String
+    let ink: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: glyph)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(CortexDesign.accent)
+                .frame(width: 26, height: 26)
+                .background(
+                    Circle().fill(CortexDesign.accent.opacity(0.16))
+                )
+                .overlay(
+                    Circle().strokeBorder(CortexDesign.accent.opacity(0.28), lineWidth: 0.5)
+                )
+            Text(text)
+                .font(.system(size: 13))
+                .foregroundColor(ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .font(.caption)
-        .foregroundColor(CortexDesign.inkSecondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(14)
-        .frame(maxWidth: 480, alignment: .leading)
-        .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(CortexDesign.hairline))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 

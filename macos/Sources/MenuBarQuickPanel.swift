@@ -24,6 +24,9 @@ struct MenuBarQuickPanel: View {
     @State private var asking = false
     @State private var answer: AskResponse?
     @State private var askError: String?
+    /// The in-flight Ask, held so clearing mid-request can cancel it (otherwise the skeleton hangs
+    /// until a request the user abandoned finally returns).
+    @State private var askTask: Task<Void, Never>?
     @State private var savingCapture = false
     @State private var captureSaved = false
     @State private var captureFailed = false
@@ -51,14 +54,10 @@ struct MenuBarQuickPanel: View {
     private var signInRequiredPanel: some View {
         VStack(spacing: 16) {
             Spacer(minLength: 0)
-            ZStack {
-                Circle().fill(CortexDesign.accentSoft).frame(width: 54, height: 54)
-                Image(systemName: "brain.head.profile")
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundColor(CortexDesign.accent)
-            }
+            // The wax-seal mark — the design-system hero that replaces the stock SF-symbol disc.
+            CortexWaxSeal(size: 56)
             Text("Sign in to Doppl")
-                .font(.system(size: 18, weight: .bold, design: .serif))
+                .font(CortexDesign.Typography.display(20))
                 .foregroundColor(CortexDesign.ink)
             Text("Create your account or sign in to ask your memory and capture thoughts.")
                 .font(.callout)
@@ -66,12 +65,9 @@ struct MenuBarQuickPanel: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 4)
-            Button {
+            CortexButton(title: "Sign in", role: .primary, size: .large, fullWidth: true) {
                 onOpenApp()
-            } label: {
-                Text("Sign in").frame(maxWidth: .infinity)
             }
-            .controlSize(.large)
             .keyboardShortcut(.defaultAction)
             Spacer(minLength: 0)
         }
@@ -190,17 +186,19 @@ struct MenuBarQuickPanel: View {
     private var askContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                Image(systemName: "magnifyingglass").foregroundColor(CortexDesign.inkFaint)
                 TextField("Ask your memory…", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14))
                     .focused($fieldFocused)
                     .onSubmit(runAsk)
                 if !query.isEmpty {
-                    Button { query = ""; withAnimation { answer = nil; askError = nil } } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundColor(.secondary.opacity(0.6))
+                    Button { clearAsk() } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(CortexDesign.inkFaint)
                     }
                     .buttonStyle(.plain)
+                    .help("Clear")
                 }
             }
             .padding(.horizontal, 11)
@@ -245,12 +243,7 @@ struct MenuBarQuickPanel: View {
                 HStack {
                     Spacer()
                     Button {
-                        // Hand the same question to the full Ask tab so follow-ups don't dead-end
-                        // in the 384pt panel.
-                        state.searchQuery = query
-                        state.selectedTab = .ask
-                        state.runSearch()
-                        onOpenApp()
+                        continueInCortex()
                     } label: {
                         Label("Continue in Cortex", systemImage: "arrow.up.forward.app")
                             .font(.caption)
@@ -277,6 +270,7 @@ struct MenuBarQuickPanel: View {
     /// memory, plus the top item waiting for review with one-tap Approve/Archive.
     private var idleContent: some View {
         VStack(alignment: .leading, spacing: 8) {
+            askHero
             let suggestions = Array(state.onboardingAskSuggestions.prefix(2))
             if suggestions.isEmpty {
                 quietRow(icon: "quote.bubble", text: "Ask a question and Cortex answers from your own memory — with citations.")
@@ -285,7 +279,7 @@ struct MenuBarQuickPanel: View {
                     Text("Try asking")
                         .font(.caption2)
                         .fontWeight(.semibold)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(CortexDesign.inkFaint)
                     ForEach(suggestions, id: \.self) { suggestion in
                         QuickSuggestionChip(text: suggestion) {
                             query = suggestion
@@ -298,6 +292,42 @@ struct MenuBarQuickPanel: View {
                 pendingReviewCard(pending)
             }
         }
+    }
+
+    /// The idle hero: a serif "Ask your memory" line on a faint field of star-dust — the same FNV
+    /// dust the constellation draws (deterministic, no randomness), tying the panel to the map's
+    /// night-sky identity while staying quiet enough to read over. It gives the empty Ask state a
+    /// voice instead of a blank field.
+    private var askHero: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Ask your memory")
+                    .font(.system(size: 20, weight: .semibold, design: .serif))
+                    .foregroundColor(CortexDesign.ink)
+                Text("Answered from your own notes — with citations.")
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            // A whisper of star-dust behind the hero — ink dots (dark, so they read on warm paper),
+            // the same deterministic FNV field the constellation draws.
+            Canvas { context, size in
+                NightSky.drawDust(&context, size: size, seed: "panel-hero-dust", count: 34, dust: CortexDesign.ink)
+            }
+            .opacity(0.5)
+            .allowsHitTesting(false)
+        )
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(CortexDesign.quietBackground)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .embossedBorder(radius: 9)
     }
 
     private func pendingReviewCard(_ capture: CaptureItem) -> some View {
@@ -320,14 +350,14 @@ struct MenuBarQuickPanel: View {
                     .lineLimit(2)
             }
             HStack(spacing: 8) {
-                Button("Approve") { state.approveCapture(capture) }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(inFlight)
-                Button("Archive") { state.archiveCapture(capture) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(inFlight)
+                CortexButton(title: "Approve", role: .primary, size: .small) {
+                    state.approveCapture(capture)
+                }
+                .disabled(inFlight)
+                CortexButton(title: "Archive", role: .secondary, size: .small) {
+                    state.archiveCapture(capture)
+                }
+                .disabled(inFlight)
                 if inFlight {
                     ProgressView().controlSize(.small)
                 }
@@ -347,7 +377,7 @@ struct MenuBarQuickPanel: View {
                 if draft.isEmpty {
                     Text("Jot a thought to remember…")
                         .font(.system(size: 14))
-                        .foregroundColor(.secondary.opacity(0.7))
+                        .foregroundColor(CortexDesign.inkFaint)
                         // Match the TextField's insets exactly (11/9) so the placeholder sits on the
                         // same baseline/column as typed text — otherwise it jumps 1pt when typing starts.
                         .padding(.horizontal, 11)
@@ -384,15 +414,12 @@ struct MenuBarQuickPanel: View {
                         .transition(.opacity)
                 }
                 Spacer()
-                Button(action: saveCapture) {
-                    HStack(spacing: 6) {
-                        if savingCapture { ProgressView().controlSize(.small) }
-                        Text(savingCapture ? "Saving…" : "Save")
-                    }
-                    .frame(minWidth: 64)
+                if savingCapture {
+                    ProgressView().controlSize(.small)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
+                CortexButton(title: savingCapture ? "Saving…" : "Save", role: .primary) {
+                    saveCapture()
+                }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(savingCapture || draft.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -401,8 +428,8 @@ struct MenuBarQuickPanel: View {
 
     private func quietRow(icon: String, text: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: icon).foregroundColor(.secondary)
-            Text(text).font(.caption).foregroundColor(.secondary)
+            Image(systemName: icon).foregroundColor(CortexDesign.inkFaint)
+            Text(text).font(.caption).foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
@@ -449,9 +476,14 @@ struct MenuBarQuickPanel: View {
             answer = nil
             askError = nil
         }
-        Task {
+        askTask?.cancel()
+        askTask = Task {
             let result = await state.askOnce(q)
+            // If the user cleared (cancel) mid-flight, drop the result silently — `clearAsk` already
+            // reset the UI; applying a stale answer would resurrect the skeleton's aftermath.
+            if Task.isCancelled { return }
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 withAnimation(.easeOut(duration: 0.28)) {
                     asking = false
                     if let result {
@@ -462,6 +494,34 @@ struct MenuBarQuickPanel: View {
                 }
             }
         }
+    }
+
+    /// Clear the Ask field AND its in-flight request. The old clear reset query/answer/askError but
+    /// left `asking` true, so clearing mid-request kept the skeleton spinning until the abandoned
+    /// request returned. This resets `asking` and cancels the task, so clearing is immediate.
+    private func clearAsk() {
+        askTask?.cancel()
+        askTask = nil
+        query = ""
+        withAnimation(.easeOut(duration: 0.2)) {
+            asking = false
+            answer = nil
+            askError = nil
+        }
+    }
+
+    /// Hand the same question to the full Ask tab (follow-ups don't dead-end in the 384pt panel) and
+    /// clear the panel's local answer on handoff — otherwise reopening the panel shows the stale
+    /// prior answer instead of a fresh idle state.
+    private func continueInCortex() {
+        state.searchQuery = query
+        state.selectedTab = .ask
+        state.runSearch()
+        onOpenApp()
+        askTask?.cancel()
+        askTask = nil
+        answer = nil
+        askError = nil
     }
 
     private func saveCapture() {
@@ -545,7 +605,7 @@ private struct QuickFooterButton: View {
                 Text(title).font(CortexDesign.Typography.hint)
             }
             .frame(width: 72, height: 40)
-            .foregroundColor(hovering && !disabled ? CortexDesign.accent : .secondary)
+            .foregroundColor(hovering && !disabled ? CortexDesign.accent : CortexDesign.inkSecondary)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(hovering && !disabled ? CortexDesign.quietBackground : Color.clear)
@@ -612,7 +672,7 @@ private struct QuickPanelSkeleton: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 6) {
                 Image(systemName: "sparkles").font(.caption).foregroundColor(CortexDesign.accent)
-                Text("Searching your memory…").font(.caption).foregroundColor(.secondary)
+                Text("Searching your memory…").font(.caption).foregroundColor(CortexDesign.inkSecondary)
             }
             skeletonLine(width: 1.0)
             skeletonLine(width: 0.92)

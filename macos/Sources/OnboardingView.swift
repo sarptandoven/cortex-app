@@ -35,6 +35,12 @@ struct OnboardingView: View {
     /// Drives the continuity mark that slides between the header and step content.
     @Namespace private var markSpace
 
+    /// An inline notice rendered at the top of the step area — the ONLY place the walkthrough speaks
+    /// back to the user about why an action didn't complete (e.g. Finish needs a source first). This
+    /// replaces the old silent `state.status` write that OnboardingView never rendered, so tapping
+    /// Finish without a connected source no longer bounces the user back with no explanation.
+    @State private var notice: OnboardingNotice?
+
     /// The "Restore from your account" branch (the "1Password moment"). When non-nil it takes over
     /// the step area with the restore sub-flow (sign in → restoring → welcome back), independent of
     /// the three-beat setup walkthrough so the main "Step N of 3" flow and its contract are untouched.
@@ -50,34 +56,49 @@ struct OnboardingView: View {
                 header
                 Divider().opacity(0.5)
                 ScrollView {
-                    Group {
-                        if let restoreStage {
-                            OnboardingRestoreFlow(
-                                state: state,
-                                stage: restoreStage,
-                                markSpace: markSpace,
-                                advanceToRestoring: { withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { self.restoreStage = .restoring } },
-                                advanceToWelcomeBack: { withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { self.restoreStage = .welcomeBack } },
-                                exitRestore: { exitRestoreFlow() },
-                                finishRestore: { finishRestoreFlow() }
-                            )
-                            .id(restoreStage)
-                        } else {
-                            stepContent
-                                .id(step)
+                    VStack(alignment: .leading, spacing: 18) {
+                        // The one inline voice of the walkthrough — why an action didn't complete.
+                        // Rendered here so it can never be silent again (the old status bounce bug).
+                        if let notice {
+                            OnboardingNoticeBanner(notice: notice) {
+                                withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { self.notice = nil }
+                            }
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .top).combined(with: .opacity),
+                                removal: .opacity
+                            ))
                         }
+
+                        Group {
+                            if let restoreStage {
+                                OnboardingRestoreFlow(
+                                    state: state,
+                                    stage: restoreStage,
+                                    markSpace: markSpace,
+                                    advanceToRestoring: { withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { self.restoreStage = .restoring } },
+                                    advanceToWelcomeBack: { withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { self.restoreStage = .welcomeBack } },
+                                    exitRestore: { exitRestoreFlow() },
+                                    finishRestore: { finishRestoreFlow() }
+                                )
+                                .id(restoreStage)
+                            } else {
+                                stepContent
+                                    .id(step)
+                            }
+                        }
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .leading).combined(with: .opacity)
+                        ))
                     }
                     .padding(.horizontal, 44)
                     .padding(.vertical, 34)
                     .frame(maxWidth: 600, alignment: .leading)
                     .frame(maxWidth: .infinity)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .leading).combined(with: .opacity)
-                    ))
                 }
                 .animation(.spring(response: 0.42, dampingFraction: 0.82), value: step)
                 .animation(.spring(response: 0.42, dampingFraction: 0.82), value: restoreStage)
+                .animation(.spring(response: 0.42, dampingFraction: 0.82), value: notice)
                 Divider().opacity(0.5)
                 footer
             }
@@ -90,13 +111,15 @@ struct OnboardingView: View {
         .background(OnboardingAmbientBackground())
     }
 
-    /// Enter the restore branch from the welcome beat. If the user already holds a session (rare on a
-    /// truly fresh Mac, but possible), skip straight to the live restore instead of asking them to
-    /// sign in again.
+    /// Enter the restore branch from the welcome beat. Always land on the sign-in stage — even when a
+    /// session already exists (rare on a truly fresh Mac, but possible: a leftover, or a DIFFERENT/empty
+    /// account). `OnboardingRestoreSignInStep` detects the live session in its own `.onAppear` and shows
+    /// the "restore this account?" confirmation guard, so we never silently pull down the wrong account.
+    /// (Jumping straight to `.restoring` here would bypass that guard — a confirmed regression.)
     private func enterRestoreFlow() {
         state.restoreProgress = .idle
         withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
-            restoreStage = state.isSignedIn ? .restoring : .signIn
+            restoreStage = .signIn
         }
     }
 
@@ -207,10 +230,22 @@ struct OnboardingView: View {
                 advance()
             }
         case .finish:
-            CortexButton(title: "Finish", systemImage: "checkmark.circle", role: .primary, size: .large) {
-                finishTapped()
+            // Single-source the gate on `canCompleteOnboarding` — the SAME flag `finishOnboarding()`
+            // uses. Finish only appears when tapping it will genuinely complete setup; until then the
+            // action is an honest "Add a source" that routes back to the Add-Memory step with the
+            // inline notice, so the primary never silently bounces.
+            if state.canCompleteOnboarding {
+                CortexButton(title: "Finish", systemImage: "checkmark.circle", role: .primary, size: .large) {
+                    finishTapped()
+                }
+                .disabled(celebrating)
+            } else {
+                CortexButton(title: "Add a source", systemImage: "arrow.left", role: .primary, size: .large) {
+                    finishTapped()
+                }
+                .disabled(celebrating)
+                .help("Connect a source to finish setup")
             }
-            .disabled(celebrating)
         }
     }
 
@@ -218,12 +253,18 @@ struct OnboardingView: View {
 
     private func advance() {
         guard let next = WalkStep(rawValue: step.rawValue + 1) else { return }
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { step = next }
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            notice = nil
+            step = next
+        }
     }
 
     private func back() {
         guard let prev = WalkStep(rawValue: step.rawValue - 1) else { return }
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { step = prev }
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            notice = nil
+            step = prev
+        }
     }
 
     /// Skip leaves the walkthrough for this session without asserting setup is finished — the
@@ -239,19 +280,44 @@ struct OnboardingView: View {
     /// The "Your Archive is ready" celebration is gated on `state.canCompleteOnboarding` — the same
     /// flag `finishOnboarding()` uses to decide whether setup actually completes. Without a connected
     /// source setup can't complete, so we must NOT claim success: instead we route the user back to
-    /// the Add-Memory step with a short nudge. The "Explore with sample notes" path connects a real
-    /// source (satisfying `.firstSource`), so it still completes honestly and does celebrate.
+    /// the Add-Memory step AND surface a visible inline notice (the reason is never silent). The
+    /// "Explore with sample notes" path connects a real source (satisfying `.firstSource`), so it
+    /// still completes honestly and does celebrate.
+    ///
+    /// The trailing footer already single-sources its gate on `canCompleteOnboarding` (Finish only
+    /// renders when it will actually complete), so this guard is a belt-and-braces backstop: if it
+    /// ever fires, it must be legible, not a silent bounce.
     private func finishTapped() {
         guard !celebrating else { return }
         guard state.canCompleteOnboarding else {
-            state.status = "One more step — connect a source to finish."
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { step = .addMemory }
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                notice = OnboardingNotice(
+                    severity: .info,
+                    title: "One more step to finish",
+                    message: needsSourceMessage
+                )
+                step = .addMemory
+            }
             return
         }
+        notice = nil
         withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) { celebrating = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.15) {
             state.finishOnboarding()
         }
+    }
+
+    /// The honest, specific reason setup can't complete yet, drawn from the SAME step gates
+    /// `finishOnboarding()` enforces — so the notice names what's actually missing (usually a source)
+    /// instead of a generic nudge.
+    private var needsSourceMessage: String {
+        if !state.hasAtLeastOneConnectedSource {
+            return "Connect a source above — your notes folder, an app, or a ChatGPT / Claude export — then Finish. Or explore with sample notes."
+        }
+        let remaining = state.incompleteOnboardingStepTitles.prefix(2).joined(separator: " · ")
+        return remaining.isEmpty
+            ? "Complete the first memory loop, then Finish."
+            : "Still to do: \(remaining)."
     }
 
     // MARK: - Step content
@@ -260,7 +326,14 @@ struct OnboardingView: View {
     private var stepContent: some View {
         switch step {
         case .welcome:
-            OnboardingWelcomeStep(markSpace: markSpace, onRestore: { enterRestoreFlow() })
+            OnboardingWelcomeStep(
+                markSpace: markSpace,
+                // The restore branch signs into a Cortex account and pulls memory down. On builds
+                // where cloud auth is unavailable that flow dead-ends on an empty provider list, so
+                // gate the ENTRY on `isCloudAuthAvailable` — not merely on the closure being non-nil.
+                cloudAuthAvailable: state.isCloudAuthAvailable,
+                onRestore: { enterRestoreFlow() }
+            )
         case .addMemory:
             OnboardingAddMemoryStep(state: state, advance: advance)
         case .finish:
@@ -274,7 +347,7 @@ struct OnboardingView: View {
     /// ⌃⌥Space hotkey) gets its moment.
     private var celebrationOverlay: some View {
         VStack(spacing: 16) {
-            OnboardingHeroMark(systemImage: "checkmark.seal.fill", tint: CortexDesign.sealMoss)
+            CortexWaxSeal(size: 74)
             Text("Your Archive is ready")
                 .font(CortexDesign.Typography.display(26))
                 .foregroundColor(CortexDesign.ink)
@@ -334,7 +407,12 @@ enum OnboardingRestoreStageProxy: Equatable {
 
 /// Step 1 of restore — sign in. Reuses the exact cloud sign-in entry points the Settings surface
 /// uses (browser-provider handoff + email/password), so there is one auth code path and no drift.
-/// The moment a session lands (state.isSignedIn), it advances to the live restore automatically.
+///
+/// A session landing does NOT silently push the user into a live restore: a leftover session for a
+/// different (or empty) account would then start pulling someone else's — or nothing — with only the
+/// footer Back to recover. Instead, when `isSignedIn` is true we present an explicit "Signed in as
+/// {email} — not you?" confirmation, and the user must choose to restore THIS account or sign out and
+/// pick another.
 private struct OnboardingRestoreSignInStep: View {
     @ObservedObject var state: AppState
     let markSpace: Namespace.ID
@@ -343,6 +421,9 @@ private struct OnboardingRestoreSignInStep: View {
     @State private var email: String = ""
     @State private var password: String = ""
     @State private var hostedURL: String = ""
+    /// True once a session is detected — flips the surface to the account-confirmation guard instead
+    /// of auto-advancing into the live restore.
+    @State private var confirmingAccount = false
 
     private var resolvedHostedURL: String {
         let trimmed = hostedURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -365,12 +446,45 @@ private struct OnboardingRestoreSignInStep: View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
                 Spacer()
-                OnboardingHeroMark(systemImage: "arrow.down.circle", tint: CortexDesign.accent)
+                CortexWaxSeal(size: 66)
                     .matchedGeometryEffect(id: "hero", in: markSpace)
                 Spacer()
             }
             .padding(.top, 6)
 
+            if confirmingAccount {
+                accountConfirmation
+            } else {
+                signInForm
+            }
+
+            Text("Offline? You can Skip and start fresh — signing in later will still restore your memory.")
+                .font(.caption)
+                .foregroundColor(CortexDesign.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: confirmingAccount)
+        .onAppear {
+            if email.isEmpty { email = state.cloudAccountEmail }
+            if state.isCloudAuthAvailable {
+                state.loadCloudAuthProviders(hostedURL: resolvedHostedURL)
+            }
+            // A session may already exist (e.g. a leftover from a prior sign-in, possibly a DIFFERENT
+            // or empty account). Never auto-restore it — ask which account first.
+            if state.isSignedIn { confirmingAccount = true }
+        }
+        // The single source of truth for "signed in" is a stored refresh token. The moment one lands,
+        // surface the confirmation guard rather than advancing straight into the live restore.
+        .onChange(of: state.isSignedIn) { signedIn in
+            confirmingAccount = signedIn
+        }
+    }
+
+    // MARK: Sign-in form
+
+    private var signInForm: some View {
+        VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Restore from your account")
                     .font(CortexDesign.Typography.display(26))
@@ -404,19 +518,20 @@ private struct OnboardingRestoreSignInStep: View {
                     .disabled(state.cloudAuthBusy)
                 }
 
-                HStack(spacing: 8) {
-                    VStack { Divider() }
-                    Text("or").font(.caption).foregroundColor(CortexDesign.inkFaint)
-                    VStack { Divider() }
-                }
+                OnboardingOrDivider()
 
-                TextField("Email", text: $email)
-                    .textFieldStyle(.roundedBorder)
-                    .textContentType(.username)
-                    .disableAutocorrection(true)
-                SecureField("Password", text: $password)
-                    .textFieldStyle(.roundedBorder)
-                    .textContentType(.password)
+                CortexField(
+                    placeholder: "Email",
+                    text: $email,
+                    textContentType: .username,
+                    disableAutocorrection: true
+                )
+                CortexField(
+                    placeholder: "Password",
+                    text: $password,
+                    secure: true,
+                    textContentType: .password
+                )
                 HStack {
                     CortexButton(title: "Sign in", systemImage: "person.crop.circle.badge.checkmark", role: .primary) {
                         state.signInToCloud(hostedURL: resolvedHostedURL, email: email, password: password)
@@ -433,31 +548,79 @@ private struct OnboardingRestoreSignInStep: View {
             }
 
             if !state.cloudAuthMessage.isEmpty {
-                Text(state.cloudAuthMessage)
-                    .font(.caption)
+                OnboardingNoticeBanner(
+                    notice: OnboardingNotice(severity: .warning, title: nil, message: state.cloudAuthMessage),
+                    onDismiss: nil
+                )
+            }
+        }
+    }
+
+    // MARK: Account confirmation guard ("not you?")
+
+    /// Confirm WHICH account is about to be restored before pulling anything down. A leftover session
+    /// for a different/empty account must not silently start restoring — the user explicitly confirms
+    /// this is theirs, or signs out and picks another.
+    private var accountConfirmation: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Signed in — restore this account?")
+                    .font(CortexDesign.Typography.display(24))
+                    .foregroundColor(CortexDesign.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("We'll pull this account's memory down onto this Mac. Make sure it's yours before we begin.")
+                    .font(CortexDesign.Typography.prose(15))
+                    .lineSpacing(3)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Text("Offline? You can Skip and start fresh — signing in later will still restore your memory.")
-                .font(.caption)
-                .foregroundColor(CortexDesign.inkFaint)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .onAppear {
-            if email.isEmpty { email = state.cloudAccountEmail }
-            if state.isCloudAuthAvailable {
-                state.loadCloudAuthProviders(hostedURL: resolvedHostedURL)
+            // The identity card — who is actually signed in right now.
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "person.crop.circle.badge.checkmark")
+                    .font(.title2)
+                    .foregroundColor(CortexDesign.sealMoss)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Signed in as")
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
+                    Text(signedInIdentity)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(CortexDesign.ink)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
             }
-            // A session may already exist (e.g. the user signed in during a prior beat); jump ahead.
-            if state.isSignedIn { onSignedIn() }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CortexDesign.panelBackground)
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+            .embossedBorder()
+
+            HStack(spacing: 10) {
+                CortexButton(title: "Restore this account", systemImage: "arrow.down.circle", role: .primary, size: .large) {
+                    onSignedIn()
+                }
+                CortexButton(title: "Not you? Sign in as someone else", role: .ghost, size: .large) {
+                    state.signOutOfCloud()
+                    // signOutOfCloud clears the refresh token → isSignedIn flips false → onChange
+                    // sets confirmingAccount = false. Set it here too so the form returns immediately.
+                    confirmingAccount = false
+                    password = ""
+                    email = state.cloudAccountEmail
+                }
+                Spacer(minLength: 0)
+            }
         }
-        // The single source of truth for "signed in" is a stored refresh token; the moment sign-in
-        // lands, advance to the live restore.
-        .onChange(of: state.isSignedIn) { signedIn in
-            if signedIn { onSignedIn() }
-        }
+    }
+
+    /// The best available label for the signed-in account. Falls back to a plain descriptor rather
+    /// than an empty string when the email isn't recorded (e.g. a browser/social session).
+    private var signedInIdentity: String {
+        let recorded = state.cloudAccountEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return recorded.isEmpty ? "your Cortex account" : recorded
     }
 
     private func providerButtonLabel(_ provider: CloudAuthProvider) -> String {
@@ -521,8 +684,7 @@ private struct OnboardingRestoringStep: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(CortexDesign.panelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .onboardingPanel(radius: 10)
 
             if case .failed(let message) = state.restoreProgress {
                 VStack(alignment: .leading, spacing: 8) {
@@ -605,7 +767,7 @@ private struct OnboardingWelcomeBackStep: View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
                 Spacer()
-                OnboardingHeroMark(systemImage: "checkmark.seal.fill", tint: CortexDesign.sealMoss)
+                CortexWaxSeal(size: 66)
                     .matchedGeometryEffect(id: "hero", in: markSpace)
                 Spacer()
             }
@@ -630,8 +792,7 @@ private struct OnboardingWelcomeBackStep: View {
                 .frame(height: 140)
                 .frame(maxWidth: .infinity)
                 .background(CortexDesign.panelBackground)
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(CortexDesign.softBorder, lineWidth: 1))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .onboardingPanel(radius: 12)
                 .overlay(alignment: .bottomLeading) {
                     Text(memoryCount > 0 ? "Your Constellation · \(memoryCount) memories" : "Your Constellation")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
@@ -677,8 +838,7 @@ private struct OnboardingWelcomeBackStep: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .onboardingPanel(radius: 10)
     }
 }
 
@@ -689,6 +849,9 @@ private struct OnboardingWelcomeBackStep: View {
 /// inside the "How it works" disclosure — same honesty gates, a third of the reading.
 private struct OnboardingWelcomeStep: View {
     let markSpace: Namespace.ID
+    /// Whether a Cortex account (and thus a restore) is actually reachable in this build. Mirrors
+    /// `AppState.isCloudAuthAvailable`. When false the restore entry is hidden so it can't dead-end.
+    var cloudAuthAvailable: Bool = true
     /// Enter the "Restore from your account" branch. Nil hides the entry (e.g. no cloud auth).
     var onRestore: (() -> Void)? = nil
     @State private var howItWorksExpanded = false
@@ -700,18 +863,19 @@ private struct OnboardingWelcomeStep: View {
         (Bundle.main.object(forInfoDictionaryKey: "CortexRequireAccount") as? String)?.lowercased() == "true"
     }
 
-    /// Whether a Cortex account (and thus a restore) is even possible in this build. Cortex accounts
-    /// are available in every build (Option B), so the restore entry is always offered — a returning
-    /// user's account may hold memory to pull back down. Mirrors AppState.isCloudAuthAvailable.
+    /// Whether a Cortex account (and thus a restore) is even possible in this build. The restore
+    /// branch signs in and pulls memory down; on a build where cloud auth is unavailable that flow
+    /// dead-ends on an empty provider list, so require BOTH a real entry closure AND cloud auth being
+    /// available (mirrors AppState.isCloudAuthAvailable) — never just the closure being non-nil.
     private var restoreAvailable: Bool {
-        onRestore != nil
+        onRestore != nil && cloudAuthAvailable
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             HStack {
                 Spacer()
-                OnboardingHeroMark(systemImage: "brain.head.profile", tint: CortexDesign.accent)
+                CortexWaxSeal(size: 72)
                     .matchedGeometryEffect(id: "hero", in: markSpace)
                 Spacer()
             }
@@ -782,15 +946,15 @@ private struct OnboardingWelcomeStep: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(CortexDesign.panelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .onboardingPanel(radius: 10)
         }
         .padding(.top, 4)
     }
 
-    /// The old privacy + philosophy beats, compressed into a quiet disclosure.
+    /// The old privacy + philosophy beats, compressed into a quiet disclosure — a design-system
+    /// disclosure (ghost header + chevron) rather than the stock macOS `DisclosureGroup` triangle.
     private var howItWorks: some View {
-        DisclosureGroup(isExpanded: $howItWorksExpanded) {
+        OnboardingDisclosure(title: "How it works", isExpanded: $howItWorksExpanded) {
             VStack(alignment: .leading, spacing: 12) {
                 OnboardingCheckRow(
                     title: accountRequired ? "Built on your Mac" : "On this Mac only",
@@ -816,10 +980,6 @@ private struct OnboardingWelcomeStep: View {
                 )
             }
             .padding(.top, 10)
-        } label: {
-            Text("How it works")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(CortexDesign.inkSecondary)
         }
         .padding(.top, 2)
     }
@@ -1121,8 +1281,7 @@ private struct OnboardingFinishStep: View {
                 .frame(height: 140)
                 .frame(maxWidth: .infinity)
                 .background(CortexDesign.panelBackground)
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(CortexDesign.softBorder, lineWidth: 1))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .onboardingPanel(radius: 12)
                 .overlay(alignment: .bottomLeading) {
                     Text(memoryCount > 0 ? "Your Constellation · \(memoryCount) memories" : "Your Constellation")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
@@ -1165,8 +1324,7 @@ private struct OnboardingFinishStep: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .onboardingPanel(radius: 10)
     }
 
     /// The old connect-tools beat as one row: nothing is required to finish.
@@ -1266,25 +1424,19 @@ private struct OnboardingQuickCaptureRow: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .onboardingPanel(radius: 10)
     }
 
     /// Direct-download build: a live opt-in toggle + a keybind recorder, bound to AppState.
     private var enableRows: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle(isOn: enabledBinding) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Quick capture")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(CortexDesign.ink)
-                    Text("Optional — save anything with a global shortcut. Change it anytime in Settings.")
-                        .font(.caption)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                CortexToggle(title: "Quick capture", isOn: enabledBinding)
+                Text("Optional — save anything with a global shortcut. Change it anytime in Settings.")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .toggleStyle(.switch)
 
             if state.quickCaptureEnabled {
                 Divider().opacity(0.5)
@@ -1474,8 +1626,17 @@ struct OnboardingConnectionCard: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(isPrimary ? CortexDesign.panelBackground : CortexDesign.cardBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke((isPrimary ? Color.accentColor : Color(nsColor: .separatorColor)).opacity(isPrimary ? 0.32 : 0.35)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        // Primary gets a wax-red hairline (never the system-blue accentColor the pre-overhaul card
+        // used) plus a rest shadow so it lifts off the paper; secondary settles into a plain
+        // letterpress edge.
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(CortexDesign.accent.opacity(isPrimary ? 0.32 : 0), lineWidth: 1)
+        )
+        .embossedBorder()
+        .shadow(color: CortexDesign.Elevation.rest.ambient.color, radius: CortexDesign.Elevation.rest.ambient.radius, y: CortexDesign.Elevation.rest.ambient.y)
+        .shadow(color: CortexDesign.Elevation.rest.contact.color, radius: CortexDesign.Elevation.rest.contact.radius, y: CortexDesign.Elevation.rest.contact.y)
     }
 }
 
@@ -1523,8 +1684,9 @@ struct OnboardingSourceTile: View {
             .padding(11)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(CortexDesign.cardBackground)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder.opacity(0.45)))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+            .embossedBorder()
+            .shadow(color: CortexDesign.Elevation.rest.contact.color, radius: CortexDesign.Elevation.rest.contact.radius, y: CortexDesign.Elevation.rest.contact.y)
             .opacity(connectable ? 1 : 0.7)
         }
         .buttonStyle(.plain)
@@ -1589,6 +1751,162 @@ private struct OnboardingFlowRow: View {
                 Image(systemName: "arrow.down")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(CortexDesign.inkFaint)
+            }
+        }
+    }
+}
+
+private extension View {
+    /// The walkthrough's panel recipe: clip to a continuous rounded rect, a letterpress embossed
+    /// edge (kills the flat rounded-rect tell), and a soft REST-elevation two-layer shadow so the
+    /// card floats a hair off the paper desk. Replaces the old flat `softBorder` stroke overlays.
+    /// Apply AFTER the panel's `.background(...)`.
+    func onboardingPanel(radius: CGFloat = CortexDesign.Radius.md) -> some View {
+        let ambient = CortexDesign.Elevation.rest.ambient
+        let contact = CortexDesign.Elevation.rest.contact
+        return self
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .embossedBorder(radius: radius)
+            .shadow(color: ambient.color, radius: ambient.radius, y: ambient.y)
+            .shadow(color: contact.color, radius: contact.radius, y: contact.y)
+    }
+}
+
+// MARK: - Onboarding design primitives (local to the walkthrough)
+//
+// The shared design system (CortexDesign.swift) ships the button/card/seal-surface language but
+// does NOT yet expose a wax-seal MARK, a form field, a toggle, or a severity banner as reusable
+// primitives. Rather than reach across into CortexDesign.swift (owned centrally), the walkthrough
+// carries its OWN small set here, built entirely from the public design tokens (CortexSealSurface,
+// embossedBorder, Elevation, CortexMotion, the palette + typography), so it speaks the same visual
+// language — restrained physical craft, no bitmap texture — without duplicating contracts.
+
+/// The walkthrough's inline voice — a severity banner. The ONLY place the flow speaks back about why
+/// an action didn't complete (e.g. Finish needs a source). Built from the palette: a tinted wash, a
+/// letterpress edge, a severity glyph, and an optional dismiss — never a stock alert.
+private struct OnboardingNotice: Equatable {
+    enum Severity: Equatable {
+        case info
+        case warning
+        case success
+
+        var tint: Color {
+            switch self {
+            case .info: return CortexDesign.accent
+            case .warning: return CortexDesign.gold
+            case .success: return CortexDesign.sealMoss
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .info: return "info.circle.fill"
+            case .warning: return "exclamationmark.triangle.fill"
+            case .success: return "checkmark.seal.fill"
+            }
+        }
+    }
+
+    var severity: Severity
+    /// Optional bold lead line; nil renders message-only.
+    var title: String?
+    var message: String
+}
+
+private struct OnboardingNoticeBanner: View {
+    let notice: OnboardingNotice
+    /// Nil hides the dismiss affordance (for persistent, system-owned messages).
+    var onDismiss: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: notice.severity.systemImage)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(notice.severity.tint)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                if let title = notice.title {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(CortexDesign.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text(notice.message)
+                    .font(.system(size: 12))
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 4)
+            if let onDismiss {
+                CortexIconButton(systemImage: "xmark", role: .ghost, size: .small, help: "Dismiss") {
+                    onDismiss()
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(notice.severity.tint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(notice.severity.tint.opacity(0.28), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// The "or" rule between the provider buttons and the email field — a hairline with a mono "or"
+/// stamp, in the design voice (no stock `Divider`-with-label).
+private struct OnboardingOrDivider: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            rule
+            Text(verbatim: "OR")
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.inkFaint)
+            rule
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var rule: some View {
+        Rectangle()
+            .fill(CortexDesign.hairline)
+            .frame(height: 1)
+    }
+}
+
+/// A quiet disclosure in the design voice — a ghost header row with a rotating chevron — replacing
+/// the stock `DisclosureGroup` triangle. Drives the passed `Binding<Bool>` and reveals its content
+/// with the same spring the rest of the walkthrough uses.
+private struct OnboardingDisclosure<Content: View>: View {
+    let title: String
+    @Binding var isExpanded: Bool
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(CortexDesign.inkSecondary)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                content()
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }

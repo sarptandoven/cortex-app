@@ -1,5 +1,13 @@
 import SwiftUI
 
+/// The primary source ledger card — the notes folder's home in Connections & Privacy. It reads as a
+/// catalog card, not a System-Settings row: the state is a mono "stamp" in the accession vocabulary
+/// (moss = kept/synced, gold = needs attention, wax = the one call to action), a wax-red margin
+/// spine marks a connected source, and the one main action is the single wax `CortexButton.primary`.
+///
+/// Only ever instantiated with the obsidian (local notes) connector, so the card speaks the notes
+/// language directly — the old generic "Direct source" else-branch (which merely re-opened this same
+/// sheet) has been removed along with its status branches.
 struct SourceConnectorStatusCard: View {
     @ObservedObject var state: AppState
     let connector: SourceConnectorCatalogItem
@@ -11,143 +19,116 @@ struct SourceConnectorStatusCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: statusIcon)
-                    .font(.system(size: 30, weight: .semibold))
-                    .foregroundColor(statusColor)
-                    .frame(width: 42, height: 42)
+            HStack(alignment: .top, spacing: 12) {
+                // The catalog glyph, pressed into a soft wax-tinted well rather than a raw system icon.
+                ZStack {
+                    RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                        .fill(stampColor.opacity(0.12))
+                    Image(systemName: statusIcon)
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(stampColor)
+                }
+                .frame(width: 46, height: 46)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Notes folder")
+                        .font(CortexDesign.Typography.title)
+                        .foregroundColor(CortexDesign.ink)
+                    // State as words and ink — a catalog accession stamp, never a colored capsule.
+                    AccessionStamp(
+                        segments: ["NOTES", statusStamp],
+                        emphasisIndex: stampEmphasized ? 1 : nil
+                    )
+                }
                 Spacer(minLength: 0)
-                SourceStatusChip(
-                    title: statusTitle,
-                    systemImage: statusChipIcon,
-                    color: statusColor
-                )
-            }
-            VStack(alignment: .leading, spacing: 5) {
-                Text(connector.id == "obsidian" ? "Primary notes" : "Direct source")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
-                Text(connector.id == "obsidian" ? "Notes folder" : connector.name)
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                Text(statusDetail)
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            if connector.id == "obsidian" {
-                HStack(spacing: 8) {
-                    Button {
-                        state.connectLocalNotesFolder(connector, chooseNew: needsContent)
-                    } label: {
-                        Label(primaryButtonTitle, systemImage: primaryButtonIcon)
-                            .frame(maxWidth: .infinity, minHeight: 46)
+            Text(statusDetail)
+                .font(CortexDesign.Typography.body)
+                .foregroundColor(CortexDesign.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                // The one wax-red primary on this surface: connect / sync / reconnect / fix notes.
+                CortexButton(
+                    title: primaryButtonTitle,
+                    systemImage: primaryButtonIcon,
+                    role: .primary,
+                    size: .large
+                ) {
+                    state.connectLocalNotesFolder(connector, chooseNew: needsContent)
+                }
+                .disabled(state.isBusy)
+
+                if state.hasConnectedObsidianVault {
+                    CortexButton(title: "Change folder", systemImage: "folder", role: .secondary, size: .large) {
+                        state.connectLocalNotesFolder(connector, chooseNew: true)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                        .disabled(state.isBusy)
+                    .disabled(state.isBusy)
 
-                    if state.hasConnectedObsidianVault {
-                        Button {
-                            state.connectLocalNotesFolder(connector, chooseNew: true)
-                        } label: {
-                            Label("Change folder", systemImage: "folder")
-                                .frame(minHeight: 46)
+                    CortexButton(title: "Disconnect", systemImage: "xmark.circle", role: .destructive, size: .large) {
+                        confirmDisconnect = true
+                    }
+                    .disabled(state.isBusy)
+                    .help("Stop syncing this notes folder. Already synced memory is kept.")
+                    .confirmationDialog(
+                        "Disconnect notes folder?",
+                        isPresented: $confirmDisconnect,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Disconnect notes", role: .destructive) {
+                            state.disconnectObsidianNotes()
                         }
-                        .controlSize(.large)
-                        .disabled(state.isBusy)
-
-                        Button(role: .destructive) {
-                            confirmDisconnect = true
-                        } label: {
-                            Label("Disconnect", systemImage: "xmark.circle")
-                                .frame(minHeight: 46)
-                        }
-                        .controlSize(.large)
-                        .disabled(state.isBusy)
-                        .help("Stop syncing this notes folder. Already synced memory is kept.")
-                        .confirmationDialog(
-                            "Disconnect notes folder?",
-                            isPresented: $confirmDisconnect,
-                            titleVisibility: .visible
-                        ) {
-                            Button("Disconnect notes", role: .destructive) {
-                                state.disconnectObsidianNotes()
-                            }
-                            Button("Cancel", role: .cancel) {}
-                        } message: {
-                            Text("Cortex stops syncing this folder. Memory already synced and reviewed is kept and stays available to Ask. You can reconnect a folder later.")
-                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Cortex stops syncing this folder. Memory already synced and reviewed is kept and stays available to Ask. You can reconnect a folder later.")
                     }
                 }
-            } else {
-                // A real, working control — previously this was a card styled like a button that
-                // did nothing when tapped. It now actually opens Connections & Privacy.
-                Button {
-                    state.openConnectionsPrivacy()
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "lock.shield")
-                        Text("Open Connections & Privacy")
-                            .font(.callout)
-                            .fontWeight(.medium)
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity)
-                    .background(CortexDesign.cardBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .contentShape(RoundedRectangle(cornerRadius: 8))
-                }
-                .buttonStyle(.plain)
+
+                Spacer(minLength: 0)
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 210, alignment: .topLeading)
-        .background(CortexDesign.panelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .cortexCard()
+        // Kept and recorded: a connected notes source carries the wax-red margin spine; a source that
+        // needs attention shifts the spine to gold; an unconnected one leaves the margin bare.
+        .archiveSpine(spineColor)
     }
 
-    private var statusTitle: String {
+    // MARK: - Stamp vocabulary (moss / gold / wax — words and ink, no capsules)
+
+    /// The mono accession word for the current state.
+    private var statusStamp: String {
         if needsAttention { return "Needs attention" }
         if needsContent { return "No notes found" }
-        if connector.id != "obsidian" { return connector.connectorReadinessStatus == "token-ready" ? "Token sync" : "Ready" }
-        return connected ? "Connected" : "Local"
+        return connected ? "Synced" : "Not connected"
+    }
+
+    /// Whether the state stamp is emphasized (tinted wax) — reserved for the states that want a look.
+    private var stampEmphasized: Bool {
+        needsAttention || needsContent || !connected
+    }
+
+    /// The semantic color for the glyph well and the state — moss when synced (LOCAL, healthy),
+    /// gold when it needs attention, wax for the call-to-connect.
+    private var stampColor: Color {
+        if needsAttention || needsContent { return CortexDesign.gold }
+        return connected ? CortexDesign.sealMoss : CortexDesign.accent
+    }
+
+    /// The margin spine: wax when connected/kept, gold when attention is owed, bare otherwise.
+    private var spineColor: Color {
+        if connected { return CortexDesign.accent }
+        if needsAttention || needsContent { return CortexDesign.gold }
+        return Color.clear
     }
 
     private var statusIcon: String {
         if needsAttention { return "exclamationmark.triangle.fill" }
         if needsContent { return "folder.badge.questionmark" }
-        if connector.id != "obsidian" { return "link.circle.fill" }
         return connected ? "checkmark.seal.fill" : "link.badge.plus"
     }
 
-    private var statusChipIcon: String {
-        if needsAttention { return "exclamationmark.circle.fill" }
-        if needsContent { return "exclamationmark.circle.fill" }
-        if connector.id != "obsidian" { return connector.connectorReadinessStatus == "token-ready" ? "key.fill" : "link.circle" }
-        return connected ? "checkmark.circle.fill" : "folder.badge.plus"
-    }
-
-    private var statusColor: Color {
-        if needsAttention { return .orange }
-        if needsContent { return .orange }
-        if connector.id != "obsidian" { return connector.connectorReadinessStatus == "token-ready" ? .accentColor : .secondary }
-        return connected ? .green : .accentColor
-    }
-
     private var statusDetail: String {
-        if connector.id != "obsidian" {
-            return connector.connectorReadinessStatus == "token-ready"
-                ? "Read-only token sync is available in Connections & Privacy."
-                : "This source is managed from Connections & Privacy."
-        }
         if needsAttention {
             return attentionDetail ?? "Cortex lost permission to read this folder — usually after it moved or macOS revoked access. Choose the folder again to resume syncing."
         }
@@ -179,25 +160,5 @@ struct SourceConnectorStatusCard: View {
             return state.hasConnectedObsidianVault ? "arrow.triangle.2.circlepath" : "folder.badge.plus"
         }
         return "folder.badge.plus"
-    }
-}
-
-struct SourceStatusChip: View {
-    let title: String
-    let systemImage: String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: systemImage)
-            Text(title)
-        }
-        .font(.caption)
-        .fontWeight(.semibold)
-        .foregroundColor(color)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(color.opacity(0.12))
-        .clipShape(Capsule())
     }
 }

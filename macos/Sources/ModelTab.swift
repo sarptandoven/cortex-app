@@ -16,6 +16,19 @@ struct ModelTab: View {
                 // purposeful connect nudge instead of a sad zero (see RecallHeadlineCard).
                 RecallHeadlineCard(state: state)
 
+                // Mount the live proof watcher on Home once the headline has answered. It polls
+                // loadRecallHeadline() every ~3s while visible, so the giant number above stays
+                // FRESH while an AI reads memory (the fix for the stale-hero bug), and flips to
+                // "<app> just read your memory. Continuity, proven." on the first live read.
+                if state.recallHeadline != nil {
+                    RecallProofWatcher(
+                        state: state,
+                        waitingLine: "Watching for the next AI to read your memory…"
+                    )
+                    .frame(maxWidth: 620, alignment: .leading)
+                    .transition(.opacity)
+                }
+
                 // Memory Wrapped — the same north-star number turned into a weekly, shareable
                 // object. Opens a screenshot-native card in a sheet; a genuine first week shows a
                 // gentle "check back after a week of use" instead of a share button on empty stats.
@@ -96,10 +109,19 @@ struct ModelTab: View {
         // Keep the north-star headline fresh whenever Home is (re)activated — the same
         // tab-activation reload pattern Review uses (all tabs stay mounted, so onChange fires
         // on every switch back to Home).
-        .task { await state.loadRecallHeadline() }
+        // Load the north-star headline AND the twin scorecard on (re)activation: the
+        // TwinScorecardCard on Home is gated on state.twinScorecard, but nothing on Home fetched
+        // it — so it was permanently blank. Load it here (same tab-activation pattern Review uses).
+        .task {
+            await state.loadRecallHeadline()
+            await state.loadTwinScorecard()
+        }
         .onChange(of: state.selectedTab) { tab in
             guard tab == .model else { return }
-            Task { await state.loadRecallHeadline() }
+            Task {
+                await state.loadRecallHeadline()
+                await state.loadTwinScorecard()
+            }
         }
     }
 
@@ -149,9 +171,55 @@ struct ModelTab: View {
     }
 }
 
-/// A real, changing sync-progress bar (determinate, driven by the job queue) shown while Cortex
-/// is turning newly-synced content into cited memory. Rendered inside the hero (its one
-/// status home) so the user watches memory build in real time without a second status card.
+/// A thin, determinate gold beam drawn in a Canvas — the sync-progress indicator in the app's
+/// live-activity visual language (a gold rule filling left-to-right with a soft leading glow),
+/// replacing the native `ProgressView`. Deterministic: the fill is `fraction`, the glow is a
+/// static gradient (no `.random`, no timeline). It intentionally MATCHES the live-activity beam's
+/// language without touching those files. Ride it under the portrait, hairline-thin.
+struct SyncBeam: View {
+    /// 0…1 determinate fill.
+    let fraction: Double
+    var height: CGFloat = 3
+
+    var body: some View {
+        Canvas { context, size in
+            let radius = size.height / 2
+            // The quiet track the beam runs in.
+            let track = Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: radius)
+            context.fill(track, with: .color(CortexDesign.gold.opacity(0.14)))
+
+            let filled = max(0, min(1, fraction)) * size.width
+            guard filled > 0 else { return }
+            let beamRect = CGRect(x: 0, y: 0, width: filled, height: size.height)
+            let beam = Path(roundedRect: beamRect, cornerRadius: radius)
+            // The gold beam itself — a subtle left-to-right lightening so it reads as ink laid down.
+            context.fill(
+                beam,
+                with: .linearGradient(
+                    Gradient(colors: [CortexDesign.gold.opacity(0.65), CortexDesign.gold]),
+                    startPoint: .zero,
+                    endPoint: CGPoint(x: filled, y: 0)
+                )
+            )
+            // The leading glow — a soft cap at the beam's head, the same "live edge" the activity
+            // surfaces use. Static, deterministic.
+            if filled < size.width {
+                let glow = Path(ellipseIn: CGRect(
+                    x: filled - radius * 2, y: -radius,
+                    width: radius * 4, height: size.height + radius * 2
+                ))
+                context.fill(glow, with: .color(CortexDesign.gold.opacity(0.35)))
+            }
+        }
+        .frame(height: height)
+        .accessibilityHidden(true)
+    }
+}
+
+/// A real, changing sync-progress indicator (determinate, driven by the job queue) shown while
+/// Cortex is turning newly-synced content into cited memory. Rendered inside the hero (its one
+/// status home) so the user watches memory build in real time. The native `ProgressView` is
+/// retired for a Canvas-drawn gold `SyncBeam` in the live-activity visual language.
 struct SyncProgressCard: View {
     let progress: SyncProgress
 
@@ -179,9 +247,7 @@ struct SyncProgressCard: View {
                         .accessibilityHidden(true)
                 }
             }
-            ProgressView(value: progress.fraction)
-                .progressViewStyle(.linear)
-                .tint(CortexDesign.gold)
+            SyncBeam(fraction: progress.fraction)
         }
         .cortexCard(padding: 14, background: CortexDesign.goldSoft)
         .accessibilityElement(children: .combine)
@@ -193,11 +259,12 @@ struct SyncProgressCard: View {
     }
 }
 
-/// Tier 2 of Home: the at-a-glance numbers — Memories, Entities, and what's waiting in
-/// Review — in one quiet strip of `CortexStatView`s. Hidden until the engine is up and at
-/// least one number is non-zero, so brand-new users see the three-step map, not a row of
-/// zeros. Falls back from the daily review payload to the raw stats endpoint, mirroring
-/// the hero's own counting rules.
+/// Tier 2 of Home: the at-a-glance numbers as ONE horizontal ledger rule — Memories · Entities ·
+/// To-review — separated by hairline dividers, each column TAPPABLE. Memories/Entities open the
+/// Constellation; To-review opens the Review tab and carries a gold spine when anything waits
+/// (gold = "live / needs you"). Hidden until the engine is up and at least one number is non-zero,
+/// so brand-new users see the three-step map, not a row of zeros. Falls back from the daily review
+/// payload to the raw stats endpoint, mirroring the hero's own counting rules.
 struct HomeStatStrip: View {
     @ObservedObject var state: AppState
     let review: DailyReviewResponse?
@@ -206,22 +273,109 @@ struct HomeStatStrip: View {
     private var entities: Int { review?.stats.entities ?? state.stats?.entities ?? 0 }
     private var pending: Int { review?.stats.pending_captures ?? state.inbox.count }
 
+    private func openConstellation() {
+        NotificationCenter.default.post(name: .cortexPresentConstellation, object: nil)
+    }
+
+    private func openReview() {
+        state.selectedTab = .review
+        state.status = "Review memory"
+    }
+
     var body: some View {
         if state.isLocalServiceReady && (memories > 0 || entities > 0 || pending > 0) {
-            HStack(alignment: .top, spacing: 0) {
-                CortexStatView(value: memories.formatted(), label: "Memories")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                CortexStatView(value: entities.formatted(), label: "Entities")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                CortexStatView(value: pending.formatted(), label: "To review")
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(alignment: .center, spacing: 0) {
+                LedgerColumn(
+                    value: memories,
+                    label: "Memories",
+                    spineWhenPositive: false,
+                    action: openConstellation
+                )
+                ledgerDivider
+                LedgerColumn(
+                    value: entities,
+                    label: "Entities",
+                    spineWhenPositive: false,
+                    action: openConstellation
+                )
+                ledgerDivider
+                LedgerColumn(
+                    value: pending,
+                    label: "To review",
+                    // A gold spine marks the unreviewed backlog — the "live, needs you" register.
+                    spineWhenPositive: true,
+                    action: openReview
+                )
             }
             .cortexCard(padding: CortexDesign.Space.md)
             .frame(maxWidth: 620, alignment: .leading)
-            .accessibilityElement(children: .ignore)
+            .accessibilityElement(children: .contain)
             .accessibilityLabel("\(memories) memories, \(entities) entities, \(pending) to review")
             .transition(.opacity)
         }
+    }
+
+    /// A hairline rule between ledger columns — the index-card margin language, vertical.
+    private var ledgerDivider: some View {
+        Rectangle()
+            .fill(CortexDesign.hairline)
+            .frame(width: 1, height: 34)
+    }
+}
+
+/// One tappable column of the Home ledger rule: a rolling serif numeral over an SF label, using
+/// the interactive-card press physics (hover fill + subtle press) instead of a hand-rolled hover.
+/// A gold spine lights when `spineWhenPositive` and the value is > 0 (the unreviewed register).
+private struct LedgerColumn: View {
+    let value: Int
+    let label: String
+    let spineWhenPositive: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    private var showSpine: Bool { spineWhenPositive && value > 0 }
+
+    var body: some View {
+        Button(action: action) {
+            CortexStatView(value: value.formatted(), label: label)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, CortexDesign.Space.xs)
+                .padding(.horizontal, CortexDesign.Space.sm)
+                .background(
+                    RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                        .fill(hovering ? CortexDesign.quietBackground : Color.clear)
+                )
+                .overlay(alignment: .leading) {
+                    if showSpine {
+                        // The gold "unreviewed" spine, in the archiveSpine language (a feathered
+                        // ink-bled rule). A top→bottom gold gradient + a hairline glow so it reads
+                        // as ink bled into the paper, not a flat bar.
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        CortexDesign.gold.opacity(0.85),
+                                        CortexDesign.gold,
+                                        CortexDesign.gold.opacity(0.9),
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .frame(width: 3)
+                            .shadow(color: CortexDesign.gold.opacity(0.35), radius: 0.5, x: 0.5)
+                            .padding(.vertical, 6)
+                    }
+                }
+                .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+                .scaleEffect(hovering ? 0.99 : 1)
+                .animation(CortexMotion.press, value: hovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityLabel("\(value) \(label)")
+        .accessibilityHint(spineWhenPositive ? "Opens Review" : "Opens your Constellation")
     }
 }
 
@@ -397,6 +551,8 @@ struct ProfileCard: View {
 private struct ProfileElementRow: View {
     let element: ProfileElement
 
+    @State private var hovering = false
+
     /// "From your calendar · seen 6 times" — degrades gracefully when parts are missing.
     private var sourceCaption: String? {
         var parts: [String] = []
@@ -415,22 +571,25 @@ private struct ProfileElementRow: View {
 
     var body: some View {
         if let url = openableURL {
+            // The whole row is the open-source affordance, on the shared press physics (a quiet
+            // wash lift + subtle press scale, one spring) rather than a flat plain button.
             Button {
                 NSWorkspace.shared.open(url)
             } label: {
-                rowContent
+                rowContent(interactive: true)
             }
             .buttonStyle(.plain)
+            .onHover { hovering = $0 }
             .accessibilityLabel(accessibilityLabel)
             .accessibilityHint("Opens the source")
         } else {
-            rowContent
+            rowContent(interactive: false)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(accessibilityLabel)
         }
     }
 
-    private var rowContent: some View {
+    private func rowContent(interactive: Bool) -> some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.xs) {
             if let text = element.text, !text.isEmpty {
                 Text("\u{201C}\(MemoryText.displayProse(text, maxLength: 260))\u{201D}")
@@ -450,8 +609,12 @@ private struct ProfileElementRow: View {
         .padding(.vertical, CortexDesign.Space.xs)
         .padding(.horizontal, CortexDesign.Space.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(CortexDesign.quietBackground)
+        .background(
+            (interactive && hovering) ? CortexDesign.accentSoft : CortexDesign.quietBackground
+        )
         .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+        .scaleEffect(interactive && hovering ? 0.995 : 1)
+        .animation(CortexMotion.press, value: hovering)
         .contentShape(Rectangle())
     }
 
@@ -710,26 +873,48 @@ struct HomeHeroSection: View {
         }
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
-            if let progress = state.syncProgress, progress.active {
-                // Sync status has ONE home: the hero. The live bar rides above the headline
-                // instead of being a second, competing status card.
-                SyncProgressCard(progress: progress)
-                    .frame(maxWidth: 620, alignment: .leading)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+    // The Mirror, made heroic: the serif hero line + primary action on the LEFT, the user's real
+    // Constellation breathing at hero scale on the RIGHT (a drifting-motes placeholder when the
+    // graph is empty). The portrait only earns its place once the layout has room, so it hides on
+    // the narrow first-run column and folds into the text zone there.
+    private var portrait: some View {
+        ConstellationMiniPreview(nodes: state.graphNodes, edges: state.graphEdges)
+            .frame(width: 300, height: 168)
+            .background(CortexDesign.panelBackground)
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+            .embossedBorder(radius: CortexDesign.Radius.md)
+            .overlay(alignment: .bottom) {
+                // The sync beam rides UNDER the portrait in the live-activity language — the one
+                // sync indicator, folded into the hero instead of a competing native ProgressView.
+                if let progress = state.syncProgress, progress.active {
+                    SyncBeam(fraction: progress.fraction)
+                        .padding(.horizontal, CortexDesign.Space.sm)
+                        .padding(.bottom, CortexDesign.Space.sm)
+                        .transition(.opacity)
+                }
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(
+                state.graphNodes.isEmpty
+                    ? "Your Constellation builds as you import"
+                    : "A living preview of your Constellation, drawn from your real memory graph"
+            )
+    }
 
+    /// The left text zone: serif hero line, its optional detail, and the ONE wax primary action.
+    private var heroTextZone: some View {
+        VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
             VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
                 Text(title)
-                    .font(CortexDesign.Typography.display(30))
+                    .font(CortexDesign.Typography.display(34))
                     .foregroundColor(CortexDesign.ink)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let detail {
                     Text(detail)
                         .font(CortexDesign.Typography.body)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: 680, alignment: .leading)
+                        .frame(maxWidth: 400, alignment: .leading)
                         .help(detailHelp ?? "")
                 }
             }
@@ -746,6 +931,33 @@ struct HomeHeroSection: View {
                 .disabled(state.isBusy)
 
                 Spacer(minLength: 0)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
+            // Two-zone living portrait: text/action on the left, the breathing real-graph
+            // Constellation on the right. On the narrow first-run column the portrait would only
+            // show drifting motes, so it stands alone as the text zone there.
+            let showPortrait = !state.graphNodes.isEmpty || (state.isLocalServiceReady && hasMemory)
+            if showPortrait {
+                HStack(alignment: .center, spacing: CortexDesign.Space.xl) {
+                    heroTextZone
+                    portrait
+                        .transition(.opacity)
+                }
+                .frame(maxWidth: 700, alignment: .leading)
+            } else {
+                heroTextZone
+                if let progress = state.syncProgress, progress.active {
+                    // No portrait to hang the beam under yet — keep the labelled sync card so the
+                    // "getting ready" states still show live progress.
+                    SyncProgressCard(progress: progress)
+                        .frame(maxWidth: 620, alignment: .leading)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
 
             if state.isLocalServiceReady && activeSources == 0 && !hasMemory && !hasEmptySource && pendingCount == 0 {
@@ -885,15 +1097,20 @@ struct HomeStatusRow: View {
 
     var body: some View {
         if let action {
+            // The whole-row tap uses the shared press physics (single spring, a quiet wash + a
+            // subtle press scale) instead of the old hand-rolled hover-fill, so it matches every
+            // other interactive surface on Home.
             Button(action: action) {
                 row
+                    .background(
+                        RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                            .fill(hovering ? CortexDesign.quietBackground : Color.clear)
+                    )
+                    .scaleEffect(hovering ? 0.995 : 1)
+                    .animation(CortexMotion.press, value: hovering)
             }
             .buttonStyle(.plain)
             .onHover { hovering = $0 }
-            .background(
-                RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
-                    .fill(hovering ? CortexDesign.quietBackground : Color.clear)
-            )
             .accessibilityHint("Opens \(title.lowercased()) details")
         } else {
             row

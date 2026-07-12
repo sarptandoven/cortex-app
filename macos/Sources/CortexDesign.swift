@@ -897,3 +897,112 @@ struct CortexEmptyState: View {
         .padding(.horizontal, CortexDesign.Space.lg)
     }
 }
+
+// MARK: - Wax-seal mark + form primitives (canonical; workstream #1 completion)
+//
+// These three finish the Wave-1 backbone (the earlier pass ran out before adding them).
+// Every surface uses these — DO NOT redefine locally.
+
+/// The wax-seal mark — a domed sealing-wax disc with an embossed serif glyph. Replaces every stock
+/// SF-Symbol hero (sign-in, onboarding, the sealed recovery-code envelope).
+struct CortexWaxSeal: View {
+    var size: CGFloat = 64
+    var glyph: String = "C"
+
+    var body: some View {
+        ZStack {
+            CortexSealSurface(cornerRadius: size / 2)
+                .clipShape(Circle())
+            Circle()
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                .padding(size * 0.14)
+            ZStack {
+                Text(glyph)
+                    .font(.system(size: size * 0.46, weight: .semibold, design: .serif))
+                    .foregroundColor(CortexDesign.accent.opacity(0.65))
+                    .offset(y: 0.7)
+                Text(glyph)
+                    .font(.system(size: size * 0.46, weight: .semibold, design: .serif))
+                    .foregroundColor(CortexDesign.panelBackground.opacity(0.92))
+            }
+        }
+        .frame(width: size, height: size)
+        .shadow(color: CortexDesign.accent.opacity(0.30), radius: 10, y: 4)
+        .shadow(color: Color.black.opacity(0.18), radius: 3, y: 1)
+    }
+}
+
+/// A design-system text field — a quiet recessed well, letterpress embossed edge, and a wax focus
+/// ring. `secure` swaps in a SecureField; `mono` renders the value in the catalog-stamp voice.
+/// Replaces every `.textFieldStyle(.roundedBorder)`.
+struct CortexField: View {
+    let placeholder: String
+    @Binding var text: String
+    var secure: Bool = false
+    var mono: Bool = false
+    var textContentType: NSTextContentType? = nil
+    var disableAutocorrection: Bool = false
+
+    @FocusState private var focused: Bool
+
+    private var valueFont: Font {
+        mono ? .system(.body, design: .monospaced) : CortexDesign.Typography.body
+    }
+
+    var body: some View {
+        Group {
+            if secure {
+                SecureField(placeholder, text: $text)
+            } else {
+                TextField(placeholder, text: $text)
+            }
+        }
+        .textFieldStyle(.plain)
+        .font(valueFont)
+        .foregroundColor(CortexDesign.ink)
+        .textContentType(textContentType)
+        .disableAutocorrection(disableAutocorrection)
+        .focused($focused)
+        .padding(.horizontal, 12)
+        .frame(minHeight: CortexDesign.controlHeight)
+        .background(CortexDesign.quietBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .embossedBorder(radius: CortexDesign.Radius.md)
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .strokeBorder(CortexDesign.accent.opacity(focused ? 0.55 : 0), lineWidth: 1.5)
+        )
+        .animation(CortexMotion.focus, value: focused)
+    }
+}
+
+/// A design-system toggle: an SF-voiced label beside a compact wax-red switch. Replaces the stock
+/// blue `Toggle` so a confirm speaks the archive's language.
+struct CortexToggle: View {
+    let title: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            HStack(spacing: 8) {
+                ZStack(alignment: isOn ? .trailing : .leading) {
+                    Capsule()
+                        .fill(isOn ? CortexDesign.accent : CortexDesign.ink.opacity(0.18))
+                    Circle()
+                        .fill(CortexDesign.panelBackground)
+                        .padding(2)
+                        .shadow(color: Color.black.opacity(0.2), radius: 1, y: 0.5)
+                }
+                .frame(width: 34, height: 20)
+                .animation(CortexMotion.press, value: isOn)
+                Text(title)
+                    .font(CortexDesign.Typography.body)
+                    .foregroundColor(CortexDesign.ink)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}

@@ -825,10 +825,7 @@ struct CortexCloudSection: View {
                 }
 
                 if !state.cloudAuthMessage.isEmpty {
-                    Text(state.cloudAuthMessage)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    authBanner(state.cloudAuthMessage)
                 }
             }
         }
@@ -864,10 +861,8 @@ struct CortexCloudSection: View {
 
             Divider().padding(.vertical, 2)
 
-            Button {
+            CortexButton(title: "Sign out", systemImage: "rectangle.portrait.and.arrow.right", role: .secondary) {
                 state.signOutOfCloud()
-            } label: {
-                Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
             }
             .disabled(state.cloudAuthBusy)
 
@@ -878,22 +873,23 @@ struct CortexCloudSection: View {
             if showDeleteConfirm {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("This permanently deletes your Cortex Cloud account and its synced copy from the server. This cannot be undone. Your memory on this Mac stays local — to erase it from this device, use \"Delete All Local Data\" in the data settings.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    SecureField("Password (leave blank if you use Apple / Google / GitHub)", text: $deletePassword)
-                        .textFieldStyle(.roundedBorder)
-                        .textContentType(.password)
-                    HStack {
-                        Button(role: .destructive) {
+                    CortexField(
+                        placeholder: "Password (leave blank if you use Apple / Google / GitHub)",
+                        text: $deletePassword,
+                        secure: true,
+                        textContentType: .password
+                    )
+                    HStack(spacing: 8) {
+                        CortexButton(title: "Delete my account permanently", systemImage: "trash", role: .destructive) {
                             state.deleteCloudAccount(password: deletePassword)
                             deletePassword = ""
                             showDeleteConfirm = false
-                        } label: {
-                            Label("Delete my account permanently", systemImage: "trash")
                         }
                         .disabled(state.cloudAuthBusy)
-                        Button("Cancel") {
+                        CortexButton(title: "Cancel", role: .ghost) {
                             deletePassword = ""
                             showDeleteConfirm = false
                         }
@@ -901,10 +897,8 @@ struct CortexCloudSection: View {
                     }
                 }
             } else {
-                Button(role: .destructive) {
+                CortexButton(title: "Delete account…", systemImage: "trash", role: .destructive) {
                     showDeleteConfirm = true
-                } label: {
-                    Label("Delete account…", systemImage: "trash")
                 }
                 .disabled(state.cloudAuthBusy)
             }
@@ -942,27 +936,22 @@ struct CortexCloudSection: View {
     private var zeroAccessDisabledControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Zero-access encrypts your synced memory with a key only on your devices — Cortex cannot read it. Save your recovery code; it's the ONLY way to restore on another device.")
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Button {
+            CortexButton(title: "Own your encryption key", systemImage: "key.horizontal", role: .primary) {
                 enableZeroAccess()
-            } label: {
-                Label("Own your encryption key", systemImage: "key.horizontal")
             }
             .disabled(state.cloudAuthBusy)
 
             if showRestoreField {
                 restoreCodeEntry
             } else {
-                Button {
+                CortexButton(title: "Restore from recovery code…", systemImage: "arrow.down.doc", role: .ghost, size: .small) {
                     showRestoreField = true
                     restoreError = ""
                     restoreCodeInput = ""
-                } label: {
-                    Label("Restore from recovery code…", systemImage: "arrow.down.doc")
                 }
-                .font(.caption)
                 .disabled(state.cloudAuthBusy)
             }
         }
@@ -971,24 +960,20 @@ struct CortexCloudSection: View {
     private var zeroAccessEnabledControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("On. Cortex cannot read your memory — it's encrypted with a key only on your devices before it syncs. Keep your recovery code safe; it's the only way to restore on another device.")
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
-                Button {
+                CortexButton(title: "Show recovery code", systemImage: "eye", role: .secondary) {
                     if let code = state.currentRecoveryCode() {
                         isForcedFirstReveal = false
                         recoverySavedConfirmed = true   // re-reveal has no forced-save gate
                         revealedRecoveryCode = code
                     }
-                } label: {
-                    Label("Show recovery code", systemImage: "eye")
                 }
                 .disabled(state.cloudAuthBusy)
-                Button {
+                CortexButton(title: "Turn off", systemImage: "lock.open", role: .ghost) {
                     state.disableZeroAccess()
-                } label: {
-                    Label("Turn off", systemImage: "lock.open")
                 }
                 .disabled(state.cloudAuthBusy)
             }
@@ -998,69 +983,93 @@ struct CortexCloudSection: View {
     /// The force-save-once reveal. Enabling zero-access without saving the code risks PERMANENT data
     /// loss, so the code cannot be dismissed until the user confirms they saved it (first reveal).
     private var recoveryCodeReveal: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        // The sealed envelope — the emotional peak of the flow, not a system warning box. A wax seal
+        // at its head, the code set on a recessed "card" well, wax-red framing. This is the moment the
+        // user is handed the one thing Cortex can never recover for them.
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                CortexWaxSeal(size: 34)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isForcedFirstReveal ? "Your recovery code" : "Recovery code")
+                        .font(CortexDesign.Typography.title)
+                        .foregroundColor(CortexDesign.ink)
+                    Text("SEALED · ZERO-ACCESS")
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
+                }
+            }
+
             if isForcedFirstReveal {
-                Text("Save this recovery code now. It is the ONLY way to restore your encrypted memory on another Mac or if you reinstall — Cortex cannot recover it for you.")
-                    .font(.caption)
-                    .foregroundColor(.orange)
+                Text("Save this now. It is the ONLY way to restore your encrypted memory on another Mac or if you reinstall — Cortex cannot recover it for you.")
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Your recovery code. Store it somewhere safe (a password manager). Anyone with this code can read your synced memory.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                Text("Store it somewhere safe (a password manager). Anyone with this code can read your synced memory.")
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
             Text(revealedRecoveryCode)
                 .font(.system(.body, design: .monospaced))
+                .foregroundColor(CortexDesign.ink)
                 .textSelection(.enabled)
-                .padding(8)
+                .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.08)))
+                .background(CortexDesign.quietBackground)
+                .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+                .embossedBorder(radius: CortexDesign.Radius.md)
+
+            if isForcedFirstReveal {
+                CortexToggle(title: "I saved my recovery code", isOn: $recoverySavedConfirmed)
+            }
+
             HStack(spacing: 8) {
-                Button {
+                CortexButton(title: "Copy", systemImage: "doc.on.doc", role: .secondary) {
                     let pb = NSPasteboard.general
                     pb.clearContents()
                     pb.setString(revealedRecoveryCode, forType: .string)
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                if isForcedFirstReveal {
-                    Toggle("I saved my recovery code", isOn: $recoverySavedConfirmed)
-                        .font(.caption)
                 }
                 Spacer()
-                Button {
+                CortexButton(title: "Done", role: .primary) {
                     revealedRecoveryCode = ""
                     isForcedFirstReveal = false
                     recoverySavedConfirmed = false
-                } label: {
-                    Text("Done")
                 }
                 .disabled(isForcedFirstReveal && !recoverySavedConfirmed)
             }
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.5), lineWidth: 1))
+        .padding(CortexDesign.Space.md)
+        .background(CortexDesign.accentSoft)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.lg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.lg, style: .continuous)
+                .strokeBorder(CortexDesign.accent.opacity(0.45), lineWidth: 1)
+        )
     }
 
     private var restoreCodeEntry: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Paste the recovery code from your other device to decrypt this account's memory on this Mac.")
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-            TextField("XXXX-XXXX-…", text: $restoreCodeInput)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .disableAutocorrection(true)
+            CortexField(
+                placeholder: "XXXX-XXXX-…",
+                text: $restoreCodeInput,
+                mono: true,
+                disableAutocorrection: true
+            )
             if !restoreError.isEmpty {
                 Text(restoreError)
-                    .font(.caption)
-                    .foregroundColor(.orange)
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.accent)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
-                Button {
+                CortexButton(title: "Restore", systemImage: "checkmark.shield", role: .primary) {
                     if let err = state.restoreZeroAccessFromRecoveryCode(restoreCodeInput) {
                         restoreError = err
                     } else {
@@ -1068,11 +1077,9 @@ struct CortexCloudSection: View {
                         restoreCodeInput = ""
                         showRestoreField = false
                     }
-                } label: {
-                    Label("Restore", systemImage: "checkmark.shield")
                 }
                 .disabled(restoreCodeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.cloudAuthBusy)
-                Button("Cancel") {
+                CortexButton(title: "Cancel", role: .ghost) {
                     showRestoreField = false
                     restoreCodeInput = ""
                     restoreError = ""
@@ -1087,6 +1094,81 @@ struct CortexCloudSection: View {
         isForcedFirstReveal = true
         recoverySavedConfirmed = false
         revealedRecoveryCode = code
+    }
+
+    // MARK: cloudAuthMessage — severity-styled inline banner
+    //
+    // The bare gray caption is promoted into a severity banner: wax-red for an error, moss for a
+    // success, and the mono catalog voice for in-flight progress (so "Signing in…" reads as a
+    // stamp, not a failure). Classification is deterministic from the message text.
+    enum AuthBannerSeverity { case error, success, progress }
+
+    /// Classify the current cloudAuthMessage. Progress messages end in an ellipsis or countdown;
+    /// success messages announce a completed state; everything else (including describe(error))
+    /// is an error. "cancelled" is treated as progress (neutral), not a failure.
+    private func authBannerSeverity(_ message: String) -> AuthBannerSeverity {
+        let lower = message.lowercased()
+        if lower.contains("signed in") || lower.contains("signed out")
+            || lower.contains("permanently deleted") {
+            return .success
+        }
+        if lower.hasSuffix("...") || lower.hasSuffix("…") || lower.contains("cancelled")
+            || lower.contains("waiting for") || lower.contains("(") {
+            return .progress
+        }
+        return .error
+    }
+
+    @ViewBuilder private func authBanner(_ message: String) -> some View {
+        let severity = authBannerSeverity(message)
+        let tint: Color = {
+            switch severity {
+            case .error: return CortexDesign.accent
+            case .success: return CortexDesign.sealMoss
+            case .progress: return CortexDesign.inkSecondary
+            }
+        }()
+        let icon: String = {
+            switch severity {
+            case .error: return "exclamationmark.triangle.fill"
+            case .success: return "checkmark.seal.fill"
+            case .progress: return "arrow.triangle.2.circlepath"
+            }
+        }()
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(tint)
+            Text(message)
+                // Progress speaks in the mono catalog voice; error/success stay in the working voice.
+                .font(severity == .progress ? CortexDesign.Typography.stamp : CortexDesign.Typography.caption)
+                .foregroundColor(severity == .progress ? CortexDesign.inkFaint : CortexDesign.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(severity == .progress ? 0.06 : 0.10))
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                .strokeBorder(tint.opacity(0.28), lineWidth: 1)
+        )
+    }
+
+    /// The mono "archive divider" — a monospaced catalog rule between the provider buttons and the
+    /// email form, replacing the stock "or" between two Dividers.
+    @ViewBuilder private func archiveDivider(_ label: String) -> some View {
+        HStack(spacing: 10) {
+            Rectangle().fill(CortexDesign.hairline).frame(height: 1)
+            Text(label)
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.inkFaint)
+                .fixedSize()
+            Rectangle().fill(CortexDesign.hairline).frame(height: 1)
+        }
     }
 
     private var signInForm: some View {
@@ -1121,83 +1203,142 @@ struct CortexCloudSection: View {
                 .disabled(state.cloudAuthBusy)
             }
 
-            // A real, labeled button per social provider the hosted backend actually offers
+            // A full-width archive button per social provider the hosted backend actually offers
             // (e.g. "Sign in with GitHub", "Continue with Google"). Each opens the browser sign-in
             // handoff pre-pointed at that provider; the app polls the session out (no token in a URL).
-            // This replaces the old single generic "Continue in browser" that hid GitHub/Google.
-            ForEach(browserProviders) { provider in
-                Button {
+            // The RECOMMENDED path — Apple if the native button above is shown, else the top provider —
+            // carries the surface's ONE wax-red primary; the rest are paper secondary. When the Apple
+            // native hero is present, no provider is promoted (the wax moment moves to email "Sign in"),
+            // so there is never more than one wax seal on the surface.
+            ForEach(Array(browserProviders.enumerated()), id: \.element.id) { index, provider in
+                CortexButton(
+                    title: providerButtonLabel(provider),
+                    systemImage: providerButtonIcon(provider),
+                    role: (index == 0 && !appleHeroShown) ? .primary : .secondary,
+                    size: .large,
+                    fullWidth: true
+                ) {
                     state.signInToCloudWithBrowser(hostedURL: resolvedHostedURL, provider: provider.provider)
-                } label: {
-                    Label(providerButtonLabel(provider), systemImage: providerButtonIcon(provider))
-                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
-                .controlSize(.large)
                 .disabled(state.cloudAuthBusy)
             }
 
             // Fallback: a generic browser sign-in when provider discovery hasn't loaded yet or the
-            // backend advertises no social providers (email-only). Kept so there is always a path.
+            // backend advertises no social providers (email-only). Kept so there is always a path —
+            // including when the native Apple button is unavailable and no providers have loaded.
             if browserProviders.isEmpty {
-                Button {
+                CortexButton(
+                    title: "Continue in browser",
+                    systemImage: "globe",
+                    role: .secondary,
+                    size: .large,
+                    fullWidth: true
+                ) {
                     state.signInToCloudWithBrowser(hostedURL: resolvedHostedURL)
-                } label: {
-                    Label("Continue in browser", systemImage: "globe")
-                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
-                .controlSize(.large)
                 .disabled(state.cloudAuthBusy)
             }
 
-            HStack(spacing: 8) {
-                VStack { Divider() }
-                Text("or").font(.caption).foregroundColor(.secondary)
-                VStack { Divider() }
+            archiveDivider("— OR SIGN IN WITH EMAIL —")
+
+            CortexField(
+                placeholder: "Email",
+                text: $email,
+                textContentType: .username,
+                disableAutocorrection: true
+            )
+            CortexField(
+                placeholder: "Password",
+                text: $password,
+                secure: true,
+                textContentType: .password
+            )
+
+            // Email "Sign in" is the wax primary ONLY when the surface has no other wax seal (i.e. the
+            // native Apple hero is showing, or no provider was promoted). "Create account" is always
+            // the paper secondary beneath it. Stacked full-width, not a cramped row.
+            VStack(spacing: 8) {
+                CortexButton(
+                    title: "Sign in",
+                    systemImage: "person.crop.circle.badge.checkmark",
+                    role: emailSignInIsPrimary ? .primary : .secondary,
+                    size: .large,
+                    fullWidth: true
+                ) {
+                    state.signInToCloud(hostedURL: resolvedHostedURL, email: email, password: password)
+                }
+                .disabled(credentialsIncomplete)
+
+                CortexButton(
+                    title: "Create account",
+                    systemImage: "person.crop.circle.badge.plus",
+                    role: .secondary,
+                    size: .large,
+                    fullWidth: true
+                ) {
+                    state.signUpToCloud(hostedURL: resolvedHostedURL, email: email, password: password)
+                }
+                .disabled(credentialsIncomplete)
             }
 
-            TextField("Email", text: $email)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.username)
-                .disableAutocorrection(true)
-            SecureField("Password", text: $password)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.password)
-            HStack {
-                Button {
-                    state.signInToCloud(hostedURL: resolvedHostedURL, email: email, password: password)
-                } label: {
-                    Label("Sign in", systemImage: "person.crop.circle.badge.checkmark")
-                }
-                .disabled(credentialsIncomplete)
-                Button {
-                    state.signUpToCloud(hostedURL: resolvedHostedURL, email: email, password: password)
-                } label: {
-                    Label("Create account", systemImage: "person.crop.circle.badge.plus")
-                }
-                .disabled(credentialsIncomplete)
-                if state.cloudAuthBusy {
+            // In-flight progress + a real escape hatch. Cancel is only offered while a BROWSER poll is
+            // running (see canOfferCancel) — a password sign-in's URLSession request is not cancellable
+            // by cancelCloudBrowserSignIn(), so offering "Cancel" there would falsely claim to stop a
+            // request that can still sign the user in. (Functionality fix.)
+            if state.cloudAuthBusy {
+                HStack(spacing: 10) {
                     ProgressView().scaleEffect(0.6)
-                    // A started browser/social sign-in polls for up to 5 minutes and disables this
-                    // whole surface; give the user an escape hatch so they are never stranded.
-                    Button("Cancel") {
-                        state.cancelCloudBrowserSignIn()
+                    if canOfferCancel {
+                        CortexButton(title: "Cancel", role: .ghost, size: .small) {
+                            state.cancelCloudBrowserSignIn()
+                        }
                     }
+                    Spacer()
                 }
-                Spacer()
             }
 
             DisclosureGroup("Advanced") {
-                TextField("Hosted URL", text: $hostedURL)
-                    .textFieldStyle(.roundedBorder)
-                    .disableAutocorrection(true)
+                CortexField(
+                    placeholder: "Hosted URL",
+                    text: $hostedURL,
+                    disableAutocorrection: true
+                )
+                .padding(.top, 4)
+                // Re-fetch which providers the backend offers when the user points the app at a
+                // different hosted URL — onAppear only fetched from the initial URL. (Functionality fix.)
+                .onChange(of: hostedURL) { _ in
+                    guard state.isCloudAuthAvailable, !isSignedIn else { return }
+                    state.loadCloudAuthProviders(hostedURL: resolvedHostedURL)
+                }
             }
-            .font(.caption)
+            .font(CortexDesign.Typography.caption)
+            .foregroundColor(CortexDesign.inkSecondary)
 
-            Text("After sign-in, Cortex opens setup: connect a source, review memory, then open Connections for Claude Desktop, ChatGPT exports, or other AI tools.")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            Text("After sign-in, Cortex opens setup: connect a source, review memory, then wire Claude Desktop, ChatGPT, or another AI tool.")
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// Whether the native Sign in with Apple hero is being shown (the recommended path is Apple),
+    /// so no browser provider should also be promoted to the wax primary.
+    private var appleHeroShown: Bool {
+        canUseNativeAppleSignIn && backendOffersApple
+    }
+
+    /// The email "Sign in" gets the wax primary only when the surface has no other wax seal — i.e.
+    /// the Apple native hero is showing, OR no browser provider was promoted (none loaded). Keeps the
+    /// "exactly one wax primary per surface" guardrail regardless of which providers exist.
+    private var emailSignInIsPrimary: Bool {
+        appleHeroShown || browserProviders.isEmpty
+    }
+
+    /// Cancel is meaningful only for an in-flight BROWSER poll (cloudBrowserSignInTask != nil), which
+    /// cancelCloudBrowserSignIn() can actually stop. A password sign-in has no such task, so we never
+    /// offer a Cancel that would claim to stop a request it cannot. (Functionality fix.)
+    private var canOfferCancel: Bool {
+        state.cloudBrowserSignInTask != nil
     }
 
     /// The hosted API the sign-in targets: the user's entry if present, else the default.

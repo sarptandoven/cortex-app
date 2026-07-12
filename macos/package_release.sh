@@ -448,9 +448,19 @@ python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-packa
 1. Verify the downloaded ${DMG_FILE} against $(basename "$CHECKSUMS").
 2. Open ${DMG_FILE}.
 3. Drag Cortex.app to Applications.
-4. Open Cortex from Applications.
-5. If macOS blocks this local beta because it is not notarized yet,
-   Control-click Cortex.app and choose Open.
+4. IMPORTANT — skip the one-time ~2-minute first-launch delay. This beta is not
+   Developer-ID-signed/notarized yet, so on first open macOS runs a full Gatekeeper
+   malware scan of the whole bundle BEFORE the app appears (this is the "it only
+   opened two minutes later" delay). Clear the quarantine flag first and the app
+   opens instantly:
+
+   ~~~bash
+   xattr -dr com.apple.quarantine /Applications/Cortex.app
+   ~~~
+
+5. Open Cortex from Applications. (If you skipped step 4 and macOS blocks it,
+   Control-click Cortex.app and choose Open — but that still runs the one-time scan;
+   step 4 is what avoids the wait.)
 6. Complete first-run setup by connecting a memory source, reviewing memory,
    asking a cited question, then deciding on backup in Connections & Privacy.
 

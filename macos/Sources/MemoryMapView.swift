@@ -463,6 +463,15 @@ struct MemoryMapView: View {
             let neighborIDs = directNeighbors(of: selectedNodeID, in: edges)
             let hoverNeighbors = directNeighbors(of: hoveredNodeID, in: edges)
             ZStack(alignment: .bottomTrailing) {
+                // The LIVE map now carries the share card's NIGHT identity: a radial center glow off
+                // the same dark palette + the same FNV-seeded star-dust (fully deterministic, no
+                // randomness — the constellation contract). The graph edges/nodes draw on top in the
+                // same Canvas so the whole surface reads as one living night sky, like a share export.
+                Canvas { context, size in
+                    NightSky.drawDust(&context, size: size, seed: "map-dust", count: 90)
+                }
+                .allowsHitTesting(false)
+
                 Canvas { context, size in
                     drawEdges(in: &context, size: size, layout: layout, edges: edges, matched: matched)
                     drawNodes(in: &context, size: size, layout: layout, matched: matched, neighborIDs: neighborIDs, hoverNeighbors: hoverNeighbors)
@@ -499,10 +508,15 @@ struct MemoryMapView: View {
                     }
                 }
                 // One drag gesture handles BOTH node-drag and camera-pan: the first change hit-tests
-                // the start location to decide which. Pinch zoom runs simultaneously. Taps still land
-                // because the drag needs 3pt of travel before it claims the gesture.
+                // the start location to decide which. Pinch zoom runs simultaneously.
+                //
+                // Tap-vs-drag: the old 3pt threshold collided with `.onTapGesture` — a tap that drifts
+                // ≥3pt on a trackpad (very common) was claimed by the drag and never selected/deselected
+                // a node. Raising the threshold to 10pt means a normal "click that wiggles a little"
+                // still lands as a tap (SwiftUI routes it to `.onTapGesture`), while a deliberate drag
+                // to move a star or pan the sky still crosses 10pt immediately. Selection is now reliable.
                 .gesture(
-                    DragGesture(minimumDistance: 3)
+                    DragGesture(minimumDistance: 10)
                         .onChanged { value in handleDragChanged(value, size: geo.size, layout: layout) }
                         .onEnded { value in handleDragEnded(value, size: geo.size, layout: layout) }
                         .simultaneously(
@@ -526,11 +540,23 @@ struct MemoryMapView: View {
             .onChange(of: layout.identityKey) { _ in syncWorkingPositions(to: layout) }
         }
         .frame(height: canvasHeight)
-        .background(CortexDesign.panelBackground)
+        .background(
+            // The night ground: solid dark paper + an off-center radial glow, exactly the share
+            // card's treatment, so the live map and the exported card are one surface.
+            ZStack {
+                NightSky.paper
+                RadialGradient(
+                    colors: [NightSky.panel.opacity(0.9), NightSky.paper],
+                    center: .init(x: 0.28, y: 0.32),
+                    startRadius: 40,
+                    endRadius: 620
+                )
+            }
+        )
         .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
-                .stroke(CortexDesign.hairline, lineWidth: 1)
+                .stroke(NightSky.ink.opacity(0.14), lineWidth: 1)
         )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Memory map with \(mapNodes.count) points and \(mapEdges.count) connections. Pinch or use the zoom buttons to zoom, drag to pan, tap a point to see its connections.")
@@ -661,7 +687,8 @@ struct MemoryMapView: View {
                     let strength: Double = selectedNodeID != nil ? 0.85 : 0.7
                     context.stroke(path, with: .color(CortexDesign.accent.opacity(strength)), lineWidth: lineWidth)
                 } else {
-                    context.stroke(path, with: .color(CortexDesign.ink.opacity(0.05)), lineWidth: 0.8)
+                    // Receded ties on the night ground read as the faintest starlight, not black.
+                    context.stroke(path, with: .color(NightSky.ink.opacity(0.06)), lineWidth: 0.8)
                 }
                 continue
             }
@@ -671,11 +698,13 @@ struct MemoryMapView: View {
             let dim: CGFloat = dimmed ? 0.28 : 1.0
             if edge.is_bridge == true {
                 let style = StrokeStyle(lineWidth: 1.6, dash: [4, 3])
-                context.stroke(path, with: .color(CortexDesign.gold.opacity(0.85 * dim)), style: style)
+                context.stroke(path, with: .color(NightSky.gold.opacity(0.7 * dim)), style: style)
             } else {
                 let lineWidth = 0.6 + CGFloat(max(0, min(1, weight))) * 1.4
-                let color = weight >= 0.66 ? CortexDesign.gold : CortexDesign.ink
-                let opacity = (0.14 + min(0.34, weight * 0.34)) * dim
+                // Strong ties glow gold; ordinary ties are faint starlight — both in the night palette
+                // so they read on the dark ground (light ink would vanish).
+                let color = weight >= 0.66 ? NightSky.gold : NightSky.ink
+                let opacity = (0.10 + min(0.30, weight * 0.34)) * dim
                 context.stroke(path, with: .color(color.opacity(opacity)), lineWidth: lineWidth)
             }
         }
@@ -697,20 +726,36 @@ struct MemoryMapView: View {
             let isHovered = node.id == hoveredNodeID
             let isDragged = draggedNodeID == node.id
             let emphasis = nodeEmphasis(node, matched: matched, neighborIDs: neighborIDs, hoverNeighbors: hoverNeighbors)
-            let fill = MemoryMapView.color(for: node)
+            // Night palette — the map is now the dark sky, so nodes take their community/type hue
+            // from the same table the share card uses (light tokens would go dark-on-dark).
+            let fill = NightSky.color(for: node)
 
             let rect = CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
             let circle = Path(ellipseIn: rect)
 
+            // God nodes (hubs / high-centrality, radius ≥ 12) carry a PERMANENT soft halo at rest —
+            // they are the fixed stars the constellation orbits, so they glow even untouched (matches
+            // the share card's god-node glow). Its strength ramps with the node's own emphasis so a
+            // dimmed god node in focus mode doesn't blaze.
+            let isGod = layout.radius(of: node) >= 12 || node.is_hub == true
+            if isGod {
+                let restHalo = radius + 9
+                let restRect = CGRect(x: point.x - restHalo, y: point.y - restHalo, width: restHalo * 2, height: restHalo * 2)
+                let restStrength = (isSelected || isHovered || isDragged) ? 0.20 : 0.12 * emphasis + 0.04
+                context.fill(Path(ellipseIn: restRect), with: .color(fill.opacity(restStrength)))
+            }
+
+            // The interaction halo (brighter, tighter) on selection / hover / drag, over the rest halo.
             if isSelected || isHovered || isDragged {
                 let haloRadius = radius + (isSelected || isDragged ? 6 : 3)
                 let haloRect = CGRect(x: point.x - haloRadius, y: point.y - haloRadius, width: haloRadius * 2, height: haloRadius * 2)
-                context.fill(Path(ellipseIn: haloRect), with: .color(fill.opacity(isSelected || isDragged ? 0.22 : 0.14)))
+                context.fill(Path(ellipseIn: haloRect), with: .color(fill.opacity(isSelected || isDragged ? 0.24 : 0.16)))
             }
 
             let fullBright = isSelected || isHovered || isDragged
             context.fill(circle, with: .color(fill.opacity(fullBright ? 1.0 : emphasis)))
-            context.stroke(circle, with: .color(CortexDesign.panelBackground), lineWidth: 1)
+            // A hairline of the night ground separates touching stars without a bright rim.
+            context.stroke(circle, with: .color(NightSky.paper), lineWidth: 1)
         }
 
         drawLabels(in: &context, size: size, layout: layout, matched: matched, neighborIDs: neighborIDs, hoverNeighbors: hoverNeighbors, visibleRect: visibleRect)
@@ -776,7 +821,8 @@ struct MemoryMapView: View {
             // Whole-sentence labels (memories/tasks) are display-truncated; the detail panel
             // shows the full text on selection.
             let displayLabel = node.label.count > 42 ? String(node.label.prefix(40)) + "…" : node.label
-            let baseColor = isSelected ? CortexDesign.ink : CortexDesign.inkSecondary
+            // Night ink — the map is the dark sky now; light ink would vanish. Selected reads brightest.
+            let baseColor = isSelected ? NightSky.ink : NightSky.inkSecondary
             let text = Text(displayLabel)
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(baseColor.opacity(baseOpacity))
@@ -794,6 +840,12 @@ struct MemoryMapView: View {
                 continue
             }
             occupiedLabelRects.append(labelRect)
+            // A whisper of night ground behind each label so it stays legible over starlight edges
+            // (the same move the share card makes), fading with the label's own opacity.
+            context.fill(
+                Path(roundedRect: labelRect, cornerRadius: 3),
+                with: .color(NightSky.paper.opacity(0.5 * baseOpacity))
+            )
             context.draw(resolved, in: CGRect(origin: textPoint, size: textSize))
         }
     }
@@ -898,26 +950,7 @@ struct MemoryMapView: View {
     }
 
     private func legendChip(label: String, color: Color, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: CortexDesign.Space.xs) {
-                Circle()
-                    .fill(color)
-                    .frame(width: 7, height: 7)
-                Text(label)
-                    .font(CortexDesign.Typography.stamp)
-                    .kerning(0.8)
-                    .lineLimit(1)
-                    .foregroundColor(active ? CortexDesign.ink : CortexDesign.inkFaint)
-            }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(active ? color.opacity(0.14) : Color.clear)
-            .clipShape(Capsule())
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .help(active ? "Show everything" : "Spotlight \(label)")
-        .accessibilityLabel(active ? "Clear \(label) spotlight" : "Spotlight \(label)")
+        LegendKeyChip(label: label, color: color, active: active, action: action)
     }
 
     // MARK: Palette — Archive colors keyed to node type.
@@ -969,6 +1002,77 @@ struct MemoryMapView: View {
         ("Topics", CortexDesign.sealMoss),
         ("Sources", CortexDesign.inkSecondary),
     ]
+}
+
+/// The constellation's KEY — not a row of stock dots but a designed legend entry: a live domed
+/// color swatch (a small star of the cluster's own hue, with a soft halo, so it reads as a piece of
+/// the map) beside the cluster's name in the serif archive voice. Clicking spotlights that cluster;
+/// the active chip gains a wash + an embossed edge so "this is what you're looking at" is legible.
+/// Hover lifts it a hair so the whole key reads as clickable.
+private struct LegendKeyChip: View {
+    let label: String
+    let color: Color
+    let active: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: CortexDesign.Space.xs) {
+                // The live swatch: a domed star of the cluster's hue with a faint halo, so the key
+                // sample looks like a node lifted off the map rather than a flat legend dot.
+                ZStack {
+                    Circle()
+                        .fill(color.opacity(0.22))
+                        .frame(width: 14, height: 14)
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [color.opacity(0.95), color],
+                                center: .init(x: 0.35, y: 0.3),
+                                startRadius: 0,
+                                endRadius: 6
+                            )
+                        )
+                        .frame(width: 8, height: 8)
+                }
+                Text(label)
+                    // Serif cluster names — the archive's voice names the user's own worlds.
+                    .font(.system(size: 12.5, weight: active ? .semibold : .regular, design: .serif))
+                    .lineLimit(1)
+                    .foregroundColor(active ? CortexDesign.ink : CortexDesign.inkSecondary)
+            }
+            .padding(.horizontal, CortexDesign.Space.sm)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                    .fill(active ? color.opacity(0.14) : (hovering ? CortexDesign.quietBackground : Color.clear))
+            )
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+            .modifier(LegendChipEmboss(active: active))
+            .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .offset(y: hovering && !active ? -0.5 : 0)
+        .animation(CortexMotion.hover, value: hovering)
+        .onHover { hovering = $0 }
+        .help(active ? "Show everything" : "Spotlight \(label)")
+        .accessibilityLabel(active ? "Clear \(label) spotlight" : "Spotlight \(label)")
+    }
+}
+
+/// The active key chip gains a letterpress edge (the design-system emboss) so the spotlighted
+/// cluster reads as a pressed, set-in tab; inactive chips stay clean.
+private struct LegendChipEmboss: ViewModifier {
+    let active: Bool
+    func body(content: Content) -> some View {
+        if active {
+            content.embossedBorder(radius: CortexDesign.Radius.sm)
+        } else {
+            content
+        }
+    }
 }
 
 /// Legend spotlight lens: one community (analysis-colored maps) or one node type (fallback maps).
@@ -1627,6 +1731,76 @@ struct MemoryMapLayout {
     }
 }
 
+// MARK: - Night sky — the shared dark identity of the live map AND the share card.
+//
+// The constellation's night palette and its FNV-seeded star-dust, factored into one place so the
+// LIVE `MemoryMapView` canvas and the exported `ConstellationShareCard` render the SAME sky. Values
+// are fixed by hex (identical to `ConstellationShareCard.Night` / `MemoryWrappedCard.Night`): the
+// app window is pinned light and the adaptive tokens would resolve light, but the constellation must
+// always carry the night identity, so it names the dark values directly. The dust is deterministic
+// (FNV-1a over "seed-index" — the same no-randomness contract as the layout), so the sky never
+// shuffles between renders or launches.
+enum NightSky {
+    static let paper = Color(red: 0.110, green: 0.102, blue: 0.090)          // #1C1A17
+    static let panel = Color(red: 0.149, green: 0.137, blue: 0.125)          // #262320
+    static let ink = Color(red: 0.910, green: 0.890, blue: 0.851)            // #E8E3D9
+    static let inkSecondary = Color(red: 0.690, green: 0.663, blue: 0.616)   // #B0A99D
+    static let inkFaint = Color(red: 0.549, green: 0.522, blue: 0.478)       // #8C857A
+    static let accent = Color(red: 0.788, green: 0.420, blue: 0.341)         // #C96B57
+    static let gold = Color(red: 0.827, green: 0.627, blue: 0.298)           // #D3A04C
+    static let moss = Color(red: 0.494, green: 0.604, blue: 0.447)           // #7E9A72
+
+    /// Dark siblings of `MemoryMapView.communityPalette`, index-aligned so each cluster keeps the
+    /// same hue family on the night surfaces as on the (light) tokened map.
+    static let communityPalette: [Color] = [
+        accent,
+        gold,
+        moss,
+        Color(red: 0.58, green: 0.51, blue: 0.78),
+        Color(red: 0.82, green: 0.56, blue: 0.42),
+        Color(red: 0.42, green: 0.66, blue: 0.69),
+    ]
+
+    /// The night-sky color for a node: community hue when analyzed, else a type hue — the dark
+    /// counterpart of `MemoryMapView.color(for:)` so the live night map and the card agree.
+    static func color(for node: GraphNode) -> Color {
+        if let community = node.community {
+            let count = communityPalette.count
+            return communityPalette[((community % count) + count) % count]
+        }
+        switch node.type.lowercased() {
+        case "person", "people": return accent
+        case "project": return gold
+        case "topic", "theme", "concept": return moss
+        default: return inkSecondary
+        }
+    }
+
+    /// Faint deterministic star-dust (FNV-seeded, no randomness) so a young, small graph still
+    /// renders as a living night sky. Shared by the live map and the share card so both draw the
+    /// same field; `seed` distinguishes surfaces, `count` scales density to the surface size. `dust`
+    /// defaults to the night ink (white stars on the dark sky); a light surface can pass a dark ink
+    /// so the same dust reads on warm paper (the quick-panel hero).
+    static func drawDust(_ context: inout GraphicsContext, size: CGSize, seed: String, count: Int, dust: Color = NightSky.ink) {
+        guard size.width > 0, size.height > 0 else { return }
+        for index in 0..<count {
+            var hash: UInt64 = 0xcbf29ce484222325
+            for byte in "\(seed)-\(index)".utf8 {
+                hash ^= UInt64(byte)
+                hash = hash &* 0x100000001b3
+            }
+            let x = CGFloat(hash % UInt64(max(1, size.width)))
+            let y = CGFloat((hash >> 16) % UInt64(max(1, size.height)))
+            let alpha = 0.04 + Double((hash >> 32) % 90) / 1_500
+            let radius: CGFloat = (hash >> 44) % 5 == 0 ? 1.5 : 0.9
+            context.fill(
+                Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)),
+                with: .color(dust.opacity(alpha))
+            )
+        }
+    }
+}
+
 // MARK: - Constellation share card — "Spotify Wrapped for your knowledge".
 //
 // A screenshot-native, social-ratio picture of the user's REAL graph: real positions (the same
@@ -1869,23 +2043,10 @@ struct ConstellationShareCard: View {
     }
 
     /// Faint deterministic star-dust (FNV-seeded, like the layout itself — no randomness) so a
-    /// young, small graph still renders as a living night sky. The card is never blank.
+    /// young, small graph still renders as a living night sky. The card is never blank. Delegates to
+    /// the shared `NightSky.drawDust` so the live map and this card draw the SAME field.
     private func drawDust(_ context: inout GraphicsContext) {
-        for index in 0..<110 {
-            var hash: UInt64 = 0xcbf29ce484222325
-            for byte in "dust-\(index)".utf8 {
-                hash ^= UInt64(byte)
-                hash = hash &* 0x100000001b3
-            }
-            let x = CGFloat(hash % UInt64(Self.size.width))
-            let y = CGFloat((hash >> 16) % UInt64(Self.size.height))
-            let alpha = 0.04 + Double((hash >> 32) % 90) / 1_500
-            let radius: CGFloat = (hash >> 44) % 5 == 0 ? 1.5 : 0.9
-            context.fill(
-                Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)),
-                with: .color(Night.ink.opacity(alpha))
-            )
-        }
+        NightSky.drawDust(&context, size: Self.size, seed: "dust", count: 110)
     }
 
     /// Label only the most prominent nodes (largest radii — hubs and high-centrality entities),
@@ -2027,6 +2188,134 @@ private struct ShareAnchorView: NSViewRepresentable {
     }
 }
 
+// MARK: - The trophy — how a share preview is presented.
+//
+// A share card is a TROPHY, not a thumbnail: it's the one number/graph the user earned this week,
+// something to hold up. So the preview gets a physical, held-object presentation shared by both
+// share sheets (constellation + wrapped): a mono catalog stamp above, the card itself sitting on a
+// dark plinth that tilts toward the cursor with a parallax'd sheen sweeping across the glass, and a
+// wax seal below. When the render fails it becomes an honest retry state — never an infinite spinner.
+
+/// The presentation frame for a rendered share card. Drag anywhere on the card to tilt it (a subtle
+/// 3D parallax); a diagonal sheen tracks the tilt so the surface reads as glass catching light. The
+/// mono stamp above and the wax seal below frame it as a catalogued, sealed object.
+struct ConstellationTrophy: View {
+    /// The rendered card image; nil means still rendering (spinner) unless `failed`.
+    let image: NSImage?
+    /// True when the render failed — show the retry state instead of a spinner.
+    var failed: Bool = false
+    /// The mono stamp above the card ("YOUR CONSTELLATION" / "MEMORY WRAPPED").
+    let stampText: String
+    /// The wordmark inside the seal below the card.
+    var sealText: String = "Cortex"
+    /// Re-run the render.
+    let onRetry: () -> Void
+
+    /// Live drag offset while tilting, cleared (spring back) on release.
+    @GestureState private var drag: CGSize = .zero
+    /// Preview point size — the pixel grid stays 2×; this is just the on-screen frame.
+    private let cardSize = CGSize(width: 640, height: 336)
+
+    /// Tilt (deg) proportional to drag, clamped so the card never flips past a plausible hold.
+    private var tiltX: Double { Double(max(-1, min(1, -drag.height / 90))) * 6 }
+    private var tiltY: Double { Double(max(-1, min(1, drag.width / 90))) * 6 }
+
+    var body: some View {
+        VStack(spacing: CortexDesign.Space.sm) {
+            // The catalog stamp above — this object is filed, not floating.
+            Text(stampText)
+                .font(CortexDesign.Typography.stamp)
+                .kerning(1.6)
+                .foregroundColor(CortexDesign.inkFaint)
+
+            card
+                .frame(width: cardSize.width, height: cardSize.height)
+                .rotation3DEffect(.degrees(tiltX), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
+                .rotation3DEffect(.degrees(tiltY), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+                .shadow(color: CortexDesign.ink.opacity(0.18), radius: 18, y: 12)
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .updating($drag) { value, state, _ in state = value.translation }
+                )
+                .animation(CortexMotion.lift, value: drag)
+
+            // The wax seal below — the object is sealed by Cortex.
+            HStack(spacing: 7) {
+                CortexSealSurface(cornerRadius: 5)
+                    .frame(width: 12, height: 12)
+                Text("Sealed by")
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                Text(sealText)
+                    .font(CortexDesign.Typography.title)
+                    .foregroundColor(CortexDesign.ink)
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    @ViewBuilder
+    private var card: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .accessibilityLabel("Preview of your \(stampText.capitalized) card")
+                    // The sheen: a diagonal highlight that tracks the tilt, so tilting the card
+                    // sweeps light across it like glass. Parallax'd by the drag, additive-soft.
+                    .overlay(sheen)
+            } else if failed {
+                retryState
+            } else {
+                ZStack {
+                    Rectangle().fill(CortexDesign.quietBackground)
+                    ProgressView().controlSize(.small)
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(CortexDesign.hairline, lineWidth: 1)
+        )
+    }
+
+    /// The glass sheen — a soft white diagonal that slides with the tilt.
+    private var sheen: some View {
+        LinearGradient(
+            colors: [Color.white.opacity(0.14), Color.clear, Color.clear, Color.white.opacity(0.05)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        .offset(x: drag.width / 8, y: drag.height / 8)
+        .blendMode(.plusLighter)
+        .allowsHitTesting(false)
+    }
+
+    /// Honest failure state: never an endless spinner. Explains it and offers Retry.
+    private var retryState: some View {
+        ZStack {
+            Rectangle().fill(CortexDesign.quietBackground)
+            VStack(spacing: CortexDesign.Space.sm) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 26, weight: .regular))
+                    .foregroundColor(CortexDesign.accent.opacity(0.7))
+                Text("Couldn't render your card")
+                    .font(CortexDesign.Typography.title)
+                    .foregroundColor(CortexDesign.ink)
+                Text("The image didn't come through this time. Try again.")
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .multilineTextAlignment(.center)
+                CortexButton(title: "Retry", systemImage: "arrow.clockwise", role: .primary, size: .small, action: onRetry)
+                    .padding(.top, 2)
+            }
+            .padding(CortexDesign.Space.lg)
+        }
+    }
+}
+
 /// The preview sheet behind the map's share button: renders the card ONCE (2× via ImageRenderer),
 /// shows exactly the pixels that would leave the machine, and offers the three exits — the system
 /// share picker (the one primary action), copy, and save-as-PNG.
@@ -2042,6 +2331,9 @@ private struct ConstellationShareSheet: View {
     @State private var cardImage: NSImage?
     @State private var cardPNG: Data?
     @State private var copied = false
+    /// True once a render attempt failed (ImageRenderer produced no bitmap). Drives the retry state
+    /// instead of an infinite spinner with the exits stuck disabled.
+    @State private var renderFailed = false
     /// Held so the picker isn't deallocated out from under its own popover.
     @State private var activePicker: NSSharingServicePicker?
     @State private var shareAnchor = ShareAnchor()
@@ -2084,40 +2376,33 @@ private struct ConstellationShareSheet: View {
             }
         }
         .padding(CortexDesign.Space.lg)
-        .frame(minWidth: 684, minHeight: 470)
+        // Taller than the bare thumbnail: the trophy adds a mono stamp above and a wax seal below.
+        .frame(minWidth: 684, minHeight: 548)
         .background(CortexDesign.appBackground)
         .task { renderCard() }
     }
 
     @ViewBuilder
     private var preview: some View {
-        ZStack {
-            if let cardImage {
-                Image(nsImage: cardImage)
-                    .resizable()
-                    .scaledToFit()
-                    .accessibilityLabel("Preview of your constellation share card")
-            } else {
-                // The render lands in one beat; this ground only shows on the largest graphs.
-                Rectangle()
-                    .fill(CortexDesign.quietBackground)
-                ProgressView()
-                    .controlSize(.small)
-            }
-        }
-        .frame(width: 640, height: 336)
-        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
-                .stroke(CortexDesign.hairline, lineWidth: 1)
+        ConstellationTrophy(
+            image: cardImage,
+            failed: renderFailed,
+            stampText: "YOUR CONSTELLATION",
+            sealText: "Cortex",
+            onRetry: { Task { @MainActor in renderCard() } }
         )
     }
 
     /// Build the model, lay the capped graph out at card scale, and rasterize at 2× — all of it
     /// deferred to sheet-open, so the live map never pays a cost for the card's existence.
+    ///
+    /// Render can fail (ImageRenderer returns no bitmap under memory pressure / an off-screen GPU
+    /// context): instead of returning silently and leaving Copy/Save/Share disabled forever behind
+    /// an endless spinner, it flips `renderFailed` so the preview offers a Retry.
     @MainActor
     private func renderCard() {
         guard cardImage == nil else { return }
+        renderFailed = false
         let model = ConstellationShareCardModel.build(
             nodes: nodes,
             edges: edges,
@@ -2127,7 +2412,10 @@ private struct ConstellationShareSheet: View {
         )
         let renderer = ImageRenderer(content: ConstellationShareCard(model: model))
         renderer.scale = 2
-        guard let cgImage = renderer.cgImage else { return }
+        guard let cgImage = renderer.cgImage else {
+            renderFailed = true
+            return
+        }
         let rep = NSBitmapImageRep(cgImage: cgImage)
         // Point size stays 1200×630 while the pixel grid is 2400×1260 — crisp on retina, correct
         // dimensions everywhere else.
