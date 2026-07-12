@@ -3408,6 +3408,9 @@ final class AppState: ObservableObject {
     @Published var onboardingComplete: Bool = UserDefaults.standard.bool(forKey: "onboardingComplete.v1")
     @Published var showOnboarding: Bool = false
     @Published var showConnectionsPrivacy: Bool = false
+    /// "What the AIs think of you" — the import-diff surface (paste a vendor memory export, see it
+    /// checked against the Cortex Mirror). A standalone sheet, independent of the other two above.
+    @Published var showImportDiff: Bool = false
     // Onboarding and Connections are separate sheets on the same presenter — only one can show at
     // a time. These coordinate handing off from one to the other (see openConnectionsPrivacy).
     private var pendingOpenConnectionsAfterOnboarding = false
@@ -5132,6 +5135,49 @@ final class AppState: ObservableObject {
             return
         }
         showConnectionsPrivacy = true
+    }
+
+    /// Present "What the AIs think of you" — the import-diff surface. Gated the same way as
+    /// Connections: it reads account-gated memory, so it can't be shown while the sign-in wall is up.
+    func openImportDiff() {
+        guard !requiresSignIn else {
+            status = "Sign in to Doppl to compare an AI export against your memory."
+            return
+        }
+        showImportDiff = true
+    }
+
+    /// Compare a pasted/loaded vendor memory export against the Cortex Mirror (POST /v1/import-diff).
+    /// Best-effort: on any failure this returns nil and sets a plain status so the view can show a
+    /// recoverable error — it never crashes the surface. `vendor` is an optional hint; when nil the
+    /// server sniffs the vendor from the export itself.
+    func importDiff(export: String, vendor: String?) async -> ImportDiffResult? {
+        let trimmed = export.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        do {
+            var body: [String: Any] = ["export": trimmed]
+            if let vendor, !vendor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                body["vendor"] = vendor
+            }
+            let data = try await request(path: "/v1/import-diff", method: "POST", body: body)
+            return try JSONDecoder().decode(ImportDiffResult.self, from: data)
+        } catch {
+            status = CortexRecoveryText.failureStatus("Compare", error: error)
+            return nil
+        }
+    }
+
+    /// "Add to Cortex" from a MISSING import-diff fact. Routes through the EXISTING capture path
+    /// (POST /v1/captures via `capture`) — the vendor's fact becomes a first-person memory sourced
+    /// as an AI-export import. Returns whether the capture succeeded so the row can confirm.
+    func addImportDiffFact(text: String, vendorLabel: String) async -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let label = vendorLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = String(trimmed.prefix(60))
+        // A stable, honest source id: the fact came from an AI memory export, not a live connector.
+        let source = label.isEmpty ? "ai-export" : "\(label.lowercased())-export"
+        return await capture(text: trimmed, source: source, title: title)
     }
 
     /// Called when the onboarding sheet finishes dismissing. If it was dismissed to hand off to
@@ -8728,6 +8774,19 @@ struct CortexView: View {
         }
         .sheet(isPresented: $state.showConnectionsPrivacy, onDismiss: { state.connectionsSheetDismissed() }) {
             ConnectionsPrivacySheet(state: state)
+                .preferredColorScheme(.light)
+                .accentColor(CortexDesign.accent)
+                .frame(
+                    minWidth: 560,
+                    idealWidth: 780,
+                    maxWidth: 840,
+                    minHeight: 560,
+                    idealHeight: 680,
+                    maxHeight: 720
+                )
+        }
+        .sheet(isPresented: $state.showImportDiff) {
+            ImportDiffView(state: state, onClose: { state.showImportDiff = false })
                 .preferredColorScheme(.light)
                 .accentColor(CortexDesign.accent)
                 .frame(

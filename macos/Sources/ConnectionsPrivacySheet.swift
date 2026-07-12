@@ -169,6 +169,7 @@ private struct ConnectionsPrivacyOverview: View {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
                 ConnectionsObsidianSection(state: state)
                 AIChatsImportCard(state: state)
+                ImportDiffEntryCard(state: state)
                 otherSourceConnections
                 if notesHealth.isNeedsAttention
                     || state.sourceAccounts.contains(where: { $0.disconnected_at == nil && $0.needsAttention }) {
@@ -1123,6 +1124,48 @@ private struct AIChatsImportCard: View {
             .underline()
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// A quiet entry, right beside the ChatGPT/Claude importer, into "What the AIs think of you" — the
+/// import-diff surface. It doesn't import; it opens the compare sheet where a vendor memory export
+/// is checked, with citations, against the Cortex Mirror. One tap, one job.
+private struct ImportDiffEntryCard: View {
+    @ObservedObject var state: AppState
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            state.openImportDiff()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "sparkle.magnifyingglass")
+                    .font(.title3)
+                    .foregroundColor(CortexDesign.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("See what the AIs think of you")
+                        .font(.headline)
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Compare a ChatGPT, Claude, or Gemini memory export against your Cortex — with citations.")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(CortexDesign.inkSecondary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).fill(hovering ? CortexDesign.accentSoft.opacity(0.5) : connectionsPanelBackground))
+            .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.hairline, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Open “What the AIs think of you” — compare an AI memory export against your Cortex.")
     }
 }
 
