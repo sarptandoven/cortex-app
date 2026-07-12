@@ -710,6 +710,15 @@ struct CortexCloudSection: View {
     @State private var showDeleteConfirm = false
     @State private var deletePassword = ""
 
+    // Zero-access ("Own your encryption key") local UI state. The key + crypto live entirely in
+    // CortexE2EE (Keychain); these only drive the disclosure / force-save-once / restore surfaces.
+    @State private var revealedRecoveryCode: String = ""     // non-empty while the code sheet is shown
+    @State private var recoverySavedConfirmed = false        // gates the "I saved it" dismissal
+    @State private var isForcedFirstReveal = false           // true = just enabled, must confirm-save
+    @State private var showRestoreField = false
+    @State private var restoreCodeInput = ""
+    @State private var restoreError = ""
+
     private static var defaultHostedURL: String { AppState.defaultHostedURL }
 
     private var isSignedIn: Bool { state.isSignedIn }
@@ -848,6 +857,13 @@ struct CortexCloudSection: View {
             }
             pushSyncStatusView
                 .fixedSize(horizontal: false, vertical: true)
+
+            Divider().padding(.vertical, 2)
+
+            zeroAccessSection
+
+            Divider().padding(.vertical, 2)
+
             Button {
                 state.signOutOfCloud()
             } label: {
@@ -893,6 +909,184 @@ struct CortexCloudSection: View {
                 .disabled(state.cloudAuthBusy)
             }
         }
+    }
+
+    // MARK: Zero-access ("Own your encryption key")
+
+    /// The zero-access opt-in surface, shown only in the signed-in account section. Three states:
+    ///   (a) the recovery code is being FORCE-shown once right after enabling (must confirm "I saved
+    ///       it" before it can be dismissed — no key backup risks permanent data loss);
+    ///   (b) OFF — a plain-English explanation + an "Own your encryption key" toggle to enable, plus
+    ///       a "Restore from recovery code" path for a device that already has an encrypted account;
+    ///   (c) ON — a confirmation, "Show recovery code" (re-reveal, no confirm gate), and a toggle to
+    ///       turn it back off (existing encrypted memory stays readable).
+    @ViewBuilder private var zeroAccessSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: state.zeroAccessEnabled ? "lock.shield.fill" : "lock.shield")
+                    .foregroundColor(state.zeroAccessEnabled ? .green : .secondary)
+                Text("Zero-access encryption")
+                    .font(.subheadline)
+            }
+
+            if !revealedRecoveryCode.isEmpty {
+                recoveryCodeReveal
+            } else if state.zeroAccessEnabled {
+                zeroAccessEnabledControls
+            } else {
+                zeroAccessDisabledControls
+            }
+        }
+    }
+
+    private var zeroAccessDisabledControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Zero-access encrypts your synced memory with a key only on your devices — Cortex cannot read it. Save your recovery code; it's the ONLY way to restore on another device.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                enableZeroAccess()
+            } label: {
+                Label("Own your encryption key", systemImage: "key.horizontal")
+            }
+            .disabled(state.cloudAuthBusy)
+
+            if showRestoreField {
+                restoreCodeEntry
+            } else {
+                Button {
+                    showRestoreField = true
+                    restoreError = ""
+                    restoreCodeInput = ""
+                } label: {
+                    Label("Restore from recovery code…", systemImage: "arrow.down.doc")
+                }
+                .font(.caption)
+                .disabled(state.cloudAuthBusy)
+            }
+        }
+    }
+
+    private var zeroAccessEnabledControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("On. Cortex cannot read your memory — it's encrypted with a key only on your devices before it syncs. Keep your recovery code safe; it's the only way to restore on another device.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button {
+                    if let code = state.currentRecoveryCode() {
+                        isForcedFirstReveal = false
+                        recoverySavedConfirmed = true   // re-reveal has no forced-save gate
+                        revealedRecoveryCode = code
+                    }
+                } label: {
+                    Label("Show recovery code", systemImage: "eye")
+                }
+                .disabled(state.cloudAuthBusy)
+                Button {
+                    state.disableZeroAccess()
+                } label: {
+                    Label("Turn off", systemImage: "lock.open")
+                }
+                .disabled(state.cloudAuthBusy)
+            }
+        }
+    }
+
+    /// The force-save-once reveal. Enabling zero-access without saving the code risks PERMANENT data
+    /// loss, so the code cannot be dismissed until the user confirms they saved it (first reveal).
+    private var recoveryCodeReveal: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if isForcedFirstReveal {
+                Text("Save this recovery code now. It is the ONLY way to restore your encrypted memory on another Mac or if you reinstall — Cortex cannot recover it for you.")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Your recovery code. Store it somewhere safe (a password manager). Anyone with this code can read your synced memory.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(revealedRecoveryCode)
+                .font(.system(.body, design: .monospaced))
+                .textSelection(.enabled)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.08)))
+            HStack(spacing: 8) {
+                Button {
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.setString(revealedRecoveryCode, forType: .string)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                if isForcedFirstReveal {
+                    Toggle("I saved my recovery code", isOn: $recoverySavedConfirmed)
+                        .font(.caption)
+                }
+                Spacer()
+                Button {
+                    revealedRecoveryCode = ""
+                    isForcedFirstReveal = false
+                    recoverySavedConfirmed = false
+                } label: {
+                    Text("Done")
+                }
+                .disabled(isForcedFirstReveal && !recoverySavedConfirmed)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.5), lineWidth: 1))
+    }
+
+    private var restoreCodeEntry: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Paste the recovery code from your other device to decrypt this account's memory on this Mac.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("XXXX-XXXX-…", text: $restoreCodeInput)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+                .disableAutocorrection(true)
+            if !restoreError.isEmpty {
+                Text(restoreError)
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                Button {
+                    if let err = state.restoreZeroAccessFromRecoveryCode(restoreCodeInput) {
+                        restoreError = err
+                    } else {
+                        restoreError = ""
+                        restoreCodeInput = ""
+                        showRestoreField = false
+                    }
+                } label: {
+                    Label("Restore", systemImage: "checkmark.shield")
+                }
+                .disabled(restoreCodeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.cloudAuthBusy)
+                Button("Cancel") {
+                    showRestoreField = false
+                    restoreCodeInput = ""
+                    restoreError = ""
+                }
+            }
+        }
+    }
+
+    /// Enable zero-access and FORCE the one-time recovery-code reveal (must confirm "I saved it").
+    private func enableZeroAccess() {
+        guard let code = state.enableZeroAccess() else { return }
+        isForcedFirstReveal = true
+        recoverySavedConfirmed = false
+        revealedRecoveryCode = code
     }
 
     private var signInForm: some View {

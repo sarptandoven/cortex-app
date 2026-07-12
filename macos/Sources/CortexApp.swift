@@ -3292,6 +3292,9 @@ final class AppState: ObservableObject {
     @Published var pushPendingCount: Int = 0
     var pushSyncTask: Task<Void, Never>?
     var pushSyncInFlight = false
+    // Zero-access (E2EE) opt-in. Mirrors CortexE2EE.isEnabled (UserDefaults) so SwiftUI can bind to
+    // it; the crypto/key material itself lives ONLY in CortexE2EE (+ the Keychain), never here.
+    @Published var zeroAccessEnabled: Bool = CortexE2EE.isEnabled
     @Published var cloudAuthBusy: Bool = false
     @Published var cloudAuthMessage: String = ""
     /// Social sign-in providers the hosted backend actually has configured (GET /v1/auth/providers).
@@ -8385,6 +8388,67 @@ final class AppState: ObservableObject {
     deinit {
         obsidianAutoSyncTask?.cancel()
         directConnectorAutoSyncTask?.cancel()
+    }
+}
+
+// MARK: - Zero-access (E2EE) AppState wiring
+//
+// Thin bindings between the SwiftUI "Own your encryption key" surface (CortexCloudAuth.swift) and
+// the crypto core (CortexE2EE.swift). No key material ever lives on AppState; these methods only
+// drive the opt-in state + surface the recovery code the UI must force the user to save. All are
+// @MainActor (AppState is) so @Published mutations are safe.
+extension AppState {
+
+    /// Enable zero-access: generate the on-device key if none exists, flip the opt-in, and hand the
+    /// UI back the recovery code to force-show ONCE (it is the only way to restore on another
+    /// device — losing it without a copy means the encrypted sync is unrecoverable). Returns nil if
+    /// something went wrong (no key could be produced), in which case the toggle stays OFF and the
+    /// plaintext path is untouched.
+    func enableZeroAccess() -> String? {
+        CortexE2EE.generateKeyIfNeeded()
+        guard CortexE2EE.setEnabled(true) else {
+            zeroAccessEnabled = false
+            return nil
+        }
+        zeroAccessEnabled = true
+        let code = try? CortexE2EE.recoveryCode()
+        // A fresh key already synced captures encrypted-from-now-on: nudge a push so the toggle
+        // takes effect promptly instead of waiting for the 5-minute tick.
+        Task { await pushSyncNudge() }
+        return code
+    }
+
+    /// Disable zero-access. The key is DELIBERATELY LEFT IN THE KEYCHAIN so anything already synced
+    /// encrypted can still be pulled + decrypted; only new pushes revert to plaintext. (Destroying
+    /// the key here would strand every already-encrypted capture — never do it on a plain toggle-off.)
+    func disableZeroAccess() {
+        CortexE2EE.setEnabled(false)
+        zeroAccessEnabled = false
+    }
+
+    /// The current recovery code (for the "Show recovery code" action), or nil if no key exists.
+    func currentRecoveryCode() -> String? {
+        try? CortexE2EE.recoveryCode()
+    }
+
+    /// Whether an on-device key exists at all (drives the UI between "enable" and "restore/show").
+    var hasZeroAccessKey: Bool { CortexE2EE.hasKey }
+
+    /// Restore the key from a recovery code transcribed from another device, then turn zero-access on
+    /// so pulls can decrypt. Returns nil on success, or a human-readable error string on failure
+    /// (invalid/mistyped code) — the key is only written when the code validates + checksums.
+    func restoreZeroAccessFromRecoveryCode(_ code: String) -> String? {
+        do {
+            try CortexE2EE.importRecoveryCode(code)
+        } catch {
+            return (error as? CortexE2EEError)?.errorDescription
+                ?? "That recovery code is not valid."
+        }
+        CortexE2EE.setEnabled(true)
+        zeroAccessEnabled = true
+        // A restored key unlocks previously-undecryptable pulled items: kick a pull to bring them in.
+        Task { await pullSyncNudge() }
+        return nil
     }
 }
 

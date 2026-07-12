@@ -61,14 +61,22 @@ keyring's legacy-plaintext sniff. Requires the raw-content read-site audit + mov
 hosted `raw_text LIKE` search onto derived/tokenized fields (or accepting local-only
 search). Upgrades "plaintext on disk" → "encrypted at rest with a per-user key."
 
-**Slice 2 — The client-held-key seam ("Own your key" / zero-access).**
-Add `'recovery'` (client-generated kit, shown once) and `'passphrase'` (argon2id-derived)
-wraps of the same DEK: client obtains the DEK over TLS, wraps it under a client-derived
-key, server stores the extra wrap row but not the wrapping key. "Download your recovery
-kit" in the macOS account UI (CryptoKit + Keychain). **Zero-access mode** = drop the
-`'service'` wrap → the server can no longer read that user's content; retrieval is
-local-only (already true for the app). This makes "we structurally cannot read your
-memory" TRUE for opt-in users — the strong version of the ownership claim.
+**Slice 2 — SHIPPED (opt-in zero-access, client-held key).**
+Rather than the DEK-rewrap route, zero-access shipped as a cleaner **additive blind-relay**
+(safer than encrypting `raw_text` in place): the macOS client holds its own 256-bit key
+(CryptoKit, Keychain, `ThisDeviceOnly`), and when the user turns on zero-access it encrypts
+each capture into a `CXEC1` blob (AES-256-GCM, AAD = capture id) before push. The hosted
+store keeps only the ciphertext (`captures.encrypted_payload`) — it runs **no extraction**,
+persists **no plaintext** (`raw_text = "[encrypted]"`), and cannot search it. The pulling
+device decrypts locally. The key never leaves the device; a Crockford-Base32 **recovery
+code** (32 bytes + CRC-8) is the only escrow, shown once with a forced "I saved it" gate.
+`scripts/cortex_decrypt.py cxec1 --recovery-code …` decrypts it offline — so "we cannot
+read your memory, and you can prove it" is structurally true for opt-in users. An
+adversarial crypto review gated the ship (fixed: prior-plaintext derivatives are now purged
+when a capture is converted to encrypted, so nothing readable survives behind the
+ciphertext; `enc_meta` is size-bounded). Files: `macos/Sources/CortexE2EE.swift`,
+`CortexPushSync/CortexPullSync/CortexCloudAuth`, backend blind-relay in `storage.py`/
+`main.py`/`standalone_server.py`, `models.py`, `docs/CXE1_WIRE_FORMAT.md` §CXEC1.
 
 **Slice 3 — Purge/tombstone propagation** so a local forget removes the hosted ciphertext
 and reaches other devices (crypto-shred already makes per-user deletion final).

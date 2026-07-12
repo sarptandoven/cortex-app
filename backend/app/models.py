@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 MemoryKind = Literal["claim", "decision", "event", "preference", "observation", "action", "question", "summary", "style", "negative", "procedure"]
@@ -42,6 +43,13 @@ class CaptureChangeItem(BaseModel):
     # Pull sync (trust passthrough): the capture's review decision on THIS store, so a second
     # device can mirror an approval the user already granted instead of re-queuing it for Review.
     review_status: str | None = None
+    # Zero-access (E2EE) blind relay: for an encrypted capture these carry the client's ciphertext
+    # (base64) + the non-secret decrypt hint so a pulling device can decrypt LOCALLY; the server
+    # never held the key. Null for plaintext captures (the common path), where `content` is the raw
+    # text as today. All-optional + snake_case so the existing Swift Codable decoders (which ignore
+    # null/unknown keys) keep decoding unchanged.
+    encrypted_payload: str | None = None
+    enc_meta: dict[str, Any] | None = None
 
 
 class CaptureChangePage(BaseModel):
@@ -53,7 +61,10 @@ class CaptureChangePage(BaseModel):
 
 class SyncIngestItem(BaseModel):
     client_capture_id: str = Field(..., min_length=1, max_length=80)
-    content: str = Field(..., min_length=1, max_length=200_000)
+    # `content` is the plaintext for a normal capture. For a ZERO-ACCESS (E2EE) capture the client
+    # sends `encrypted_payload` instead and there is no server-side plaintext, so `content` is
+    # optional in that case (see the model_validator below); it defaults to "" and is ignored.
+    content: str = Field(default="", max_length=200_000)
     source: str = Field(default="macos", max_length=80)
     source_url: str | None = Field(default=None, max_length=500)
     title: str | None = Field(default=None, max_length=200)
@@ -62,6 +73,30 @@ class SyncIngestItem(BaseModel):
     # granted, so a capture approved on Mac A doesn't land review-pending on Mac B. Bounded to the
     # two mirrorable states; anything else is a validation error. Absent -> normal review flow.
     review_status: Literal["approved", "pending"] | None = None
+    # Zero-access (E2EE) blind relay (ADDITIVE, opt-in). When present the CLIENT has encrypted the
+    # capture and holds the key; the server stores this ciphertext verbatim and NEVER derives any
+    # memory/task/entity/embedding from it (there is no plaintext server-side). `encrypted_payload`
+    # is the client's CXE1 blob as base64; `enc_meta` is the non-secret decrypt hint
+    # {alg, nonce_b64, key_id, aad_context} — NEVER any key material. Absent -> today's plaintext
+    # path, byte-for-byte unchanged.
+    encrypted_payload: str | None = Field(default=None, max_length=2_000_000)
+    enc_meta: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _require_content_or_ciphertext(self) -> "SyncIngestItem":
+        # A plaintext item MUST carry non-empty content (preserving the old min_length=1 contract);
+        # a zero-access item MUST carry ciphertext instead. Exactly one shape is required.
+        if self.encrypted_payload is not None:
+            if not str(self.encrypted_payload).strip():
+                raise ValueError("encrypted_payload must be non-empty base64 when present")
+            # enc_meta is a TINY non-secret hint ({alg, nonce_b64, key_id, aad_context}); bound it
+            # so a caller can't store an oversize blob that inflates the DB and amplifies every
+            # subsequent pull (encrypted_payload is capped above; keep enc_meta symmetric).
+            if self.enc_meta is not None and len(json.dumps(self.enc_meta)) > 4_096:
+                raise ValueError("enc_meta is too large (max 4096 bytes serialized)")
+        elif not str(self.content or "").strip():
+            raise ValueError("content is required when encrypted_payload is absent")
+        return self
 
 
 class SyncIngestRequest(BaseModel):

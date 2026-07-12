@@ -2936,6 +2936,7 @@ class CortexStore:
         # production path constructs the store after init_db, so all memories reads/writes
         # below can rely on the column existing.
         self._ensure_memory_occurrences_column()
+        self._ensure_encrypted_capture_columns()
         self._ensure_provenance_substrate()
         self._ensure_event_fingerprints()
         self._ensure_belief_snapshot_search_index()
@@ -2951,6 +2952,36 @@ class CortexStore:
                 # open will converge, and nothing can touch memories before then.
                 if "duplicate column name" not in message and "no such table" not in message:
                     raise
+
+    def _ensure_encrypted_capture_columns(self) -> None:
+        """Additive zero-access (E2EE) sync columns on `captures`, migrated in place.
+
+        Same duplicate-column-tolerant ALTER-ADD-COLUMN mechanism as
+        database.MIGRATIONS / _ensure_memory_occurrences_column, so it is idempotent and
+        safe to re-run on a live DB. Both columns are nullable and NULL for every existing
+        (plaintext) capture, so the plaintext path is unchanged.
+
+        `encrypted_payload` (BLOB) holds the CLIENT's ciphertext (a CXE1 blob the server
+        cannot read — the key never leaves the device). `enc_meta` (TEXT) holds the JSON
+        decrypt hint {alg, nonce_b64, key_id, aad_context} — NEVER any key material — so a
+        pulling device can decrypt locally. A capture with `encrypted_payload` set is a
+        blind relay row: its `raw_text` is a fixed non-sensitive placeholder and it derives
+        NO server-side memories/tasks/entities/embeddings.
+        """
+        for statement in (
+            "ALTER TABLE captures ADD COLUMN encrypted_payload BLOB",
+            "ALTER TABLE captures ADD COLUMN enc_meta TEXT",
+        ):
+            with connect(self.db_path) as conn:
+                try:
+                    conn.execute(statement)
+                except sqlite3.OperationalError as exc:
+                    message = str(exc).lower()
+                    # "duplicate column name" -> already migrated (idempotent re-run).
+                    # "no such table" -> brand-new path before init_db; init_db + the next
+                    # store open converges, and nothing can touch captures before then.
+                    if "duplicate column name" not in message and "no such table" not in message:
+                        raise
 
     def _ensure_event_fingerprints(self) -> None:
         """Backfill the derived per-event hash once for legacy databases.
@@ -8819,32 +8850,57 @@ class CortexStore:
                 # NEVER push a capture the user REJECTED (archived) in Review to the cloud — that
                 # would sync raw content the user explicitly chose to forget, violating the privacy
                 # promise. Archived rows are skipped; the rowid cursor still advances past them.
-                "SELECT rowid AS seq, id, source, source_url, title, raw_text, captured_at, review_status "
+                "SELECT rowid AS seq, id, source, source_url, title, raw_text, captured_at, review_status, "
+                "encrypted_payload, enc_meta "
                 "FROM captures WHERE user_id = ? AND rowid > ? AND review_status != 'archived' "
                 "ORDER BY rowid ASC LIMIT ?",
                 (user_id, after, limit + 1),
             ).fetchall()
         has_more = len(rows) > limit
         rows = rows[:limit]
-        items = [
-            {
-                "seq": int(row["seq"]),
-                "client_capture_id": row["id"],
-                "content": row["raw_text"],
-                "source": row["source"],
-                "source_url": row["source_url"],
-                "title": row["title"],
-                "captured_at": row["captured_at"],
-                # ADDITIVE (pull sync trust passthrough): the review decision this store holds, so
-                # a second device can mirror an approval instead of re-queuing the capture for
-                # Review. Existing consumers are unaffected: the push worker's Codable struct
-                # (CortexPushSync.swift PushCaptureItem) ignores unknown JSON keys.
-                "review_status": row["review_status"],
-            }
-            for row in rows
-        ]
+        items = [self._capture_change_item_from_row(row) for row in rows]
         next_seq = items[-1]["seq"] if items else after
         return {"items": items, "next_seq": next_seq, "has_more": has_more}
+
+    @staticmethod
+    def _capture_change_item_from_row(row) -> dict[str, Any]:
+        """Shape one capture-feed item, additively carrying the zero-access (E2EE) fields.
+
+        For a PLAINTEXT capture, `encrypted_payload`/`enc_meta` are NULL and `content` is the
+        raw text exactly as today. For a ZERO-ACCESS capture, `content` is the fixed
+        non-sensitive placeholder held server-side (there is no plaintext), `encrypted_payload`
+        is the client's ciphertext re-encoded base64 so it round-trips byte-for-byte through
+        JSON, and `enc_meta` is the parsed decrypt-hint JSON — enough for the pulling device to
+        decrypt locally, never any key material. All added keys are snake_case + nullable, so
+        the existing Swift Codable decoders (which ignore null/unknown keys) are unaffected."""
+        keys = set(row.keys())
+        encrypted_payload_b64 = None
+        enc_meta = None
+        if "encrypted_payload" in keys and row["encrypted_payload"] is not None:
+            encrypted_payload_b64 = base64.b64encode(bytes(row["encrypted_payload"])).decode("ascii")
+        if "enc_meta" in keys and row["enc_meta"]:
+            try:
+                enc_meta = json.loads(row["enc_meta"])
+            except (ValueError, TypeError):
+                enc_meta = None
+        return {
+            "seq": int(row["seq"]),
+            "client_capture_id": row["id"],
+            "content": row["raw_text"],
+            "source": row["source"],
+            "source_url": row["source_url"],
+            "title": row["title"],
+            "captured_at": row["captured_at"],
+            # ADDITIVE (pull sync trust passthrough): the review decision this store holds, so
+            # a second device can mirror an approval instead of re-queuing the capture for
+            # Review. Existing consumers are unaffected: the push worker's Codable struct
+            # (CortexPushSync.swift PushCaptureItem) ignores unknown JSON keys.
+            "review_status": row["review_status"],
+            # ADDITIVE (zero-access E2EE): the ciphertext + decrypt hint for a blind-relay
+            # capture; both null for plaintext captures (the common path, unchanged).
+            "encrypted_payload": encrypted_payload_b64,
+            "enc_meta": enc_meta,
+        }
 
     def source_policy_requires_review(self, user_id: str, source: str) -> bool:
         """True when a CONNECTED source account for `source` carries a review-gating policy
@@ -10280,6 +10336,175 @@ class CortexStore:
             "tasks": tasks,
             "entities": entities,
             "graph": {"nodes": self.graph(user_id, limit=80)["nodes"], "edges": edges},
+        }
+
+    # Non-sensitive placeholder stored in `raw_text` for a zero-access (E2EE) capture. There is
+    # NO plaintext server-side, so the searchable text column holds this fixed marker — the hosted
+    # `raw_text LIKE` search simply never matches it (by design: blind-relay content is not
+    # server-searchable). NOT NULL on raw_text is satisfied without ever persisting plaintext.
+    ENCRYPTED_CAPTURE_PLACEHOLDER = "[encrypted]"
+
+    def save_encrypted_capture(
+        self,
+        *,
+        user_id: str,
+        client_capture_id: str,
+        encrypted_payload: bytes,
+        enc_meta: dict[str, Any] | None,
+        source: str,
+        captured_at: str | None = None,
+        auto_approve: bool = False,
+        force_review: bool = False,
+    ) -> dict[str, Any]:
+        """Blind-relay store for a zero-access (E2EE) synced capture.
+
+        The CLIENT holds the key and encrypts before push; the server receives only ciphertext
+        (`encrypted_payload`, a CXE1 blob it cannot read) plus a non-secret decrypt hint
+        (`enc_meta`). This path is a deliberate structural dead-end for server-side content:
+
+          * It stores the ciphertext + hint and a fixed non-sensitive placeholder in `raw_text`
+            (title/source_url stay None) — the plaintext is NEVER persisted anywhere server-side
+            (there is none to persist).
+          * It does NOT call extract_context and derives ZERO memories / tasks / entities /
+            embeddings — a zero-access capture produces no server-side searchable content by
+            design. The hosted `raw_text LIKE` search never matches the placeholder.
+          * It is idempotent via the client's stable capture id (ON CONFLICT(id) DO UPDATE), with
+            the SAME cross-user PK-hijack guard save_capture applies: a client id already owned by
+            ANOTHER user is refused and a fresh per-user id is minted instead.
+          * review_status honors the same approved/pending passthrough semantics as the plaintext
+            path (auto_approve fast-tracks; force_review pins pending); an unchanged re-apply
+            preserves the existing local review decision.
+
+        Returns the same {capture_id, ...} envelope shape as save_capture, with empty
+        memories/tasks/entities (there is nothing derivable server-side)."""
+        if not isinstance(encrypted_payload, (bytes, bytearray)) or not encrypted_payload:
+            raise ValueError("encrypted_payload is required")
+        payload = bytes(encrypted_payload)
+        captured_at = captured_at or now_iso()
+        override_id = str(client_capture_id or "").strip()
+        override_ok = False
+        if override_id.startswith("cap_"):
+            candidate = override_id[:80]
+            with connect(self.db_path) as _guard_conn:
+                _owner = _guard_conn.execute("SELECT user_id FROM captures WHERE id = ?", (candidate,)).fetchone()
+            # SECURITY (identical to save_capture): the captures PK is id-only, so a client-supplied
+            # id that already belongs to ANOTHER user must never be honored — accept it only when
+            # new or already this user's; otherwise mint a fresh per-user deterministic id.
+            override_ok = _owner is None or _owner["user_id"] == user_id
+        if override_ok:
+            capture_id = override_id[:80]
+        else:
+            capture_id = stable_id("cap_", user_id + source + captured_at + payload[:120].hex())
+        # A synced capture is its own provenance (the record itself is retrievable); mirror the
+        # cite_capture_provenance=True path save_capture takes for sync ingests.
+        source_url = f"cortex-capture://{capture_id}"
+        # The raw_hash covers the CIPHERTEXT, so a re-push of the SAME ciphertext is a no-op upsert
+        # (idempotent) while a genuinely new ciphertext for the same id is treated as a replacement.
+        raw_hash = stable_id("", payload.hex())
+        meta_json = json.dumps(enc_meta) if isinstance(enc_meta, dict) else None
+        placeholder = self.ENCRYPTED_CAPTURE_PLACEHOLDER
+
+        with connect(self.db_path) as conn:
+            user_settings = self._settings(conn, user_id)
+            review_status = "approved" if (auto_approve or not user_settings["review_new_captures"]) else "pending"
+            if force_review:
+                review_status = "pending"
+            approved_at = None if review_status == "pending" else captured_at
+            existing_capture = conn.execute(
+                "SELECT id, raw_hash, review_status, approved_at FROM captures WHERE user_id = ? AND id = ?",
+                (user_id, capture_id),
+            ).fetchone()
+            if existing_capture and existing_capture["raw_hash"] == raw_hash and existing_capture["review_status"] != "archived":
+                # Unchanged ciphertext re-apply: preserve the review decision already made (a
+                # re-pushed batch can never escalate/reset it), matching save_capture's semantics.
+                review_status = existing_capture["review_status"]
+                approved_at = existing_capture["approved_at"]
+            elif existing_capture and existing_capture["raw_hash"] != raw_hash:
+                # SECURITY (zero-access integrity): this capture id previously held DIFFERENT
+                # content — most dangerously, a PLAINTEXT version whose memories/tasks/entities
+                # + memory_fts rows were derived and indexed server-side. Converting it to
+                # encrypted overwrites raw_text with the placeholder but would otherwise leave
+                # those derivatives intact, so the server would still hold and full-text-search
+                # the plaintext of a capture the user just designated zero-access. Purge the
+                # derivatives first, exactly as save_capture does on a hash change, so nothing
+                # readable survives behind the ciphertext.
+                self._purge_capture_derivatives_in_conn(conn, user_id, capture_id)
+            conn.execute(
+                """
+                INSERT INTO captures
+                (id, user_id, import_id, source, source_url, source_account_id, author_principal_id, external_id, title, raw_text, raw_hash, summary, review_status, approved_at, captured_at, encrypted_payload, enc_meta)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  user_id = captures.user_id,
+                  source = excluded.source,
+                  source_url = excluded.source_url,
+                  title = excluded.title,
+                  raw_text = excluded.raw_text,
+                  raw_hash = excluded.raw_hash,
+                  review_status = excluded.review_status,
+                  approved_at = excluded.approved_at,
+                  captured_at = excluded.captured_at,
+                  encrypted_payload = excluded.encrypted_payload,
+                  enc_meta = excluded.enc_meta
+                """,
+                (
+                    capture_id,
+                    user_id,
+                    None,          # import_id
+                    source,
+                    source_url,
+                    None,          # source_account_id
+                    "",            # author_principal_id (NOT NULL DEFAULT '')
+                    None,          # external_id
+                    None,          # title — NEVER the plaintext (there is none server-side)
+                    placeholder,   # raw_text — fixed non-sensitive placeholder, never plaintext
+                    raw_hash,
+                    "",            # summary — no server-side extraction, so no summary
+                    review_status,
+                    approved_at,
+                    captured_at,
+                    payload,       # encrypted_payload — the client's opaque ciphertext
+                    meta_json,     # enc_meta — non-secret decrypt hint JSON (NEVER a key)
+                ),
+            )
+            self._event(
+                conn,
+                user_id,
+                capture_id,
+                "capture",
+                "created",
+                {"source": source, "encrypted": True},
+            )
+            # DELIBERATELY no extraction, no _save_memory/_save_task/_save_entity, no edges, no
+            # embeddings — a zero-access capture yields zero server-side searchable content.
+            conn.execute(
+                """
+                INSERT INTO capture_processing_state
+                (capture_id, user_id, ingest_status, extraction_status, embedding_status, memory_count, task_count, entity_count, last_job_id, last_error, queued_at, started_at, completed_at, updated_at)
+                VALUES (?, ?, 'materialized', 'skipped', 'not_needed', 0, 0, 0, NULL, NULL, ?, ?, ?, ?)
+                ON CONFLICT(capture_id) DO UPDATE SET
+                  ingest_status = 'materialized',
+                  extraction_status = 'skipped',
+                  embedding_status = 'not_needed',
+                  memory_count = 0,
+                  task_count = 0,
+                  entity_count = 0,
+                  last_job_id = NULL,
+                  last_error = NULL,
+                  started_at = excluded.started_at,
+                  completed_at = excluded.completed_at,
+                  updated_at = excluded.updated_at
+                """,
+                (capture_id, user_id, captured_at, captured_at, captured_at, captured_at),
+            )
+
+        return {
+            "capture_id": capture_id,
+            "summary": "",
+            "memories": [],
+            "tasks": [],
+            "entities": [],
+            "graph": {"nodes": [], "edges": []},
         }
 
     def inbox(self, user_id: str, limit: int = 30) -> list[dict[str, Any]]:

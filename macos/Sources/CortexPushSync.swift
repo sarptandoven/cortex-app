@@ -116,23 +116,51 @@ extension AppState {
                 let page = try JSONDecoder().decode(PushCapturePage.self, from: pageData)
                 if page.items.isEmpty { break }
                 pushPendingCount = page.items.count
+                // Zero-access (E2EE) gate. When ON, EVERY item in this batch must be encrypted before
+                // it leaves the device. If the toggle is on but no key exists (e.g. the key was
+                // forgotten / a different device restore is pending), we MUST NOT silently fall back
+                // to plaintext — abort the tick with a clear error and leave the cursor unadvanced.
+                let zeroAccess = CortexE2EE.isEnabled
+                if zeroAccess && !CortexE2EE.hasKey {
+                    throw CortexE2EEError.noKey
+                }
                 // 2. Push the batch to the HOSTED account (idempotent upsert by client_capture_id).
                 let body: [String: Any] = [
                     "device_id": pushDeviceID,
                     "cursor": String(page.next_seq),
-                    "items": page.items.map { item -> [String: Any] in
+                    "items": try page.items.map { item -> [String: Any] in
                         var dict: [String: Any] = [
                             "client_capture_id": item.client_capture_id,
-                            "content": item.content,
                             "source": item.source,
                             "captured_at": item.captured_at,
                         ]
-                        if let url = item.source_url { dict["source_url"] = url }
-                        if let title = item.title { dict["title"] = title }
-                        // Only the two states the sync-ingest contract accepts; anything else
-                        // (e.g. archived) stays local and the hosted side applies its defaults.
-                        if let review = item.review_status, review == "approved" || review == "pending" {
-                            dict["review_status"] = review
+                        if zeroAccess {
+                            // Encrypt content + all metadata into a CXEC1 blob bound to this capture
+                            // id; the server becomes a blind relay (never sees plaintext). `content`
+                            // is OMITTED entirely — the ciphertext is the only carrier.
+                            var fields: [String: Any] = [
+                                "content": item.content,
+                                "source": item.source,
+                                "captured_at": item.captured_at,
+                            ]
+                            if let url = item.source_url { fields["source_url"] = url }
+                            if let title = item.title { fields["title"] = title }
+                            if let review = item.review_status, review == "approved" || review == "pending" {
+                                fields["review_status"] = review
+                            }
+                            let sealed = try CortexE2EE.encryptPayload(fields, captureID: item.client_capture_id)
+                            dict["encrypted_payload"] = sealed.payloadB64
+                            dict["enc_meta"] = sealed.encMeta
+                        } else {
+                            // Today's plaintext path — byte-for-byte unchanged.
+                            dict["content"] = item.content
+                            if let url = item.source_url { dict["source_url"] = url }
+                            if let title = item.title { dict["title"] = title }
+                            // Only the two states the sync-ingest contract accepts; anything else
+                            // (e.g. archived) stays local and the hosted side applies its defaults.
+                            if let review = item.review_status, review == "approved" || review == "pending" {
+                                dict["review_status"] = review
+                            }
                         }
                         return dict
                     },
@@ -146,6 +174,11 @@ extension AppState {
             }
             pushPendingCount = 0
             pushSyncState = .synced(Date())
+        } catch let e2ee as CortexE2EEError {
+            // Zero-access is ON but this device has no key (or encryption failed): DO NOT fall back to
+            // plaintext. Leave the cursor unadvanced and surface the crypto-specific message so the
+            // user knows to restore their recovery code — the memory stays safely local until then.
+            pushSyncState = .error(e2ee.errorDescription ?? "Zero-access encryption is unavailable on this Mac.")
         } catch {
             // Offline / server error / token gone: leave the cursor unadvanced; the next 5-min tick
             // (or the next learn nudge) resumes from where it stopped. No data is lost — it stays local.

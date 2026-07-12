@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import html
 import hmac
 import secrets
@@ -2917,11 +2919,6 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     for raw in raw_items:
                         if not isinstance(raw, dict):
                             raise ValueError("each item must be an object")
-                        content = str(raw.get("content") or "")
-                        if not content.strip():
-                            raise ValueError("content is required")
-                        if len(content) > 200_000:
-                            raise ValueError("content is too large")
                         client_capture_id = str(raw.get("client_capture_id") or "").strip()
                         if not client_capture_id or len(client_capture_id) > 80:
                             raise ValueError("client_capture_id is required (at most 80 characters)")
@@ -2929,6 +2926,37 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         # Trust passthrough is bounded to the two mirrorable review states.
                         if review_status is not None and review_status not in {"approved", "pending"}:
                             raise ValueError("review_status must be approved or pending")
+                        # Zero-access (E2EE) blind relay (ADDITIVE, mirrors main.py): when the client
+                        # sends ciphertext, `content` is optional and no plaintext exists server-side;
+                        # otherwise this is today's plaintext path with the same content requirement.
+                        raw_encrypted = raw.get("encrypted_payload")
+                        ciphertext: bytes | None = None
+                        enc_meta = None
+                        if raw_encrypted is not None:
+                            if not isinstance(raw_encrypted, str) or not raw_encrypted.strip():
+                                raise ValueError("encrypted_payload must be non-empty base64 when present")
+                            if len(raw_encrypted) > 2_000_000:
+                                raise ValueError("encrypted_payload is too large")
+                            try:
+                                ciphertext = base64.b64decode(raw_encrypted, validate=True)
+                            except (binascii.Error, ValueError):
+                                raise ValueError("encrypted_payload must be valid base64")
+                            if not ciphertext:
+                                raise ValueError("encrypted_payload decodes to empty bytes")
+                            raw_meta = raw.get("enc_meta")
+                            if raw_meta is not None and not isinstance(raw_meta, dict):
+                                raise ValueError("enc_meta must be an object")
+                            # enc_meta is a tiny non-secret decrypt hint; bound it so it can't
+                            # inflate the store / amplify pulls (mirrors the FastAPI validator).
+                            if raw_meta is not None and len(json.dumps(raw_meta)) > 4096:
+                                raise ValueError("enc_meta is too large")
+                            enc_meta = raw_meta
+                        content = str(raw.get("content") or "")
+                        if ciphertext is None:
+                            if not content.strip():
+                                raise ValueError("content is required")
+                            if len(content) > 200_000:
+                                raise ValueError("content is too large")
                         normalized_items.append({
                             "client_capture_id": client_capture_id,
                             "content": content,
@@ -2937,6 +2965,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                             "title": str(raw.get("title") or "")[:200] or None,
                             "captured_at": str(raw.get("captured_at") or "")[:40] or None,
                             "review_status": review_status,
+                            "encrypted_payload": ciphertext,
+                            "enc_meta": enc_meta,
                         })
                 except ValueError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
@@ -2945,6 +2975,39 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 results = []
                 review_gated_sources: dict[str, bool] = {}
                 for item in normalized_items:
+                    # Zero-access (E2EE) blind-relay branch (ADDITIVE, mirrors main.py): store the
+                    # client's ciphertext opaquely, derive NO memory/task/entity/embedding, apply the
+                    # same approved/pending passthrough gate. Absent ciphertext -> plaintext path below.
+                    if item["encrypted_payload"] is not None:
+                        auto_approve = settings.auto_approve_captures
+                        force_review = False
+                        if item["review_status"] == "approved":
+                            source_gated = review_gated_sources.get(item["source"])
+                            if source_gated is None:
+                                source_gated = store.source_policy_requires_review(user_id, item["source"])
+                                review_gated_sources[item["source"]] = source_gated
+                            if source_gated:
+                                force_review = True  # per-source policy wins over the passthrough
+                            else:
+                                auto_approve = True
+                        elif item["review_status"] == "pending":
+                            force_review = True
+                        saved = store.save_encrypted_capture(
+                            user_id=user_id,
+                            client_capture_id=item["client_capture_id"],
+                            encrypted_payload=item["encrypted_payload"],
+                            enc_meta=item["enc_meta"],
+                            source=item["source"],
+                            captured_at=item["captured_at"],
+                            auto_approve=auto_approve,
+                            force_review=force_review,
+                        )
+                        results.append({
+                            "client_capture_id": item["client_capture_id"],
+                            "capture_id": saved.get("capture_id", ""),
+                            "status": "accepted",
+                        })
+                        continue
                     extracted = extract_context(item["content"], item["source"], author_aliases=aliases)
                     if item["captured_at"]:
                         extracted["_timestamp"] = item["captured_at"]

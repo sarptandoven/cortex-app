@@ -131,5 +131,99 @@ class CortexDecryptRoundTripTests(unittest.TestCase):
         self.assertEqual(got, b"alice backup")
 
 
+class CXEC1ZeroAccessTests(unittest.TestCase):
+    """The offline tool must decrypt zero-access (client-key) CXEC1 blobs — the proof that
+    a user with their recovery code owns their zero-access data even if Cortex dies. We
+    build the blob exactly as the macOS CortexE2EE seal produces it (AES-256-GCM, 12-byte
+    nonce, AAD = capture_id, wire = magic || nonce || ciphertext || tag)."""
+
+    def _seal(self, key: bytes, capture_id: str, plaintext: bytes) -> bytes:
+        import os as _os
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        nonce = _os.urandom(12)
+        ct = AESGCM(key).encrypt(nonce, plaintext, capture_id.encode("utf-8"))
+        return cortex_decrypt.CXEC1_MAGIC + nonce + ct
+
+    def test_round_trip_with_sync_key(self) -> None:
+        key = bytes(range(32, 64))
+        payload = b'{"content":"my zero-access memory","title":null,"source":"macos"}'
+        blob = self._seal(key, "cap_zero1", payload)
+        self.assertTrue(cortex_decrypt.is_cxec1(blob))
+        got = cortex_decrypt.decrypt_cxec1(blob, key, "cap_zero1")
+        self.assertEqual(got, payload)
+
+    def test_wrong_capture_id_fails(self) -> None:
+        key = bytes(range(32, 64))
+        blob = self._seal(key, "cap_zero1", b"secret")
+        with self.assertRaises(cortex_decrypt.DecryptError):
+            cortex_decrypt.decrypt_cxec1(blob, key, "cap_OTHER")
+
+    def test_wrong_key_fails(self) -> None:
+        blob = self._seal(bytes(range(32, 64)), "cap_zero1", b"secret")
+        with self.assertRaises(cortex_decrypt.DecryptError):
+            cortex_decrypt.decrypt_cxec1(blob, bytes(32), "cap_zero1")
+
+    def _base32_encode(self, data: bytes) -> str:
+        # MSB-first Crockford Base32, mirroring CortexE2EE.base32Encode.
+        alphabet = cortex_decrypt._CROCKFORD
+        out = []
+        buffer = 0
+        bits = 0
+        for byte in data:
+            buffer = (buffer << 8) | byte
+            bits += 8
+            while bits >= 5:
+                bits -= 5
+                out.append(alphabet[(buffer >> bits) & 0x1F])
+        if bits > 0:
+            out.append(alphabet[(buffer << (5 - bits)) & 0x1F])
+        return "".join(out)
+
+    def _recovery_code(self, key: bytes) -> str:
+        payload = key + bytes([cortex_decrypt._crc8_atm(key)])
+        symbols = self._base32_encode(payload)
+        return "-".join(symbols[i : i + 4] for i in range(0, len(symbols), 4))
+
+    def test_recovery_code_decodes_to_key(self) -> None:
+        key = bytes((i * 7 + 3) & 0xFF for i in range(32))
+        code = self._recovery_code(key)
+        self.assertEqual(cortex_decrypt.key_from_recovery_code(code), key)
+        # Lowercase + Crockford aliases (O->0, I/L->1) + missing hyphens all still decode.
+        munged = code.lower().replace("-", "").replace("0", "o").replace("1", "l")
+        self.assertEqual(cortex_decrypt.key_from_recovery_code(munged), key)
+
+    def test_recovery_code_checksum_rejects_typo(self) -> None:
+        key = bytes(range(32))
+        code = list(self._recovery_code(key))
+        # Flip one symbol to a different valid Crockford symbol.
+        i = next(idx for idx, ch in enumerate(code) if ch != "-")
+        code[i] = "Z" if code[i] != "Z" else "Y"
+        with self.assertRaises(cortex_decrypt.DecryptError):
+            cortex_decrypt.key_from_recovery_code("".join(code))
+
+    def test_decrypt_zero_access_with_recovery_code(self) -> None:
+        key = bytes((i * 11 + 5) & 0xFF for i in range(32))
+        code = self._recovery_code(key)
+        blob = self._seal(key, "cap_rec", b'{"content":"recovered from my code alone"}')
+        got = cortex_decrypt.decrypt_cxec1(
+            blob, cortex_decrypt.key_from_recovery_code(code), "cap_rec"
+        )
+        self.assertEqual(got, b'{"content":"recovered from my code alone"}')
+
+    def test_cli_cxec1_end_to_end(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        key = bytes(range(32, 64))
+        blob = self._seal(key, "cap_cli", b"cli zero-access plaintext")
+        (tmp / "z.cxec1").write_bytes(blob)
+        out = tmp / "z.out"
+        rc = cortex_decrypt.main([
+            "cxec1", "--key", base64.b64encode(key).decode(),
+            "--capture-id", "cap_cli", "--in", str(tmp / "z.cxec1"), "--out", str(out),
+        ])
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.read_bytes(), b"cli zero-access plaintext")
+
+
 if __name__ == "__main__":
     unittest.main()

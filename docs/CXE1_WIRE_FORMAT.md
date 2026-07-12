@@ -83,6 +83,33 @@ authentication (a hard error), never silent garbage.
 | HKDF info        | `b"cortex:v1:" + purpose`               |
 | Nonce budget     | 2²⁸ writes per (user, dek_version), then a fresh version is minted |
 
+## CXEC1 — client zero-access format (opt-in end-to-end)
+
+When a user turns on **zero-access mode**, their synced captures are encrypted on-device
+under a key that **never leaves their devices** (macOS Keychain) and is escrowed only by
+the user as a recovery code — Cortex's servers hold no key material and store the blob
+blind (no extraction, no plaintext). This is the strong "we cannot read your memory"
+guarantee, and it is the format `scripts/cortex_decrypt.py cxec1` decrypts.
+
+```
+CXEC1 := "CXEC1"                5 bytes, magic
+       || nonce                12 bytes, random per message
+       || ciphertext_and_tag   AES-256-GCM output
+
+plaintext := UTF-8 JSON of the capture fields { content, title, source_url, source,
+             captured_at, review_status }   (title/source_url may be null)
+key       := the 32-byte device sync key (Keychain; recovery code is its transcribable form)
+AAD       := UTF-8(client_capture_id)        binds each blob to its capture — no relocation
+ciphertext_and_tag := AES-256-GCM(key).seal(nonce, plaintext, aad = AAD)
+```
+
+The server stores `base64(CXEC1 blob)` in `captures.encrypted_payload` plus a non-secret
+`enc_meta` hint `{alg, nonce_b64, key_id, aad_context}` (never a key), sets `raw_text` to
+the placeholder `"[encrypted]"`, and derives **zero** memories/embeddings from it. The
+pulling device decrypts locally and applies the plaintext to its own store. Reference
+implementation: `macos/Sources/CortexE2EE.swift`; independent decryptor:
+`scripts/cortex_decrypt.py cxec1 --key <32B> --capture-id <id>`.
+
 ## Deletion = crypto-shredding
 
 `crypto_shred(user_id)` zero-overwrites and deletes the user's wrap rows and tombstones

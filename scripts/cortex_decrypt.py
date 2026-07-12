@@ -63,6 +63,14 @@ WRAP_NONCE_LEN = 12
 DATA_NONCE_LEN = 12
 GCM_TAG_LEN = 16
 
+# CXEC1 = Cortex client-encrypted v1 (zero-access sync). The client (macOS) holds the key;
+# the server stores this blob and NEVER holds key material. Layout (matches the macOS
+# CortexE2EE implementation and docs/CXE1_WIRE_FORMAT.md §"Client zero-access format"):
+#   "CXEC1"(5) || nonce(12) || AES-256-GCM(sync_key).seal(nonce, plaintext, aad=utf8(capture_id))
+# where the trailing bytes are ciphertext||tag (i.e. CryptoKit SealedBox.combined minus its
+# leading nonce, which we carry explicitly). plaintext = UTF-8 JSON of the capture fields.
+CXEC1_MAGIC = b"CXEC1"
+
 
 class DecryptError(Exception):
     """Any failure to parse or authenticate a CXE1 blob or a wrapped DEK."""
@@ -163,6 +171,86 @@ def decrypt_blob(
     except InvalidTag as exc:
         raise DecryptError(
             "blob failed authentication — wrong user, purpose, or key (or corrupted ciphertext)"
+        ) from exc
+
+
+def is_cxec1(blob: bytes) -> bool:
+    """True if ``blob`` is a CXEC1 client-encrypted (zero-access) blob."""
+    return bytes(blob[:5]) == CXEC1_MAGIC
+
+
+# --- Recovery code (matches macos/Sources/CortexE2EE.swift exactly) --------------------
+# Crockford Base32 (RFC-4648 alphabet minus I,L,O,U), MSB-first bit packing, over a
+# 33-byte payload = 32 key bytes || 1 CRC-8/ATM byte (poly 0x07, init 0x00). The device
+# shows this once; with it, this tool decrypts your zero-access data — no Cortex required.
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_CROCKFORD_DECODE = {c: i for i, c in enumerate(_CROCKFORD)}
+for _alias, _canon in (("I", "1"), ("L", "1"), ("O", "0")):
+    _CROCKFORD_DECODE[_alias] = _CROCKFORD_DECODE[_canon]
+
+
+def _crc8_atm(data: bytes) -> int:
+    crc = 0x00
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x07) & 0xFF if (crc & 0x80) else (crc << 1) & 0xFF
+    return crc
+
+
+def _base32_decode(symbols: list[int]) -> bytes:
+    buffer = 0
+    bits = 0
+    out = bytearray()
+    for value in symbols:
+        buffer = (buffer << 5) | value
+        bits += 5
+        while bits >= 8:
+            bits -= 8
+            out.append((buffer >> bits) & 0xFF)
+    return bytes(out)  # residual < 8 padding bits are discarded (matches the Swift encoder)
+
+
+def key_from_recovery_code(code: str) -> bytes:
+    """Decode a recovery code back to its 32-byte sync key, verifying the checksum."""
+    cleaned = "".join(ch for ch in code.upper() if not ch.isspace() and ch != "-")
+    if not cleaned:
+        raise DecryptError("recovery code is empty")
+    symbols: list[int] = []
+    for ch in cleaned:
+        if ch not in _CROCKFORD_DECODE:
+            raise DecryptError(f"recovery code contains an unrecognized character {ch!r}")
+        symbols.append(_CROCKFORD_DECODE[ch])
+    decoded = _base32_decode(symbols)
+    if len(decoded) != DEK_LEN + 1:
+        raise DecryptError(f"recovery code decoded to {len(decoded)} bytes, expected {DEK_LEN + 1}")
+    key, checksum = decoded[:DEK_LEN], decoded[DEK_LEN]
+    if _crc8_atm(key) != checksum:
+        raise DecryptError("recovery code checksum mismatch — re-check the characters")
+    return key
+
+
+def decrypt_cxec1(blob: bytes, sync_key: bytes, capture_id: str) -> bytes:
+    """Decrypt a zero-access CXEC1 blob with the 32-byte client sync key.
+
+    The key is held ONLY on the user's devices (Keychain) and, as a recovery code, by the
+    user — never by Cortex's servers. This is the offline proof of "we cannot read your
+    zero-access memory": with your recovery code and this script, your data is yours.
+    """
+    raw = bytes(blob)
+    if not is_cxec1(raw):
+        raise DecryptError("not a CXEC1 (zero-access) blob")
+    if len(sync_key) != DEK_LEN:
+        raise DecryptError(f"sync key must be {DEK_LEN} bytes, got {len(sync_key)}")
+    body = raw[len(CXEC1_MAGIC):]
+    if len(body) < DATA_NONCE_LEN + GCM_TAG_LEN:
+        raise DecryptError("truncated CXEC1 blob")
+    nonce, ciphertext = body[:DATA_NONCE_LEN], body[DATA_NONCE_LEN:]
+    try:
+        return AESGCM(sync_key).decrypt(nonce, ciphertext, capture_id.encode("utf-8"))
+    except InvalidTag as exc:
+        raise DecryptError(
+            "CXEC1 blob failed authentication — wrong sync key or capture id, or corrupted"
         ) from exc
 
 
@@ -279,7 +367,42 @@ def build_parser() -> argparse.ArgumentParser:
     k.add_argument("--keyring", required=True, help="path to the exported keyring.sqlite")
     k.set_defaults(func=_cmd_from_keyring)
 
+    c = sub.add_parser("cxec1", help="decrypt a zero-access (client-key) CXEC1 blob")
+    keygrp = c.add_mutually_exclusive_group(required=True)
+    keygrp.add_argument("--key", help="32-byte sync key, base64 or hex")
+    keygrp.add_argument("--recovery-code", help="your Cortex recovery code (as shown in the app)")
+    c.add_argument("--capture-id", required=True, help="the client_capture_id (the blob's AAD)")
+    c.add_argument("--in", dest="infile", default="-", help="CXEC1 blob file (raw or base64), or - for stdin")
+    c.add_argument("--out", default="-", help="output file, or - for stdout")
+    c.set_defaults(func=_cmd_cxec1)
+
     return parser
+
+
+def _decode_key(text: str) -> bytes:
+    """Accept the 32-byte sync key as base64 or hex."""
+    text = (text or "").strip()
+    try:
+        key = base64.b64decode(text, validate=True)
+        if len(key) == DEK_LEN:
+            return key
+    except Exception:
+        pass
+    try:
+        key = bytes.fromhex(text)
+        if len(key) == DEK_LEN:
+            return key
+    except Exception:
+        pass
+    raise DecryptError("--key must be a base64 or hex encoding of exactly 32 bytes")
+
+
+def _cmd_cxec1(args: argparse.Namespace) -> int:
+    blob = _read_blob(args.infile)
+    key = key_from_recovery_code(args.recovery_code) if args.recovery_code else _decode_key(args.key)
+    plaintext = decrypt_cxec1(blob, key, args.capture_id)
+    _emit(plaintext, args.out)
+    return 0
 
 
 def main(argv: Optional[list[str]] = None) -> int:

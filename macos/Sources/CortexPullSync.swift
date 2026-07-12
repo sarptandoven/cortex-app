@@ -55,6 +55,21 @@ private struct PullCaptureItem: Codable {
     let title: String?
     let captured_at: String
     let review_status: String?
+    // Zero-access (E2EE) blind-relay fields. For an encrypted capture the hosted feed returns
+    // `content` == "[encrypted]" (a non-secret placeholder), `encrypted_payload` == base64(CXEC1),
+    // and `enc_meta` == the decrypt hint. This device decrypts LOCALLY with its on-device key and
+    // applies the recovered plaintext. Null/absent for plaintext captures (the common path).
+    let encrypted_payload: String?
+    let enc_meta: EncMeta?
+}
+
+/// The non-secret decrypt hint that rides an encrypted pull item. Only `aad_context` (the capture
+/// id used as AES-GCM AAD) is load-bearing on decrypt; the rest is advisory. NEVER any key material.
+private struct EncMeta: Codable {
+    let alg: String?
+    let nonce_b64: String?
+    let key_id: String?
+    let aad_context: String?
 }
 
 private struct PullCapturePage: Codable {
@@ -139,8 +154,48 @@ extension AppState {
                 // 2. Apply the batch into the LOCAL store (idempotent upsert by the stable capture
                 //    id). review_status rides along so an approval granted on another device is
                 //    honored here (bounded server-side; local per-source policy still wins).
-                let body: [String: Any] = [
-                    "items": page.items.map { item -> [String: Any] in
+                //
+                //    Zero-access (E2EE): an encrypted item is decrypted LOCALLY here with this Mac's
+                //    on-device key and the recovered PLAINTEXT is applied (the local store stays
+                //    plaintext — encryption is only for the wire/hosted-account). An item that fails
+                //    to decrypt (wrong key / tampered / malformed) is SKIPPED — never applied as its
+                //    ciphertext placeholder — and flips `decryptFailures` so we surface an error and
+                //    do NOT advance the cursor past this page, leaving the item to retry once the
+                //    correct recovery code is restored.
+                var applyItems: [[String: Any]] = []
+                var decryptFailures = 0
+                for item in page.items {
+                    if let payloadB64 = item.encrypted_payload, !payloadB64.isEmpty {
+                        do {
+                            let fields = try CortexE2EE.decryptToFields(
+                                payloadB64: payloadB64,
+                                captureID: item.client_capture_id
+                            )
+                            var dict: [String: Any] = [
+                                "client_capture_id": item.client_capture_id,
+                                // Recovered plaintext content; fall back to source/captured_at from
+                                // the recovered fields, else the clear envelope fields.
+                                "content": (fields["content"] as? String) ?? "",
+                                "source": (fields["source"] as? String) ?? item.source,
+                                "captured_at": (fields["captured_at"] as? String) ?? item.captured_at,
+                            ]
+                            if let url = fields["source_url"] as? String { dict["source_url"] = url }
+                            if let title = fields["title"] as? String { dict["title"] = title }
+                            if let review = fields["review_status"] as? String { dict["review_status"] = review }
+                            // Never apply an item whose decrypted content is empty AND whose only
+                            // marker was the "[encrypted]" placeholder — that would poison the store.
+                            guard let content = dict["content"] as? String, !content.isEmpty else {
+                                decryptFailures += 1
+                                continue
+                            }
+                            applyItems.append(dict)
+                        } catch {
+                            // Bad tag / wrong key / malformed / id-mismatch — hard skip, never apply.
+                            decryptFailures += 1
+                            continue
+                        }
+                    } else {
+                        // Plaintext item — unchanged.
                         var dict: [String: Any] = [
                             "client_capture_id": item.client_capture_id,
                             "content": item.content,
@@ -150,11 +205,22 @@ extension AppState {
                         if let url = item.source_url { dict["source_url"] = url }
                         if let title = item.title { dict["title"] = title }
                         if let review = item.review_status { dict["review_status"] = review }
-                        return dict
-                    },
-                ]
-                _ = try await request(path: "/v1/sync/ingest", method: "POST", body: body)
-                // 3. Advance + persist the cursor ONLY after the local apply succeeded, so a
+                        applyItems.append(dict)
+                    }
+                }
+                if !applyItems.isEmpty {
+                    _ = try await request(path: "/v1/sync/ingest", method: "POST", body: ["items": applyItems])
+                }
+                // 3. If any item in this page failed to decrypt, STOP here: surface the error and
+                //    leave the cursor at the previous page boundary so those items are retried on the
+                //    next tick (e.g. after the user restores the correct recovery code). Applied items
+                //    are idempotent upserts, so re-applying them next tick is a safe no-op.
+                if decryptFailures > 0 {
+                    center.state = .error(CortexE2EEError.decryptFailed.errorDescription
+                        ?? "Some synced memory could not be decrypted on this Mac.")
+                    return
+                }
+                // 4. Advance + persist the cursor ONLY after the local apply succeeded, so a
                 //    mid-backlog failure resumes exactly at the last applied capture (a safe
                 //    re-apply upsert).
                 cursor = page.next_seq
