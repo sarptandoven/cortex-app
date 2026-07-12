@@ -2023,6 +2023,23 @@ enum AIIntegrationCatalog {
             browserURL: "https://windsurf.com"
         ),
         AIIntegration(
+            id: "zed",
+            name: "Zed",
+            category: .oneClick,
+            systemImage: "bolt.horizontal",
+            summary: "Adds Cortex as a context server so Zed's agent reads your reviewed memory.",
+            restartHint: "Zed picks up the new context server automatically once the settings file is saved.",
+            bundleIdentifiers: ["dev.zed.Zed", "dev.zed.Zed-Preview"],
+            configTargets: [
+                // Zed keys MCP servers under "context_servers" (NOT "mcpServers"); the per-host
+                // shaper in mergeMCPConfig writes the correct schema for this file. Same path on
+                // macOS and Linux. Source: zed.dev/docs/ai/mcp.
+                IntegrationConfigTarget(label: "Zed settings", root: .home, relativePath: ".config/zed/settings.json")
+            ],
+            setupHint: "Use Cortex in Zed's agent panel to search reviewed memory before asking the user to repeat context.",
+            browserURL: "https://zed.dev"
+        ),
+        AIIntegration(
             id: "cline",
             name: "Cline",
             category: .developer,
@@ -2089,8 +2106,8 @@ enum AIIntegrationCatalog {
             restartHint: "In ChatGPT connector settings, paste the Cortex link and key, then save.",
             bundleIdentifiers: ["com.openai.chat"],
             configTargets: [],
-            setupHint: "ChatGPT reaches Cortex through a remote connector. Add the Cortex link and key in its connector settings. Your memory stays in Cortex and is served live, never copied out.",
-            browserURL: "https://chatgpt.com/#settings/connectors",
+            setupHint: "ChatGPT reaches Cortex through a remote connector. Turn on developer mode, then add the Cortex link and key as a custom connector. Your memory stays in Cortex and is served live, never copied out.",
+            browserURL: "https://chatgpt.com/plugins",
             connectionKind: .remoteMCP
         ),
         AIIntegration(
@@ -2102,14 +2119,14 @@ enum AIIntegrationCatalog {
             restartHint: "In Claude connector settings, paste the Cortex link and key, then save.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Claude Desktop connects live over MCP. On the web, add the Cortex remote connector: paste the link and key. Your memory stays in Cortex, served live.",
-            browserURL: "https://claude.ai/settings/connectors",
+            setupHint: "Claude Desktop connects live over MCP. On the web, add the Cortex remote connector: Customize then Connectors, add a custom connector, and paste the link and key. Your memory stays in Cortex, served live.",
+            browserURL: "https://claude.ai/customize/connectors",
             connectionKind: .remoteMCP
         ),
         AIIntegration(
             id: "gemini",
-            name: "Gemini",
-            category: .browser,
+            name: "Gemini CLI",
+            category: .developer,
             systemImage: "diamond",
             summary: "Connect the Gemini CLI to Cortex over MCP so it reads your reviewed memory live.",
             restartHint: "Restart the Gemini CLI so it picks up the Cortex connection.",
@@ -2119,20 +2136,39 @@ enum AIIntegrationCatalog {
             ],
             requiresExistingConfigTarget: true,
             setupHint: "The Gemini CLI connects to Cortex over MCP once its settings file exists.",
-            browserURL: "https://gemini.google.com"
+            browserURL: "https://github.com/google-gemini/gemini-cli"
         ),
         AIIntegration(
             id: "perplexity",
             name: "Perplexity",
             category: .browser,
             systemImage: "magnifyingglass.circle",
-            summary: "Browser reference for research workflows.",
-            restartHint: "Open Perplexity when you want to work alongside Cortex.",
+            summary: "Add Cortex as a custom remote connector so Perplexity can reach your reviewed memory on demand.",
+            restartHint: "In Perplexity, add a custom remote connector, paste the Cortex link, and set the key as the API key.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "A live Cortex connection for Perplexity is not supported yet. Open it alongside Cortex in the meantime.",
-            browserURL: "https://www.perplexity.ai",
-            referenceOnly: true
+            // Perplexity Pro/Enterprise supports user-added custom REMOTE MCP connectors: Settings >
+            // Connectors > + Custom connector > Remote > MCP Server URL + API Key. Source:
+            // perplexity.ai/help-center/en/articles/13915507-adding-custom-remote-connectors.
+            setupHint: "Perplexity reaches Cortex through a custom remote connector. Add the Cortex link and set the key as the API key. Your memory stays in Cortex, served live.",
+            browserURL: "https://www.perplexity.ai/account/connectors",
+            connectionKind: .remoteMCP
+        ),
+        AIIntegration(
+            id: "mistral-le-chat",
+            name: "Mistral Le Chat",
+            category: .browser,
+            systemImage: "wind.circle",
+            summary: "Add Cortex as a custom MCP connector so Le Chat can reach your reviewed memory on demand.",
+            restartHint: "In Le Chat, add a custom MCP connector, paste the Cortex link, and set the key as the bearer token.",
+            bundleIdentifiers: [],
+            // Mistral Le Chat supports user-added custom remote MCP connectors: + Add Connector >
+            // Custom MCP Connector tab > name + Server URL + HTTP Bearer Token. Source:
+            // mistral.ai/news/le-chat-mcp-connectors-memories and docs.mistral.ai le-chat connectors.
+            configTargets: [],
+            setupHint: "Le Chat reaches Cortex through a custom MCP connector. Add the Cortex link and set the key as the bearer token. Your memory stays in Cortex, served live.",
+            browserURL: "https://chat.mistral.ai/chat",
+            connectionKind: .remoteMCP
         ),
         AIIntegration(
             id: "copilot-web",
@@ -2152,13 +2188,33 @@ enum AIIntegrationCatalog {
             name: "Grok",
             category: .browser,
             systemImage: "xmark.circle",
-            summary: "Browser reference while direct connectors are planned.",
-            restartHint: "Open Grok when you want to work alongside Cortex.",
+            summary: "Add Cortex as a custom connector so Grok can reach your reviewed memory on demand.",
+            restartHint: "In Grok, add a new custom connector, paste the Cortex link, and set the key for auth.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "A live Cortex connection for Grok is not supported yet. Open it alongside Cortex in the meantime.",
-            browserURL: "https://grok.com",
-            referenceOnly: true
+            // Grok supports user-added custom remote MCP connectors ("bring your own MCP"):
+            // grok.com/connectors > New Connector > Custom > MCP server URL + auth. Oriented to
+            // Grok Business/Enterprise. Source: docs.x.ai/grok/connectors.
+            setupHint: "Grok reaches Cortex through a custom connector (Grok Business or Enterprise). Add the Cortex link and set the key for auth. Your memory stays in Cortex, served live.",
+            browserURL: "https://grok.com/connectors",
+            connectionKind: .remoteMCP
+        ),
+        AIIntegration(
+            id: "gemini-web",
+            name: "Gemini",
+            category: .browser,
+            systemImage: "diamond.circle",
+            summary: "Add Cortex as a custom app so Gemini can reach your reviewed memory on demand.",
+            restartHint: "In Gemini's Connected Apps, add a custom app and paste the Cortex link.",
+            bundleIdentifiers: [],
+            configTargets: [],
+            // Gemini web supports user-added custom remote MCP apps via Gemini Spark: Settings >
+            // Connected Apps > Custom apps for Spark > Add a custom app > MCP server URL. Eligibility
+            // is narrow (US only, 18+, personal Google account, English, Spark-eligible). Source:
+            // support.google.com/gemini/answer/17209137.
+            setupHint: "Gemini reaches Cortex through a custom app in Connected Apps (needs Gemini Spark eligibility, US only for now). Add the Cortex link. Your memory stays in Cortex, served live.",
+            browserURL: "https://gemini.google.com/apps",
+            connectionKind: .remoteMCP
         ),
         AIIntegration(
             id: "poe",
@@ -7198,7 +7254,7 @@ final class AppState: ObservableObject {
         for integration in integrations {
             let installedTargets = DistributionMode.isAppStore
                 ? []
-                : integration.configTargets.filter { configContainsCortex(at: $0.url) }
+                : integration.configTargets.filter { configContainsCortex(at: $0.url, for: integration) }
             guard AppState.existingMCPToken(for: integration.id) != nil || !installedTargets.isEmpty else {
                 continue
             }
@@ -7319,13 +7375,17 @@ final class AppState: ObservableObject {
         switch integration.id {
         case "cursor":
             // cursor://anysphere.cursor-deeplink/mcp/install?name=cortex&config=BASE64
-            // where BASE64 = base64(UTF-8 JSON of the single server object).
+            // where BASE64 = base64(UTF-8 JSON of the single BARE server object {command,args,env}).
+            // Cursor expects RAW standard base64 in the query: every real "Add to Cursor" badge and the
+            // official docs example carry raw base64 (literal '/', '+', '='), which are all query-legal.
+            // Percent-encoding would only work if Cursor percent-decoded before base64-decoding, and the
+            // raw-base64 badges prove it does not rely on that. If URL(string:) ever returns nil,
+            // connectViaDeeplink falls back to copy-config.
             guard let serverData = try? JSONSerialization.data(withJSONObject: server, options: [.sortedKeys]) else {
                 return nil
             }
             let base64 = serverData.base64EncodedString()
-            let encoded = base64.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? base64
-            return URL(string: "cursor://anysphere.cursor-deeplink/mcp/install?name=cortex&config=\(encoded)")
+            return URL(string: "cursor://anysphere.cursor-deeplink/mcp/install?name=cortex&config=\(base64)")
         case "vscode-copilot":
             // vscode:mcp/install?ENCODED where ENCODED = percent-encoded JSON of
             // {"name":"cortex", ...server object fields...}.
@@ -7558,33 +7618,92 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Every MCP-capable app detected on THIS Mac that "Connect all my AI apps" can wire up in one
+    /// click: config-file apps (Claude Desktop / Windsurf / Zed / Cline / Roo / Gemini CLI) that
+    /// Cortex can write, plus native one-click deeplink apps (Cursor / VS Code) whose install URL
+    /// Cortex can fire. Remote-connector (web) and http-API tools are excluded here because they
+    /// need the user in the loop (paste a key / sign in), so a silent batch could never finish them.
+    var connectAllDetectedIntegrations: [AIIntegration] {
+        integrations.filter { integration in
+            guard integrationState(for: integration).appInstalled else { return false }
+            switch integration.connectionKind {
+            case .mcpConfig:
+                return integration.supportsInstall
+            case .mcpDeeplink:
+                return true
+            case .cliCommand, .remoteMCP, .httpAPI:
+                return false
+            }
+        }
+    }
+
+    /// "Connect all my AI apps" — the one-click that wires up EVERY installed MCP-capable app at
+    /// once. For each detected app it fires the most automated path that actually works: write the
+    /// config + relaunch for config-file apps, open the native install deeplink for Cursor / VS Code.
+    /// Idempotent (re-running rewrites the same server) and safe (a backup is saved before any config
+    /// write). On the sandboxed App Store build no file write is possible, so it copies a combined
+    /// setup guide instead and points the user at the per-app wizard.
     func installDetectedIntegrations() {
         if DistributionMode.isAppStore {
-            status = "App Store builds require advanced AI tool setup"
+            // The sandbox can't write another app's config or fire an install deeplink batch, so the
+            // honest one-click here is a copyable combined config the user pastes per app.
+            copyMCPConfig()
+            status = "Copied the Cortex setup config. Paste it into each AI app's MCP settings."
             return
         }
-        let detected = integrations.filter { integration in
-            integration.supportsInstall && integrationState(for: integration).appInstalled
-        }
+        let detected = connectAllDetectedIntegrations
         guard !detected.isEmpty else {
-            status = "No detected local AI apps yet"
+            status = "No detected local AI apps yet. Open Connect an app to add one."
             return
         }
-        var installed = 0
+        var connected: [String] = []
+        var opened: [String] = []
         var failures: [String] = []
-        for integration in detected {
+        // Config-file apps first (synchronous writes), then relaunch each so it picks Cortex up.
+        for integration in detected where integration.connectionKind == .mcpConfig {
             do {
                 registerMCPTokenInBackground(for: integration)
                 for target in integration.configTargets {
                     try mergeMCPConfig(at: target.url, integration: integration)
                 }
-                installed += 1
+                relaunchIntegrationApp(for: integration)
+                connected.append(integration.name)
             } catch {
                 failures.append(integration.name)
             }
         }
+        // Then fire each native install deeplink (Cursor / VS Code). The app pops up to confirm on
+        // its own end, so these are "opened to confirm" rather than "connected" until the user OKs.
+        for integration in detected where integration.connectionKind == .mcpDeeplink {
+            if let url = mcpInstallDeeplink(for: integration) {
+                NSWorkspace.shared.open(url)
+                markIntegrationConfigCopied(integration)
+                opened.append(integration.name)
+            } else {
+                failures.append(integration.name)
+            }
+        }
         refreshIntegrationStates()
-        status = failures.isEmpty ? "Connected \(installed) detected apps" : "Connected \(installed), failed \(failures.joined(separator: ", "))"
+        status = connectAllSummary(connected: connected, opened: opened, failures: failures)
+    }
+
+    /// A single readable line summarizing what "Connect all my AI apps" just did: which apps went
+    /// live via config, which opened to confirm (deeplink), and which failed.
+    private func connectAllSummary(connected: [String], opened: [String], failures: [String]) -> String {
+        var parts: [String] = []
+        if !connected.isEmpty {
+            parts.append("Connected \(connected.joined(separator: ", "))")
+        }
+        if !opened.isEmpty {
+            parts.append("opened \(opened.joined(separator: ", ")) to confirm")
+        }
+        if !failures.isEmpty {
+            parts.append("couldn't reach \(failures.joined(separator: ", "))")
+        }
+        if parts.isEmpty {
+            return "No detected local AI apps yet"
+        }
+        return parts.joined(separator: "; ") + "."
     }
 
     func refreshIntegrationStates() {
@@ -7612,7 +7731,7 @@ final class AppState: ObservableObject {
                 configHasVerifiedCortexServer(at: target.url, for: integration)
             }
             let cortexPresent = integration.configTargets.filter { target in
-                configContainsCortex(at: target.url)
+                configContainsCortex(at: target.url, for: integration)
             }
             let exists = integration.configTargets.contains { target in
                 FileManager.default.fileExists(atPath: target.url.path)
@@ -7647,7 +7766,7 @@ final class AppState: ObservableObject {
             )
         }
         let verified = integration.configTargets.filter { configHasVerifiedCortexServer(at: $0.url, for: integration) }
-        let cortexPresent = integration.configTargets.filter { configContainsCortex(at: $0.url) }
+        let cortexPresent = integration.configTargets.filter { configContainsCortex(at: $0.url, for: integration) }
         return integrationStates[integration.id] ?? AIIntegrationState(
             appInstalled: integrationAppearsInstalled(integration),
             configured: !verified.isEmpty,
@@ -7666,7 +7785,7 @@ final class AppState: ObservableObject {
             return hostAppInstalled
         }
         let hasExtensionConfig = integration.configTargets.contains { target in
-            FileManager.default.fileExists(atPath: target.url.path) || configContainsCortex(at: target.url)
+            FileManager.default.fileExists(atPath: target.url.path) || configContainsCortex(at: target.url, for: integration)
         }
         return hostAppInstalled && hasExtensionConfig
     }
@@ -7745,8 +7864,11 @@ final class AppState: ObservableObject {
     }
 
     func mcpConfigJSON(for integration: AIIntegration? = nil, redactToken: Bool = false) -> String {
+        // Use the host's real top-level key so the copy/preview shape matches what the auto-writer
+        // writes (Zed = "context_servers", everyone else = "mcpServers"). A copied blob with the
+        // wrong key would be a broken paste, so the copy path must agree with mergeMCPConfig.
         let config: [String: Any] = [
-            "mcpServers": [
+            mcpHostConfigKey(for: integration): [
                 "cortex": mcpServerDefinition(for: integration, redactToken: redactToken)
             ]
         ]
@@ -7785,6 +7907,20 @@ final class AppState: ObservableObject {
         """
     }
 
+    /// The top-level JSON key a host keeps its MCP servers under. Almost every host uses the
+    /// canonical `mcpServers` object; Zed keys them under `context_servers` instead (same
+    /// {command,args,env} server shape, verified against zed.dev/docs/ai/mcp). Writing an
+    /// mcpServers-shaped blob into Zed would be a broken connection, so the writer + both detection
+    /// probes route through this one place. New hosts with a different key are a one-line add here.
+    private func mcpHostConfigKey(for integration: AIIntegration?) -> String {
+        switch integration?.id {
+        case "zed":
+            return "context_servers"
+        default:
+            return "mcpServers"
+        }
+    }
+
     private func mergeMCPConfig(at url: URL, integration: AIIntegration? = nil) throws {
         let manager = FileManager.default
         try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -7801,9 +7937,10 @@ final class AppState: ObservableObject {
             try backupConfig(url)
         }
 
-        var servers = root["mcpServers"] as? [String: Any] ?? [:]
+        let key = mcpHostConfigKey(for: integration)
+        var servers = root[key] as? [String: Any] ?? [:]
         servers["cortex"] = mcpServerDefinition(for: integration)
-        root["mcpServers"] = servers
+        root[key] = servers
 
         let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: url, options: .atomic)
@@ -7818,10 +7955,10 @@ final class AppState: ObservableObject {
         try manager.copyItem(at: url, to: backupURL)
     }
 
-    private func configContainsCortex(at url: URL) -> Bool {
+    private func configContainsCortex(at url: URL, for integration: AIIntegration? = nil) -> Bool {
         guard let data = try? Data(contentsOf: url),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let servers = root["mcpServers"] as? [String: Any] else {
+              let servers = root[mcpHostConfigKey(for: integration)] as? [String: Any] else {
             return false
         }
         return servers["cortex"] != nil
@@ -7830,7 +7967,7 @@ final class AppState: ObservableObject {
     private func configHasVerifiedCortexServer(at url: URL, for integration: AIIntegration? = nil) -> Bool {
         guard let data = try? Data(contentsOf: url),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let servers = root["mcpServers"] as? [String: Any],
+              let servers = root[mcpHostConfigKey(for: integration)] as? [String: Any],
               let cortex = servers["cortex"] as? [String: Any] else {
             return false
         }
@@ -9540,7 +9677,7 @@ struct IntegrationCompactHero: View {
                 Button {
                     connectDetected()
                 } label: {
-                    Label(isAppStore ? "Copy setup config" : "Connect", systemImage: isAppStore ? "doc.on.doc" : "link.circle")
+                    Label(isAppStore ? "Copy setup config" : "Connect all", systemImage: isAppStore ? "doc.on.doc" : "bolt.fill")
                         .frame(minWidth: 110, minHeight: 46)
                 }
                 .buttonStyle(.borderedProminent)
@@ -9584,7 +9721,7 @@ struct IntegrationCompactHero: View {
         if needsConnection {
             return isAppStore
                 ? "Copy the setup config and paste it into your AI app. This version can't write other apps' settings."
-                : "Cortex can connect detected local AI tools automatically."
+                : "One click connects every AI app detected on this Mac. A backup is saved before any change."
         }
         if connectedCount > 0 {
             return "Approved memory is available to connected AI tools."

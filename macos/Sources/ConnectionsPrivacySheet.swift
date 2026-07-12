@@ -3080,9 +3080,11 @@ struct ConnectAppWizard: View {
     }
 
     // Step 1 — Pick tool: the same catalog the tiles use, grouped by category. Each card shows
-    // icon + name + the tool's own one-line summary ("what you'll be able to do").
+    // icon + name + the tool's own one-line summary ("what you'll be able to do"). The one-click
+    // "Connect all my AI apps" hero sits on top so the fastest path is the first thing offered.
     private var pickStep: some View {
         VStack(alignment: .leading, spacing: 18) {
+            connectAllHero
             ForEach(IntegrationCategory.allCases, id: \.self) { category in
                 let tools = state.integrations.filter { $0.category == category }
                 if !tools.isEmpty {
@@ -3100,6 +3102,71 @@ struct ConnectAppWizard: View {
                 }
             }
         }
+    }
+
+    /// The one-click "Connect all my AI apps" hero at the top of step 1. It wires up EVERY
+    /// MCP-capable app detected on this Mac in a single click (config-write + relaunch for config
+    /// apps, native install deeplink for Cursor / VS Code) via state.installDetectedIntegrations().
+    /// On the App Store build (no file write) it copies a combined setup config instead, which is
+    /// honest about what the sandbox can do. Always shown so the fastest path is discoverable, with
+    /// the button disabled and a plain nudge when nothing MCP-capable is detected yet.
+    @ViewBuilder
+    private var connectAllHero: some View {
+        let detected = state.connectAllDetectedIntegrations
+        let count = detected.count
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(CortexDesign.accent.opacity(0.13))
+                Image(systemName: "bolt.circle.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+            }
+            .frame(width: 48, height: 48)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Fastest".uppercased())
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.accent)
+                Text("Connect all my AI apps")
+                    .font(.headline)
+                    .foregroundColor(CortexDesign.ink)
+                Text(connectAllDetail(count: count))
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            CortexButton(
+                title: DistributionMode.isAppStore ? "Copy setup config" : "Connect all",
+                systemImage: DistributionMode.isAppStore ? "doc.on.doc" : "bolt.fill",
+                role: .primary,
+                size: .large
+            ) {
+                state.installDetectedIntegrations()
+            }
+            .disabled(!DistributionMode.isAppStore && count == 0)
+            .help(DistributionMode.isAppStore
+                  ? "Copies the Cortex setup config to paste into each AI app's MCP settings."
+                  : "Wires up every AI app detected on this Mac at once. A backup is saved before any config change.")
+        }
+        .padding(14)
+        .background(CortexDesign.cardBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.accent.opacity(0.35), lineWidth: 1.5))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func connectAllDetail(count: Int) -> String {
+        if DistributionMode.isAppStore {
+            return "Copy one config and paste it into each AI app's MCP settings."
+        }
+        if count == 0 {
+            return "No AI apps detected on this Mac yet. Install one, or pick a tool below."
+        }
+        return "\(count) AI app\(count == 1 ? "" : "s") detected on this Mac. Connect \(count == 1 ? "it" : "them all") in one click."
     }
 
     private func toolPickCard(_ tool: AIIntegration) -> some View {
