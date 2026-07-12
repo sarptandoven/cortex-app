@@ -205,12 +205,19 @@ struct OnboardingView: View {
                 CortexButton(title: "Back", systemImage: "chevron.left", role: .ghost, size: .large) {
                     back()
                 }
-                .disabled(step == .welcome)
+                // Block navigation while a source is loading (e.g. "Explore with sample notes" runs
+                // state.isBusy for its whole duration). Without this gate the footer Back/Continue/
+                // Finish stayed live mid-load, letting a user advance PAST the onboarding gates before
+                // the source finished — arriving at a step whose gate was not yet met.
+                .disabled(step == .welcome || state.isBusy)
                 .opacity(step == .welcome ? 0 : 1)
 
                 Spacer()
 
                 trailingFooterButton
+                    // The trailing action is gated on isBusy too so Continue / Finish can't fire
+                    // while a source load is still in flight (the mid-load advance-past-gate bug).
+                    .disabled(state.isBusy)
             }
         }
         .padding(20)
@@ -226,14 +233,19 @@ struct OnboardingView: View {
                 advance()
             }
         case .addMemory:
+            // When a source is connected but its first sync hasn't produced citable memory yet,
+            // "Continue" would advance to a step whose gate isn't met and Finish would bounce the
+            // user straight back here. Reflect that honestly: relabel to "Finishing sync…" and
+            // disable, so Continue only advances once the source is genuinely ready.
             CortexButton(
-                title: "Continue",
-                systemImage: "chevron.right",
+                title: addMemorySyncing ? "Finishing sync…" : "Continue",
+                systemImage: addMemorySyncing ? "arrow.triangle.2.circlepath" : "chevron.right",
                 role: state.onboardingHasSource ? .primary : .ghost,
                 size: .large
             ) {
                 advance()
             }
+            .disabled(addMemorySyncing)
         case .useIt:
             // The connect-a-tool card carries this beat's emphasized (wax) call to action in-content;
             // the footer keeps a quiet forward path so a user who wants to wire tools later isn't
@@ -264,6 +276,16 @@ struct OnboardingView: View {
                 .help("Connect a source to finish setup")
             }
         }
+    }
+
+    /// True while the add-memory beat has a source connected but not yet ready to continue on: a
+    /// connector sync is actively running, OR a memory layer is wired but its first sync hasn't yet
+    /// produced citable memory (`onboardingHasSyncedMemory` still false). In that window advancing
+    /// would land on a step whose gate isn't met and Finish would bounce the user back — so the
+    /// footer's Continue reflects the syncing state instead of pretending the gate is satisfied.
+    private var addMemorySyncing: Bool {
+        if !state.connectorSyncingIDs.isEmpty { return true }
+        return state.onboardingHasConnectedMemoryLayer && !state.onboardingHasSyncedMemory
     }
 
     // MARK: - Navigation
@@ -1018,6 +1040,10 @@ private struct OnboardingAddMemoryStep: View {
 
     @State private var loadingSamples = false
     @State private var dropTargeted = false
+    /// Inline feedback for the export drop target: set when a drop can't be used (a non-file drop, or
+    /// a file whose type we don't import). Replaces the old silent failure where an unrecognized drop
+    /// did nothing at all. Cleared on the next successful drop / file-picker use.
+    @State private var dropFeedback: String?
 
     private var obsidianConnector: SourceConnectorCatalogItem? {
         state.sourceConnectorCatalog.first { $0.id == "obsidian" }
@@ -1051,7 +1077,11 @@ private struct OnboardingAddMemoryStep: View {
                 isPrimary: !state.onboardingHasSource,
                 status: connectStatus,
                 buttonTitle: connectButtonTitle,
-                buttonSystemImage: connectButtonIcon
+                buttonSystemImage: connectButtonIcon,
+                // In flight while a folder connect / sync this card kicked off is running
+                // (state.isBusy) or any connector sync is active — so the primary can't be
+                // double-fired mid-connect.
+                isBusy: state.isBusy || !state.connectorSyncingIDs.isEmpty
             ) {
                 runConnectAction()
             }
@@ -1175,39 +1205,83 @@ private struct OnboardingAddMemoryStep: View {
     /// `AppState.importFromPath`, plus the same file picker Connections uses
     /// (`importAIChatExport`). Without this, the step's copy said "drag in an export" while only
     /// offering the notes-folder flow.
+    /// File types the export drop target accepts: a ChatGPT / Claude export (.zip or its
+    /// conversations.json / .jsonl), a plain .txt transcript, or an unzipped folder. Anything else
+    /// gets clear feedback instead of a silent no-op.
+    private static let acceptedExportExtensions: Set<String> = ["zip", "json", "jsonl", "txt"]
+
     @ViewBuilder
     private var aiExportOption: some View {
-        RoundedRectangle(cornerRadius: 10)
-            .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
-            .foregroundColor(dropTargeted ? CortexDesign.accent : CortexDesign.softBorder)
-            .frame(height: 58)
-            .overlay(
-                HStack(spacing: 8) {
-                    if state.importInFlight { ProgressView().controlSize(.small) }
-                    Text(state.importInFlight ? "Importing your chats…" : "Drag a ChatGPT / Claude export here, or")
-                        .font(.callout)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                    if !state.importInFlight {
-                        CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .ghost, size: .small) {
-                            state.importAIChatExport()
+        VStack(alignment: .leading, spacing: 6) {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
+                .foregroundColor(dropTargeted ? CortexDesign.accent : (dropFeedback != nil ? CortexDesign.gold : CortexDesign.softBorder))
+                .frame(height: 58)
+                .overlay(
+                    HStack(spacing: 8) {
+                        if state.importInFlight { ProgressView().controlSize(.small) }
+                        Text(state.importInFlight ? "Importing your chats…" : "Drag a ChatGPT / Claude export (.zip, .json, .txt) here, or")
+                            .font(.callout)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                        if !state.importInFlight {
+                            CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .ghost, size: .small) {
+                                dropFeedback = nil
+                                state.importAIChatExport()
+                            }
                         }
                     }
+                )
+                .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+                    handleExportDrop(providers)
                 }
-            )
-            .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
-                guard let provider = providers.first else { return false }
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                    var resolved: String?
-                    if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
-                        resolved = url.standardizedFileURL.path
-                    } else if let url = item as? URL {
-                        resolved = url.standardizedFileURL.path
-                    }
-                    guard let path = resolved else { return }
-                    Task { @MainActor in await state.importFromPath(path) }
-                }
-                return true
+
+            if let dropFeedback {
+                Label(dropFeedback, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.gold)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 2)
+                    .transition(.opacity)
             }
+        }
+        .animation(.easeInOut(duration: 0.2), value: dropFeedback)
+    }
+
+    /// Resolve a dropped file URL and route it to `importFromPath`, or surface clear feedback. A
+    /// non-file drop, or a file whose type we don't import, now says so plainly instead of failing
+    /// silently. A folder (unzipped export) is always accepted; a plain file must carry a recognized
+    /// extension.
+    private func handleExportDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first,
+              provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else {
+            dropFeedback = "That doesn't look like a file. Drag your ChatGPT or Claude export file (.zip, .json, or .txt) here, or use Choose export file."
+            return false
+        }
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+            var resolvedURL: URL?
+            if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                resolvedURL = url.standardizedFileURL
+            } else if let url = item as? URL {
+                resolvedURL = url.standardizedFileURL
+            }
+            Task { @MainActor in
+                guard let url = resolvedURL else {
+                    dropFeedback = "Could not read that dropped item. Try Choose export file instead."
+                    return
+                }
+                let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                let ext = url.pathExtension.lowercased()
+                if !isDirectory && !ext.isEmpty
+                    && !OnboardingAddMemoryStep.acceptedExportExtensions.contains(ext) {
+                    dropFeedback = "Cortex can import a ChatGPT or Claude export: a .zip, its conversations.json, a .jsonl, a .txt transcript, or the unzipped folder. \(ext.uppercased()) files aren't supported here."
+                    return
+                }
+                dropFeedback = nil
+                let path = url.path
+                await state.importFromPath(path)
+            }
+        }
+        return true
     }
 
     private func exploreWithSampleNotes() {
@@ -1789,6 +1863,10 @@ struct OnboardingConnectionCard: View {
     let status: String?
     let buttonTitle: String
     let buttonSystemImage: String
+    /// True while a connect / sync kicked off by this card is still in flight. Disables the button
+    /// and swaps in a "Connecting…" label so a slow connect can't be double-fired by an impatient
+    /// second tap (which would kick a duplicate folder-picker / connect request).
+    var isBusy: Bool = false
     let action: () -> Void
 
     var body: some View {
@@ -1818,14 +1896,20 @@ struct OnboardingConnectionCard: View {
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
-            CortexButton(
-                title: buttonTitle,
-                systemImage: buttonSystemImage,
-                role: isPrimary ? .primary : .secondary,
-                size: .large,
-                fullWidth: true,
-                action: action
-            )
+            HStack(spacing: 10) {
+                CortexButton(
+                    title: isBusy ? "Connecting…" : buttonTitle,
+                    systemImage: isBusy ? "arrow.triangle.2.circlepath" : buttonSystemImage,
+                    role: isPrimary ? .primary : .secondary,
+                    size: .large,
+                    fullWidth: true,
+                    action: action
+                )
+                .disabled(isBusy)
+                if isBusy {
+                    ProgressView().controlSize(.small)
+                }
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .topLeading)

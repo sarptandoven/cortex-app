@@ -9,7 +9,11 @@ struct ReviewTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: CortexDesign.Space.xl) {
-                ReviewHeaderSection(state: state)
+                ReviewHeaderSection(
+                    state: state,
+                    isReloading: isReloading,
+                    onRefresh: { Task { await reload() } }
+                )
                 if !initialLoadDone && state.inbox.isEmpty {
                     ReviewLoadingCard()
                 } else {
@@ -59,6 +63,9 @@ struct ReviewTab: View {
 
 struct ReviewHeaderSection: View {
     @ObservedObject var state: AppState
+    // The tab drives the reload; the header only surfaces the affordance and its in-flight state.
+    var isReloading: Bool = false
+    var onRefresh: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -73,6 +80,26 @@ struct ReviewHeaderSection: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
+                // Manual refresh: the tab already live-refreshes every few seconds, but a quiet
+                // "check now" affordance lets an impatient reviewer pull the latest queue on demand.
+                if let onRefresh {
+                    CortexIconButton(
+                        systemImage: "arrow.clockwise",
+                        role: .ghost,
+                        help: isReloading ? "Refreshing review queue" : "Refresh the review queue"
+                    ) {
+                        onRefresh()
+                    }
+                    .disabled(isReloading)
+                    .rotationEffect(.degrees(isReloading ? 360 : 0))
+                    .animation(
+                        isReloading
+                            ? .linear(duration: 0.9).repeatForever(autoreverses: false)
+                            : .default,
+                        value: isReloading
+                    )
+                    .accessibilityLabel("Refresh review queue")
+                }
             }
         }
     }
@@ -603,7 +630,18 @@ struct ReviewInboxSection: View {
     let captures: [CaptureItem]
 
     private static let pageSize = 10
+    // The inbox endpoint (GET /v1/inbox) pages by `limit` only — no offset — and the server caps a
+    // single fetch at 100. loadInbox() fetches the first 30; when the reviewer reaches the end of that
+    // page and a larger backlog exists, "Show more" fetches the NEXT server page by growing the limit,
+    // so the backlog past the initial 30 is actually reachable (up to the 100 server ceiling; beyond
+    // that the section board / "Approve all N" are the tools for a very large backlog).
+    private static let serverFetchStart = 30
+    private static let serverFetchStep = 30
+    private static let serverFetchCap = 100
     @State private var visibleLimit = ReviewInboxSection.pageSize
+    @State private var serverFetchLimit = ReviewInboxSection.serverFetchStart
+    @State private var loadingMoreFromServer = false
+    @State private var previousCaptureCount = 0
     @State private var confirmApproveAll = false
     @State private var approveAllInFlight = false
 
@@ -650,7 +688,7 @@ struct ReviewInboxSection: View {
                             .foregroundColor(CortexDesign.inkFaint)
                     }
                     Spacer()
-                    if visibleCount > 3 {
+                    if showBatchApprove {
                         // approveCaptures caps the batch at 10 server-side, so approve exactly that
                         // slice and label the button with the true count — no promising more than we act on.
                         let approveBatch = Array(visibleCaptures.prefix(10))
@@ -707,19 +745,49 @@ struct ReviewInboxSection: View {
                     }
 
                     if captures.count > visibleCount {
+                        // More is already loaded locally: just reveal the next slice, no fetch.
                         CortexButton(title: "Show more (\(captures.count - visibleCount) remaining)", systemImage: "chevron.down", role: .ghost, size: .large, fullWidth: true) {
                             visibleLimit += Self.pageSize
                         }
+                    } else if canFetchMoreFromServer {
+                        // The loaded page is exhausted but the server holds more (the inbox request
+                        // caps at 30). Fetch the NEXT page so the backlog is actually reachable —
+                        // without this the "Approve all" path was the only way past item 30.
+                        CortexButton(
+                            title: loadingMoreFromServer ? "Loading more" : "Show more (\(remainingBeyondLoaded) more waiting)",
+                            systemImage: loadingMoreFromServer ? "hourglass" : "chevron.down",
+                            role: .ghost,
+                            size: .large,
+                            fullWidth: true
+                        ) {
+                            fetchMoreFromServer()
+                        }
+                        .disabled(loadingMoreFromServer)
                     }
                 }
                 .animation(.spring(response: 0.35, dampingFraction: 0.8), value: captures.map(\.id))
             }
         }
-        .onChange(of: captures.count) { _ in
-            // Reset pagination when the list changes (after approve/archive/sync) so the
-            // "Show more" state tracks the current list.
-            visibleLimit = Self.pageSize
+        .onChange(of: captures.count) { newCount in
+            // A shrink (approve/archive removed an item) re-collapses the queue to a calm first page
+            // and resets the server-page cursor so "Show more" starts paging from scratch again. A
+            // grow is left alone here: the "Show more" fetch reveals its own new slice, so we must NOT
+            // snap the visible window back to page one and hide what the reviewer just pulled in.
+            if newCount < previousCaptureCount {
+                visibleLimit = Self.pageSize
+                serverFetchLimit = Self.serverFetchStart
+            }
+            previousCaptureCount = newCount
         }
+    }
+
+    /// Whether the batch-approve row (Approve N shown / Approve all N) earns its place. It appears
+    /// whenever there is more than one thing to batch — either multiple items on screen, or a larger
+    /// backlog behind them — so even a tiny 2-3 item queue gets a one-tap batch approve (and every
+    /// card in it lights up its own in-flight ghost). A lone single item stays out of the batch row:
+    /// its own card button already covers it, so "Approve 1 shown" would just be noise.
+    private var showBatchApprove: Bool {
+        visibleCount > 1 || totalPendingCount > visibleCount
     }
 
     private var visibleCaptures: [CaptureItem] {
@@ -734,6 +802,21 @@ struct ReviewInboxSection: View {
     /// is only visible through the review stats. Never report fewer than what's already on screen.
     private var totalPendingCount: Int {
         max(state.review?.stats.pending_captures ?? 0, captures.count)
+    }
+
+    /// How many pending items exist on the server past what's currently loaded into the inbox array.
+    private var remainingBeyondLoaded: Int {
+        max(totalPendingCount - captures.count, 0)
+    }
+
+    /// Whether "Show more" can pull the NEXT server page: there IS a backlog past the loaded set, the
+    /// current fetch actually filled its page (so more likely exist), and we haven't hit the server's
+    /// per-request ceiling. Past the ceiling a very large backlog is cleared via the section board or
+    /// "Approve all N", not by paging one screen at a time.
+    private var canFetchMoreFromServer: Bool {
+        remainingBeyondLoaded > 0
+            && captures.count >= serverFetchLimit
+            && serverFetchLimit < Self.serverFetchCap
     }
 
     /// The calm-facing count: a big backlog is never rendered as a scary raw "1,238". Anything past
@@ -770,6 +853,33 @@ struct ReviewInboxSection: View {
         Task {
             await state.approveAllCaptures(source: source)
             approveAllInFlight = false
+        }
+    }
+
+    /// Pull the NEXT server page of the inbox. The endpoint pages by `limit` only (no offset) and caps
+    /// a single fetch at 100, so paging = re-fetching with a larger limit and replacing the inbox
+    /// array. loadInbox() defaults to 30; each "Show more" past the loaded set grows the limit by a
+    /// page (capped at 100) so the backlog beyond the initial 30 becomes reachable in the item view.
+    private func fetchMoreFromServer() {
+        guard !loadingMoreFromServer else { return }
+        let nextLimit = min(serverFetchLimit + Self.serverFetchStep, Self.serverFetchCap)
+        guard nextLimit > serverFetchLimit else { return }
+        loadingMoreFromServer = true
+        Task {
+            defer { loadingMoreFromServer = false }
+            do {
+                let data = try await state.request(path: "/v1/inbox?limit=\(nextLimit)", method: "GET")
+                let results = try JSONDecoder().decode(InboxResponse.self, from: data).results
+                serverFetchLimit = nextLimit
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    state.inbox = results
+                    // Reveal the freshly loaded page (the onChange grow-branch also protects this,
+                    // but set it here so the new items show even if the count didn't change).
+                    visibleLimit = min(results.count, visibleLimit + Self.pageSize)
+                }
+            } catch {
+                state.status = CortexRecoveryText.failureStatus("Load more review items", error: error)
+            }
         }
     }
 
@@ -1174,6 +1284,9 @@ struct ReviewQueueCaptureCard: View {
                     Label("Approve all from \(sourceDisplayName)", systemImage: "checkmark.seal.fill")
                 }
                 .disabled(isInFlight)
+                // Honest scope: this approves EVERY pending item from this source server-side, not just
+                // the cards on this page — so the label never over-promises or surprises the user.
+                .help("Approves every pending item from \(sourceDisplayName), including any not shown on this page")
             }
         }
     }

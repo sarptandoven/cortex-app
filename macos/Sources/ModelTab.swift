@@ -1196,7 +1196,13 @@ struct HomeHeroSection: View {
         case .needsAttention:
             state.openConnectionsPrivacy(statusMessage: "Check source connection")
         case .dueSync:
-            state.openConnectionsPrivacy(statusMessage: "Sync connected sources")
+            // FIX: "Sync now" must actually sync, not open Connections. syncNowFromMenu()
+            // covers every source (local notes folder + due connected sources + queued jobs)
+            // and is a no-op while a sync is already active, so tapping mid-sync is safe.
+            // The status names the work ("Sync connected sources") for the split second before
+            // syncNowFromMenu flips it to its own live "Syncing your sources…" line.
+            state.status = "Sync connected sources"
+            state.syncNowFromMenu()
         case .connect, .connectEmpty:
             if let connector = obsidianConnector {
                 state.connectLocalNotesFolder(connector, chooseNew: hasEmptySource)

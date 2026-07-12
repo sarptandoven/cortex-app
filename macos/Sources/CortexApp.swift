@@ -4061,12 +4061,14 @@ final class AppState: ObservableObject {
     func startLiveRefresh() {
         guard liveRefreshTask == nil else { return }
         liveRefreshTask = Task { @MainActor [weak self] in
+            var tick = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 6_000_000_000)
                 guard let self, !Task.isCancelled else { break }
                 // Skip while the sign-in wall is up or the app is in the background — nothing to show.
                 guard NSApplication.shared.isActive, !self.requiresSignIn else { continue }
-                await self.refreshLiveCounts()
+                tick &+= 1
+                await self.refreshLiveCounts(tick: tick)
             }
         }
     }
@@ -4076,13 +4078,32 @@ final class AppState: ObservableObject {
         liveRefreshTask = nil
     }
 
-    /// The cheap loaders whose results back the always-visible counts. Deliberately small so the
-    /// heartbeat stays inexpensive; heavier surfaces (graph, profile, twin) still load on demand.
-    func refreshLiveCounts() async {
+    /// TIERED live refresh so no surface goes stale while a user watches it:
+    ///  - EVERY ~6s: the always-visible counts + connection status shown across surfaces.
+    ///  - EVERY ~6s: the CURRENTLY-VISIBLE tab's own light data (Review inbox, Home twin/mirror, Ask
+    ///    suggestions) — the things the earlier "counts only" refresh left frozen until a tab switch.
+    ///  - EVERY ~30s (throttled): the heavy surfaces on Home (profile, constellation graph) so they
+    ///    stay fresh without making the heartbeat expensive.
+    func refreshLiveCounts(tick: Int = 1) async {
         await loadStats()
         await loadReview()
         await loadRecallHeadline()
+        await loadSourceConnectivity()
         refreshIntegrationStates()
+        let heavy = (tick % 5 == 0)   // ~every 30s
+        switch selectedTab {
+        case .review:
+            await loadInbox()
+        case .model:
+            await loadTwinScorecard()
+            await loadMirrorInsight()
+            if heavy {
+                await loadProfile()
+                await loadGraph()
+            }
+        case .ask:
+            await loadRecent()
+        }
     }
 
     func ensureBackend() async {

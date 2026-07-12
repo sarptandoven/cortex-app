@@ -441,10 +441,20 @@ extension AppState {
             // Browser sign-in (account picker / SSO / 2FA / first-time account creation)
             // routinely takes minutes. Poll for up to 5 minutes with visible progress and a
             // short backoff so a first-time user setting up 2FA does not get timed out.
+            //
+            // A SINGLE poll must not abort the whole 5-minute flow. The network can hiccup, and the
+            // poll endpoint can transiently return a non-2xx (e.g. a 401 before the browser session
+            // is authorized, a 429, or a brief 5xx) while the browser sign-in is still perfectly on
+            // track. Previously any such tick threw straight out and stranded the user, or (on a
+            // stall) left cloudAuthBusy true behind a stale "Waiting…" line. So we now catch a failed
+            // tick, surface a clear "connection is slow, still trying" status, and keep polling until
+            // the real deadline — only a fatal, repeated failure ends the flow.
             let start = Date()
             let deadline = start.addingTimeInterval(300)
             var delay: UInt64 = 2 * 1_000_000_000
             var tick = 0
+            var consecutiveFailures = 0
+            let maxConsecutiveFailures = 8   // ~8 stalled/failed ticks in a row = give up cleanly
             while Date() < deadline {
                 do {
                     try await Task.sleep(nanoseconds: delay)
@@ -454,10 +464,29 @@ extension AppState {
                     return
                 }
                 delay = min(delay + 1_000_000_000, 5 * 1_000_000_000)
-                let pollData = try await cloudPost(base: base, path: "/v1/auth/app/poll", body: [
-                    "flow_id": started.flow_id,
-                    "poll_secret": started.poll_secret
-                ])
+
+                let pollData: Data
+                do {
+                    pollData = try await cloudPost(base: base, path: "/v1/auth/app/poll", body: [
+                        "flow_id": started.flow_id,
+                        "poll_secret": started.poll_secret
+                    ])
+                } catch {
+                    // A stalled or failed single poll (network hiccup, transient 401/429/5xx).
+                    // Don't kill the flow: tell the user we're still trying, and keep polling until
+                    // either the browser sign-in lands or the 5-minute deadline is genuinely reached.
+                    consecutiveFailures += 1
+                    if consecutiveFailures >= maxConsecutiveFailures {
+                        // Repeated failures — the connection is genuinely down. End cleanly with a
+                        // clear reason (defer clears cloudAuthBusy) rather than spinning silently.
+                        cloudAuthMessage = "Lost the connection to Cortex Cloud while waiting for browser sign-in. Check your network, then try again. You can also Cancel."
+                        return
+                    }
+                    cloudAuthMessage = "Still waiting on Cortex Cloud. The connection is slow; finish sign-in in your browser, or Cancel."
+                    continue
+                }
+                consecutiveFailures = 0
+
                 let poll = try JSONDecoder().decode(CortexCloudAppPollResponse.self, from: pollData)
                 if let access = poll.access_token, let refresh = poll.refresh_token {
                     let tokens = CortexCloudTokenResponse(
@@ -1112,8 +1141,15 @@ struct CortexCloudSection: View {
             || lower.contains("permanently deleted") {
             return .success
         }
+        // A terminal give-up (e.g. the browser poll lost the connection for good) is an error even
+        // though it mentions "waiting for" — classify these before the progress heuristics so a real
+        // failure never reads as neutral progress.
+        if lower.contains("lost the connection") || lower.contains("check your network") {
+            return .error
+        }
         if lower.hasSuffix("...") || lower.hasSuffix("…") || lower.contains("cancelled")
-            || lower.contains("waiting for") || lower.contains("(") {
+            || lower.contains("waiting for") || lower.contains("(")
+            || lower.contains("still waiting") || lower.contains("connection is slow") {
             return .progress
         }
         return .error

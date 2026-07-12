@@ -114,6 +114,7 @@ struct AskQuerySection: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: CortexDesign.Space.xs) {
         HStack(spacing: CortexDesign.Space.sm) {
             Image(systemName: "magnifyingglass")
                 .font(.title3)
@@ -139,8 +140,9 @@ struct AskQuerySection: View {
                     queryFocused = true
                 }
             }
-            // The one primary action on this surface.
-            CortexButton(title: "Ask", role: .primary, size: .large) {
+            // The one primary action on this surface. Its label switches to "Searching…" in
+            // flight so the click is acknowledged in place, with the spinner line just below.
+            CortexButton(title: state.isBusy ? "Searching…" : "Ask", role: .primary, size: .large) {
                 state.runSearch()
             }
             .disabled(state.isBusy || trimmedQuery.isEmpty)
@@ -162,6 +164,26 @@ struct AskQuerySection: View {
                 .stroke(CortexDesign.hairline, lineWidth: 1)
         )
         .animation(.easeOut(duration: 0.15), value: queryFocused)
+
+        // A clear, unmissable in-flight line right under the field: the moment the user asks,
+        // a small spinner and "Searching your memory…" confirm the work started.
+        if state.isBusy {
+            HStack(spacing: CortexDesign.Space.xs) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+                    .frame(width: 14, height: 14)
+                Text("Searching your memory…")
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+            }
+            .padding(.horizontal, CortexDesign.Space.xs)
+            .transition(.opacity)
+            .accessibilityElement()
+            .accessibilityLabel("Searching your memory")
+        }
+        }
+        .animation(.easeOut(duration: 0.15), value: state.isBusy)
         .onAppear {
             // Focus after the field joins the hierarchy — an immediate assignment is
             // silently dropped on macOS 13.
@@ -605,10 +627,15 @@ struct AskResponseSection: View {
                     showActionsWhenMemoryExists: true
                 )
             } else {
+                // Retrieval found related memory but the model wouldn't commit to a single
+                // cited answer. Rather than a dead "no answer" line, name what happened and
+                // point straight at the matches, which are auto-opened just below.
                 AskQuietState(
-                    title: "Matching memory found",
-                    detail: "Related memory found, but no direct answer. Open the retrieved set below."
+                    title: "Related memory, no single answer",
+                    detail: "Cortex found memory related to your question but not a confident cited answer. The closest matches are open below - skim them, or ask something more specific.",
+                    systemImage: "text.magnifyingglass"
                 )
+                .onAppear { citedMemoriesExpanded = true }
             }
 
             // ALWAYS expose the fuller retrieved set when there is one — even beneath a cited
@@ -837,7 +864,7 @@ struct AskResultsSection: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(state.searchResults) { item in
-                            AskSourceDetailRow(item: item)
+                            AskSourceDetailRow(state: state, item: item)
                         }
                     }
                 }
@@ -847,7 +874,16 @@ struct AskResultsSection: View {
 }
 
 struct AskSourceDetailRow: View {
+    @ObservedObject var state: AppState
     let item: MemoryItem
+
+    private var openableURL: URL? {
+        CitationDisplay.openableURL(sourceURL: item.source_url)
+    }
+
+    private var isForgetting: Bool {
+        state.inFlightMemoryIds.contains(item.id)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -894,11 +930,35 @@ struct AskSourceDetailRow: View {
                 .foregroundColor(CortexDesign.inkSecondary)
                 .help(item.source_url ?? citation)
             }
+
+            // Lightweight row actions: open the underlying source when it's reachable, and
+            // let the reader forget a match that isn't helpful (it drops out of future answers).
+            HStack(spacing: CortexDesign.Space.xs) {
+                if let url = openableURL {
+                    CortexButton(title: "Open source", systemImage: "arrow.up.right.square", role: .ghost, size: .small) {
+                        NSWorkspace.shared.open(url)
+                    }
+                    .help("Open this source (\(url.absoluteString))")
+                }
+                Spacer(minLength: 0)
+                CortexButton(
+                    title: isForgetting ? "Forgetting…" : "Not helpful",
+                    systemImage: "hand.thumbsdown",
+                    role: .ghost,
+                    size: .small
+                ) {
+                    state.deleteMemory(item)
+                }
+                .disabled(isForgetting)
+                .help("Forget this memory so it stops appearing in answers")
+            }
+            .padding(.top, 2)
         }
         .padding(12)
         .background(CortexDesign.panelBackground)
         .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.hairline, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
+        .opacity(isForgetting ? 0.55 : 1)
     }
 
     private var sourceTitle: String {
@@ -1067,6 +1127,29 @@ struct AskAnswerPanel: View {
                 .stroke(CortexDesign.hairline, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
+        // A brief, unmissable confirmation pill after Copy — the small button-label flip alone was
+        // easy to miss, so a wax-red toast slides in at the top of the answer and fades out.
+        .overlay(alignment: .top) {
+            if justCopied {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(citations.isEmpty ? "Answer copied" : "Answer and sources copied")
+                        .font(CortexDesign.Typography.caption)
+                        .fontWeight(.semibold)
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Capsule().fill(CortexDesign.accent))
+                .shadow(color: CortexDesign.accent.opacity(0.25), radius: 8, y: 2)
+                .padding(.top, 10)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .accessibilityElement()
+                .accessibilityLabel(citations.isEmpty ? "Answer copied" : "Answer and sources copied")
+            }
+        }
+        .animation(.spring(response: 0.32, dampingFraction: 0.8), value: justCopied)
         .onChange(of: answer) { _ in
             justCopied = false
             selectedCitation = nil
@@ -1268,7 +1351,28 @@ struct AskMarginCitationCard: View {
     let onHover: (Bool) -> Void
 
     private var openableURL: URL? {
-        CitationDisplay.openableURL(path: citation.citation_path, sourceURL: citation.source_url)
+        // A file URL whose target has been deleted/moved is not really openable — treat it as
+        // unavailable so the card shows a note instead of a link that opens to nothing.
+        guard let url = CitationDisplay.openableURL(path: citation.citation_path, sourceURL: citation.source_url) else {
+            return nil
+        }
+        if url.isFileURL, !FileManager.default.fileExists(atPath: url.path) {
+            return nil
+        }
+        return url
+    }
+
+    /// True when this citation clearly pointed at an on-disk file (an absolute path or a file
+    /// source URL) but that file can no longer be opened — deleted, moved, or a volume unmounted.
+    /// A web/http citation or an internal capture never triggers this note.
+    private var sourceUnavailable: Bool {
+        guard openableURL == nil else { return false }
+        if let path = citation.citation_path?.trimmingCharacters(in: .whitespacesAndNewlines),
+           path.hasPrefix("/") {
+            return true
+        }
+        let lower = (citation.source_url ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lower.hasPrefix("file://") || lower.hasPrefix("local-file://")
     }
 
     var body: some View {
@@ -1321,6 +1425,20 @@ struct AskMarginCitationCard: View {
                         .layoutPriority(1)
                 }
             }
+
+            if sourceUnavailable {
+                // The citation still stands (its excerpt is real), but the file behind it can no
+                // longer be opened. Say so plainly rather than leaving a dead, unclickable card.
+                HStack(spacing: 5) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 9))
+                    Text("Source no longer available")
+                        .font(CortexDesign.Typography.hint)
+                        .lineLimit(1)
+                }
+                .foregroundColor(CortexDesign.inkFaint)
+                .help("The original file for this citation was moved or deleted. The quoted excerpt above is still what Cortex used.")
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -1367,7 +1485,14 @@ struct AskMarginCitationCard: View {
     }
 
     private var helpText: String {
-        let base = openableURL != nil ? "Click to open source" : sourceLabel
+        let base: String
+        if openableURL != nil {
+            base = "Click to open source"
+        } else if sourceUnavailable {
+            base = "\(sourceLabel) (source no longer available)"
+        } else {
+            base = sourceLabel
+        }
         return excerpt.isEmpty ? base : "\(excerpt)\n\n\(base)"
     }
 

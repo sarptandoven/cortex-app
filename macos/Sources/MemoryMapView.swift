@@ -93,6 +93,18 @@ struct MemoryMapView: View {
     private static let minZoom: CGFloat = 0.6
     private static let maxZoom: CGFloat = 4.0
 
+    /// The hit-test slop (screen points, divided by zoom before use) used by tap, hover, AND
+    /// drag-start hit-testing. All three now pass the SAME `12 / effectiveZoom`: drag-start used to
+    /// test with a tighter `10`, so a press could begin a node-drag while the matching tap release,
+    /// tested more generously, still counted as empty space — the node would jump under the pointer
+    /// and then deselect. One shared tolerance removes that class of bug.
+    ///
+    /// The drag's minimum travel (below) is a different threshold with a different job: it decides
+    /// tap-vs-drag, not on-node-vs-empty. Kept comfortably above a trackpad's natural click-wiggle so
+    /// an intended tap stays a tap (routed to `.onTapGesture`), while a deliberate move of a star or
+    /// pan of the sky crosses it at once.
+    private static let dragMinimumDistance: CGFloat = 10
+
     /// Types that belong to the entity layer (always shown). Everything else — memory kinds
     /// like fact/preference/decision, and task kinds — is the detail layer.
     private static let entityLayerTypes: Set<String> = [
@@ -236,7 +248,7 @@ struct MemoryMapView: View {
                         neighborhood: neighborhood,
                         edgeSummaries: selectedEdgeSummaries,
                         loading: loadingNeighborhood,
-                        onExplore: onExplore,
+                        onExplore: exploreAction,
                         onSelectConnection: { entityID in selectNode(entityID) }
                     )
                     .transition(.opacity)
@@ -248,11 +260,19 @@ struct MemoryMapView: View {
         .onAppear {
             Task { await state.loadGraph() }
         }
-        // If the graph reloads and the selected node vanishes, drop the stale selection.
+        // When the graph reloads (a capture or sync landed, e.g. the ~6s live refresh): if the
+        // selected node vanished, drop the stale selection; if it survived, quietly re-fetch its
+        // neighborhood so an OPEN detail panel doesn't keep showing pre-capture connections. The
+        // edge summaries and cluster name recompute on their own (they read `state` directly); only
+        // the fetched `neighborhood` snapshot needs a nudge.
         .onChange(of: state.graphNodes) { _ in
-            if let id = selectedNodeID, !state.graphNodes.contains(where: { $0.id == id }) {
-                selectedNodeID = nil
-                neighborhood = nil
+            if let id = selectedNodeID {
+                if !state.graphNodes.contains(where: { $0.id == id }) {
+                    selectedNodeID = nil
+                    neighborhood = nil
+                } else {
+                    refreshOpenPanelNeighborhood()
+                }
             }
             hoveredNodeID = nil
         }
@@ -310,9 +330,39 @@ struct MemoryMapView: View {
         }
     }
 
+    /// Re-fetch the OPEN panel's cited neighborhood after a graph update, keeping the current data on
+    /// screen until the new snapshot arrives (no "Loading connections…" flash on a background
+    /// refresh). Only entity nodes have a neighborhood to fetch; the result is discarded if the
+    /// selection changed while it was in flight.
+    private func refreshOpenPanelNeighborhood() {
+        guard let id = selectedNodeID,
+              let node = state.graphNodes.first(where: { $0.id == id }),
+              node.centrality != nil else { return }
+        Task {
+            let result = await state.loadNeighborhood(id)
+            await MainActor.run {
+                if selectedNodeID == id, let result { neighborhood = result }
+            }
+        }
+    }
+
     private var selectedNode: GraphNode? {
         guard let id = selectedNodeID else { return nil }
         return state.graphNodes.first { $0.id == id }
+    }
+
+    /// The "Explore in Ask" action the detail panel always gets, so the button is never a dead end.
+    /// The Constellation overlay supplies its own `onExplore` (which also brings the main window
+    /// forward). The read-only Home embed leaves `onExplore` nil — there we default to the SAME recipe
+    /// the overlay uses (seed the query with the node's label, switch to Ask, run it), without the
+    /// window plumbing since Home is already the front window. Either way the button does something.
+    private var exploreAction: (GraphNode) -> Void {
+        if let onExplore { return onExplore }
+        return { node in
+            state.searchQuery = node.label
+            state.selectedTab = .ask
+            state.runSearch()
+        }
     }
 
     // MARK: Camera math
@@ -394,7 +444,7 @@ struct MemoryMapView: View {
         // First change of this drag: decide node-drag vs pan by hit-testing the start location.
         if activeDrag == nil {
             let startLayout = layoutPoint(value.startLocation, in: size)
-            if let hit = nearestNode(to: startLayout, tolerance: 10 / effectiveZoom, layout: layout, nodes: mapNodes) {
+            if let hit = nearestNode(to: startLayout, tolerance: 12 / effectiveZoom, layout: layout, nodes: mapNodes) {
                 activeDrag = .node(id: hit.id)
                 hoveredNodeID = hit.id
                 NSCursor.closedHand.set()
@@ -510,13 +560,13 @@ struct MemoryMapView: View {
                 // One drag gesture handles BOTH node-drag and camera-pan: the first change hit-tests
                 // the start location to decide which. Pinch zoom runs simultaneously.
                 //
-                // Tap-vs-drag: the old 3pt threshold collided with `.onTapGesture` — a tap that drifts
-                // ≥3pt on a trackpad (very common) was claimed by the drag and never selected/deselected
-                // a node. Raising the threshold to 10pt means a normal "click that wiggles a little"
-                // still lands as a tap (SwiftUI routes it to `.onTapGesture`), while a deliberate drag
-                // to move a star or pan the sky still crosses 10pt immediately. Selection is now reliable.
+                // Tap-vs-drag: `dragMinimumDistance` (10pt) is the travel before this becomes a drag —
+                // a normal "click that wiggles a little" stays under it and SwiftUI routes it to
+                // `.onTapGesture`, while a deliberate drag crosses it at once. Both the tap and the
+                // drag-start now hit-test with the SAME `12 / effectiveZoom` slop, so a press and its
+                // release always agree on whether they landed on a node. Selection is reliable.
                 .gesture(
-                    DragGesture(minimumDistance: 10)
+                    DragGesture(minimumDistance: Self.dragMinimumDistance)
                         .onChanged { value in handleDragChanged(value, size: geo.size, layout: layout) }
                         .onEnded { value in handleDragEnded(value, size: geo.size, layout: layout) }
                         .simultaneously(
@@ -563,35 +613,33 @@ struct MemoryMapView: View {
     }
 
     /// Quiet zoom in / zoom out / reset controls in the canvas corner — pinch is not
-    /// discoverable on a Mac, buttons are.
+    /// discoverable on a Mac, buttons are. Each button now lights on hover and presses in on click
+    /// (via `ZoomStepButton`), and zoom-out / zoom-in dim and stop responding once the camera is at
+    /// its floor / ceiling, so the control never reads as broken when a tap "does nothing".
     private var cameraControls: some View {
         HStack(spacing: 2) {
-            Button { stepZoom(1 / 1.35) } label: {
-                Image(systemName: "minus.magnifyingglass")
-            }
-            .buttonStyle(.plain)
-            .frame(width: 26, height: 24)
-            .help("Zoom out")
-            .accessibilityLabel("Zoom out")
-            Button { stepZoom(1.35) } label: {
-                Image(systemName: "plus.magnifyingglass")
-            }
-            .buttonStyle(.plain)
-            .frame(width: 26, height: 24)
-            .help("Zoom in")
-            .accessibilityLabel("Zoom in")
+            ZoomStepButton(
+                systemImage: "minus.magnifyingglass",
+                help: "Zoom out",
+                disabled: zoomScale <= Self.minZoom + 0.001
+            ) { stepZoom(1 / 1.35) }
+            ZoomStepButton(
+                systemImage: "plus.magnifyingglass",
+                help: "Zoom in",
+                disabled: zoomScale >= Self.maxZoom - 0.001
+            ) { stepZoom(1.35) }
             if zoomScale != 1 || panOffset != .zero {
-                Button { resetCamera() } label: {
-                    Image(systemName: "arrow.counterclockwise")
-                }
-                .buttonStyle(.plain)
-                .frame(width: 26, height: 24)
-                .help("Reset view")
-                .accessibilityLabel("Reset view")
+                ZoomStepButton(
+                    systemImage: "arrow.counterclockwise",
+                    help: "Reset view",
+                    disabled: false
+                ) { resetCamera() }
+                .transition(.opacity)
             }
         }
         .font(.system(size: 12, weight: .medium))
         .foregroundColor(CortexDesign.inkSecondary)
+        .animation(.easeInOut(duration: 0.15), value: zoomScale)
         .padding(3)
         .background(CortexDesign.panelBackground.opacity(0.92))
         .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
@@ -1004,6 +1052,47 @@ struct MemoryMapView: View {
     ]
 }
 
+/// A single camera-cluster button (zoom out / zoom in / reset). Unlike a bare `.plain` button it
+/// gives real feedback: a quiet hover wash, a press-in scale, and a dimmed, non-interactive state at
+/// the zoom floor / ceiling — so a tap at max zoom reads as "already there", not as a dead control.
+private struct ZoomStepButton: View {
+    let systemImage: String
+    let help: String
+    let disabled: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .frame(width: 26, height: 24)
+                .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+                .background(
+                    RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                        .fill(hovering && !disabled ? CortexDesign.quietBackground : Color.clear)
+                )
+        }
+        .buttonStyle(ZoomStepPressStyle())
+        .disabled(disabled)
+        .opacity(disabled ? 0.35 : 1)
+        .onHover { hovering = $0 && !disabled }
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
+/// The press physics for a camera-cluster button: a small settle-in on click so the zoom actually
+/// feels like it did something, matching the design system's "sets into the paper" press language.
+private struct ZoomStepPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.88 : 1)
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .animation(CortexMotion.press, value: configuration.isPressed)
+    }
+}
+
 /// The constellation's KEY — not a row of stock dots but a designed legend entry: a live domed
 /// color swatch (a small star of the cluster's own hue, with a soft halo, so it reads as a piece of
 /// the map) beside the cluster's name in the serif archive voice. Clicking spotlights that cluster;
@@ -1171,14 +1260,17 @@ private struct NodeDetailPanel: View {
             }
             connectionsSection
             if let onExplore {
-                Button {
+                CortexButton(
+                    title: "Explore in Ask",
+                    systemImage: "sparkle.magnifyingglass",
+                    role: .primary,
+                    size: .small
+                ) {
                     onExplore(node)
-                } label: {
-                    Label("Explore in Ask", systemImage: "sparkle.magnifyingglass")
-                        .font(CortexDesign.Typography.caption.weight(.semibold))
                 }
-                .buttonStyle(.bordered)
-                .tint(CortexDesign.accent)
+                .help("Ask Cortex about \(node.label) and jump to the answer.")
+                .accessibilityLabel("Explore \(node.label) in Ask")
+                .padding(.top, 2)
             }
         }
         .cortexCard(padding: CortexDesign.Space.md)

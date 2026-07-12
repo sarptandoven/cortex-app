@@ -483,8 +483,8 @@ struct MemoryWrappedShareSheet: View {
         VStack(alignment: .leading, spacing: 3) {
             CortexToggle(title: "Notify me weekly", isOn: $notifyWeekly)
             Text(notifyWeekly
-                 ? "You'll get a nudge when a new card is ready, only on weeks with real recalls."
-                 : "Get a once-a-week nudge when your card is ready. Off by default.")
+                 ? "On. You'll get one nudge a week when a new card is ready, and only on weeks with real recalls."
+                 : "Off. Turn this on for one nudge a week when a new card is ready, only on weeks with real recalls.")
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
