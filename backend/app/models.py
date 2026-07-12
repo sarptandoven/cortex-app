@@ -211,6 +211,20 @@ class SourceAnalyzeResponse(BaseModel):
     supported_sources: list[dict[str, Any]]
 
 
+class ImportDiffRequest(BaseModel):
+    """IMPORT-DIFF: compare a vendor's SHORT memory export against Cortex's cited memory.
+
+    Send EITHER `export` (the pasted / uploaded vendor "saved memories" text or
+    JSON) OR a pre-parsed `facts` list ([str] or [{text, vendor?, captured_at?}]).
+    `vendor` names the source ("chatgpt"/"claude"/"gemini"/...) when known; it is
+    sniffed from the content otherwise. Read-only preview — nothing is imported."""
+
+    export: str | dict[str, Any] | list[Any] | None = None
+    facts: list[Any] | None = Field(default=None, max_length=1000)
+    vendor: str = Field(default="", max_length=80)
+    user_id: str = "local"
+
+
 class SourceAccountRequest(BaseModel):
     source: str = Field(..., min_length=1, max_length=80)
     account_label: str = Field(default="", max_length=160)

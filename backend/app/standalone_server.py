@@ -2751,6 +2751,36 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/mirror":
                 self._send_json({"insight": store.mirror_insight(user_id)})
                 return
+            if method == "POST" and path == "/v1/import-diff":
+                # IMPORT-DIFF ("what the AIs think of you"): parse a vendor's SHORT memory export
+                # and compare it against Cortex's own cited memory (confirmed / conflicting / stale
+                # / missing per fact) plus what Cortex's Mirror knows that the vendor missed.
+                # Read-only preview; nothing is imported. Cite-or-abstain: every confirmed/
+                # conflicting/stale verdict carries a real Cortex memory id.
+                from .import_diff import compare_vendor_export
+
+                body = self._json_body()
+                export = body.get("export")
+                facts = body.get("facts")
+                if export is None and facts is None:
+                    self._send_json(
+                        {"detail": "Provide either 'export' text/json or a pre-parsed 'facts' list."},
+                        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                    )
+                    return
+                if facts is not None and not isinstance(facts, list):
+                    self._send_json({"detail": "'facts' must be a list."}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
+                self._send_json(
+                    compare_vendor_export(
+                        store,
+                        user_id,
+                        raw_export=export,
+                        vendor_facts=facts,
+                        vendor=str(body.get("vendor") or "")[:80],
+                    )
+                )
+                return
             if method == "GET" and path == "/v1/person-map":
                 include_pending = (params.get("include_pending") or ["false"])[0].strip().lower() in {"1", "true", "yes"}
                 self._send_json(store.person_map(user_id, include_pending=include_pending, sector=(params.get("sector") or [None])[0]))

@@ -42,6 +42,7 @@ from .models import GradeAnswerRequest, WouldIRequest, DraftAsMeRequest, GradeTw
 from .models import SharedMemoryWriteRequest, SharedPrincipalCreateRequest
 from .models import ImportBundleRequest, MemoryConsolidationRequest, VerifyBeliefProofRequest, VerifyIntegrityRequest, VerifyBundleRequest
 from .models import WorkingCanvasNodeRequest, WorkingCanvasNodeResponse, WorkingCanvasResponse
+from .models import ImportDiffRequest
 from .oauth_broker import register_oauth_broker_routes
 from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
@@ -2396,6 +2397,27 @@ def stats(user_id: str = Depends(auth)) -> dict[str, Any]:
 @app.get("/v1/mirror")
 def mirror(user_id: str = Depends(auth)) -> dict[str, Any]:
     return {"insight": store.mirror_insight(user_id)}
+
+
+@app.post("/v1/import-diff", response_model=None)
+def import_diff(request: ImportDiffRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """IMPORT-DIFF ("what the AIs think of you"): parse a vendor's SHORT memory
+    export and compare it, side by side, against Cortex's own cited memory —
+    confirmed / conflicting / stale / missing per fact, plus what Cortex's Mirror
+    knows that the vendor's export missed. Read-only preview: nothing is imported
+    (import the 'missing' facts via /v1/captures). Cite-or-abstain: every
+    confirmed/conflicting/stale verdict carries a real Cortex memory id."""
+    from .import_diff import compare_vendor_export
+
+    if request.export is None and request.facts is None:
+        raise HTTPException(status_code=422, detail="Provide either 'export' text/json or a pre-parsed 'facts' list.")
+    return compare_vendor_export(
+        store,
+        user_id,
+        raw_export=request.export,
+        vendor_facts=request.facts,
+        vendor=request.vendor,
+    )
 
 
 @app.get("/v1/profile", response_model=None)

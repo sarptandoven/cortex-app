@@ -3218,3 +3218,328 @@ def _strip_rtf(value: str) -> str:
     value = re.sub(r"\\[a-zA-Z]+-?\d* ?", " ", value)
     value = value.replace("{", " ").replace("}", " ")
     return re.sub(r"\s+", " ", value).strip()
+
+
+# ===========================================================================
+# Vendor MEMORY exports (the SHORT "what the AI remembers about you" lists)
+# ---------------------------------------------------------------------------
+# Distinct from the full conversation exports parsed above: these are the tiny
+# bulleted fact lists a vendor surfaces as "Saved memories" / "Model set
+# context" (ChatGPT), the Claude memory/profile summary, or Gemini's
+# Personalization / "Things Gemini remembers" page. Users copy-paste them or
+# download a small JSON/markdown/text file; each atomic fact becomes one
+# VendorFact {text, vendor, captured_at?} that the import-diff engine compares
+# against Cortex's own cited memory. Tolerant of the real shapes (JSON object,
+# JSON list, markdown bullets, plain lines); a malformed blob yields [] and
+# never raises.
+# ===========================================================================
+
+# Canonical vendor ids + display labels for the memory-list mode.
+VENDOR_MEMORY_LABELS: dict[str, str] = {
+    "chatgpt": "ChatGPT",
+    "claude": "Claude",
+    "gemini": "Gemini",
+    "copilot": "Microsoft Copilot",
+    "grok": "Grok",
+    "perplexity": "Perplexity",
+}
+
+# Vendor aliases seen in filenames / copy-paste headers / hint strings.
+_VENDOR_MEMORY_ALIASES: dict[str, str] = {
+    "chatgpt": "chatgpt",
+    "chat-gpt": "chatgpt",
+    "openai": "chatgpt",
+    "gpt": "chatgpt",
+    "claude": "claude",
+    "anthropic": "claude",
+    "gemini": "gemini",
+    "google-gemini": "gemini",
+    "bard": "gemini",
+    "copilot": "copilot",
+    "microsoft-copilot": "copilot",
+    "grok": "grok",
+    "xai": "grok",
+    "perplexity": "perplexity",
+}
+
+# A single atomic vendor fact is capped so a pasted paragraph can't smuggle a
+# whole document in as one "fact"; the diff compares short sentence-like facts.
+MAX_VENDOR_FACT_CHARS = 600
+# Never build an unbounded diff from a giant paste — keep the top N facts in
+# file order (dedup applied first) so the compare stays deterministic + bounded.
+MAX_VENDOR_FACTS = 400
+
+# Boilerplate the vendor pages wrap the actual list in — never a real fact.
+_VENDOR_MEMORY_BOILERPLATE = (
+    "saved memories",
+    "saved memory",
+    "model set context",
+    "memory updated",
+    "manage memory",
+    "manage memories",
+    "things gemini remembers",
+    "what gemini remembers",
+    "personalization",
+    "here's what",
+    "here is what",
+    "what i remember",
+    "what i know about you",
+    "memory is on",
+    "reference saved memories",
+    "clear chatgpt's memory",
+    "to forget",
+    "no memories yet",
+    "delete all",
+)
+
+
+def vendor_memory_label(vendor: str) -> str:
+    """Display label for a vendor id, falling back to a title-cased id."""
+    key = _normalize_vendor_hint(vendor)
+    if key in VENDOR_MEMORY_LABELS:
+        return VENDOR_MEMORY_LABELS[key]
+    cleaned = re.sub(r"[^a-z0-9]+", " ", str(vendor or "").lower()).strip()
+    return cleaned.title() if cleaned else "AI assistant"
+
+
+def _normalize_vendor_hint(value: Any) -> str:
+    """Map a free-form vendor hint / filename token to a canonical vendor id (or "")."""
+    normalized = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+    if not normalized:
+        return ""
+    if normalized in _VENDOR_MEMORY_ALIASES:
+        return _VENDOR_MEMORY_ALIASES[normalized]
+    compact = normalized.replace("-", "")
+    for alias, vendor in _VENDOR_MEMORY_ALIASES.items():
+        if alias.replace("-", "") == compact:
+            return vendor
+    # A longer token like "chatgpt-memory-export" — match by contained vendor word.
+    tokens = set(normalized.split("-"))
+    for alias, vendor in _VENDOR_MEMORY_ALIASES.items():
+        if alias in tokens:
+            return vendor
+    return ""
+
+
+def _detect_vendor_from_text(text: str) -> str:
+    """Best-effort vendor id from the export's own header/body (used when no hint)."""
+    head = text[:2000].lower()
+    for vendor in ("chatgpt", "claude", "gemini", "copilot", "grok", "perplexity"):
+        if vendor in head:
+            return vendor
+    for alias, vendor in _VENDOR_MEMORY_ALIASES.items():
+        if alias in head:
+            return vendor
+    return ""
+
+
+def _is_vendor_memory_boilerplate(line: str) -> bool:
+    lowered = line.strip().lower().rstrip(":.")
+    if not lowered:
+        return True
+    if any(marker in lowered for marker in _VENDOR_MEMORY_BOILERPLATE):
+        return True
+    # A bare vendor name / page heading ("ChatGPT", "Memory") carries no fact.
+    if lowered in VENDOR_MEMORY_LABELS or lowered in _VENDOR_MEMORY_ALIASES or lowered in {"memory", "memories", "context"}:
+        return True
+    return False
+
+
+def _clean_vendor_fact_text(value: Any) -> str:
+    """Normalize one candidate fact: strip bullet/number markers, collapse whitespace, bound length."""
+    if isinstance(value, (dict, list)):
+        return ""
+    text = str(value or "")
+    text = html.unescape(text).replace("•", " ").replace("–", "-").replace("—", "-")
+    # Strip a leading list marker: "-", "*", "•", "1.", "1)", "[ ]"/"[x]" checkbox, "> " quote.
+    text = re.sub(r"^\s*(?:[-*+•●▪]|\d{1,3}[.)]|\[[ xX]?\]|>)\s+", "", text)
+    text = re.sub(r"\s+", " ", text).strip().strip("\"'")
+    if len(text) > MAX_VENDOR_FACT_CHARS:
+        text = text[:MAX_VENDOR_FACT_CHARS].rstrip() + "..."
+    return text
+
+
+def _vendor_fact(text: str, vendor: str, captured_at: str = "") -> dict[str, Any] | None:
+    cleaned = _clean_vendor_fact_text(text)
+    # A real memory fact is a short statement — a couple of words at minimum, not a stray token.
+    if len(cleaned) < 4 or len(cleaned.split()) < 2:
+        return None
+    if _is_vendor_memory_boilerplate(cleaned):
+        return None
+    fact: dict[str, Any] = {"text": cleaned, "vendor": vendor}
+    captured = str(captured_at or "").strip()
+    if captured:
+        fact["captured_at"] = captured[:64]
+    return fact
+
+
+def _vendor_facts_from_json(payload: Any, vendor: str, depth: int = 0) -> list[dict[str, Any]]:
+    """Walk a vendor memory JSON payload, harvesting atomic facts.
+
+    Handles the realistic shapes: a bare list of strings; a list of objects with
+    a text/content/memory/value field (and an optional created/updated time); a
+    top-level object whose "memories"/"saved_memories"/"facts"/"items"/"context"
+    key holds the list; and, as a last resort, a scan of string leaves. Nesting
+    is depth-capped so a crafted deep blob can't overflow the parser.
+    """
+    if depth >= MAX_PARSE_NESTING_DEPTH:
+        return []
+    facts: list[dict[str, Any]] = []
+    if isinstance(payload, str):
+        fact = _vendor_fact(payload, vendor)
+        return [fact] if fact else []
+    if isinstance(payload, list):
+        for item in payload:
+            facts.extend(_vendor_facts_from_json(item, vendor, depth + 1))
+        return facts
+    if isinstance(payload, dict):
+        # Prefer an explicit collection key so we don't harvest metadata fields as facts.
+        for key in (
+            "memories", "saved_memories", "savedMemories", "memory", "facts",
+            "items", "entries", "context", "model_set_context", "personalization",
+            "data", "results",
+        ):
+            value = payload.get(key)
+            if isinstance(value, (list, dict)):
+                nested = _vendor_facts_from_json(value, vendor, depth + 1)
+                if nested:
+                    return nested
+        # A single fact object: {text/content/memory/value, created_at?}.
+        text = ""
+        for key in ("text", "content", "memory", "fact", "value", "statement", "description", "summary"):
+            candidate = payload.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                text = candidate
+                break
+        if text:
+            captured = ""
+            for key in ("captured_at", "created_at", "createdAt", "created", "updated_at", "updatedAt", "timestamp", "date"):
+                stamp = payload.get(key)
+                if isinstance(stamp, (str, int, float)) and str(stamp).strip():
+                    captured = _iso_from_unix(float(stamp)) if isinstance(stamp, (int, float)) else str(stamp)
+                    break
+            fact = _vendor_fact(text, vendor, captured)
+            if fact:
+                facts.append(fact)
+            return facts
+        # No recognizable text key: scan string leaves so an unusual object still yields facts.
+        for value in payload.values():
+            if isinstance(value, str):
+                fact = _vendor_fact(value, vendor)
+                if fact:
+                    facts.append(fact)
+            elif isinstance(value, list):
+                facts.extend(_vendor_facts_from_json(value, vendor, depth + 1))
+    return facts
+
+
+def _vendor_facts_from_text(text: str, vendor: str) -> list[dict[str, Any]]:
+    """Parse a markdown / plain-text vendor memory dump into facts (one per bullet/line)."""
+    facts: list[dict[str, Any]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        # Skip a markdown heading line entirely (## Saved memories) — it's a page label.
+        if re.match(r"^#{1,6}\s", line):
+            continue
+        fact = _vendor_fact(line, vendor)
+        if fact:
+            facts.append(fact)
+    return facts
+
+
+def _dedupe_vendor_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop exact-duplicate facts (same normalized text), keeping first occurrence + its order."""
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for fact in facts:
+        key = re.sub(r"\s+", " ", str(fact.get("text") or "").lower()).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(fact)
+    return unique[:MAX_VENDOR_FACTS]
+
+
+def parse_vendor_memory_export(raw: Any, vendor_hint: str = "") -> dict[str, Any]:
+    """Parse a SHORT vendor MEMORY export into atomic vendor facts.
+
+    `raw` is the export as pasted/uploaded — a JSON string, an already-parsed
+    JSON object/list, or plain/markdown text. `vendor_hint` names the vendor
+    ("chatgpt"/"claude"/"gemini"/...) when known; otherwise it is sniffed from
+    the content. Returns {"vendor", "vendor_label", "facts": [{text, vendor,
+    captured_at?}], "count"}. Never raises: a malformed/empty blob yields an
+    empty fact list. This is the "memory list" mode — deliberately separate from
+    the full-conversation parsers, which expect message transcripts.
+    """
+    vendor = _normalize_vendor_hint(vendor_hint)
+    facts: list[dict[str, Any]] = []
+
+    payload: Any = raw
+    text_form = ""
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            raw = bytes(raw).decode("utf-8", errors="replace")
+        except Exception:
+            raw = ""
+        payload = raw
+    if isinstance(raw, str):
+        text_form = raw
+        stripped = raw.strip()
+        if stripped and stripped[0] in "[{":
+            try:
+                payload = json.loads(stripped)
+            except (json.JSONDecodeError, RecursionError, ValueError):
+                payload = raw  # not JSON after all — treat as text below
+        else:
+            payload = raw
+
+    if not vendor:
+        vendor = _detect_vendor_from_text(text_form) if text_form else ""
+
+    try:
+        if isinstance(payload, (dict, list)):
+            facts = _vendor_facts_from_json(payload, vendor or "")
+        elif isinstance(payload, str):
+            facts = _vendor_facts_from_text(payload, vendor or "")
+    except (RecursionError, ValueError, TypeError):
+        facts = []
+
+    facts = _dedupe_vendor_facts(facts)
+    # Stamp the resolved vendor onto each fact so a mixed/unhinted export is still attributed.
+    for fact in facts:
+        if not fact.get("vendor"):
+            fact["vendor"] = vendor or ""
+    return {
+        "vendor": vendor or "",
+        "vendor_label": vendor_memory_label(vendor) if vendor else "AI assistant",
+        "facts": facts,
+        "count": len(facts),
+    }
+
+
+def normalize_vendor_facts(facts: Any, vendor_hint: str = "") -> list[dict[str, Any]]:
+    """Coerce a client-supplied pre-parsed fact list into clean VendorFact dicts.
+
+    The import-diff endpoint accepts EITHER raw export text OR a caller-parsed
+    list of facts (strings or {text, vendor?, captured_at?} objects); this
+    normalizes the latter through the same cleaning/bounding/dedup path so both
+    entry points behave identically. Never raises.
+    """
+    vendor = _normalize_vendor_hint(vendor_hint)
+    out: list[dict[str, Any]] = []
+    if not isinstance(facts, list):
+        return out
+    for item in facts:
+        if isinstance(item, str):
+            fact = _vendor_fact(item, vendor or "")
+        elif isinstance(item, dict):
+            item_vendor = _normalize_vendor_hint(item.get("vendor")) or vendor or ""
+            text = item.get("text") or item.get("content") or item.get("memory") or item.get("fact") or ""
+            fact = _vendor_fact(str(text), item_vendor, str(item.get("captured_at") or item.get("created_at") or ""))
+        else:
+            fact = None
+        if fact:
+            out.append(fact)
+    return _dedupe_vendor_facts(out)
