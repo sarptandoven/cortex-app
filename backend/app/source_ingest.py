@@ -146,6 +146,20 @@ CONSUMER_AI_TRANSCRIPT_SOURCES: dict[str, str] = {
     "notebooklm": "NotebookLM",
 }
 
+# Limitless (formerly Rewind) exports its recorded days as "lifelogs": a
+# timestamped transcript split into speaker-labelled segments. The realistic
+# export shapes we handle:
+#   * the Developer-API envelope   {"data": {"lifelogs": [...]}, "meta": {...}}
+#   * a bare list of lifelog objects              [ {lifelog}, {lifelog}, ... ]
+#   * a single lifelog object                     { "id": ..., "contents": [...] }
+#   * JSONL, one lifelog per line (bulk export)
+#   * a markdown / text transcript dump (Limitless plugins + legacy Rewind)
+# any of the above, optionally inside a .zip. A lifelog node looks like:
+#   {"type": "blockquote", "content": "...", "speakerName": "Sarp",
+#    "speakerIdentifier": "user"|null, "startTime": "2026-07-01T09:15:00Z", ...}
+LIMITLESS_LIFELOG_NODE_TYPES = {"heading1", "heading2", "heading3", "blockquote", "paragraph"}
+LIMITLESS_MARKDOWN_MARKERS = ("limitless", "lifelog", "rewind")
+
 
 SUPPORTED_SOURCES: list[dict[str, Any]] = [
     {
@@ -195,6 +209,16 @@ SUPPORTED_SOURCES: list[dict[str, Any]] = [
         "name": "NotebookLM",
         "formats": ["transcript.json", "JSON/JSONL/TXT/Markdown transcript"],
         "status": "generic",
+    },
+    {
+        "id": "limitless",
+        "name": "Limitless / Rewind",
+        "formats": [
+            "Limitless lifelogs export (lifelogs.json / .jsonl / API envelope)",
+            "Limitless or Rewind markdown/text transcript dump",
+            "Export .zip containing any of the above",
+        ],
+        "status": "native",
     },
     {
         "id": "notion",
@@ -424,9 +448,11 @@ def analyze_sources(paths: Iterable[str], source_hint: str = "", max_records: in
 
 
 # Filenames/patterns that mark a file as an AI-chat or app data export worth probing.
-_EXPORT_JSON_NAMES = {"conversations.json", "conversations.jsonl", "result.json", "messages.json"}
+_EXPORT_JSON_NAMES = {"conversations.json", "conversations.jsonl", "result.json", "messages.json",
+                      "lifelogs.json", "lifelogs.jsonl", "limitless.json"}
 _EXPORT_ZIP_HINTS = ("chatgpt", "claude", "openai", "anthropic", "gemini", "notebooklm",
-                     "export", "conversations", "takeout", "slack", "discord", "telegram")
+                     "export", "conversations", "takeout", "slack", "discord", "telegram",
+                     "limitless", "lifelog", "rewind")
 
 
 def scan_export_candidates(directories: Iterable[str], *, max_files: int = 60, max_records: int = 200) -> list[dict[str, Any]]:
@@ -511,6 +537,7 @@ def _parsed_source_records(paths: Iterable[str], source_hint: str = "") -> list[
     for parser in (
         _parse_chatgpt,
         _parse_consumer_ai_transcripts,
+        _parse_limitless,
         _parse_claude,
         _parse_slack,
         _parse_discord,
@@ -1125,6 +1152,254 @@ def _google_keep_time(value: Any) -> str:
         return ""
     seconds = raw / 1_000_000 if raw > 10_000_000_000 else raw
     return _iso_from_unix(seconds)
+
+
+def _parse_limitless(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
+    """Import a Limitless (formerly Rewind) export into per-day transcript records.
+
+    Detection is by filename/dir marker (``limitless``/``lifelog``/``rewind``) plus a
+    content sniff, so a user can drop the raw export folder or ``.zip`` and have it
+    recognized without a hint. Each lifelog (a recorded day/session) becomes one
+    record whose content is the speaker-labelled transcript; the shared chunker then
+    splits long days into atomic memories. Malformed entries are skipped, never
+    fatal — a single corrupt lifelog can't discard a whole import.
+    """
+    records: list[SourceRecord] = []
+    for asset in assets:
+        if not _looks_like_limitless_asset(asset, hint):
+            continue
+        if asset.suffix == ".jsonl":
+            records.extend(_parse_limitless_jsonl_asset(asset))
+        elif asset.suffix == ".json":
+            records.extend(_parse_limitless_json_asset(asset))
+        elif asset.suffix in {".md", ".markdown", ".txt"}:
+            record = _parse_limitless_text_asset(asset)
+            if record:
+                records.append(record)
+    return records
+
+
+def _looks_like_limitless_asset(asset: SourceAsset, hint: str) -> bool:
+    if asset.suffix not in {".json", ".jsonl", ".md", ".markdown", ".txt"}:
+        return False
+    if hint in {"limitless", "rewind", "lifelog", "lifelogs"}:
+        return True
+    haystack = f"{asset.display_path}\n{asset.name}".lower()
+    if any(marker in haystack for marker in LIMITLESS_MARKDOWN_MARKERS):
+        return True
+    # No filename hint — sniff the content so a generically-named `export.json`
+    # from Limitless is still recognized (and, crucially, so an unrelated JSON
+    # file is not misclaimed).
+    if asset.suffix in {".json", ".jsonl"}:
+        return _limitless_content_sniff(asset)
+    return False
+
+
+def _limitless_content_sniff(asset: SourceAsset) -> bool:
+    """True only when the file's shape is unmistakably a Limitless lifelog export.
+
+    Requires the lifelog-node fingerprint (`speakerName`/`speakerIdentifier`/
+    `lifelogs`/`startOffsetMs`) so a plain chat-export JSON is never misclaimed.
+    """
+    head = asset.read_text()[:20_000].lower()
+    if not head:
+        return False
+    if '"lifelogs"' in head:
+        return True
+    return ('"speakeridentifier"' in head or '"speakername"' in head or '"startoffsetms"' in head)
+
+
+def _parse_limitless_json_asset(asset: SourceAsset) -> list[SourceRecord]:
+    try:
+        payload = json.loads(asset.read_text())
+    except (json.JSONDecodeError, RecursionError):
+        return []
+    lifelogs = _limitless_lifelogs_from_payload(payload)
+    return [
+        record
+        for lifelog in lifelogs
+        if isinstance(lifelog, dict) and (record := _limitless_record(asset, lifelog))
+    ]
+
+
+def _parse_limitless_jsonl_asset(asset: SourceAsset) -> list[SourceRecord]:
+    records: list[SourceRecord] = []
+    for line in asset.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except (json.JSONDecodeError, RecursionError):
+            # JSONL lines are independent lifelogs; one truncated/corrupt line
+            # (common in large exports) must not discard the valid days already
+            # parsed. Skip the bad line and keep going.
+            continue
+        for lifelog in _limitless_lifelogs_from_payload(row):
+            if isinstance(lifelog, dict):
+                record = _limitless_record(asset, lifelog)
+                if record:
+                    records.append(record)
+    return records
+
+
+def _limitless_lifelogs_from_payload(payload: Any) -> list[Any]:
+    """Unwrap the several realistic shapes a lifelog export can arrive in.
+
+    Handles the Developer-API envelope ``{"data": {"lifelogs": [...]}}``, a bare
+    list of lifelogs, a single lifelog object, and a top-level ``{"lifelogs": [...]}``.
+    """
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if isinstance(data, dict) and isinstance(data.get("lifelogs"), list):
+        return data["lifelogs"]
+    if isinstance(data, list):
+        return data
+    for key in ("lifelogs", "entries", "items", "results"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    # A single lifelog object (has the shape of a day: contents or markdown).
+    if _looks_like_lifelog(payload):
+        return [payload]
+    return []
+
+
+def _looks_like_lifelog(value: dict[str, Any]) -> bool:
+    return bool(
+        isinstance(value.get("contents"), list)
+        or isinstance(value.get("markdown"), str)
+        or ("title" in value and ("startTime" in value or "start_time" in value))
+    )
+
+
+def _limitless_record(asset: SourceAsset, lifelog: dict[str, Any]) -> SourceRecord | None:
+    start = _limitless_time(lifelog.get("startTime") or lifelog.get("start_time"))
+    end = _limitless_time(lifelog.get("endTime") or lifelog.get("end_time"))
+    day = _limitless_day_label(start)
+    base_title = str(lifelog.get("title") or "Lifelog").strip() or "Lifelog"
+    title = f"{base_title} - {day}" if day else base_title
+    transcript = _limitless_transcript_lines(lifelog)
+    if not transcript:
+        # Fall back to the pre-rendered markdown when the structured contents are
+        # missing/empty (older/partial exports carry only `markdown`).
+        markdown = str(lifelog.get("markdown") or "").strip()
+        if markdown:
+            transcript = [line.strip() for line in markdown.splitlines() if line.strip()]
+    if not transcript:
+        return None
+    lines = ["Source: Limitless", f"Lifelog: {base_title}"]
+    if start:
+        lines.append(f"Start: {start}")
+    if end:
+        lines.append(f"End: {end}")
+    lines.extend(["", "--- Transcript ---", *transcript])
+    source_url = _source_locator(
+        asset.display_path,
+        service="limitless",
+        lifelog=base_title,
+        lifelog_id=lifelog.get("id") or lifelog.get("uuid"),
+        file=Path(asset.name).name,
+        start=start,
+    )
+    return SourceRecord(
+        "limitless",
+        title,
+        "\n".join(lines),
+        source_url=source_url,
+        metadata={"asset": asset.display_path, "service": "Limitless", "lifelog_start": start},
+    )
+
+
+def _limitless_transcript_lines(lifelog: dict[str, Any]) -> list[str]:
+    contents = lifelog.get("contents")
+    if not isinstance(contents, list):
+        return []
+    lines: list[str] = []
+    _collect_limitless_nodes(contents, lines)
+    return lines
+
+
+def _collect_limitless_nodes(nodes: Any, lines: list[str], depth: int = 0) -> None:
+    if not isinstance(nodes, list) or depth >= MAX_PARSE_NESTING_DEPTH:
+        return
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        text = str(node.get("content") or node.get("text") or "").strip()
+        if text:
+            node_type = str(node.get("type") or "").strip().lower()
+            speaker = _limitless_speaker(node)
+            when = _limitless_time(node.get("startTime") or node.get("start_time"))
+            if node_type in {"heading1", "heading2", "heading3"} and not speaker:
+                lines.append(f"# {text}" if node_type == "heading1" else f"## {text}")
+            elif speaker:
+                prefix = f"{when} {speaker}" if when else speaker
+                lines.append(f"{prefix}: {text}")
+            else:
+                lines.append(text)
+        children = node.get("children")
+        if isinstance(children, list) and children:
+            _collect_limitless_nodes(children, lines, depth + 1)
+
+
+def _limitless_speaker(node: dict[str, Any]) -> str:
+    name = str(node.get("speakerName") or node.get("speaker_name") or node.get("speaker") or "").strip()
+    if name:
+        return re.sub(r"\s+", " ", name)[:60]
+    identifier = str(node.get("speakerIdentifier") or node.get("speaker_identifier") or "").strip().lower()
+    if identifier == "user":
+        return "You"
+    return ""
+
+
+def _limitless_day_label(start: str) -> str:
+    match = re.match(r"^(\d{4}-\d{2}-\d{2})", start or "")
+    return match.group(1) if match else ""
+
+
+def _limitless_time(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        # Milliseconds vs seconds: Limitless offsets are ms; epoch seconds are ~1e9.
+        seconds = value / 1000 if value > 100_000_000_000 else float(value)
+        return _iso_from_unix(seconds)
+    text = str(value).strip()
+    return text
+
+
+def _parse_limitless_text_asset(asset: SourceAsset) -> SourceRecord | None:
+    text = asset.read_text()
+    lines = [line.rstrip() for line in text.splitlines()]
+    body = [line.strip() for line in lines if line.strip()]
+    if not body:
+        return None
+    day = _limitless_day_label_from_text(asset.name, text)
+    base_title = Path(asset.name).stem or "Lifelog"
+    title = f"{base_title} - {day}" if day and day not in base_title else base_title
+    content = "\n".join(["Source: Limitless", f"Lifelog: {base_title}", "", "--- Transcript ---", *body])
+    source_url = _source_locator(
+        asset.display_path, service="limitless", lifelog=base_title, file=Path(asset.name).name, start=day
+    )
+    return SourceRecord(
+        "limitless",
+        title,
+        content,
+        source_url=source_url,
+        metadata={"asset": asset.display_path, "service": "Limitless", "lifelog_start": day},
+    )
+
+
+def _limitless_day_label_from_text(name: str, text: str) -> str:
+    match = re.search(r"\d{4}-\d{2}-\d{2}", name)
+    if match:
+        return match.group(0)
+    match = re.search(r"\d{4}-\d{2}-\d{2}", text[:400])
+    return match.group(0) if match else ""
 
 
 def _parse_claude(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:

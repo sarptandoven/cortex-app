@@ -21,6 +21,7 @@ These formats have dedicated parsers in `backend/app/source_ingest.py`. They are
 | Google Chat / Hangouts | Google Takeout Chat/Hangouts `messages.json` | Parses conversation messages, creators, and timestamps. |
 | Microsoft Teams | Teams JSON or CSV message exports | Parses sender, created time, and HTML/plain message bodies. |
 | Zoom | `.vtt` and `.srt` transcripts | Preserves speaker lines and transcript text from meeting exports. |
+| Limitless / Rewind | Limitless lifelogs export (`lifelogs.json`/`.jsonl`/API envelope), markdown/text transcript dumps, or a `.zip` of any of those | The migration path for Rewind refugees. Each lifelog becomes a per-day transcript record with speaker labels and timestamps; long days are chunked. Detected by filename/dir marker (`limitless`/`lifelog`/`rewind`) plus a lifelog-node content sniff. See [`site/limitless.html`](../site/limitless.html) for the landing page. |
 | Messages | Advanced/Fallback iMessage `chat.db` copy | Read-only import of recent message text by chat. This is only read from an explicit local copy or legally provided export. |
 | WhatsApp | Text chat export | Parses common timestamped text exports as episodic message history. |
 | Browser bookmarks and history exports | Chrome, Edge, Safari, and Firefox Netscape bookmark HTML exports; Chrome/Edge Bookmarks JSON; Chrome/Firefox history SQLite through Advanced/Fallback | Preserves bookmark titles, URLs, and bounded browser history as research/source signals. |

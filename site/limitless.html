@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bring your Limitless (Rewind) history to Cortex</title>
+    <meta
+      name="description"
+      content="Migrating off Limitless (formerly Rewind)? Import your lifelog export into Cortex in one step. It stays on your Mac — you own the vault."
+    />
+    <meta property="og:title" content="Bring your Limitless (Rewind) history to Cortex" />
+    <meta property="og:description" content="Import your Limitless / Rewind export into Cortex in one step. Local-first — your memory stays on your machine." />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#f7f4ed" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="privacy-page">
+    <header class="site-header">
+      <a class="brand" href="index.html" aria-label="Cortex home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Cortex</span>
+      </a>
+      <nav aria-label="Primary">
+        <a href="index.html#loop">Loop</a>
+        <a href="index.html#integrations">Integrations</a>
+        <a href="index.html#privacy">Privacy</a>
+        <a href="index.html#download">Download</a>
+      </nav>
+      <a class="header-download" href="index.html#download">macOS app</a>
+    </header>
+
+    <main class="privacy-main">
+      <p class="eyebrow">For Limitless &amp; Rewind users</p>
+      <h1>Your memory outlived the company that stored it.</h1>
+      <p>
+        Rewind became Limitless. Then Meta acquired the team, and the personal, local-first
+        memory a lot of people built their days around is winding down. If you exported your
+        lifelogs before the lights went out — or you're doing it right now — Cortex is a place
+        to keep them.
+      </p>
+      <p>
+        Cortex is a private, owned home for that history. Your export imports in one step, and
+        it stays on your Mac. No account is required to import, and nothing is uploaded to us to
+        do it. This time the vault is yours.
+      </p>
+
+      <section>
+        <h2>What Cortex does with your Limitless export</h2>
+        <ul>
+          <li>
+            <strong>Reads your lifelogs.</strong> Cortex understands the Limitless lifelogs
+            export — the <code>lifelogs.json</code> / <code>.jsonl</code> the app and the
+            Developer API produce — as well as markdown or text transcript dumps (including the
+            older Rewind ones). A <code>.zip</code> of any of those works too.
+          </li>
+          <li>
+            <strong>Keeps each day as a memory.</strong> Every lifelog becomes a searchable
+            record: the speaker-labelled transcript, a clear title, and the date it happened.
+            Long days are split into sensible pieces so they stay useful instead of one giant blob.
+          </li>
+          <li>
+            <strong>Preserves who said what and when.</strong> Speaker names and timestamps
+            carry over, so a memory still knows it was <em>you</em> at 9:05 on a Tuesday.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Import it in one step</h2>
+        <ol class="install-list">
+          <li>
+            <strong>Export from Limitless</strong>
+            <span>
+              Download your lifelogs from Limitless (or use an export you already have — a
+              <code>lifelogs.json</code>, a <code>.jsonl</code>, a folder of markdown/text
+              transcripts, or a <code>.zip</code> of them). A legacy Rewind transcript export
+              works too.
+            </span>
+          </li>
+          <li>
+            <strong>Open Cortex</strong>
+            <span>Download the macOS app and open it. You don't need an account to import.</span>
+          </li>
+          <li>
+            <strong>Drop in the export</strong>
+            <span>
+              Point Cortex at the exported file, folder, or <code>.zip</code>. Cortex recognizes
+              a Limitless / Rewind export on its own and shows you how many lifelogs it found
+              before anything is saved.
+            </span>
+          </li>
+          <li>
+            <strong>Review and keep</strong>
+            <span>
+              Your days land as memories you can review, search, and cite. From here they're part
+              of one vault you own — alongside anything else you connect.
+            </span>
+          </li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>The privacy posture, plainly</h2>
+        <ul>
+          <li>
+            <strong>Local-first.</strong> The import runs entirely on your Mac. Your export is
+            read from disk and written to a local vault. It works with the network off.
+          </li>
+          <li>
+            <strong>You own the vault.</strong> Your memories are readable records on your own
+            disk with a rebuildable search index next to them — not locked inside a service you
+            can't leave. You can back them up, move them, or delete them yourself.
+          </li>
+          <li>
+            <strong>No account needed to import, nothing uploaded to us.</strong> Importing your
+            Limitless history requires no sign-up, and Cortex doesn't send your export anywhere to
+            do it.
+          </li>
+          <li>
+            <strong>Optional cloud is separate and honest about itself.</strong> Cortex Cloud
+            (multi-device sync and hosted retrieval) is an opt-in you turn on later; it is
+            encrypted at rest but is not yet end-to-end encrypted, and the
+            <a href="privacy.html">Privacy page</a> says so plainly. Import doesn't touch it.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Honest limits</h2>
+        <ul>
+          <li>
+            Cortex imports the <em>data</em> in your export — transcripts, titles, timestamps,
+            speakers. It does not import Limitless's app UI, audio recordings, or any feature that
+            only ran inside their service.
+          </li>
+          <li>
+            Export formats change. Cortex is built to be tolerant — a malformed entry is skipped,
+            not fatal — but if your export looks different from what we handle, tell us and we'll
+            add it. Email <a href="mailto:support@trydoppl.com">support@trydoppl.com</a>.
+          </li>
+          <li>
+            Cortex is an early macOS beta. We'd rather under-promise here than repeat the thing
+            that just happened to you.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Get started</h2>
+        <p>
+          Download the macOS app from the <a href="index.html#download">download section</a>,
+          open it, and drop in your Limitless export. Questions or a format we don't yet read?
+          Email <a href="mailto:support@trydoppl.com">support@trydoppl.com</a>.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Cortex</span>
+      <a href="index.html">Home</a>
+      <a href="limitless.html">Limitless import</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="faq.html">FAQ</a>
+      <a href="mailto:support@trydoppl.com">Support</a>
+    </footer>
+  </body>
+</html>
