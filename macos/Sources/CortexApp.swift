@@ -3176,6 +3176,33 @@ enum CortexCredentialStore {
     }
 }
 
+/// New-machine RESTORE state for the onboarding "Restore from your account" path. It is a thin,
+/// honest projection of the real pull-sync: `restoreFromAccount()` starts pull-sync and updates this
+/// as `loadStats()` reports captures actually landing. `recovered` is the count that has genuinely
+/// been applied locally — never claimed until the pull applied ≥1 item. `.empty` is the honest
+/// "account has nothing to restore yet" terminal; `.done` carries the final recovered count.
+enum RestoreProgress: Equatable {
+    case idle
+    case restoring(recovered: Int)
+    case done(recovered: Int)
+    case empty
+    case failed(String)
+
+    /// Captures recovered so far / in total, for the live "N memories recovered" line.
+    var recovered: Int {
+        switch self {
+        case .restoring(let n), .done(let n): return n
+        case .idle, .empty, .failed: return 0
+        }
+    }
+
+    /// True once the restore has genuinely applied ≥1 item — the only state that may claim success.
+    var isConfirmedRestored: Bool {
+        if case .done(let n) = self { return n > 0 }
+        return false
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     private static let apiKeyDefaultsKey = "localBetaAPIKey.v1"
@@ -3292,6 +3319,11 @@ final class AppState: ObservableObject {
     @Published var pushPendingCount: Int = 0
     var pushSyncTask: Task<Void, Never>?
     var pushSyncInFlight = false
+    /// New-machine RESTORE progress for the onboarding "Restore from your account" path (the
+    /// "1Password moment"). Drives the guided restore step's live "N memories recovered" line + its
+    /// terminal confirmation. Purely a UI mirror of the real pull-sync (PullSyncCenter) + loadStats;
+    /// it never does its own networking. See `restoreFromAccount()`.
+    @Published var restoreProgress: RestoreProgress = .idle
     // Zero-access (E2EE) opt-in. Mirrors CortexE2EE.isEnabled (UserDefaults) so SwiftUI can bind to
     // it; the crypto/key material itself lives ONLY in CortexE2EE (+ the Keychain), never here.
     @Published var zeroAccessEnabled: Bool = CortexE2EE.isEnabled
@@ -7615,6 +7647,108 @@ final class AppState: ObservableObject {
         onboardingDismissedForSession = true
         showOnboarding = false
         status = "Getting started closed. Continue from Home anytime."
+    }
+
+    // MARK: - New-machine restore (the "1Password moment")
+
+    /// Rebuild this Mac's memory from the signed-in hosted account, for the onboarding "Restore from
+    /// your account" path. This does NOT invent any networking: it ensures the existing background
+    /// pull-sync worker (CortexPullSync.swift) is running, nudges an immediate tick, then watches the
+    /// LOCAL store's capture count (via loadStats) climb as pulled pages apply — surfacing honest
+    /// progress on `restoreProgress`. It NEVER claims "restored" until the pull has genuinely applied
+    /// ≥1 capture; an account with nothing to pull reports `.empty` cleanly, and offline / auth
+    /// failure reports `.failed` without bricking onboarding (the caller can still Skip).
+    ///
+    /// Safe to call when signed out: it reports `.failed` and returns rather than reaching the network.
+    func restoreFromAccount() async {
+        guard isSignedIn, !cloudSyncBaseURL.isEmpty else {
+            restoreProgress = .failed("Sign in to your Cortex account to restore your memory.")
+            return
+        }
+
+        // Baseline: what this device already holds before the pull, so "recovered" counts only what
+        // the restore actually brings down (a device that re-runs restore isn't credited twice).
+        await loadStats()
+        let baseline = stats?.captures ?? 0
+        restoreProgress = .restoring(recovered: 0)
+        status = "Restoring your memory…"
+
+        // Ensure the real pull worker is running (idempotent — it cancels any prior task), then kick
+        // an immediate tick outside the 5-minute cadence so restore starts NOW.
+        startPullSync(initial: false)
+
+        // Drive the restore by polling the local capture count while the pull applies pages. The pull
+        // itself owns the network + apply; we only observe. Bounded so a stalled/offline pull can't
+        // spin forever — it lands on an honest terminal state and onboarding stays skippable.
+        let center = PullSyncCenter.shared
+        let deadline = Date().addingTimeInterval(90)
+        var sawSyncing = false
+        // Fire the first tick, then keep nudging until the feed drains or we time out.
+        await pullSyncNudge()
+
+        while Date() < deadline {
+            await loadStats()
+            let recovered = max(0, (stats?.captures ?? baseline) - baseline)
+            if recovered > 0 {
+                restoreProgress = .restoring(recovered: recovered)
+                status = "Restoring your memory… \(recovered) recovered"
+            }
+
+            switch center.state {
+            case .syncing:
+                sawSyncing = true
+            case .synced:
+                // The pull reached the end of the feed. Refresh the real memory surfaces so the
+                // confirmation shows the memory that genuinely came back.
+                await loadStats()
+                await loadGraph()
+                await loadRecallHeadline()
+                let finalRecovered = max(0, (stats?.captures ?? baseline) - baseline)
+                restoreProgress = finalRecovered > 0 ? .done(recovered: finalRecovered) : .empty
+                status = finalRecovered > 0
+                    ? "Welcome back — \(finalRecovered) memories restored."
+                    : "Nothing to restore yet — your account has no memory to pull down."
+                return
+            case .error(let message):
+                // If we already recovered items before the error, keep them and confirm honestly;
+                // otherwise surface the failure so onboarding can offer Skip / retry.
+                let recoveredSoFar = max(0, (stats?.captures ?? baseline) - baseline)
+                if recoveredSoFar > 0 {
+                    await loadGraph()
+                    await loadRecallHeadline()
+                    restoreProgress = .done(recovered: recoveredSoFar)
+                    status = "Welcome back — \(recoveredSoFar) memories restored."
+                } else {
+                    restoreProgress = .failed(message)
+                    status = "Restore paused — \(message)"
+                }
+                return
+            case .idle:
+                break
+            }
+
+            do {
+                try await Task.sleep(nanoseconds: 800_000_000)
+            } catch {
+                return
+            }
+            // Keep nudging so a multi-page backlog keeps draining inside our watch window.
+            await pullSyncNudge()
+        }
+
+        // Timed out: report whatever genuinely landed (honest), never a fabricated success.
+        await loadStats()
+        let recovered = max(0, (stats?.captures ?? baseline) - baseline)
+        if recovered > 0 {
+            await loadGraph()
+            await loadRecallHeadline()
+            restoreProgress = .done(recovered: recovered)
+            status = "Welcome back — \(recovered) memories restored."
+        } else if sawSyncing {
+            restoreProgress = .failed("Restore is taking longer than expected. It will keep running in the background.")
+        } else {
+            restoreProgress = .empty
+        }
     }
 
     func showOnboardingAgain() {

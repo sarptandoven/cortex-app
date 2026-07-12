@@ -35,6 +35,13 @@ struct OnboardingView: View {
     /// Drives the continuity mark that slides between the header and step content.
     @Namespace private var markSpace
 
+    /// The "Restore from your account" branch (the "1Password moment"). When non-nil it takes over
+    /// the step area with the restore sub-flow (sign in → restoring → welcome back), independent of
+    /// the three-beat setup walkthrough so the main "Step N of 3" flow and its contract are untouched.
+    /// `.signIn` reuses the existing cloud sign-in; once signed in it advances to `.restoring` (live
+    /// pull progress), then `.welcomeBack` (the confirmation).
+    @State private var restoreStage: OnboardingRestoreStageProxy?
+
     private var steps: [WalkStep] { WalkStep.allCases }
 
     var body: some View {
@@ -43,18 +50,34 @@ struct OnboardingView: View {
                 header
                 Divider().opacity(0.5)
                 ScrollView {
-                    stepContent
-                        .padding(.horizontal, 44)
-                        .padding(.vertical, 34)
-                        .frame(maxWidth: 600, alignment: .leading)
-                        .frame(maxWidth: .infinity)
-                        .id(step)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .leading).combined(with: .opacity)
-                        ))
+                    Group {
+                        if let restoreStage {
+                            OnboardingRestoreFlow(
+                                state: state,
+                                stage: restoreStage,
+                                markSpace: markSpace,
+                                advanceToRestoring: { withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { self.restoreStage = .restoring } },
+                                advanceToWelcomeBack: { withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { self.restoreStage = .welcomeBack } },
+                                exitRestore: { exitRestoreFlow() },
+                                finishRestore: { finishRestoreFlow() }
+                            )
+                            .id(restoreStage)
+                        } else {
+                            stepContent
+                                .id(step)
+                        }
+                    }
+                    .padding(.horizontal, 44)
+                    .padding(.vertical, 34)
+                    .frame(maxWidth: 600, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .move(edge: .leading).combined(with: .opacity)
+                    ))
                 }
                 .animation(.spring(response: 0.42, dampingFraction: 0.82), value: step)
+                .animation(.spring(response: 0.42, dampingFraction: 0.82), value: restoreStage)
                 Divider().opacity(0.5)
                 footer
             }
@@ -65,6 +88,32 @@ struct OnboardingView: View {
             }
         }
         .background(OnboardingAmbientBackground())
+    }
+
+    /// Enter the restore branch from the welcome beat. If the user already holds a session (rare on a
+    /// truly fresh Mac, but possible), skip straight to the live restore instead of asking them to
+    /// sign in again.
+    private func enterRestoreFlow() {
+        state.restoreProgress = .idle
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            restoreStage = state.isSignedIn ? .restoring : .signIn
+        }
+    }
+
+    /// Leave the restore branch back to the normal welcome beat (e.g. the user changes their mind or
+    /// their account was empty and they'd rather start fresh). Never bricks onboarding.
+    private func exitRestoreFlow() {
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            restoreStage = nil
+            step = .welcome
+        }
+    }
+
+    /// Restore is complete — hand off to the normal finish so the setup gates stay honest. A restored
+    /// account has a connected source (its pulled captures), so this genuinely completes onboarding.
+    private func finishRestoreFlow() {
+        restoreStage = nil
+        finishTapped()
     }
 
     // MARK: - Header
@@ -117,15 +166,24 @@ struct OnboardingView: View {
 
     private var footer: some View {
         HStack {
-            CortexButton(title: "Back", systemImage: "chevron.left", role: .ghost, size: .large) {
-                back()
+            if restoreStage != nil {
+                // The restore branch carries its own actions in-content; the footer only offers a
+                // way back out so a returning user is never trapped mid-restore.
+                CortexButton(title: "Back", systemImage: "chevron.left", role: .ghost, size: .large) {
+                    exitRestoreFlow()
+                }
+                Spacer()
+            } else {
+                CortexButton(title: "Back", systemImage: "chevron.left", role: .ghost, size: .large) {
+                    back()
+                }
+                .disabled(step == .welcome)
+                .opacity(step == .welcome ? 0 : 1)
+
+                Spacer()
+
+                trailingFooterButton
             }
-            .disabled(step == .welcome)
-            .opacity(step == .welcome ? 0 : 1)
-
-            Spacer()
-
-            trailingFooterButton
         }
         .padding(20)
     }
@@ -202,7 +260,7 @@ struct OnboardingView: View {
     private var stepContent: some View {
         switch step {
         case .welcome:
-            OnboardingWelcomeStep(markSpace: markSpace)
+            OnboardingWelcomeStep(markSpace: markSpace, onRestore: { enterRestoreFlow() })
         case .addMemory:
             OnboardingAddMemoryStep(state: state, advance: advance)
         case .finish:
@@ -232,6 +290,398 @@ struct OnboardingView: View {
     }
 }
 
+// MARK: - Restore branch (the "1Password moment")
+
+/// The returning-user restore sub-flow: sign in → live "Restoring your memory…" → "Welcome back".
+/// It reuses the EXISTING cloud sign-in (AppState.signInToCloud* / provider discovery) and the
+/// EXISTING pull-sync (AppState.restoreFromAccount, which drives CortexPullSync); it never does its
+/// own networking. Honesty is load-bearing: it never claims memory is restored until the pull has
+/// genuinely applied ≥1 item (state.restoreProgress.isConfirmedRestored), and it reports an empty
+/// account plainly. The confirmation reuses the REAL ConstellationMiniPreview + RecallHeadlineCard
+/// so the memory truly feels like it came back.
+private struct OnboardingRestoreFlow: View {
+    @ObservedObject var state: AppState
+    let stage: OnboardingRestoreStageProxy
+    let markSpace: Namespace.ID
+    let advanceToRestoring: () -> Void
+    let advanceToWelcomeBack: () -> Void
+    let exitRestore: () -> Void
+    let finishRestore: () -> Void
+
+    var body: some View {
+        switch stage {
+        case .signIn:
+            OnboardingRestoreSignInStep(state: state, markSpace: markSpace, onSignedIn: advanceToRestoring)
+        case .restoring:
+            OnboardingRestoringStep(
+                state: state,
+                onRestored: advanceToWelcomeBack,
+                onEmpty: exitRestore
+            )
+        case .welcomeBack:
+            OnboardingWelcomeBackStep(state: state, markSpace: markSpace, onFinish: finishRestore)
+        }
+    }
+}
+
+/// The three stages of the restore branch, shared by `OnboardingView` (which drives the cursor) and
+/// the extracted `OnboardingRestoreFlow` sub-view (which renders each stage).
+enum OnboardingRestoreStageProxy: Equatable {
+    case signIn
+    case restoring
+    case welcomeBack
+}
+
+/// Step 1 of restore — sign in. Reuses the exact cloud sign-in entry points the Settings surface
+/// uses (browser-provider handoff + email/password), so there is one auth code path and no drift.
+/// The moment a session lands (state.isSignedIn), it advances to the live restore automatically.
+private struct OnboardingRestoreSignInStep: View {
+    @ObservedObject var state: AppState
+    let markSpace: Namespace.ID
+    let onSignedIn: () -> Void
+
+    @State private var email: String = ""
+    @State private var password: String = ""
+    @State private var hostedURL: String = ""
+
+    private var resolvedHostedURL: String {
+        let trimmed = hostedURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? AppState.defaultHostedURL : trimmed
+    }
+
+    /// Social providers reached via the browser handoff (Apple has its own native flow elsewhere;
+    /// here we keep the returning-user path simple and lean on the universal browser + email paths).
+    private var browserProviders: [CloudAuthProvider] {
+        state.cloudAuthProviders.filter { $0.provider.lowercased() != "apple" }
+    }
+
+    private var credentialsIncomplete: Bool {
+        state.cloudAuthBusy
+            || email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || password.isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                Spacer()
+                OnboardingHeroMark(systemImage: "arrow.down.circle", tint: CortexDesign.accent)
+                    .matchedGeometryEffect(id: "hero", in: markSpace)
+                Spacer()
+            }
+            .padding(.top, 6)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Restore from your account")
+                    .font(CortexDesign.Typography.display(26))
+                    .foregroundColor(CortexDesign.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Sign in to the account you used before. Your memory rebuilds itself on this Mac — nothing is retyped or re-imported.")
+                    .font(CortexDesign.Typography.prose(15))
+                    .lineSpacing(3)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(browserProviders) { provider in
+                    CortexButton(
+                        title: providerButtonLabel(provider),
+                        systemImage: providerButtonIcon(provider),
+                        role: .secondary,
+                        size: .large,
+                        fullWidth: true
+                    ) {
+                        state.signInToCloudWithBrowser(hostedURL: resolvedHostedURL, provider: provider.provider)
+                    }
+                    .disabled(state.cloudAuthBusy)
+                }
+
+                if browserProviders.isEmpty {
+                    CortexButton(title: "Continue in browser", systemImage: "globe", role: .secondary, size: .large, fullWidth: true) {
+                        state.signInToCloudWithBrowser(hostedURL: resolvedHostedURL)
+                    }
+                    .disabled(state.cloudAuthBusy)
+                }
+
+                HStack(spacing: 8) {
+                    VStack { Divider() }
+                    Text("or").font(.caption).foregroundColor(CortexDesign.inkFaint)
+                    VStack { Divider() }
+                }
+
+                TextField("Email", text: $email)
+                    .textFieldStyle(.roundedBorder)
+                    .textContentType(.username)
+                    .disableAutocorrection(true)
+                SecureField("Password", text: $password)
+                    .textFieldStyle(.roundedBorder)
+                    .textContentType(.password)
+                HStack {
+                    CortexButton(title: "Sign in", systemImage: "person.crop.circle.badge.checkmark", role: .primary) {
+                        state.signInToCloud(hostedURL: resolvedHostedURL, email: email, password: password)
+                    }
+                    .disabled(credentialsIncomplete)
+                    if state.cloudAuthBusy {
+                        ProgressView().controlSize(.small)
+                        CortexButton(title: "Cancel", role: .ghost, size: .small) {
+                            state.cancelCloudBrowserSignIn()
+                        }
+                    }
+                    Spacer()
+                }
+            }
+
+            if !state.cloudAuthMessage.isEmpty {
+                Text(state.cloudAuthMessage)
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text("Offline? You can Skip and start fresh — signing in later will still restore your memory.")
+                .font(.caption)
+                .foregroundColor(CortexDesign.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            if email.isEmpty { email = state.cloudAccountEmail }
+            if state.isCloudAuthAvailable {
+                state.loadCloudAuthProviders(hostedURL: resolvedHostedURL)
+            }
+            // A session may already exist (e.g. the user signed in during a prior beat); jump ahead.
+            if state.isSignedIn { onSignedIn() }
+        }
+        // The single source of truth for "signed in" is a stored refresh token; the moment sign-in
+        // lands, advance to the live restore.
+        .onChange(of: state.isSignedIn) { signedIn in
+            if signedIn { onSignedIn() }
+        }
+    }
+
+    private func providerButtonLabel(_ provider: CloudAuthProvider) -> String {
+        switch provider.provider.lowercased() {
+        case "github": return "Sign in with GitHub"
+        case "google": return "Continue with Google"
+        default: return "Continue with \(provider.display_name)"
+        }
+    }
+
+    private func providerButtonIcon(_ provider: CloudAuthProvider) -> String {
+        switch provider.provider.lowercased() {
+        case "github": return "chevron.left.forwardslash.chevron.right"
+        case "google": return "globe"
+        default: return "arrow.up.forward.app"
+        }
+    }
+}
+
+/// Step 2 of restore — the live pull. Kicks AppState.restoreFromAccount() (which runs the real
+/// pull-sync) and narrates its honest progress: "Restoring your memory… N memories recovered".
+/// It advances to the confirmation ONLY once the pull genuinely applied ≥1 item; an empty account
+/// bows out cleanly instead of pretending.
+private struct OnboardingRestoringStep: View {
+    @ObservedObject var state: AppState
+    let onRestored: () -> Void
+    let onEmpty: () -> Void
+
+    @State private var started = false
+
+    private var recovered: Int { state.restoreProgress.recovered }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack {
+                Spacer()
+                OnboardingHeroMark(systemImage: "arrow.triangle.2.circlepath", tint: CortexDesign.accent)
+                Spacer()
+            }
+            .padding(.top, 6)
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text(headline)
+                    .font(CortexDesign.Typography.display(26))
+                    .foregroundColor(CortexDesign.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(detail)
+                    .font(CortexDesign.Typography.prose(15))
+                    .lineSpacing(3)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // The live count — honest: it only ever reflects captures the pull has actually applied.
+            HStack(spacing: 10) {
+                if isActive { ProgressView().controlSize(.small) }
+                Text(recovered > 0 ? "\(recovered) memories recovered" : "Reaching your account…")
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundColor(CortexDesign.inkSecondary)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CortexDesign.panelBackground)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            if case .failed(let message) = state.restoreProgress {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        CortexButton(title: "Try again", systemImage: "arrow.clockwise", role: .secondary, size: .small) {
+                            started = false
+                            beginRestoreIfNeeded()
+                        }
+                        CortexButton(title: "Skip for now", role: .ghost, size: .small) {
+                            onEmpty()
+                        }
+                    }
+                }
+            }
+
+            if case .empty = state.restoreProgress {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Nothing to restore yet — this account has no memory to pull down. You can start fresh and it will sync from here.")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    CortexButton(title: "Continue setup", systemImage: "chevron.right", role: .secondary, size: .small) {
+                        onEmpty()
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .task { beginRestoreIfNeeded() }
+        .onChange(of: state.restoreProgress) { progress in
+            if progress.isConfirmedRestored { onRestored() }
+        }
+    }
+
+    private var isActive: Bool {
+        if case .restoring = state.restoreProgress { return true }
+        return false
+    }
+
+    private var headline: String {
+        if case .failed = state.restoreProgress { return "Restore paused" }
+        if case .empty = state.restoreProgress { return "Your account is empty" }
+        return "Restoring your memory…"
+    }
+
+    private var detail: String {
+        if case .failed = state.restoreProgress {
+            return "Your memory is safe in your account — nothing was lost. It will keep restoring in the background, or try again."
+        }
+        if case .empty = state.restoreProgress {
+            return "There's nothing here to bring back yet."
+        }
+        return "Pulling your captures down from your account into this Mac. This can take a moment for a large archive."
+    }
+
+    private func beginRestoreIfNeeded() {
+        guard !started else { return }
+        started = true
+        Task { await state.restoreFromAccount() }
+    }
+}
+
+/// Step 3 of restore — the confirmation. Reuses the REAL ConstellationMiniPreview (drawn from the
+/// pulled graph) and RecallHeadlineCard so the memory genuinely feels like it came back, then guides
+/// the user to reconnect their AI tools — honestly: tool wiring is per-device and is NOT restored by
+/// sync, so we route into the existing Connect-an-app wizard rather than fabricate an auto-restore.
+private struct OnboardingWelcomeBackStep: View {
+    @ObservedObject var state: AppState
+    let markSpace: Namespace.ID
+    let onFinish: () -> Void
+
+    private var recovered: Int { state.restoreProgress.recovered }
+    private var memoryCount: Int { state.stats?.memories ?? state.graphNodes.count }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                Spacer()
+                OnboardingHeroMark(systemImage: "checkmark.seal.fill", tint: CortexDesign.sealMoss)
+                    .matchedGeometryEffect(id: "hero", in: markSpace)
+                Spacer()
+            }
+            .padding(.top, 6)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Welcome back — your memory is restored")
+                    .font(CortexDesign.Typography.display(26))
+                    .foregroundColor(CortexDesign.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(recovered > 0
+                     ? "\(recovered) memories are back on this Mac, exactly as you left them. It keeps syncing from here."
+                     : "Your account is connected and syncing to this Mac.")
+                    .font(CortexDesign.Typography.prose(15))
+                    .lineSpacing(3)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // The user's REAL restored graph, drawn by the same engine as the full map.
+            ConstellationMiniPreview(nodes: state.graphNodes, edges: state.graphEdges)
+                .frame(height: 140)
+                .frame(maxWidth: .infinity)
+                .background(CortexDesign.panelBackground)
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(CortexDesign.softBorder, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(alignment: .bottomLeading) {
+                    Text(memoryCount > 0 ? "Your Constellation · \(memoryCount) memories" : "Your Constellation")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .padding(10)
+                }
+
+            // The real north-star headline (hidden until the endpoint answers), so the restored
+            // account's recall history surfaces here too.
+            RecallHeadlineCard(state: state)
+
+            // Honest reconnect guidance: MCP/tool configs are per-device and are NOT synced, so we do
+            // NOT claim they auto-restored. Route into the existing Connect-an-app wizard.
+            reconnectToolsCard
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .task {
+            await state.loadStats()
+            await state.loadGraph()
+            await state.loadRecallHeadline()
+        }
+    }
+
+    private var reconnectToolsCard: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "link.circle")
+                .font(.title3)
+                .foregroundColor(CortexDesign.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Reconnect your AI tools")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(CortexDesign.ink)
+                Text("Your memory is back. AI-tool wiring is per-device and isn't synced — reconnect Claude, ChatGPT, or others to use it here.")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            CortexButton(title: "Connect", systemImage: "link", role: .secondary, size: .small) {
+                state.openConnectionsPrivacy(statusMessage: "Reconnect your AI tools")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CortexDesign.panelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
 // MARK: - Step 1: Welcome
 
 /// The value prop in two short lines with the privacy reassurance folded in as one quiet caption,
@@ -239,6 +689,8 @@ struct OnboardingView: View {
 /// inside the "How it works" disclosure — same honesty gates, a third of the reading.
 private struct OnboardingWelcomeStep: View {
     let markSpace: Namespace.ID
+    /// Enter the "Restore from your account" branch. Nil hides the entry (e.g. no cloud auth).
+    var onRestore: (() -> Void)? = nil
     @State private var howItWorksExpanded = false
 
     // The required-account build (CortexRequireAccount=true) syncs memory to the user's account, so
@@ -246,6 +698,13 @@ private struct OnboardingWelcomeStep: View {
     // Gate on the same Info.plist flag AppState.accountRequired reads.
     private var accountRequired: Bool {
         (Bundle.main.object(forInfoDictionaryKey: "CortexRequireAccount") as? String)?.lowercased() == "true"
+    }
+
+    /// Whether a Cortex account (and thus a restore) is even possible in this build. Cortex accounts
+    /// are available in every build (Option B), so the restore entry is always offered — a returning
+    /// user's account may hold memory to pull back down. Mirrors AppState.isCloudAuthAvailable.
+    private var restoreAvailable: Bool {
+        onRestore != nil
     }
 
     var body: some View {
@@ -280,8 +739,53 @@ private struct OnboardingWelcomeStep: View {
             }
 
             howItWorks
+
+            if restoreAvailable {
+                restoreEntry
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The returning-user path: "Already have Cortex? Restore from your account." A quiet divider +
+    /// ghost action so it never competes with the primary "start fresh / add memory" flow, but is
+    /// unmistakable for someone setting up a new Mac. Routes into the restore branch (sign in → pull).
+    @ViewBuilder
+    private var restoreEntry: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                VStack { Divider() }
+                Text("or")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkFaint)
+                VStack { Divider() }
+            }
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.title3)
+                    .foregroundColor(CortexDesign.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Already have \(DistributionMode.appDisplayName)?")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Sign in and your memory rebuilds itself on this Mac from your account.")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                CortexButton(title: "Restore", systemImage: "arrow.down.circle", role: .secondary, size: .small) {
+                    onRestore?()
+                }
+                .accessibilityLabel("Restore from your account")
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CortexDesign.panelBackground)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .padding(.top, 4)
     }
 
     /// The old privacy + philosophy beats, compressed into a quiet disclosure.
