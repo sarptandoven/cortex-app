@@ -78,8 +78,16 @@ ciphertext; `enc_meta` is size-bounded). Files: `macos/Sources/CortexE2EE.swift`
 `CortexPushSync/CortexPullSync/CortexCloudAuth`, backend blind-relay in `storage.py`/
 `main.py`/`standalone_server.py`, `models.py`, `docs/CXE1_WIRE_FORMAT.md` §CXEC1.
 
-**Slice 3 — Purge/tombstone propagation** so a local forget removes the hosted ciphertext
-and reaches other devices (crypto-shred already makes per-user deletion final).
+**Slice 3 — SHIPPED: purge/tombstone propagation.** A local forget/purge now removes the
+hosted copy (ciphertext or plaintext) AND reaches every other device. Deletions ride their
+own monotonic `sync_tombstones` feed (a DELETE never bumps `captures.rowid`); both servers
+expose `GET/POST /v1/sync/deletions`; the push/pull workers propagate + apply them with an
+anti-resurrection guard (a tombstoned id is never re-created) and per-item transactions
+(a mid-batch failure never leaves the DB claiming a capture the source-of-truth vault lost).
+An adversarial data-loss review gated the ship — fixed a HIGH bug where a forgotten memory
+was resurrected when its parent capture was re-processed (the deterministic memory id is now
+tombstone-checked before re-derivation). Files: `storage.py` (tombstones + feed + apply +
+`_save_memory` guard), `main.py`/`standalone_server.py`, `CortexPushSync`/`CortexPullSync`.
 
 ## Privacy posture (verbatim, honest — never overclaim)
 

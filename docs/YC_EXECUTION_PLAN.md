@@ -56,10 +56,13 @@ Execution is 3 waves of parallel, file-disjoint workstreams. **Waves 1–2 are t
 8. **[H] CLAUDE.md compiler (new-direction wedge #1)** — "Sync to CLAUDE.md": render the cited profile + active-project memories into a fenced, Cortex-managed block of the user's existing `CLAUDE.md`/`.cursorrules`/`AGENTS.md`, refreshed on memory change. **Meet the ICP inside their revealed workaround** (visible, git-diffable) instead of asking them to trust an invisible retrieval layer; MCP live recall becomes the upsell.
 9. **Plan-doc corrections** — fold §1's table into `YC_COMPANY_PLAN.md` (claim the shipped wins, name the plaintext-sync risk in §14, fix §11/§15 "next" lists).
 
-### Explicitly deferred (post-YC or founder-gated)
-- **E2E-encrypt hosted sync** (age/per-user key) — the one place the ownership pitch currently breaks; schedule immediately after waves 1–2; until then the plan must *say* sync is signed-not-encrypted.
-- Purge propagation to hosted + devices (tombstone sync).
-- Mobile (iOS read/capture), bge-class embedding upgrade, teams UX, Memory Wrapped weekly card (rides on [A]+[C] infra), OpenMemory alias layer, Limitless/Rewind importer + landing page, import-diff ("what the AIs think of you"), storage.py refactor.
+### SHIPPED since (were deferred; now built + reviewed + pushed)
+- ✅ **Zero-access E2EE sync** — opt-in; the server stores ciphertext it structurally cannot read (blind relay), the key never leaves the user's devices, recovery-code escrow + offline `cortex-decrypt`. Crypto-reviewed (`1cfe5c6`).
+- ✅ **Purge/tombstone propagation** — a local forget reaches the hosted copy + every device; data-loss-reviewed (`0d666ab`).
+- ✅ **Memory Wrapped** weekly card (`2b508ae`); ✅ **Limitless/Rewind importer + landing page** (`98b52d4`); ✅ **provable key ownership** (CXE1 spec + offline tool, `f27a589`).
+
+### Still deferred (post-YC or founder-gated)
+- New-machine restore (in build), mobile (iOS), bge-class embedding upgrade, teams UX, OpenMemory alias layer, import-diff ("what the AIs think of you"), storage.py refactor.
 - Actual SDK publishing, OAuth app registration, MAS provisioning, hosted redeploy — founder actions.
 
 ---
