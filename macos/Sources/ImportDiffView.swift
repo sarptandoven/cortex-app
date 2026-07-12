@@ -357,7 +357,7 @@ struct ImportDiffView: View {
     private var pasteWell: some View {
         ZStack(alignment: .topLeading) {
             if pasted.isEmpty {
-                Text("Paste your export here — the raw text or JSON is fine.")
+                Text("Paste your export here. The raw text or JSON is fine.")
                     .font(CortexDesign.Typography.prose(13))
                     .foregroundColor(CortexDesign.inkFaint)
                     .padding(.horizontal, 12)
@@ -389,7 +389,7 @@ struct ImportDiffView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "arrow.down.doc")
                         .foregroundColor(dropTargeted ? CortexDesign.accent : CortexDesign.inkFaint)
-                    Text("Drop your export file here — a .zip is fine")
+                    Text("Drop your export file here. A .zip is fine")
                         .font(CortexDesign.Typography.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                 }
@@ -607,7 +607,7 @@ struct ImportDiffView: View {
             VStack(alignment: .leading, spacing: 6) {
                 if result.isKeywordFallback {
                     Label(
-                        "Matched by keyword, not meaning — the semantic embedder wasn't available, so these matches are rougher than usual.",
+                        "Matched by keyword, not meaning: the semantic embedder wasn't available, so these matches are rougher than usual.",
                         systemImage: "info.circle"
                     )
                     .font(CortexDesign.Typography.caption)
@@ -658,7 +658,7 @@ struct ImportDiffView: View {
     private func openExportFile() {
         let panel = NSOpenPanel()
         panel.title = "Open export file"
-        panel.message = "Open a ChatGPT, Claude, or Gemini memory export — the .zip, its .json/.jsonl, or a plain-text file."
+        panel.message = "Open a ChatGPT, Claude, or Gemini memory export: the .zip, its .json/.jsonl, or a plain-text file."
         panel.prompt = "Open"
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -738,7 +738,7 @@ enum ImportDiffZipExtractor {
         do {
             try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
         } catch {
-            return .failure("Couldn't open that .zip — no room to unzip it. Paste the export contents instead.")
+            return .failure("Couldn't open that .zip: no room to unzip it. Paste the export contents instead.")
         }
 
         // /usr/bin/ditto -x -k <zip> <dest> extracts a PKZip archive. It ships with macOS, so no

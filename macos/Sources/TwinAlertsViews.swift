@@ -149,7 +149,7 @@ struct ReviewProactiveAlertCard: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(isInFlight)
-                .help("Not worth flagging — Cortex stops raising pairs like this")
+                .help("Not worth flagging: Cortex stops raising pairs like this")
                 Button {
                     resolve("accepted")
                 } label: {
@@ -414,7 +414,7 @@ struct TwinScorecardCard: View {
     let scorecard: TwinScorecardResponse
 
     private var accuracyText: String {
-        guard let accuracy = scorecard.accuracy else { return "—" }
+        guard let accuracy = scorecard.accuracy else { return "–" }
         return "\(Int((accuracy * 100).rounded()))%"
     }
 
@@ -574,7 +574,7 @@ struct ConnectionsToolUsageSection: View {
     }
 
     private var precisionValue: String {
-        guard let precision = state.alertPrecision?.precision else { return "—" }
+        guard let precision = state.alertPrecision?.precision else { return "–" }
         return "\(Int((precision * 100).rounded()))%"
     }
 
@@ -589,7 +589,7 @@ struct ConnectionsToolUsageSection: View {
     }
 
     private var prefetchValue: String {
-        guard let rate = state.prefetchHitRate?.hit_rate else { return "—" }
+        guard let rate = state.prefetchHitRate?.hit_rate else { return "–" }
         return "\(Int((rate * 100).rounded()))%"
     }
 

@@ -351,12 +351,12 @@ enum CortexE2EE {
         }
         let decoded = base32Decode(symbolValues)
         guard decoded.count == keyByteCount + 1 else {
-            throw CortexE2EEError.invalidRecoveryCode("wrong length — expected a full \(keyByteCount)-byte key code")
+            throw CortexE2EEError.invalidRecoveryCode("wrong length: expected a full \(keyByteCount)-byte key code")
         }
         let raw = Array(decoded[0..<keyByteCount])
         let checksum = decoded[keyByteCount]
         guard crc8(raw) == checksum else {
-            throw CortexE2EEError.invalidRecoveryCode("checksum mismatch — re-check the characters")
+            throw CortexE2EEError.invalidRecoveryCode("checksum mismatch: re-check the characters")
         }
         return SymmetricKey(data: Data(raw))
     }

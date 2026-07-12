@@ -2080,7 +2080,7 @@ enum AIIntegrationCatalog {
             name: "Claude Web",
             category: .browser,
             systemImage: "sparkle.magnifyingglass",
-            summary: "Copy a cited memory pack into a Claude web chat — or use Claude Desktop for the live connection.",
+            summary: "Copy a cited memory pack into a Claude web chat, or use Claude Desktop for the live connection.",
             restartHint: "Paste the memory pack at the start of a Claude chat.",
             bundleIdentifiers: [],
             configTargets: [],
@@ -2093,7 +2093,7 @@ enum AIIntegrationCatalog {
             name: "Gemini",
             category: .browser,
             systemImage: "diamond",
-            summary: "Copy a cited memory pack into Gemini — the Gemini CLI can also connect over MCP.",
+            summary: "Copy a cited memory pack into Gemini. The Gemini CLI can also connect over MCP.",
             restartHint: "Paste the memory pack at the start of a Gemini chat.",
             bundleIdentifiers: [],
             configTargets: [
@@ -2627,7 +2627,7 @@ final class BackendSupervisor {
                 // failure now instead of leaving the user on a spinner. "failed" keeps this
                 // routed to the recovery card (see backendNeedsRecovery).
                 if tick > 1, let process, !process.isRunning {
-                    return "Local memory engine failed to start — port 8766 may already be in use. Quit any other Cortex instance (or whatever is using that port), then click Reconnect."
+                    return "Local memory engine failed to start: port 8766 may already be in use. Quit any other Cortex instance (or whatever is using that port), then click Reconnect."
                 }
                 if tick > 0, tick % 10 == 0 {
                     onProgress?("Starting the local memory engine (\(tick / 2)s)...")
@@ -3411,10 +3411,17 @@ final class AppState: ObservableObject {
     /// "What the AIs think of you" — the import-diff surface (paste a vendor memory export, see it
     /// checked against the Cortex Mirror). A standalone sheet, independent of the other two above.
     @Published var showImportDiff: Bool = false
+    /// The Connect-an-AI-tool wizard, presentable as its OWN top-level sheet so "use your memory in
+    /// Claude, ChatGPT, or Cursor" is a one-click hero action from Home and onboarding — not buried
+    /// three levels deep in the Connections sheet. Reuses the same ConnectAppWizard the sheet hosts.
+    @Published var showConnectToolsWizard: Bool = false
     // Onboarding and Connections are separate sheets on the same presenter — only one can show at
     // a time. These coordinate handing off from one to the other (see openConnectionsPrivacy).
     private var pendingOpenConnectionsAfterOnboarding = false
     private var reopenOnboardingAfterConnections = false
+    // Same handoff, for the standalone Connect-an-AI-tool wizard opened from inside onboarding.
+    private var pendingOpenWizardAfterOnboarding = false
+    private var reopenOnboardingAfterWizard = false
     @Published var onboardingStep: OnboardingStep = OnboardingStep(rawValue: UserDefaults.standard.integer(forKey: "onboardingStep.v2")) ?? .privateVault
     @Published var firstSourceAdded: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstSourceImported.v1")
     @Published var firstMemoryReviewed: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstMemoryReviewed.v1")
@@ -3945,6 +3952,7 @@ final class AppState: ObservableObject {
         startPullSync()
         startSyncProgressPolling()
         startActivityStream()
+        startLiveRefresh()
         activateQuickCaptureIfEnabled()
         presentOnboardingIfNeeded()
         // Fire a one-time "proof of life" notch so a new user actually sees the notch channel work
@@ -3956,11 +3964,47 @@ final class AppState: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                 NotchNotifier.shared.show(
                     title: "Welcome to \(DistributionMode.appDisplayName)",
-                    subtitle: "This is your notch — Cortex speaks here.",
+                    subtitle: "This is your notch. Cortex speaks here.",
                     style: .info
                 )
             }
         }
+    }
+
+    // MARK: - Live refresh
+    //
+    // A light, foreground-only heartbeat so the counts a user watches — memories, "to review", the
+    // cross-AI headline, connection status — update WITHOUT switching tabs. Before this, only the
+    // north-star polled; every other surface went stale until a manual tab switch or app restart.
+    // Cheap loaders only, ~6s cadence, and it skips a tick while the app isn't frontmost so it never
+    // spins in the background.
+    private var liveRefreshTask: Task<Void, Never>?
+
+    func startLiveRefresh() {
+        guard liveRefreshTask == nil else { return }
+        liveRefreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                guard let self, !Task.isCancelled else { break }
+                // Skip while the sign-in wall is up or the app is in the background — nothing to show.
+                guard NSApplication.shared.isActive, !self.requiresSignIn else { continue }
+                await self.refreshLiveCounts()
+            }
+        }
+    }
+
+    func stopLiveRefresh() {
+        liveRefreshTask?.cancel()
+        liveRefreshTask = nil
+    }
+
+    /// The cheap loaders whose results back the always-visible counts. Deliberately small so the
+    /// heartbeat stays inexpensive; heavier surfaces (graph, profile, twin) still load on demand.
+    func refreshLiveCounts() async {
+        await loadStats()
+        await loadReview()
+        await loadRecallHeadline()
+        refreshIntegrationStates()
     }
 
     func ensureBackend() async {
@@ -4870,9 +4914,9 @@ final class AppState: ObservableObject {
                 // "No active memories" placeholder the context engine emits when it has nothing.
                 let hasMemoryBullet = text.contains("\n- [") || text.hasPrefix("- [")
                 if !hasMemoryBullet || text.contains("No active memories") {
-                    return ConnectionTestResult(ok: false, message: "No memory to share yet — add a source first")
+                    return ConnectionTestResult(ok: false, message: "No memory to share yet. Add a source first")
                 }
-                return ConnectionTestResult(ok: true, message: "Memory pack ready — your memory is reachable")
+                return ConnectionTestResult(ok: true, message: "Memory pack ready: your memory is reachable")
             case .mcpConfig:
                 // Honest per-tool test: a generic self-ping used to report "Connected" even when
                 // THIS tool's config was missing or unverified. Check the integration's own state
@@ -4882,25 +4926,25 @@ final class AppState: ObservableObject {
                     return ConnectionTestResult(
                         ok: false,
                         message: state.needsRepair
-                            ? "\(integration.name) config needs repair — use Connect to fix it"
-                            : "\(integration.name) isn't set up yet — use Connect / copy the config first"
+                            ? "\(integration.name) config needs repair. Use Connect to fix it"
+                            : "\(integration.name) isn't set up yet. Use Connect / copy the config first"
                     )
                 }
                 let data = try await request(path: "/v1/tools/schema?format=openai", method: "GET")
                 let count = Self.toolSchemaCount(data)
-                return ConnectionTestResult(ok: true, message: "\(integration.name) config verified — \(count) Cortex tools available")
+                return ConnectionTestResult(ok: true, message: "\(integration.name) config verified: \(count) Cortex tools available")
             case .cliCommand, .httpAPI:
                 // These live outside any file we can inspect (a CLI registration / another app's
                 // settings), so the test verifies Cortex's side and says exactly that.
                 let data = try await request(path: "/v1/tools/schema?format=openai", method: "GET")
                 let count = Self.toolSchemaCount(data)
-                return ConnectionTestResult(ok: true, message: "Cortex is reachable — \(count) tools available to \(integration.name)")
+                return ConnectionTestResult(ok: true, message: "Cortex is reachable: \(count) tools available to \(integration.name)")
             }
         } catch {
             // Connection-shaped failures (offline/timeout engine) get the friendly, actionable line;
             // a genuine HTTP/status error surfaces its (trimmed) message so the user has something to
             // act on rather than a misleading "is the app running?".
-            let generic = "Couldn't reach Cortex — is the app running?"
+            let generic = "Couldn't reach Cortex. Is the app running?"
             if isRetriableConnectionError(error) {
                 return ConnectionTestResult(ok: false, message: generic)
             }
@@ -5046,7 +5090,7 @@ final class AppState: ObservableObject {
         guard let insight = mirrorInsight else { return }
         rememberMirrorDismissal(insight.dismissKey)
         mirrorInsight = nil
-        status = "Thanks — noted."
+        status = "Thanks, noted."
         let claim = insight.headline.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !claim.isEmpty else { return }
         Task { [weak self] in
@@ -5129,12 +5173,48 @@ final class AppState: ObservableObject {
         // Dismiss onboarding first and present Connections in its onDismiss; reopen onboarding
         // when Connections closes so the user returns to the flow.
         if showOnboarding {
+            // Mutually exclusive with the wizard handoff: clear its pending flag so a stale one
+            // can't fire an unexpected sheet when onboarding next dismisses.
+            pendingOpenWizardAfterOnboarding = false
             reopenOnboardingAfterConnections = !onboardingComplete
             pendingOpenConnectionsAfterOnboarding = true
             showOnboarding = false
             return
         }
         showConnectionsPrivacy = true
+    }
+
+    /// Present the Connect-an-AI-tool wizard DIRECTLY — the product's hero action: use the memory you
+    /// already have inside the AI tools you already use (Claude Desktop, ChatGPT, Cursor, and more).
+    /// Same sheet-over-sheet handoff as openConnectionsPrivacy: if onboarding is up we dismiss it
+    /// first and present the wizard in its onDismiss, then return the user to onboarding on close.
+    func presentConnectToolsWizard(statusMessage: String = "Connect an AI tool") {
+        guard !requiresSignIn else {
+            status = "Sign in to Doppl to connect your AI tools."
+            return
+        }
+        status = statusMessage
+        if showOnboarding {
+            // Mutually exclusive with the Connections handoff: clear its pending flag so a stale
+            // one can't fire an unexpected sheet when onboarding next dismisses.
+            pendingOpenConnectionsAfterOnboarding = false
+            reopenOnboardingAfterWizard = !onboardingComplete
+            pendingOpenWizardAfterOnboarding = true
+            showOnboarding = false
+            return
+        }
+        showConnectToolsWizard = true
+    }
+
+    /// The wizard sheet finished dismissing: refresh connection state (the user may have just wired a
+    /// tool) and return to onboarding if we interrupted it to get here.
+    func connectToolsWizardDismissed() {
+        refreshIntegrationStates()
+        let shouldReopen = reopenOnboardingAfterWizard
+        reopenOnboardingAfterWizard = false
+        if shouldReopen && !onboardingComplete {
+            showOnboarding = true
+        }
     }
 
     /// Present "What the AIs think of you" — the import-diff surface. Gated the same way as
@@ -5183,6 +5263,11 @@ final class AppState: ObservableObject {
     /// Called when the onboarding sheet finishes dismissing. If it was dismissed to hand off to
     /// Connections, present Connections now (after the first sheet is fully gone).
     func onboardingSheetDismissed() {
+        if pendingOpenWizardAfterOnboarding {
+            pendingOpenWizardAfterOnboarding = false
+            showConnectToolsWizard = true
+            return
+        }
         guard pendingOpenConnectionsAfterOnboarding else { return }
         pendingOpenConnectionsAfterOnboarding = false
         showConnectionsPrivacy = true
@@ -5515,7 +5600,7 @@ final class AppState: ObservableObject {
     /// read, then synced through the existing local-notes distill path.
     func loadSampleNotes() async {
         guard !obsidianSyncInFlight else {
-            status = "A sync is already running — one moment…"
+            status = "A sync is already running, one moment…"
             return
         }
 
@@ -5624,7 +5709,7 @@ final class AppState: ObservableObject {
     func importAIChatExport(sourceHint: String = "") {
         let panel = NSOpenPanel()
         panel.title = "Choose export file"
-        panel.message = "Select your ChatGPT or Claude export — a .zip, its conversations.json, or the unzipped folder."
+        panel.message = "Select your ChatGPT or Claude export: a .zip, its conversations.json, or the unzipped folder."
         panel.prompt = "Import"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
@@ -5730,12 +5815,12 @@ final class AppState: ObservableObject {
                 if learnedNow > 0 { announceLearned(count: learnedNow) }
                 if moreRemaining {
                     // Never drop the rest silently: this export is larger than one import pass.
-                    status = "Imported \(added) conversations — this export is very large. Run Import again to add the rest (already-imported items are skipped)."
+                    status = "Imported \(added) conversations. This export is very large. Run Import again to add the rest (already-imported items are skipped)."
                 } else {
                     status = "Imported \(added) conversation\(added == 1 ? "" : "s"). Building your memory in the background…"
                 }
             } else if skipped > 0 {
-                status = "Already imported — nothing new to add."
+                status = "Already imported, nothing new to add."
             } else {
                 status = "No conversations found in that file. Choose the export .zip or its conversations.json."
             }
@@ -5821,7 +5906,7 @@ final class AppState: ObservableObject {
             }
             // The remembered folder moved, was renamed, or is on an unmounted disk. Don't silently
             // no-op — say so and fall through to the picker so the user can re-choose in place.
-            status = "Your notes folder moved or is unavailable — choose it again."
+            status = "Your notes folder moved or is unavailable. Choose it again."
             connectorLastMessages[connector.id] = "The connected notes folder could not be found. Choose the folder again to resume syncing."
         }
 
@@ -6148,7 +6233,7 @@ final class AppState: ObservableObject {
                 let data = try await request(path: "/v1/pair", method: "POST", body: ["label": label, "surface": "chat"])
                 let pairing = try JSONDecoder().decode(BrowserExtensionPairing.self, from: data)
                 browserExtensionPairing = pairing
-                status = "Browser extension paired — token copied to clipboard."
+                status = "Browser extension paired. Token copied to clipboard."
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(pairing.token, forType: .string)
                 let alert = NSAlert()
@@ -7024,7 +7109,7 @@ final class AppState: ObservableObject {
         if r.failed > 0 { parts.append("\(r.failed) couldn’t be read") }
         var summary = "\(sourceName): from \(found) note\(found == 1 ? "" : "s"), " + parts.joined(separator: ", ") + "."
         if r.scan.truncated == true {
-            summary += " Large library — \(r.scan.records_returned) of \(found) scanned; sync again to continue."
+            summary += " Large library: \(r.scan.records_returned) of \(found) scanned; sync again to continue."
         }
         return summary
     }
@@ -7200,7 +7285,7 @@ final class AppState: ObservableObject {
             .replacingOccurrences(of: "{BASE_URL}", with: endpoint)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(command, forType: .string)
-        status = "\(integration.name) connect command copied — paste it into a terminal"
+        status = "\(integration.name) connect command copied. Paste it into a terminal"
     }
 
     /// Copies a cited, review-gated memory pack for a browser assistant (ChatGPT, Claude web,
@@ -7230,7 +7315,7 @@ final class AppState: ObservableObject {
                 """
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(handoff, forType: .string)
-                status = "Memory pack copied — paste it into \(name)"
+                status = "Memory pack copied. Paste it into \(name)"
                 if openSite, let urlString = integration?.browserURL, let url = URL(string: urlString) {
                     NSWorkspace.shared.open(url)
                 }
@@ -7662,7 +7747,7 @@ final class AppState: ObservableObject {
         // real data source. This is the "onboarding requires a data connection" gate.
         guard hasAtLeastOneConnectedSource else {
             setOnboardingStep(.firstSource)
-            status = "Connect at least one source — a service, your notes folder, or an export — to finish setup."
+            status = "Connect at least one source (a service, your notes folder, or an export) to finish setup."
             return
         }
         guard canCompleteOnboarding else {
@@ -7752,8 +7837,8 @@ final class AppState: ObservableObject {
                 let finalRecovered = max(0, (stats?.captures ?? baseline) - baseline)
                 restoreProgress = finalRecovered > 0 ? .done(recovered: finalRecovered) : .empty
                 status = finalRecovered > 0
-                    ? "Welcome back — \(finalRecovered) memories restored."
-                    : "Nothing to restore yet — your account has no memory to pull down."
+                    ? "Welcome back, \(finalRecovered) memories restored."
+                    : "Nothing to restore yet: your account has no memory to pull down."
                 return
             case .error(let message):
                 // If we already recovered items before the error, keep them and confirm honestly;
@@ -7763,10 +7848,10 @@ final class AppState: ObservableObject {
                     await loadGraph()
                     await loadRecallHeadline()
                     restoreProgress = .done(recovered: recoveredSoFar)
-                    status = "Welcome back — \(recoveredSoFar) memories restored."
+                    status = "Welcome back, \(recoveredSoFar) memories restored."
                 } else {
                     restoreProgress = .failed(message)
-                    status = "Restore paused — \(message)"
+                    status = "Restore paused: \(message)"
                 }
                 return
             case .idle:
@@ -7789,7 +7874,7 @@ final class AppState: ObservableObject {
             await loadGraph()
             await loadRecallHeadline()
             restoreProgress = .done(recovered: recovered)
-            status = "Welcome back — \(recovered) memories restored."
+            status = "Welcome back, \(recovered) memories restored."
         } else if sawSyncing {
             restoreProgress = .failed("Restore is taking longer than expected. It will keep running in the background.")
         } else {
@@ -8116,7 +8201,7 @@ final class AppState: ObservableObject {
             if failed == 0 {
                 status = "Approved \(approved) review item\(approved == 1 ? "" : "s")"
             } else {
-                status = "Approved \(approved), \(failed) failed — see the item\(failed == 1 ? "" : "s") for details"
+                status = "Approved \(approved), \(failed) failed. See the item\(failed == 1 ? "" : "s") for details"
             }
             await drainQueuedMemoryJobs(automatic: true)
             await loadInbox()
@@ -8154,7 +8239,7 @@ final class AppState: ObservableObject {
             if failed == 0 {
                 status = "Archived \(archived) review item\(archived == 1 ? "" : "s")"
             } else {
-                status = "Archived \(archived), \(failed) failed — see the item\(failed == 1 ? "" : "s") for details"
+                status = "Archived \(archived), \(failed) failed. See the item\(failed == 1 ? "" : "s") for details"
             }
             await loadInbox()
             await loadRecent()
@@ -8798,6 +8883,21 @@ struct CortexView: View {
                     maxHeight: 720
                 )
         }
+        // The Connect-an-AI-tool wizard as its OWN top-level sheet, so Home and onboarding can open
+        // "use your memory in Claude/ChatGPT/Cursor" in one click without routing through Connections.
+        .sheet(isPresented: $state.showConnectToolsWizard, onDismiss: { state.connectToolsWizardDismissed() }) {
+            ConnectAppWizard(state: state)
+                .preferredColorScheme(.light)
+                .accentColor(CortexDesign.accent)
+                .frame(
+                    minWidth: 560,
+                    idealWidth: 720,
+                    maxWidth: 800,
+                    minHeight: 540,
+                    idealHeight: 640,
+                    maxHeight: 720
+                )
+        }
         // App-menu "Settings…" (⌘,) requests the settings surface by flipping presentSettings; the
         // window content owns the actual presentation. Reuse the Connections & Privacy sheet — that
         // is Cortex's settings surface — then reset the one-shot flag.
@@ -8944,11 +9044,11 @@ struct CortexSignInWall: View {
                             ink: vaultInk)
                         VaultTeachRow(
                             glyph: "circle.hexagongrid.fill",
-                            text: "Cortex builds one private, cited memory of you — on your Mac, never on ours.",
+                            text: "Cortex builds one private, cited memory of you. On your Mac, never on ours.",
                             ink: vaultInk)
                         VaultTeachRow(
                             glyph: "sparkles",
-                            text: "Wire it into Claude Desktop, ChatGPT, Cursor — every AI tool remembers you.",
+                            text: "Wire it into Claude Desktop, ChatGPT, Cursor. Every AI tool remembers you.",
                             ink: vaultInk)
                     }
                     .frame(maxWidth: 440, alignment: .leading)
@@ -8973,7 +9073,7 @@ struct CortexSignInWall: View {
                         // a faint lit plate that gives that ink enough contrast to read, keeping the
                         // primitive intact rather than hand-rolling a Button.
                         CortexButton(
-                            title: "Explore with sample notes — no account needed",
+                            title: "Explore with sample notes, no account needed",
                             systemImage: "sparkles",
                             role: .ghost
                         ) {
@@ -9305,7 +9405,7 @@ struct IntegrationCompactHero: View {
     private var detail: String {
         if needsConnection {
             return isAppStore
-                ? "Copy the setup config and paste it into your AI app — this version can't write other apps' settings."
+                ? "Copy the setup config and paste it into your AI app. This version can't write other apps' settings."
                 : "Cortex can connect detected local AI tools automatically."
         }
         if connectedCount > 0 {
@@ -11743,7 +11843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.toolTip = "Cortex — click to ask your memory (⌃⌥Space)"
+        statusItem.button?.toolTip = "Cortex: click to ask your memory (⌃⌥Space)"
         // Click-split so both surfaces coexist on one status item WITHOUT statusItem.menu hijacking
         // every click: LEFT-click / hotkey → the rich "Cortex Spotlight" popover; RIGHT-click (or
         // ⌃-click) → a lean native menu (Open/Review/Ask/Sync/Connections/Quit).

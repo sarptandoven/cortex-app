@@ -2345,7 +2345,7 @@ private struct ConstellationShareSheet: View {
                     Text("Share your constellation")
                         .font(CortexDesign.Typography.title)
                         .foregroundColor(CortexDesign.ink)
-                    Text("A snapshot of your real memory graph. Node names are visible — share it on purpose.")
+                    Text("A snapshot of your real memory graph. Node names are visible. Share it on purpose.")
                         .font(CortexDesign.Typography.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                 }

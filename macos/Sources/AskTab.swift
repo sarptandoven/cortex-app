@@ -101,7 +101,7 @@ struct AskTab: View {
         if state.hasConnectedSourceAccount || state.hasConnectedObsidianVault {
             return "Sync your source, then approve one useful item in Review."
         }
-        return "Connect notes or a source — Cortex answers only from reviewed memory."
+        return "Connect notes or a source. Cortex answers only from reviewed memory."
     }
 }
 
@@ -601,7 +601,7 @@ struct AskResponseSection: View {
                 AskEmptyGuidance(
                     state: state,
                     title: "No cited answer found",
-                    detail: "Nothing in reviewed notes matches yet — try a more specific question.",
+                    detail: "Nothing in reviewed notes matches yet. Try a more specific question.",
                     showActionsWhenMemoryExists: true
                 )
             } else {

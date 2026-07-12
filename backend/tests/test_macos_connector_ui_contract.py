@@ -162,7 +162,10 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
 
         self.assertIn("@State private var advancedExpanded = true", source)
         self.assertIn("AI tools & permissions", source)
-        self.assertIn("Use your memory in Claude Desktop, ChatGPT, Cursor & other AI apps", source)
+        # The AI-apps group is now the hero of the sheet (top + open), titled for the use-your-memory
+        # promise and naming the concrete tools so "connect to ChatGPT/Claude" is unmissable.
+        self.assertIn("Use your memory in AI apps", source)
+        self.assertIn("Connect Claude Desktop, ChatGPT, Cursor, and other AI apps", source)
         self.assertIn("Copy tool config", source)
         self.assertIn("ChatGPT web cannot read local memory directly yet", source)
         self.assertNotIn("if detectedAIToolCount > 0 || state.connectedAIIntegrationCount > 0", source)

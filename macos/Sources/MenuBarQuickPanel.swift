@@ -273,7 +273,7 @@ struct MenuBarQuickPanel: View {
             askHero
             let suggestions = Array(state.onboardingAskSuggestions.prefix(2))
             if suggestions.isEmpty {
-                quietRow(icon: "quote.bubble", text: "Ask a question and Cortex answers from your own memory — with citations.")
+                quietRow(icon: "quote.bubble", text: "Ask a question and Cortex answers from your own memory, with citations.")
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Try asking")
@@ -304,7 +304,7 @@ struct MenuBarQuickPanel: View {
                 Text("Ask your memory")
                     .font(.system(size: 20, weight: .semibold, design: .serif))
                     .foregroundColor(CortexDesign.ink)
-                Text("Answered from your own notes — with citations.")
+                Text("Answered from your own notes, with citations.")
                     .font(CortexDesign.Typography.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
             }
@@ -403,12 +403,12 @@ struct MenuBarQuickPanel: View {
                 // Honest states: green only after a verified save, and a visible (retry-able)
                 // failure instead of a silent swallow.
                 if captureSaved {
-                    Label("Saved — Ask can use it now", systemImage: "checkmark.seal.fill")
+                    Label("Saved. Ask can use it now", systemImage: "checkmark.seal.fill")
                         .font(.caption).fontWeight(.semibold)
                         .foregroundColor(CortexDesign.sealMoss)
                         .transition(.scale(scale: 0.8).combined(with: .opacity))
                 } else if captureFailed {
-                    Label("Couldn't save — try again", systemImage: "exclamationmark.triangle.fill")
+                    Label("Couldn't save. Try again", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundColor(CortexDesign.accent)
                         .transition(.opacity)

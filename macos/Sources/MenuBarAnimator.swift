@@ -268,32 +268,32 @@ final class MenuBarAnimator {
             button.imagePosition = .imageOnly
             button.title = ""
             button.image = idleImage
-            button.toolTip = "Cortex — click to ask your memory (⌃⌥Space)"
+            button.toolTip = "Cortex: click to ask your memory (⌃⌥Space)"
         case .syncing:
             button.imagePosition = .imageOnly
             button.title = ""
             button.image = spinnerFrames.first ?? idleImage
-            button.toolTip = "Cortex — syncing your memory…"
+            button.toolTip = "Cortex: syncing your memory…"
         case .attention(let count):
             button.image = attentionImage ?? idleImage
             button.title = " \(count > 99 ? "99+" : String(count))"
             button.imagePosition = .imageLeading
-            button.toolTip = "Cortex — \(count) item\(count == 1 ? "" : "s") waiting for review"
+            button.toolTip = "Cortex: \(count) item\(count == 1 ? "" : "s") waiting for review"
         case .success:
             button.imagePosition = .imageOnly
             button.title = ""
             button.image = successImage ?? idleImage
-            button.toolTip = "Cortex — sync complete"
+            button.toolTip = "Cortex: sync complete"
         case .learned:
             button.imagePosition = .imageOnly
             button.title = ""
             button.image = learnedFrames.first ?? idleImage
-            button.toolTip = "Cortex — learned something new"
+            button.toolTip = "Cortex: learned something new"
         case .captured:
             button.imagePosition = .imageOnly
             button.title = ""
             button.image = capturedFrames.first ?? idleImage
-            button.toolTip = "Cortex — captured to memory"
+            button.toolTip = "Cortex: captured to memory"
         }
         // Safety net: if symbol rendering ever fails, fall back to a visible text title.
         if button.image == nil && button.title.isEmpty {

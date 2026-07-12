@@ -168,9 +168,10 @@ class PhaseUISurfaceWiringTests(unittest.TestCase):
         self.assertIn('Label("Noted"', card)
 
     def test_metrics_render_honest_placeholders_not_fabricated_zeros(self) -> None:
-        # Nil rates render as an em-dash placeholder, never as a made-up "0%".
+        # Nil rates render as a dash placeholder, never as a made-up "0%". (An en-dash "no data"
+        # glyph, since prose em dashes were removed from the UI copy.)
         views = read(VIEWS)
-        self.assertIn('return "\u2014"', views)
+        self.assertIn('return "\u2013"', views)
         self.assertIn("No alerts resolved yet", views)
         self.assertIn("No prefetch trials yet", views)
 

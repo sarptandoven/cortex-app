@@ -127,7 +127,7 @@ struct ReviewSourceHealthStrip: View {
             return "A source needs attention. Already synced memory stays available."
         }
         if pendingCount > 0 {
-            return "Approve useful items, archive noise — approved memory powers Ask and your AI tools."
+            return "Approve useful items, archive noise. Approved memory powers Ask and your AI tools."
         }
         if !sources.isEmpty {
             return "New synced memories land here first."
@@ -299,13 +299,19 @@ struct ReviewWaxSealConfirm: View {
 struct ReviewSectionsBoard: View {
     @ObservedObject var state: AppState
 
+    /// The calm-facing item count: a big backlog collapses to "99+" so the section board reads as
+    /// "a few tidy decisions", never a raw scary "1,238 items".
+    private var pendingDisplay: String {
+        state.reviewSectionsPendingTotal > 99 ? "99+" : "\(state.reviewSectionsPendingTotal)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Review by section")
                     .font(CortexDesign.Typography.title)
                     .foregroundColor(CortexDesign.ink)
-                Text("\(state.reviewSectionsPendingTotal) items in \(state.reviewSections.count) sections — one decision each.")
+                Text("\(pendingDisplay) items in \(state.reviewSections.count) sections, one decision each.")
                     .font(CortexDesign.Typography.body)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -524,6 +530,74 @@ struct ReviewGhostStamp: View {
     }
 }
 
+/// The calm focus lead: the antidote to "a thousand things to review". It leads with the small set the
+/// user is actually looking at ("A few to look at today"), and presents any larger backlog only as a
+/// soft, no-pressure secondary line ("and plenty more whenever you like"). The exact backlog number is
+/// never rendered when it's large: it collapses to "99+" so Review reads as an invitation, not a chore.
+struct ReviewFocusLead: View {
+    let focusCount: Int
+    let backlogBeyondFocus: Int
+    let pendingDisplay: String
+
+    private var focusTitle: String {
+        // Warm, low-pressure framing scaled to how much is on screen, never a count-driven alarm.
+        switch focusCount {
+        case 0: return "You're all caught up"
+        case 1: return "One to look at"
+        case 2...5: return "A few to look at"
+        default: return "Today's review"
+        }
+    }
+
+    private var focusDetail: String {
+        // The soft secondary backlog line: gentle, optional, never an exact scary number when large.
+        if backlogBeyondFocus <= 0 {
+            return "Take a look when you have a moment. No rush."
+        }
+        return "Start with these. Plenty more whenever you like."
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "cup.and.saucer")
+                .font(.headline)
+                .foregroundColor(CortexDesign.sealMoss)
+                .frame(width: 28, height: 28)
+                .background(CortexDesign.sealMoss.opacity(0.11))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(focusTitle)
+                    .font(CortexDesign.Typography.title)
+                    .foregroundColor(CortexDesign.ink)
+                Text(focusDetail)
+                    .font(CortexDesign.Typography.body)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            // The backlog whisper: a quiet capped pill, never the raw scary count. Only when there is
+            // meaningfully more behind the focus set.
+            if backlogBeyondFocus > 0 {
+                Text("\(pendingDisplay) waiting")
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(CortexDesign.quietBackground)
+                    .clipShape(Capsule())
+                    .help("There's no deadline. Review at your own pace.")
+            }
+        }
+        .cortexCard(padding: CortexDesign.Space.md, background: CortexDesign.panelBackground)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(focusTitle). \(focusDetail)")
+    }
+}
+
 struct ReviewInboxSection: View {
     @ObservedObject var state: AppState
     let captures: [CaptureItem]
@@ -541,6 +615,15 @@ struct ReviewInboxSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
+            // The calm focus lead: leads with the small set on screen ("A few to look at"), and only
+            // whispers the rest of the backlog as a soft secondary line. Never a scary raw number.
+            if !captures.isEmpty {
+                ReviewFocusLead(
+                    focusCount: focusCount,
+                    backlogBeyondFocus: backlogBeyondFocus,
+                    pendingDisplay: pendingDisplay
+                )
+            }
             if showSections {
                 ReviewSectionsBoard(state: state)
             }
@@ -548,7 +631,7 @@ struct ReviewInboxSection: View {
             // wax-seal panel replaces the action row while armed.
             if confirmApproveAll {
                 ReviewWaxSealConfirm(
-                    message: "Approve all \(totalPendingCount) items? Everything waiting becomes usable memory — you can still archive or forget individual memories later.",
+                    message: "Approve all \(totalPendingCount) items? Everything waiting becomes usable memory. You can still archive or forget individual memories later.",
                     confirmTitle: "Approve all",
                     onConfirm: {
                         withAnimation(CortexMotion.press) { confirmApproveAll = false }
@@ -651,6 +734,25 @@ struct ReviewInboxSection: View {
     /// is only visible through the review stats. Never report fewer than what's already on screen.
     private var totalPendingCount: Int {
         max(state.review?.stats.pending_captures ?? 0, captures.count)
+    }
+
+    /// The calm-facing count: a big backlog is never rendered as a scary raw "1,238". Anything past
+    /// 99 collapses to "99+" so Review reads as an invitation, not an overwhelming chore. Used for the
+    /// header lead and the soft secondary backlog line; the pinned "Approve all N" button keeps the
+    /// exact count so a user who opts into the bulk clear sees precisely what it acts on.
+    private var pendingDisplay: String {
+        totalPendingCount > 99 ? "99+" : "\(totalPendingCount)"
+    }
+
+    /// The small curated focus set the user is actually looking at right now, framed calmly.
+    private var focusCount: Int {
+        visibleCount
+    }
+
+    /// How much backlog sits behind the focus set, if any: the soft secondary line, never a scary
+    /// exact number when it's large.
+    private var backlogBeyondFocus: Int {
+        max(totalPendingCount - focusCount, 0)
     }
 
     /// How many loaded captures share each raw source string — gates the per-source approve-all so

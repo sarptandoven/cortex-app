@@ -3,10 +3,11 @@ import UniformTypeIdentifiers
 
 /// A fast, delightful first-run walkthrough for Cortex — "The Archive".
 ///
-/// Three calm beats: welcome (value prop with privacy folded in), add memory (every connect path
-/// on one screen with a single primary action), and you're set (next-step pointers plus the
-/// compact quick-capture, AI-tools, and first-backup decisions). Each beat animates in with a
-/// spring + asymmetric slide and carries ambient motion (`TimelineView`).
+/// Four calm beats: welcome (value prop with privacy folded in), add memory (every connect path
+/// on one screen with a single primary action), use it (connect an AI tool so your memory travels
+/// into Claude/ChatGPT/Cursor, the payoff), and you're set (next-step pointers plus the compact
+/// quick-capture and first-backup decisions). Each beat animates in with a spring + asymmetric
+/// slide and carries ambient motion (`TimelineView`).
 ///
 /// The walkthrough keeps its OWN step cursor (`WalkStep`) so the storytelling order is independent
 /// of the practical setup-loop enum that `AppState` tracks. Real actions still route through
@@ -19,12 +20,16 @@ import UniformTypeIdentifiers
 struct OnboardingView: View {
     @ObservedObject var state: AppState
 
-    /// The three narrative beats of the walkthrough. Independent of `OnboardingStep` (the setup
-    /// loop). The old privacy / see-yourself / quick-capture / connect-tools beats are merged into
-    /// these three, so the flow only ever shows three screens while every capability survives.
+    /// The four narrative beats of the walkthrough. Independent of `OnboardingStep` (the setup
+    /// loop). The arc is deliberate: welcome (the promise), addMemory (capture), useIt (the PAYOFF:
+    /// use your memory inside Claude, ChatGPT, Cursor), and finish (review it, then you're set). The
+    /// old privacy / see-yourself / quick-capture beats are folded into these, and "connect an AI
+    /// tool" is promoted from a finish-step footnote to its own emphasized beat, because using your
+    /// memory where you work IS the point of Cortex.
     private enum WalkStep: Int, CaseIterable, Identifiable {
         case welcome
         case addMemory
+        case useIt
         case finish
 
         var id: Int { rawValue }
@@ -43,7 +48,7 @@ struct OnboardingView: View {
 
     /// The "Restore from your account" branch (the "1Password moment"). When non-nil it takes over
     /// the step area with the restore sub-flow (sign in → restoring → welcome back), independent of
-    /// the three-beat setup walkthrough so the main "Step N of 3" flow and its contract are untouched.
+    /// the four-beat setup walkthrough so the main "Step N of 4" flow and its contract are untouched.
     /// `.signIn` reuses the existing cloud sign-in; once signed in it advances to `.restoring` (live
     /// pull progress), then `.welcomeBack` (the confirmation).
     @State private var restoreStage: OnboardingRestoreStageProxy?
@@ -160,7 +165,7 @@ struct OnboardingView: View {
             }
 
             // Progress dots — the current beat is a longer, wax-red capsule; visited beats stay
-            // filled, unvisited stay quiet. A quiet "Step N of 3" for orientation.
+            // filled, unvisited stay quiet. A quiet "Step N of 4" for orientation.
             HStack(spacing: 8) {
                 ForEach(steps) { s in
                     Capsule()
@@ -225,6 +230,18 @@ struct OnboardingView: View {
                 title: "Continue",
                 systemImage: "chevron.right",
                 role: state.onboardingHasSource ? .primary : .ghost,
+                size: .large
+            ) {
+                advance()
+            }
+        case .useIt:
+            // The connect-a-tool card carries this beat's emphasized (wax) call to action in-content;
+            // the footer keeps a quiet forward path so a user who wants to wire tools later isn't
+            // trapped on the payoff screen.
+            CortexButton(
+                title: state.connectedAIIntegrationCount > 0 ? "Continue" : "Do this later",
+                systemImage: "chevron.right",
+                role: state.connectedAIIntegrationCount > 0 ? .primary : .ghost,
                 size: .large
             ) {
                 advance()
@@ -312,7 +329,7 @@ struct OnboardingView: View {
     /// instead of a generic nudge.
     private var needsSourceMessage: String {
         if !state.hasAtLeastOneConnectedSource {
-            return "Connect a source above — your notes folder, an app, or a ChatGPT / Claude export — then Finish. Or explore with sample notes."
+            return "Connect a source above: your notes folder, an app, or a ChatGPT / Claude export, then Finish. Or explore with sample notes."
         }
         let remaining = state.incompleteOnboardingStepTitles.prefix(2).joined(separator: " · ")
         return remaining.isEmpty
@@ -336,6 +353,8 @@ struct OnboardingView: View {
             )
         case .addMemory:
             OnboardingAddMemoryStep(state: state, advance: advance)
+        case .useIt:
+            OnboardingUseItStep(state: state)
         case .finish:
             OnboardingFinishStep(state: state)
         }
@@ -351,7 +370,7 @@ struct OnboardingView: View {
             Text("Your Archive is ready")
                 .font(CortexDesign.Typography.display(26))
                 .foregroundColor(CortexDesign.ink)
-            Text("Ask anytime — press ⌃⌥Space, or click the mark in your menu bar.")
+            Text("Now use it where you work. Ask in Cortex with ⌃⌥Space, or let Claude, ChatGPT, and Cursor cite your memory.")
                 .font(.callout)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .multilineTextAlignment(.center)
@@ -458,7 +477,7 @@ private struct OnboardingRestoreSignInStep: View {
                 signInForm
             }
 
-            Text("Offline? You can Skip and start fresh — signing in later will still restore your memory.")
+            Text("Offline? You can Skip and start fresh. Signing in later will still restore your memory.")
                 .font(.caption)
                 .foregroundColor(CortexDesign.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)
@@ -490,7 +509,7 @@ private struct OnboardingRestoreSignInStep: View {
                     .font(CortexDesign.Typography.display(26))
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Sign in to the account you used before. Your memory rebuilds itself on this Mac — nothing is retyped or re-imported.")
+                Text("Sign in to the account you used before. Your memory rebuilds itself on this Mac, nothing is retyped or re-imported.")
                     .font(CortexDesign.Typography.prose(15))
                     .lineSpacing(3)
                     .foregroundColor(CortexDesign.inkSecondary)
@@ -564,7 +583,7 @@ private struct OnboardingRestoreSignInStep: View {
     private var accountConfirmation: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Signed in — restore this account?")
+                Text("Signed in. Restore this account?")
                     .font(CortexDesign.Typography.display(24))
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -706,7 +725,7 @@ private struct OnboardingRestoringStep: View {
 
             if case .empty = state.restoreProgress {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Nothing to restore yet — this account has no memory to pull down. You can start fresh and it will sync from here.")
+                    Text("Nothing to restore yet: this account has no memory to pull down. You can start fresh and it will sync from here.")
                         .font(.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -736,7 +755,7 @@ private struct OnboardingRestoringStep: View {
 
     private var detail: String {
         if case .failed = state.restoreProgress {
-            return "Your memory is safe in your account — nothing was lost. It will keep restoring in the background, or try again."
+            return "Your memory is safe in your account, nothing was lost. It will keep restoring in the background, or try again."
         }
         if case .empty = state.restoreProgress {
             return "There's nothing here to bring back yet."
@@ -774,7 +793,7 @@ private struct OnboardingWelcomeBackStep: View {
             .padding(.top, 6)
 
             VStack(alignment: .leading, spacing: 10) {
-                Text("Welcome back — your memory is restored")
+                Text("Welcome back. Your memory is restored")
                     .font(CortexDesign.Typography.display(26))
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -825,14 +844,14 @@ private struct OnboardingWelcomeBackStep: View {
                 Text("Reconnect your AI tools")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(CortexDesign.ink)
-                Text("Your memory is back. AI-tool wiring is per-device and isn't synced — reconnect Claude, ChatGPT, or others to use it here.")
+                Text("Your memory is back. AI-tool wiring is per-device and isn't synced, so reconnect Claude, ChatGPT, or others to use it here.")
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             CortexButton(title: "Connect", systemImage: "link", role: .secondary, size: .small) {
-                state.openConnectionsPrivacy(statusMessage: "Reconnect your AI tools")
+                state.presentConnectToolsWizard(statusMessage: "Reconnect your AI tools")
             }
         }
         .padding(14)
@@ -887,7 +906,7 @@ private struct OnboardingWelcomeStep: View {
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("A private archive of what you know — your notes, distilled into memory you can search and let your AI tools cite.")
+                Text("A private archive of what you know, distilled from your notes, so Claude, ChatGPT, and Cursor can cite the memory you already have.")
                     .font(CortexDesign.Typography.prose(16))
                     .lineSpacing(4)
                     .foregroundColor(CortexDesign.inkSecondary)
@@ -896,7 +915,7 @@ private struct OnboardingWelcomeStep: View {
                 // The privacy beat, folded into one quiet line.
                 Text(accountRequired
                      ? "Built and kept on your Mac, synced privately to your account. Your memory is always yours."
-                     : "Everything stays on your Mac — nothing is uploaded, and there's no account to create.")
+                     : "Everything stays on your Mac. Nothing is uploaded, and there's no account to create.")
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkFaint)
                     .fixedSize(horizontal: false, vertical: true)
@@ -974,7 +993,7 @@ private struct OnboardingWelcomeStep: View {
                 )
                 OnboardingCheckRow(
                     title: "A calm, considered space",
-                    detail: "No feed, no noise — just your memory, kept like a well-tended library.",
+                    detail: "No feed, no noise, just your memory, kept like a well-tended library.",
                     systemImage: "books.vertical",
                     color: CortexDesign.gold
                 )
@@ -1012,7 +1031,7 @@ private struct OnboardingAddMemoryStep: View {
                         .font(CortexDesign.Typography.display(26))
                         .foregroundColor(CortexDesign.ink)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Point Cortex at your notes — it distills the useful parts into memory. Add more later.")
+                    Text("Point Cortex at your notes and it distills the useful parts into memory. Add more later.")
                         .font(CortexDesign.Typography.prose(15))
                         .lineSpacing(3)
                         .foregroundColor(CortexDesign.inkSecondary)
@@ -1126,7 +1145,7 @@ private struct OnboardingAddMemoryStep: View {
         let sources = onboardingSources
         if !sources.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("…or connect an app — sign in once and Cortex pulls your data")
+                Text("…or connect an app: sign in once and Cortex pulls your data")
                     .font(.subheadline)
                     .fontWeight(.semibold)
                     .foregroundColor(CortexDesign.inkSecondary)
@@ -1212,7 +1231,7 @@ private struct OnboardingAddMemoryStep: View {
         if state.hasConnectedObsidianVault {
             return "Cortex checks connected notes on launch and every 30 minutes, then distills new memory with citations."
         }
-        return "Choose a local notes folder — or drag in a ChatGPT / Claude export. Everything stays on your Mac."
+        return "Choose a local notes folder, or drag in a ChatGPT / Claude export. Everything stays on your Mac."
     }
 
     private var connectIcon: String {
@@ -1247,7 +1266,177 @@ private struct OnboardingAddMemoryStep: View {
     }
 }
 
-// MARK: - Step 3: You're set
+// MARK: - Step 3: Use it (the payoff)
+
+/// The beat that carries the whole point of Cortex: use the memory you already have INSIDE the AI
+/// tools you already use (Claude Desktop, ChatGPT, Cursor). It is deliberately emphasized, not a
+/// footnote: a single wax primary that opens the shared Connect-an-AI-tool wizard
+/// (`state.presentConnectToolsWizard()`), the one hero action the whole app funnels into.
+///
+/// It reads live state (no local Timer): `connectedAIIntegrationCount` flips the headline to a
+/// proven "N tool(s) can now cite your memory" once wiring lands, and `detectedAIIntegrationCount`
+/// surfaces an honest "we found Claude / ChatGPT on this Mac" nudge when apps are installed but not
+/// yet configured. Both refresh via the app-wide live refresh, so this screen updates itself if the
+/// user connects a tool in the wizard and returns.
+private struct OnboardingUseItStep: View {
+    @ObservedObject var state: AppState
+
+    private var connected: Int { state.connectedAIIntegrationCount }
+    private var detected: Int { state.detectedAIIntegrationCount }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top, spacing: 22) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(connected > 0 ? "Your memory is where you work" : "Now use it where you work")
+                        .font(CortexDesign.Typography.display(26))
+                        .foregroundColor(CortexDesign.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("This is the point of \(DistributionMode.appDisplayName): the memory you just built can be read and cited right inside Claude Desktop, ChatGPT, and Cursor. No copy-paste, no re-explaining yourself.")
+                        .font(CortexDesign.Typography.prose(15))
+                        .lineSpacing(3)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                OnboardingHeroMark(systemImage: "sparkles.rectangle.stack", tint: CortexDesign.accent)
+                    .frame(width: 96)
+                    .padding(.top, 2)
+            }
+
+            // The proven state: once at least one tool is wired, celebrate it plainly and honestly.
+            if connected > 0 {
+                OnboardingCheckRow(
+                    title: connected == 1
+                        ? "1 AI tool can cite your memory"
+                        : "\(connected) AI tools can cite your memory",
+                    detail: "Ask your questions in Claude, ChatGPT, or Cursor and they'll pull from your approved memory, with sources.",
+                    systemImage: "checkmark.seal.fill",
+                    color: CortexDesign.sealMoss
+                )
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(CortexDesign.panelBackground)
+                .onboardingPanel(radius: 10)
+            }
+
+            // THE hero action. A full-width wax primary that can't be missed: it opens the shared
+            // Connect-an-AI-tool wizard (sheet-over-sheet handoff, then returns to onboarding).
+            heroConnectCard
+
+            // The three tools named as concrete, familiar rows so the promise is legible.
+            toolsRow
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            // Refresh detection once on entry; the app-wide live refresh keeps it current after.
+            state.refreshIntegrationStates()
+        }
+    }
+
+    /// The can't-miss primary. Wax button, full width, the single emphasized action of this beat.
+    /// The supporting line adapts to what we detected on this Mac so the nudge is honest and specific.
+    private var heroConnectCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "link.badge.plus")
+                    .font(.title2)
+                    .foregroundColor(CortexDesign.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(connected > 0 ? "Connect another AI tool" : "Connect an AI tool")
+                        .font(.headline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.ink)
+                    Text(heroDetail)
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            CortexButton(
+                title: connected > 0 ? "Connect another tool" : "Connect an AI tool",
+                systemImage: "link",
+                role: .primary,
+                size: .large,
+                fullWidth: true
+            ) {
+                state.presentConnectToolsWizard(statusMessage: "Connect your AI tools")
+            }
+            .accessibilityLabel("Connect an AI tool to use your memory")
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(CortexDesign.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(CortexDesign.accent.opacity(0.32), lineWidth: 1)
+        )
+        .embossedBorder()
+        .shadow(color: CortexDesign.Elevation.rest.ambient.color, radius: CortexDesign.Elevation.rest.ambient.radius, y: CortexDesign.Elevation.rest.ambient.y)
+        .shadow(color: CortexDesign.Elevation.rest.contact.color, radius: CortexDesign.Elevation.rest.contact.radius, y: CortexDesign.Elevation.rest.contact.y)
+    }
+
+    /// Honest, specific supporting copy: name that we found apps on this Mac when we did, otherwise a
+    /// plain invitation. Never claims a tool is present that isn't.
+    private var heroDetail: String {
+        if connected == 0, detected > 0 {
+            return detected == 1
+                ? "We found an AI app on this Mac. Wire it up in one step so it can read your memory."
+                : "We found \(detected) AI apps on this Mac. Wire them up in one step so they can read your memory."
+        }
+        if connected > 0 {
+            return "Add ChatGPT, Cursor, or another tool so your memory follows you everywhere you work."
+        }
+        return "Set up Claude Desktop, ChatGPT, or Cursor in one step so they can cite your approved memory."
+    }
+
+    /// The three canonical tools as calm rows, so "use it where you work" is concrete, not abstract.
+    private var toolsRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Works with the tools you already use")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundColor(CortexDesign.inkSecondary)
+            HStack(spacing: 10) {
+                OnboardingToolChip(name: "Claude", systemImage: "sparkle")
+                OnboardingToolChip(name: "ChatGPT", systemImage: "bubble.left.and.bubble.right")
+                OnboardingToolChip(name: "Cursor", systemImage: "cursorarrow.rays")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A compact, non-interactive chip naming a supported AI tool. Purely illustrative, so the "use your
+/// memory where you work" promise reads as concrete tools rather than an abstraction. The real wiring
+/// happens in the Connect-an-AI-tool wizard opened by the hero button above.
+private struct OnboardingToolChip: View {
+    let name: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(CortexDesign.accent)
+            Text(name)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(CortexDesign.ink)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity)
+        .background(CortexDesign.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .embossedBorder()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Works with \(name)")
+    }
+}
+
+// MARK: - Step 4: You're set
 
 /// The closing beat: the Constellation preview and the review → ask → cited-answers loop as
 /// next-step pointers, plus the compact quick-capture opt-in, the AI-tools launch point, and the
@@ -1267,7 +1456,7 @@ private struct OnboardingFinishStep: View {
                     .font(CortexDesign.Typography.display(26))
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("As memory accumulates, Cortex draws Your Constellation — review it, ask it questions, get cited answers.")
+                Text("As memory accumulates, Cortex draws Your Constellation. Review it, then it's ready wherever you work: in Cortex, and in the AI tools you connected.")
                     .font(CortexDesign.Typography.prose(15))
                     .lineSpacing(3)
                     .foregroundColor(CortexDesign.inkSecondary)
@@ -1327,21 +1516,36 @@ private struct OnboardingFinishStep: View {
         .onboardingPanel(radius: 10)
     }
 
-    /// The old connect-tools beat as one row: nothing is required to finish.
+    /// The connect-tools status row. Connecting an AI tool is now its own emphasized beat (the
+    /// `.useIt` step), so here it reflects state honestly: a green "N connected" check once tools are
+    /// wired, or a quiet second chance to open the same hero wizard. Nothing here is required to
+    /// finish. Routes through `presentConnectToolsWizard()` (THE hero action) so there is one path.
+    @ViewBuilder
     private var aiToolsRow: some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Connect your AI tools")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(CortexDesign.ink)
-                Text("Let agents like Claude read and cite your approved memory — set up anytime.")
-                    .font(.caption)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 8)
-            CortexButton(title: "Open Connections", systemImage: "link.circle", role: .secondary, size: .small) {
-                state.openConnectionsPrivacy(statusMessage: "Connect your AI tools")
+        if state.connectedAIIntegrationCount > 0 {
+            OnboardingCheckRow(
+                title: state.connectedAIIntegrationCount == 1
+                    ? "1 AI tool can read your memory"
+                    : "\(state.connectedAIIntegrationCount) AI tools can read your memory",
+                detail: "Claude, ChatGPT, and Cursor can cite your approved memory. Add more anytime from Connections.",
+                systemImage: "checkmark.seal.fill",
+                color: CortexDesign.sealMoss
+            )
+        } else {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Use your memory in your AI tools")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Let Claude, ChatGPT, and Cursor read and cite your approved memory. You can still set this up anytime.")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                CortexButton(title: "Connect a tool", systemImage: "link.circle", role: .secondary, size: .small) {
+                    state.presentConnectToolsWizard(statusMessage: "Connect your AI tools")
+                }
             }
         }
     }
@@ -1413,7 +1617,7 @@ private struct OnboardingQuickCaptureRow: View {
             if isMAS {
                 OnboardingCheckRow(
                     title: "Everything becomes memory, automatically",
-                    detail: "Add notes or import your chats any time and \(DistributionMode.appDisplayName) distills them into cited memory on your Mac — no extra setup.",
+                    detail: "Add notes or import your chats any time and \(DistributionMode.appDisplayName) distills them into cited memory on your Mac, no extra setup.",
                     systemImage: "checkmark.seal",
                     color: CortexDesign.gold
                 )
@@ -1432,7 +1636,7 @@ private struct OnboardingQuickCaptureRow: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 CortexToggle(title: "Quick capture", isOn: enabledBinding)
-                Text("Optional — save anything with a global shortcut. Change it anytime in Settings.")
+                Text("Optional: save anything with a global shortcut. Change it anytime in Settings.")
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)

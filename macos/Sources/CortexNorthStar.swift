@@ -246,7 +246,7 @@ struct RecallHeadlineCard: View {
                 .foregroundColor(CortexDesign.ink)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("All of it came through shared connections — connect apps individually to see which AI is reading.")
+            Text("All of it came through shared connections. Connect apps individually to see which AI is reading.")
                 .font(.caption)
                 .foregroundColor(CortexDesign.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)
@@ -268,7 +268,7 @@ struct RecallHeadlineCard: View {
                 .foregroundColor(CortexDesign.ink)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("Connect an app and it can read your approved memory — with citations.")
+            Text("Connect an app and it can read your approved memory, with citations.")
                 .font(.callout)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -276,7 +276,7 @@ struct RecallHeadlineCard: View {
             CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .secondary, size: .small) {
                 state.openConnectionsPrivacy(statusMessage: "Connect an app")
             }
-            .help("Opens Connections — the step-by-step wizard connects Claude, Cursor, and other AI apps to your memory.")
+            .help("Opens Connections: the step-by-step wizard connects Claude, Cursor, and other AI apps to your memory.")
         }
         .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.panelBackground)
         .frame(maxWidth: 620, alignment: .leading)
@@ -526,43 +526,171 @@ struct ConstellationMiniPreview: View {
         }
     }
 
+    // MARK: Rotating framings
+
+    /// One held framing of the SAME real graph. The rotation only re-EMPHASIZES the constellation
+    /// (which register is warm, whether halos bloom, how brightly links flicker); it never re-lays
+    /// out nodes or invents data, so the constellation stays the user's real map throughout. All
+    /// values are deterministic — driven off the timeline clock and the memoized layout, never
+    /// `.random`.
+    private enum Framing: CaseIterable {
+        case constellation   // the calm baseline: even accent register, soft halos
+        case emphasis        // the hubs warm to gold, their halos bloom; links stay quiet
+        case links           // the connective tissue lights up: brighter links, cooler nodes
+
+        /// Node dot tint for this framing.
+        var nodeTint: Color {
+            switch self {
+            case .constellation: return CortexDesign.accent
+            case .emphasis: return CortexDesign.accent
+            case .links: return CortexDesign.accent
+            }
+        }
+        /// Extra tint mixed into hub nodes (nil = no special hub emphasis).
+        var hubAccent: Color? {
+            switch self {
+            case .emphasis: return CortexDesign.gold
+            case .constellation, .links: return nil
+            }
+        }
+        /// Base halo opacity for a hub node.
+        var hubHalo: Double {
+            switch self {
+            case .constellation: return 0.14
+            case .emphasis: return 0.22
+            case .links: return 0.10
+            }
+        }
+        /// Base halo opacity for a non-hub node.
+        var nodeHalo: Double {
+            switch self {
+            case .constellation: return 0.08
+            case .emphasis: return 0.10
+            case .links: return 0.06
+            }
+        }
+        /// Link flicker floor + swing — the "links" framing brings the connective tissue forward.
+        var linkFloor: Double {
+            switch self {
+            case .constellation: return 0.12
+            case .emphasis: return 0.10
+            case .links: return 0.24
+            }
+        }
+        var linkSwing: Double {
+            switch self {
+            case .constellation: return 0.06
+            case .emphasis: return 0.05
+            case .links: return 0.10
+            }
+        }
+    }
+
+    /// Each framing is held ~10s; the cross-fade between neighbours runs the last ~1.8s of that
+    /// window. Both are inside the 8-12s hold / 1.5-2s fade ask, and both are deterministic.
+    private static let framingHold: Double = 10
+    private static let framingFade: Double = 1.8
+
+    /// Deterministic rotation state at time `t`: the framing currently on screen, the framing being
+    /// crossed to, and a 0…1 fade progress. Outside the fade window the two framings are equal and
+    /// `fade` is 0, so the crossfade layer contributes nothing.
+    private func rotation(at t: Double) -> (current: Framing, next: Framing, fade: Double) {
+        let all = Framing.allCases
+        let period = Self.framingHold
+        let phase = t / period
+        let index = Int(phase.rounded(.down))
+        let current = all[((index % all.count) + all.count) % all.count]
+        let next = all[(((index + 1) % all.count) + all.count) % all.count]
+
+        // Time elapsed inside the current hold, in seconds.
+        let intoPhase = (phase - phase.rounded(.down)) * period
+        let fadeStart = period - Self.framingFade
+        guard intoPhase >= fadeStart else {
+            return (current, current, 0)
+        }
+        // Raw linear progress across the fade window, eased so the cross-fade is a slow swell and
+        // settle rather than a linear ramp — never a hard jump.
+        let raw = min(1, max(0, (intoPhase - fadeStart) / Self.framingFade))
+        let eased = raw * raw * (3 - 2 * raw) // smoothstep = the easeInOut curve, done in-canvas
+        return (current, next, eased)
+    }
+
     private var liveMiniature: some View {
         let drawNodes = previewNodes
         let drawEdges = previewEdges
         return TimelineView(.animation) { context in
             let t = context.date.timeIntervalSinceReferenceDate
+            let rot = rotation(at: t)
             Canvas { ctx, size in
                 let layout = MemoryMapLayout.layout(nodes: drawNodes, edges: drawEdges, size: Self.nominalSize)
                 let sx = size.width / Self.nominalSize.width
                 let sy = size.height / Self.nominalSize.height
                 func scaled(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x * sx, y: p.y * sy) }
 
-                // Links first, pulsing softly — the same flicker language as the full map.
-                for edge in drawEdges {
-                    guard let pa = layout.position(of: edge.source_id),
-                          let pb = layout.position(of: edge.target_id) else { continue }
-                    var path = Path()
-                    path.move(to: scaled(pa))
-                    path.addLine(to: scaled(pb))
-                    let flicker = 0.12 + (sin(t * 0.8 + Double(edge.id.hashValue % 7)) + 1) * 0.06
-                    ctx.stroke(path, with: .color(CortexDesign.accent.opacity(flicker)), lineWidth: 1)
-                }
-
-                // Nodes breathing gently; size comes from the real layout's prominence radii.
-                for (index, node) in drawNodes.enumerated() {
-                    guard let position = layout.position(of: node.id) else { continue }
-                    let p = scaled(position)
-                    let pulse = 1 + sin(t * 1.1 + Double(index) * 0.7) * 0.15
-                    let r = min(7, max(3, layout.radius(of: node) * 0.7)) * pulse
-                    let halo = CGRect(x: p.x - r * 2, y: p.y - r * 2, width: r * 4, height: r * 4)
-                    ctx.fill(Path(ellipseIn: halo), with: .color(CortexDesign.accent.opacity(node.is_hub == true ? 0.14 : 0.08)))
-                    let dot = CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)
-                    ctx.fill(Path(ellipseIn: dot), with: .color(CortexDesign.accent.opacity(0.85)))
+                // Draw the constellation once per framing and cross-fade the two by whole-layer
+                // opacity — a slow easeInOut swell, so a framing never hard-cuts to the next. The
+                // outgoing framing fades from 1 -> (1 - fade); the incoming fades 0 -> fade. Away
+                // from the fade window `fade` is 0, so only the current framing renders.
+                drawFraming(rot.current, layerOpacity: 1 - rot.fade,
+                            in: &ctx, layout: layout, drawNodes: drawNodes, drawEdges: drawEdges,
+                            scaled: scaled, t: t)
+                if rot.fade > 0 {
+                    drawFraming(rot.next, layerOpacity: rot.fade,
+                                in: &ctx, layout: layout, drawNodes: drawNodes, drawEdges: drawEdges,
+                                scaled: scaled, t: t)
                 }
             }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("A preview of your Constellation, drawn from your real memory graph")
+    }
+
+    /// Render ONE framing of the real graph at a given whole-layer opacity. The breathing (node
+    /// pulse) and link flicker are unchanged in spirit — the same deterministic sin() language as
+    /// before — with per-framing emphasis dialled in via the Framing tokens. `layerOpacity`
+    /// multiplies every element's alpha so the caller can cross-fade two framings.
+    private func drawFraming(
+        _ framing: Framing,
+        layerOpacity: Double,
+        in ctx: inout GraphicsContext,
+        layout: MemoryMapLayout,
+        drawNodes: [GraphNode],
+        drawEdges: [GraphEdge],
+        scaled: (CGPoint) -> CGPoint,
+        t: Double
+    ) {
+        guard layerOpacity > 0.001 else { return }
+
+        // Links first, pulsing softly — the same flicker language as the full map, with the
+        // per-framing floor/swing dialled in so the "links" framing brings connective tissue forward.
+        for edge in drawEdges {
+            guard let pa = layout.position(of: edge.source_id),
+                  let pb = layout.position(of: edge.target_id) else { continue }
+            var path = Path()
+            path.move(to: scaled(pa))
+            path.addLine(to: scaled(pb))
+            let flicker = framing.linkFloor + (sin(t * 0.8 + Double(edge.id.hashValue % 7)) + 1) * framing.linkSwing
+            ctx.stroke(path, with: .color(CortexDesign.accent.opacity(flicker * layerOpacity)), lineWidth: 1)
+        }
+
+        // Nodes breathing gently; size comes from the real layout's prominence radii. Hubs may warm
+        // toward gold in the emphasis framing.
+        for (index, node) in drawNodes.enumerated() {
+            guard let position = layout.position(of: node.id) else { continue }
+            let p = scaled(position)
+            let pulse = 1 + sin(t * 1.1 + Double(index) * 0.7) * 0.15
+            let r = min(7, max(3, layout.radius(of: node) * 0.7)) * pulse
+            let isHub = node.is_hub == true
+
+            let dotTint = (isHub ? framing.hubAccent : nil) ?? framing.nodeTint
+            let haloBase = isHub ? framing.hubHalo : framing.nodeHalo
+            let haloTint = (isHub ? framing.hubAccent : nil) ?? CortexDesign.accent
+
+            let halo = CGRect(x: p.x - r * 2, y: p.y - r * 2, width: r * 4, height: r * 4)
+            ctx.fill(Path(ellipseIn: halo), with: .color(haloTint.opacity(haloBase * layerOpacity)))
+            let dot = CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)
+            ctx.fill(Path(ellipseIn: dot), with: .color(dotTint.opacity(0.85 * layerOpacity)))
+        }
     }
 
     /// Honest empty state: a few clearly-decorative drifting motes (not a fake graph) under a

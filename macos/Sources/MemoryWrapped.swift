@@ -105,7 +105,7 @@ struct MemoryWrappedModel {
     var compactSummary: String {
         if isFirstWeek { return "Your first week is being written." }
         if distinctAIs >= 1 { return headlineText }
-        if totalRecalls >= 1 { return sharedOnlyHeadline + " — through shared connections." }
+        if totalRecalls >= 1 { return sharedOnlyHeadline + ", through shared connections." }
         // No attributed AND no shared reads but not first-week (defensive): stay warm, never sad.
         return "Your first week is being written."
     }
@@ -279,7 +279,7 @@ struct MemoryWrappedCard: View {
                     .lineLimit(3)
                     .minimumScaleFactor(0.7)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("All through shared connections — connect apps individually to see which AI is reading.")
+                Text("All through shared connections. Connect apps individually to see which AI is reading.")
                     .font(.system(size: 17, weight: .regular))
                     .foregroundColor(Night.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -304,7 +304,7 @@ struct MemoryWrappedCard: View {
                 .font(.system(size: 46, weight: .semibold, design: .serif))
                 .foregroundColor(Night.ink)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Connect Claude, Cursor, or ChatGPT and every recall lands here — your memory, working across every AI, in one number.")
+            Text("Connect Claude, Cursor, or ChatGPT and every recall lands here. Your memory, working across every AI, in one number.")
                 .font(.system(size: 18, weight: .regular))
                 .foregroundColor(Night.inkSecondary)
                 .frame(maxWidth: 720, alignment: .leading)
@@ -434,7 +434,7 @@ struct MemoryWrappedShareSheet: View {
                     Text("Your Memory Wrapped")
                         .font(CortexDesign.Typography.title)
                         .foregroundColor(CortexDesign.ink)
-                    Text("Your week's recall stats, ready to share. Real numbers only — post it on purpose.")
+                    Text("Your week's recall stats, ready to share. Real numbers only. Post it on purpose.")
                         .font(CortexDesign.Typography.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                 }
@@ -483,7 +483,7 @@ struct MemoryWrappedShareSheet: View {
         VStack(alignment: .leading, spacing: 3) {
             CortexToggle(title: "Notify me weekly", isOn: $notifyWeekly)
             Text(notifyWeekly
-                 ? "You'll get a nudge when a new card is ready — only on weeks with real recalls."
+                 ? "You'll get a nudge when a new card is ready, only on weeks with real recalls."
                  : "Get a once-a-week nudge when your card is ready. Off by default.")
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkSecondary)
@@ -633,7 +633,7 @@ struct MemoryWrappedEntry: View {
                 CortexButton(title: "Open your card", systemImage: "sparkles.rectangle.stack", role: .secondary, size: .small) {
                     showSheet = true
                 }
-                .help("Opens a shareable, screenshot-native card of this week's recall stats — Share, Copy, or Save PNG.")
+                .help("Opens a shareable, screenshot-native card of this week's recall stats: Share, Copy, or Save PNG.")
             }
         }
         // Behind the entry, a LIVE downscaled peek of the ACTUAL Wrapped card (only once there's a

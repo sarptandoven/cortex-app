@@ -542,7 +542,7 @@ extension AppState {
             if !password.isEmpty { body["password"] = password }  // not trimmed: passwords may hold spaces
             _ = try await cloudPost(base: base, path: "/v1/auth/account", body: body, bearer: cloudAccessToken, method: "DELETE")
             resetToLocalDefaults()
-            cloudAuthMessage = "Your Cortex Cloud account and its synced copy were permanently deleted. Your memory on this Mac stays local — use \"Delete All Local Data\" to erase it from this device."
+            cloudAuthMessage = "Your Cortex Cloud account and its synced copy were permanently deleted. Your memory on this Mac stays local. Use \"Delete All Local Data\" to erase it from this device."
         } catch {
             cloudAuthMessage = CortexCloudAuth.describe(error)
         }
@@ -552,8 +552,8 @@ extension AppState {
     /// the standard expiry message.
     func handleCloudSessionExpired() {
         resetToLocalDefaults()
-        cloudAuthMessage = "Your Cortex Cloud session expired — sign in again."
-        status = "Your Cortex Cloud session expired — sign in again."
+        cloudAuthMessage = "Your Cortex Cloud session expired. Sign in again."
+        status = "Your Cortex Cloud session expired. Sign in again."
     }
 
     // MARK: Session application / teardown
@@ -787,7 +787,7 @@ struct CortexCloudSection: View {
             Label("Your memory stays on this Mac and syncs to your account.", systemImage: "icloud")
                 .font(.caption).foregroundColor(.secondary)
         } else {
-            Label("Sync is unavailable — sign in again to reconnect your account.", systemImage: "exclamationmark.icloud")
+            Label("Sync is unavailable. Sign in again to reconnect your account.", systemImage: "exclamationmark.icloud")
                 .font(.caption).foregroundColor(.orange)
         }
     }
@@ -872,7 +872,7 @@ struct CortexCloudSection: View {
             // the user permanently delete their account and data from within the app.
             if showDeleteConfirm {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("This permanently deletes your Cortex Cloud account and its synced copy from the server. This cannot be undone. Your memory on this Mac stays local — to erase it from this device, use \"Delete All Local Data\" in the data settings.")
+                    Text("This permanently deletes your Cortex Cloud account and its synced copy from the server. This cannot be undone. Your memory on this Mac stays local. To erase it from this device, use \"Delete All Local Data\" in the data settings.")
                         .font(CortexDesign.Typography.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -935,7 +935,7 @@ struct CortexCloudSection: View {
 
     private var zeroAccessDisabledControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Zero-access encrypts your synced memory with a key only on your devices — Cortex cannot read it. Save your recovery code; it's the ONLY way to restore on another device.")
+            Text("Zero-access encrypts your synced memory with a key only on your devices. Cortex cannot read it. Save your recovery code; it's the ONLY way to restore on another device.")
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -959,7 +959,7 @@ struct CortexCloudSection: View {
 
     private var zeroAccessEnabledControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("On. Cortex cannot read your memory — it's encrypted with a key only on your devices before it syncs. Keep your recovery code safe; it's the only way to restore on another device.")
+            Text("On. Cortex cannot read your memory: it's encrypted with a key only on your devices before it syncs. Keep your recovery code safe; it's the only way to restore on another device.")
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1001,7 +1001,7 @@ struct CortexCloudSection: View {
             }
 
             if isForcedFirstReveal {
-                Text("Save this now. It is the ONLY way to restore your encrypted memory on another Mac or if you reinstall — Cortex cannot recover it for you.")
+                Text("Save this now. It is the ONLY way to restore your encrypted memory on another Mac or if you reinstall. Cortex cannot recover it for you.")
                     .font(CortexDesign.Typography.caption)
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1239,7 +1239,7 @@ struct CortexCloudSection: View {
                 .disabled(state.cloudAuthBusy)
             }
 
-            archiveDivider("— OR SIGN IN WITH EMAIL —")
+            archiveDivider("OR SIGN IN WITH EMAIL")
 
             CortexField(
                 placeholder: "Email",

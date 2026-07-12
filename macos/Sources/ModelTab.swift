@@ -11,6 +11,13 @@ struct ModelTab: View {
                 // and the source status line now live inside it, so status has one home.
                 HomeHeroSection(state: state, review: state.review)
 
+                // THE PRODUCT'S PURPOSE, stated plainly and made the obvious next action: wire
+                // your memory into Claude, ChatGPT, and Cursor. This sits directly under the hero,
+                // above the north-star proof, so "use your memory where you already work" is the
+                // first thing after the headline. Its primary wax button opens the shared
+                // Connect-an-AI-tool wizard (state.presentConnectToolsWizard).
+                ConnectAIToolsHeroCard(state: state)
+
                 // The north-star headline — the felt proof of "your memory, actively used
                 // across every AI". Hidden until the endpoint answers once; empty weeks get a
                 // purposeful connect nudge instead of a sad zero (see RecallHeadlineCard).
@@ -47,7 +54,7 @@ struct ModelTab: View {
                         HStack(alignment: .firstTextBaseline) {
                             SectionHeader(
                                 title: "Your Constellation",
-                                detail: "People, projects, and topics — and how they connect."
+                                detail: "People, projects, and topics, and how they connect."
                             )
                             Spacer(minLength: CortexDesign.Space.md)
                             CortexButton(
@@ -168,6 +175,154 @@ struct ModelTab: View {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "d MMM yyyy"
         return formatter.string(from: date)
+    }
+}
+
+/// THE HERO CTA of the whole app: "use your memory in the AI tools you already work in."
+///
+/// This is not a footnote, it is the product's purpose stated as an action. It sits high on Home
+/// (right under the north-star hero) and is ALWAYS visible so the next step is never in doubt. The
+/// single primary wax button opens the shared Connect-an-AI-tool wizard
+/// (state.presentConnectToolsWizard). The status line and button label read the LIVE
+/// @Published counts (connectedAIIntegrationCount / detectedAIIntegrationCount) directly, so the
+/// app-wide 6s live refresh keeps them fresh with no local timer of our own.
+///
+/// Three honest shapes, driven purely off connectedAIIntegrationCount:
+///   • 0 connected  → "Not connected yet." + the purpose line, "Connect an AI tool", and (when the
+///     detector found AI apps on this Mac) a quiet "N ready to connect on this Mac" nudge;
+///   • N connected  → "N connected", the button becomes "Connect another", and a small
+///     add-another affordance sits beside the count;
+/// The Claude / ChatGPT / Cursor glyph strip anchors the promise to real, named tools.
+struct ConnectAIToolsHeroCard: View {
+    @ObservedObject var state: AppState
+
+    /// Live counts, read straight from the @Published state (app-wide live refresh keeps them
+    /// current, so this view never runs its own polling timer).
+    private var connected: Int { state.connectedAIIntegrationCount }
+    private var detected: Int { state.detectedAIIntegrationCount }
+
+    private var isConnected: Bool { connected > 0 }
+
+    /// The primary button's label: an invitation on a cold start, an "add another" once at least
+    /// one tool is wired.
+    private var primaryTitle: String {
+        isConnected ? "Connect another" : "Connect an AI tool"
+    }
+
+    /// The live status line under the headline.
+    private var statusLine: String {
+        if isConnected {
+            return "\(connected) connected. Your memory travels with you into every AI you wire in."
+        }
+        return "Not connected yet. Wire Cortex into the tools you already work in."
+    }
+
+    /// The quiet "we noticed apps you could connect right now" nudge, shown only before the first
+    /// connection and only when the detector actually found installed-but-unconfigured AI apps.
+    private var detectedNudge: String? {
+        guard !isConnected, detected > 0 else { return nil }
+        return "\(detected) ready to connect on this Mac"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+            Text(verbatim: "USE YOUR MEMORY EVERYWHERE")
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.accent)
+                .accessibilityHidden(true)
+
+            Text("Use your memory in Claude, ChatGPT, and Cursor")
+                .font(CortexDesign.Typography.display(26))
+                .foregroundColor(CortexDesign.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 540, alignment: .leading)
+
+            // The named-tool glyph strip: small, tasteful marks so the promise is anchored to real
+            // tools rather than an abstract "AI".
+            AIToolGlyphStrip()
+
+            HStack(alignment: .center, spacing: CortexDesign.Space.md) {
+                Circle()
+                    .fill(isConnected ? CortexDesign.sealMoss : CortexDesign.gold)
+                    .frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+                Text(statusLine)
+                    .font(CortexDesign.Typography.body)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 460, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+
+            HStack(alignment: .center, spacing: CortexDesign.Space.md) {
+                CortexButton(
+                    title: primaryTitle,
+                    systemImage: "wand.and.stars",
+                    role: .primary,
+                    size: .large
+                ) {
+                    state.presentConnectToolsWizard()
+                }
+                .help("Opens the step-by-step wizard: connect Claude Desktop, ChatGPT, Cursor, and other AI tools to your memory.")
+
+                if let detectedNudge {
+                    Label(detectedNudge, systemImage: "sparkles")
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .accessibilityHidden(true)
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+        .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.accentSoft)
+        .archiveSpine(CortexDesign.accent)
+        .frame(maxWidth: 620, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            "Use your memory in Claude, ChatGPT, and Cursor. \(statusLine)"
+        )
+    }
+}
+
+/// The named-tool glyph strip under the Connect hero: three small, tasteful marks for
+/// Claude / ChatGPT / Cursor drawn from SF Symbols so no bundled assets are needed. Purely
+/// decorative (the accessibility label on the card already names the tools), so it stays hidden
+/// from VoiceOver.
+private struct AIToolGlyphStrip: View {
+    private struct Tool: Identifiable {
+        let name: String
+        let symbol: String
+        var id: String { name }
+    }
+
+    private let tools: [Tool] = [
+        Tool(name: "Claude", symbol: "sparkle"),
+        Tool(name: "ChatGPT", symbol: "bubble.left.and.bubble.right"),
+        Tool(name: "Cursor", symbol: "cursorarrow.rays"),
+    ]
+
+    var body: some View {
+        HStack(spacing: CortexDesign.Space.sm) {
+            ForEach(tools) { tool in
+                HStack(spacing: 6) {
+                    Image(systemName: tool.symbol)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(CortexDesign.accent)
+                    Text(tool.name)
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, CortexDesign.Space.sm)
+                .background(CortexDesign.panelBackground)
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(CortexDesign.hairline, lineWidth: 1))
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -789,11 +944,11 @@ struct HomeHeroSection: View {
                 if !action.isEmpty {
                     return "\(lead): \(action)"
                 }
-                return "\(lead) — synced memory stays available."
+                return "\(lead). Synced memory stays available."
             }
             return needsAttentionSources > 1
-                ? "\(needsAttentionSources) sources need attention — synced memory stays available."
-                : "A source needs attention — synced memory stays available."
+                ? "\(needsAttentionSources) sources need attention. Synced memory stays available."
+                : "A source needs attention. Synced memory stays available."
         }
         if pendingCount > 0 {
             return nil
@@ -811,12 +966,12 @@ struct HomeHeroSection: View {
             return nil
         }
         if hasEmptySource {
-            return "No usable content found there — pick a source with real notes."
+            return "No usable content found there. Pick a source with real notes."
         }
         if state.connectedAIIntegrationCount > 0 {
             return "Connect notes so Ask can answer with citations."
         }
-        return "Connect once — Cortex keeps notes synced and brings new memory to Review."
+        return "Connect once. Cortex keeps notes synced and brings new memory to Review."
     }
 
     // The longer explanation lives in a tooltip so the hero stays one line tall.

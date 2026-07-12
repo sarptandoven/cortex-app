@@ -41,7 +41,7 @@ struct ConnectionsPrivacySheet: View {
                     Circle()
                         .fill(CortexDesign.sealMoss)
                         .frame(width: 7, height: 7)
-                    Text("Memory stays on this Mac — you choose what other AI apps can use.")
+                    Text("Memory stays on this Mac. You choose what other AI apps can use.")
                         .font(CortexDesign.Typography.body)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -119,12 +119,19 @@ private struct ConnectionsPrivacyOverview: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
-                // The Sources group stays visible at top level, even on first run — a user who
+                // AI apps is the hero: connecting your memory to Claude Desktop, ChatGPT, and
+                // Cursor is why most people open this sheet, so it sits at the very top and opens
+                // expanded — once there's memory to share. On first run there's nothing to connect
+                // yet, so the Sources group leads instead and AI apps waits for a source.
+                //
+                // The Sources group stays visible at top level, even on first run: a user who
                 // doesn't want the local notes folder needs a way to connect any other source to
-                // get past onboarding. The other three groups wait until a source is connected.
-                sourcesGroup
+                // get past onboarding. Privacy and Advanced wait until a source is connected.
                 if !state.firstRunNeedsSource {
                     aiAppsGroup
+                }
+                sourcesGroup
+                if !state.firstRunNeedsSource {
                     if let summary = state.trustSummary {
                         privacyDataGroup(summary: summary)
                         advancedGroup(summary: summary)
@@ -162,7 +169,7 @@ private struct ConnectionsPrivacyOverview: View {
         }
     }
 
-    // MARK: Group 1 — Sources (notes, chat imports, connector library)
+    // MARK: Group 2 — Sources (notes, chat imports, connector library)
 
     private var sourcesGroup: some View {
         CortexDisclosure(
@@ -191,17 +198,18 @@ private struct ConnectionsPrivacyOverview: View {
         if notesHealth.isNeedsAttention {
             return "A source needs attention"
         }
-        return "\(connectedSourceCount) source\(connectedSourceCount == 1 ? "" : "s") connected — notes, chat imports, more"
+        return "\(connectedSourceCount) source\(connectedSourceCount == 1 ? "" : "s") connected: notes, chat imports, more"
     }
 
-    // MARK: Group 2 — AI apps (MCP setup, memory packs, tool permissions)
+    // MARK: Group 1 — AI apps (the hero: MCP setup, memory packs, tool permissions)
 
     private var aiAppsGroup: some View {
         CortexDisclosure(
             isExpanded: $advancedExpanded,
             systemImage: "wand.and.stars",
-            title: "AI apps",
-            detail: "Use your memory in Claude Desktop, ChatGPT, Cursor & other AI apps"
+            title: "Use your memory in AI apps",
+            detail: aiAppsGroupDetail,
+            help: "Connect Claude Desktop, Cursor, or any MCP app to read reviewed memory with citations, or copy a memory pack to paste into ChatGPT and Claude on the web."
         ) {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
                 ConnectionsAIToolsSection(state: state)
@@ -210,6 +218,21 @@ private struct ConnectionsPrivacyOverview: View {
             .padding(.top, 12)
         }
         .connectionsGroupCard()
+    }
+
+    /// Live subtitle for the hero group, driven by the app-wide contract counts (kept fresh by the
+    /// app's live-refresh loop). Leads with what's connected, then nudges toward detected apps, and
+    /// otherwise pitches the two ways in: MCP for desktop apps, a memory pack for web chats.
+    private var aiAppsGroupDetail: String {
+        let connected = state.connectedAIIntegrationCount
+        if connected > 0 {
+            return "\(connected) app\(connected == 1 ? "" : "s") connected. Claude Desktop, ChatGPT, Cursor, and web chats."
+        }
+        let detected = state.detectedAIIntegrationCount
+        if detected > 0 {
+            return "\(detected) AI app\(detected == 1 ? "" : "s") detected on this Mac. Connect Claude Desktop, ChatGPT, Cursor, or web chats."
+        }
+        return "Connect Claude Desktop, ChatGPT, Cursor, and other AI apps. Or copy a memory pack for the web."
     }
 
     // MARK: Group 3 — Privacy & data (permissions, stored data, backups, export)
@@ -257,7 +280,7 @@ private struct ConnectionsPrivacyOverview: View {
             systemImage: "square.grid.2x2",
             title: "Add more sources",
             detail: advancedSourceDisclosureDetail,
-            accessibilityTitle: "Add more sources — Connections library"
+            accessibilityTitle: "Add more sources: Connections library"
         ) {
             ConnectionsDirectSourcesSection(state: state)
                 .padding(.top, 10)
@@ -270,7 +293,7 @@ private struct ConnectionsPrivacyOverview: View {
         if extraSources > 0 {
             return "\(extraSources) extra source\(extraSources == 1 ? "" : "s") connected"
         }
-        return "Optional extras — connect any time"
+        return "Optional extras, connect any time"
     }
 
     private func privacySettings(summary: TrustSummaryResponse) -> some View {
@@ -542,7 +565,7 @@ private struct ConnectionsObsidianSection: View {
 
     private var primarySourceDetail: String {
         if let obsidianReadiness {
-            return "\(obsidianReadiness.syncPlanDisplayTitle) — synced automatically."
+            return "\(obsidianReadiness.syncPlanDisplayTitle), synced automatically."
         }
         return "Choose the local source Cortex should keep synced automatically."
     }
@@ -661,7 +684,7 @@ private struct ConnectionsDirectSourcesSection: View {
             list = names.dropLast().joined(separator: ", ") + ", and \(names[names.count - 1])"
         }
         let verb = names.count == 1 ? "isn't" : "aren't"
-        return "\(list) \(verb) available for direct sign-in in this build yet — import them via file/export import."
+        return "\(list) \(verb) available for direct sign-in in this build yet. Import them via file/export import."
     }
 
     // Library search + category grouping (VSCode-extensions style: searchable, sectioned list of
@@ -1074,7 +1097,7 @@ private struct AIChatsImportCard: View {
 
     private let steps = [
         "In ChatGPT: Settings → Data controls → Export data. In Claude: Settings → Privacy → Export data.",
-        "The export arrives by email after a short wait — watch your inbox for the download link.",
+        "The export arrives by email after a short wait. Watch your inbox for the download link.",
         "Download the .zip, then drop it above or click Choose export file."
     ]
 
@@ -1092,7 +1115,7 @@ private struct AIChatsImportCard: View {
                     Text("Import your ChatGPT or Claude chats")
                         .font(.headline)
                         .foregroundColor(CortexDesign.ink)
-                    Text("Drop your export file here — it's ready to use right away.")
+                    Text("Drop your export file here. It's ready to use right away.")
                         .font(.caption).foregroundColor(CortexDesign.inkSecondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
@@ -1226,7 +1249,7 @@ private struct ImportDiffEntryCard: View {
                     Text("See what the AIs think of you")
                         .font(.headline)
                         .foregroundColor(CortexDesign.ink)
-                    Text("Compare a ChatGPT, Claude, or Gemini memory export against your Cortex — with citations.")
+                    Text("Compare a ChatGPT, Claude, or Gemini memory export against your Cortex, with citations.")
                         .font(.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1245,7 +1268,7 @@ private struct ImportDiffEntryCard: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help("Open “What the AIs think of you” — compare an AI memory export against your Cortex.")
+        .help("Open “What the AIs think of you”: compare an AI memory export against your Cortex.")
     }
 }
 
@@ -1478,7 +1501,7 @@ private struct ConnectionsDirectSourceRow: View {
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("Cortex stops syncing \(connector.name) and forgets its saved connection, so it won't resume on its own. Memory already synced from this source is kept — remove it from Privacy & data → Manage stored data. To pause without forgetting the connection, use Pause instead.")
+                    Text("Cortex stops syncing \(connector.name) and forgets its saved connection, so it won't resume on its own. Memory already synced from this source is kept: remove it from Privacy & data → Manage stored data. To pause without forgetting the connection, use Pause instead.")
                 }
             }
         }
@@ -1548,7 +1571,7 @@ private struct ConnectionsDirectSourceRow: View {
             if !managedOAuthConfigured {
                 return state.managedOAuthConfigurationMessage(connector) ?? "\(connector.name) sign-in is not configured for this build yet."
             }
-            return "Sign in with \(managedOAuthProviderName) — read-only."
+            return "Sign in with \(managedOAuthProviderName), read-only."
         }
         switch connector.id {
         case "calendar":
@@ -2293,9 +2316,6 @@ private struct ConnectionsAIToolsSection: View {
     @State private var packPreviewExpanded = false
     /// Context-file ("Sync to CLAUDE.md") block-preview disclosure state.
     @State private var contextBlockPreviewExpanded = false
-    /// Presents the guided "Connect an app" wizard (pick → connect → verify → done). Additive
-    /// front door over the per-tool tiles below — the same catalog, primitives, and honesty gates.
-    @State private var showConnectWizard = false
 
     private var connectedCount: Int {
         state.integrations.filter { state.integrationState(for: $0).configured }.count
@@ -2317,63 +2337,18 @@ private struct ConnectionsAIToolsSection: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "AI tools & permissions",
-                detail: "Optional. Connected apps read reviewed memory with citations."
+                detail: "Two ways in: connect a desktop app, or copy a memory pack for the web."
             )
-            .help("Claude Desktop and other MCP apps can read reviewed memory with citations. ChatGPT or Claude web chats should be imported as exports until direct browser memory support ships.")
+            .help("Claude Desktop and other MCP apps can read reviewed memory with citations. For ChatGPT or Claude on the web, copy a memory pack and paste it at the start of a chat.")
 
+            // The hero front door, first: the guided wizard opens as a top-level sheet.
             connectWizardEntry
 
-            HStack(alignment: .center, spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(statusColor.opacity(0.13))
-                    Image(systemName: statusIcon)
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundColor(statusColor)
-                }
-                .frame(width: 56, height: 56)
+            // Two clearly named paths right under the wizard, so a user who isn't on a desktop
+            // app sees the web memory-pack route immediately instead of scrolling past MCP setup.
+            browserAssistantRow
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("AI apps".uppercased())
-                        .font(CortexDesign.Typography.stamp)
-                        .kerning(0.8)
-                        .foregroundColor(CortexDesign.inkFaint)
-                    Text(statusTitle)
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                        .foregroundColor(CortexDesign.ink)
-                    Text(statusDetail)
-                        .font(.callout)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 8)
-
-                if !detectedConnectable.isEmpty, !DistributionMode.isAppStore {
-                    // Automatic config-file install only works outside the App Store sandbox; in
-                    // App Store builds installDetectedIntegrations() is a no-op, so showing this
-                    // prominent button there was a dead end. Those builds get the copy-guide path
-                    // below instead.
-                    CortexButton(title: "Enable in apps", systemImage: "link.circle", role: .secondary, size: .large) {
-                        state.installDetectedIntegrations()
-                    }
-                } else if !detectedConnectable.isEmpty {
-                    CortexButton(title: "Copy setup config", systemImage: "doc.on.doc", role: .secondary, size: .large) {
-                        state.copyMCPConfig()
-                    }
-                    .help("Copies the tool configuration to paste into your AI app's settings.")
-                } else {
-                    CortexButton(title: "Copy tool config", systemImage: "doc.on.doc", role: .secondary, size: .large) {
-                        state.copyMCPConfig()
-                    }
-                    .help("Copies the Cortex MCP configuration to paste into Claude Desktop or another compatible tool.")
-                }
-            }
-            .padding(14)
-            .background(connectionsPanelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            desktopAppsStatusRow
 
             if DistributionMode.isAppStore {
                 // Local-first App Store builds can't write into other apps' config files
@@ -2381,8 +2356,6 @@ private struct ConnectionsAIToolsSection: View {
                 // manual paste: the connection JSON in a copyable block plus numbered steps.
                 ConnectionsGuidedMCPSetup(state: state)
             }
-
-            browserAssistantRow
 
             universalReachRow
 
@@ -2396,35 +2369,92 @@ private struct ConnectionsAIToolsSection: View {
                 }
             }
         }
-        .sheet(isPresented: $showConnectWizard) {
-            ConnectAppWizard(state: state)
-        }
     }
 
-    /// The guided "Connect an app" front door: one wax-red primary that opens the step-by-step
-    /// wizard (pick → connect → verify → done). Additive over the per-tool tiles below — it does
-    /// not replace them, it's just the easier entry point for a non-technical user.
+    /// The desktop MCP path (Claude Desktop, Cursor, and other MCP apps): live status plus the
+    /// right copy/enable action for this build. Sits under the web memory-pack row so both paths
+    /// read as peers, with the guided wizard above as the easiest way to do either.
+    private var desktopAppsStatusRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(statusColor.opacity(0.13))
+                Image(systemName: statusIcon)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundColor(statusColor)
+            }
+            .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Desktop apps".uppercased())
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
+                Text(statusTitle)
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
+                Text(statusDetail)
+                    .font(.callout)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            if !detectedConnectable.isEmpty, !DistributionMode.isAppStore {
+                // Automatic config-file install only works outside the App Store sandbox; in
+                // App Store builds installDetectedIntegrations() is a no-op, so showing this
+                // prominent button there was a dead end. Those builds get the copy-guide path
+                // below instead.
+                CortexButton(title: "Enable in apps", systemImage: "link.circle", role: .secondary, size: .large) {
+                    state.installDetectedIntegrations()
+                }
+            } else if !detectedConnectable.isEmpty {
+                CortexButton(title: "Copy setup config", systemImage: "doc.on.doc", role: .secondary, size: .large) {
+                    state.copyMCPConfig()
+                }
+                .help("Copies the tool configuration to paste into your AI app's settings.")
+            } else {
+                CortexButton(title: "Copy tool config", systemImage: "doc.on.doc", role: .secondary, size: .large) {
+                    state.copyMCPConfig()
+                }
+                .help("Copies the Cortex MCP configuration to paste into Claude Desktop or another compatible tool.")
+            }
+        }
+        .padding(14)
+        .background(connectionsPanelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// The hero of the whole sheet: the guided "Connect an app" front door. One wax-red primary
+    /// opens the step-by-step wizard (pick, connect, verify, done) as a top-level sheet via the
+    /// app-wide contract (`state.presentConnectToolsWizard()`), the same wizard Home presents. It is
+    /// the first and most prominent thing here because using your memory in Claude Desktop, ChatGPT,
+    /// and Cursor is the point. The per-tool tiles below stay as the manual path for power users.
     private var connectWizardEntry: some View {
         HStack(alignment: .center, spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(CortexDesign.accent.opacity(0.13))
                 Image(systemName: "wand.and.stars")
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.system(size: 30, weight: .semibold))
                     .foregroundColor(CortexDesign.accent)
             }
-            .frame(width: 56, height: 56)
+            .frame(width: 64, height: 64)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Guided setup".uppercased())
+                Text("Start here".uppercased())
                     .font(CortexDesign.Typography.stamp)
                     .kerning(0.8)
-                    .foregroundColor(CortexDesign.inkFaint)
-                Text("Connect an AI app in a few steps")
-                    .font(.title3)
+                    .foregroundColor(CortexDesign.accent)
+                Text("Use your memory in Claude, ChatGPT & Cursor")
+                    .font(.title2)
                     .fontWeight(.semibold)
                     .foregroundColor(CortexDesign.ink)
-                Text("Pick a tool, copy its connection, and verify it works — no config files to hunt for.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(wizardEntryDetail)
                     .font(.callout)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2433,14 +2463,33 @@ private struct ConnectionsAIToolsSection: View {
             Spacer(minLength: 8)
 
             CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .primary, size: .large) {
-                showConnectWizard = true
+                state.presentConnectToolsWizard()
             }
             .help("Opens a step-by-step wizard: pick a tool, copy its connection, and test that it can reach your memory.")
         }
-        .padding(14)
+        .padding(18)
         .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.accent.opacity(0.35)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.accent.opacity(0.35), lineWidth: 1.5))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Live status line under the hero, driven by the app-wide contract counts (kept fresh by the
+    /// app's live-refresh loop, so no local Timer here). It names how many AI tools are connected,
+    /// nudges toward apps detected on this Mac, and otherwise pitches the guided path.
+    private var wizardEntryDetail: String {
+        let connected = state.connectedAIIntegrationCount
+        if connected > 0 {
+            let detected = state.detectedAIIntegrationCount
+            if detected > 0 {
+                return "\(connected) app\(connected == 1 ? "" : "s") connected. \(detected) more detected on this Mac, connect \(detected == 1 ? "it" : "them") too."
+            }
+            return "\(connected) app\(connected == 1 ? "" : "s") connected. Add another any time, no config files to hunt for."
+        }
+        let detected = state.detectedAIIntegrationCount
+        if detected > 0 {
+            return "\(detected) AI app\(detected == 1 ? "" : "s") detected on this Mac. Pick one, copy its connection, and verify it works."
+        }
+        return "Pick a tool, copy its connection, and verify it works. No config files to hunt for."
     }
 
     /// The browser extension + universal API paths, previously reachable ONLY from the menu-bar
@@ -2521,7 +2570,7 @@ private struct ConnectionsAIToolsSection: View {
                         .font(.title3)
                         .fontWeight(.semibold)
                         .foregroundColor(CortexDesign.ink)
-                    Text("Keep your CLAUDE.md in sync with your memory — cited, visible, yours.")
+                    Text("Keep your CLAUDE.md in sync with your memory: cited, visible, yours.")
                         .font(.callout)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2532,7 +2581,7 @@ private struct ConnectionsAIToolsSection: View {
                 CortexButton(title: "Add file…", systemImage: "plus", role: .secondary, size: .large) {
                     state.chooseContextFile()
                 }
-                .help("Pick an existing CLAUDE.md, AGENTS.md, or .cursorrules — or type a new filename to create one.")
+                .help("Pick an existing CLAUDE.md, AGENTS.md, or .cursorrules, or type a new filename to create one.")
             }
 
             if !state.contextFilePaths.isEmpty {
@@ -2757,7 +2806,7 @@ private struct ConnectionsAIToolsSection: View {
                         .font(.title3)
                         .fontWeight(.semibold)
                         .foregroundColor(CortexDesign.ink)
-                    Text("Puts your reviewed, cited memory on the clipboard — paste it at the start of any chat.")
+                    Text("Puts your reviewed, cited memory on the clipboard. Paste it at the start of any chat.")
                         .font(.callout)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2950,7 +2999,7 @@ struct ConnectAppWizard: View {
         case .pick: return "Pick the tool you want to give access to your reviewed memory."
         case .connect: return selected.map { "Add Cortex to \($0.name)." } ?? "Add Cortex to your tool."
         case .verify: return selected.map { "Check that \($0.name) can reach your memory." } ?? "Check the connection."
-        case .done: return "You're set — your memory is available where you work."
+        case .done: return "You're set. Your memory is available where you work."
         }
     }
 
@@ -3057,7 +3106,7 @@ struct ConnectAppWizard: View {
                 // an mcpConfig tool whose config isn't set still can't skip (its failure means "not
                 // set up," not "nothing to share"), so the honesty invariant holds.
                 if canFinishWithoutMemory {
-                    CortexButton(title: "I'll add memory later — finish anyway", role: .secondary, size: .large) {
+                    CortexButton(title: "I'll add memory later, finish anyway", role: .secondary, size: .large) {
                         withAnimation(.easeInOut(duration: 0.2)) { step = .done }
                     }
                     .help("The connection is set up; there's just no reviewed memory to share yet. Add a source and it'll be available here automatically.")
@@ -3323,7 +3372,7 @@ struct ConnectAppWizard: View {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(CortexDesign.sealMoss)
-                Text("Copied — paste it, then continue to verify.")
+                Text("Copied. Paste it, then continue to verify.")
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
             }
@@ -3427,7 +3476,7 @@ struct ConnectAppWizard: View {
                 RecallProofWatcher(
                     state: state,
                     toolLabel: tool.name,
-                    waitingLine: "Waiting for \(tool.name) to read your memory — ask it anything about you."
+                    waitingLine: "Waiting for \(tool.name) to read your memory. Ask it anything about you."
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, CortexDesign.Space.sm)
@@ -3505,7 +3554,7 @@ private struct ConnectionsGuidedMCPSetup: View {
     private let steps = [
         "Open your AI app's MCP settings (Claude Desktop: Settings → Developer → Edit Config).",
         "Paste the configuration below into the mcpServers block, then save.",
-        "Quit and reopen the app — Cortex memory tools appear once it restarts."
+        "Quit and reopen the app. Cortex memory tools appear once it restarts."
     ]
 
     /// Redacted preview of the connection JSON — the real token is copied, never shown. Rendered
@@ -4114,7 +4163,7 @@ struct GitHubDeviceCodeView: View {
                 Text("Sign in with GitHub")
                     .font(.system(size: 19, weight: .semibold))
                     .foregroundColor(CortexDesign.ink)
-                Text("Cortex reads your GitHub activity so your memory can cite it. Read-only — Cortex never writes to your repositories.")
+                Text("Cortex reads your GitHub activity so your memory can cite it. Read-only: Cortex never writes to your repositories.")
                     .font(.system(size: 12))
                     .foregroundColor(CortexDesign.inkSecondary)
                     .multilineTextAlignment(.center)
