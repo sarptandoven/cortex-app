@@ -37,6 +37,7 @@ from .observability import metrics, route_label
 from .models import AgentSessionsSyncRequest, AgentSessionsSyncResponse, APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
 from .models import CaptureChangePage, SyncIngestRequest, SyncIngestResponse
+from .models import SyncDeletionPage, SyncDeletionApplyRequest, SyncDeletionApplyResponse
 from .models import GradeAnswerRequest, WouldIRequest, DraftAsMeRequest, GradeTwinPredictionRequest
 from .models import SharedMemoryWriteRequest, SharedPrincipalCreateRequest
 from .models import ImportBundleRequest, MemoryConsolidationRequest, VerifyBeliefProofRequest, VerifyIntegrityRequest, VerifyBundleRequest
@@ -2615,6 +2616,16 @@ def sync_ingest(request: SyncIngestRequest, user_id: str = Depends(auth)) -> dic
     results: list[dict[str, Any]] = []
     review_gated_sources: dict[str, bool] = {}
     for item in request.items:
+        # Anti-resurrection guard (Phase-2 Slice 3): a capture whose id was already forgotten
+        # (a sync_tombstone exists) must NOT be re-created by an out-of-order create page — the
+        # deletion is authoritative. Skip it; the tombstone already re-propagates the delete onward.
+        if store.is_tombstoned(user_id, "capture", item.client_capture_id):
+            results.append({
+                "client_capture_id": item.client_capture_id,
+                "capture_id": "",
+                "status": "tombstoned",
+            })
+            continue
         # Zero-access (E2EE) blind-relay branch (ADDITIVE): when the client sends ciphertext, the
         # server stores it opaquely and derives NO memory/task/entity/embedding — there is no
         # plaintext server-side. The same approved/pending passthrough gate applies. When
@@ -2707,6 +2718,40 @@ def sync_ingest(request: SyncIngestRequest, user_id: str = Depends(auth)) -> dic
         except Exception:
             pass  # best-effort high-watermark; a missing/revoked device must not fail ingest
     return {"applied": len(results), "cursor": request.cursor, "results": results}
+
+
+@app.get("/v1/sync/deletions", response_model=SyncDeletionPage)
+def sync_deletions(
+    after_seq: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    """Phase-2 outbound DELETIONS feed: tombstones created after `after_seq` (monotonic seq),
+    CONTENT-FREE (just ids). A DELETE never bumps captures.rowid, so deletions ride their own feed;
+    the desktop app pushes local deletions here and pulls hosted deletions to apply locally, so a
+    forget propagates local -> hosted -> other devices. Oldest first, per-user."""
+    return store.capture_tombstone_page(user_id, after_seq, limit)
+
+
+@app.post("/v1/sync/deletions", response_model=SyncDeletionApplyResponse)
+def sync_deletions_apply(request: SyncDeletionApplyRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Phase-2 inbound DELETIONS apply: for each {object_type, object_id}, delete that
+    capture/memory + derivatives via the SAME safe delete primitive the local forget path uses, and
+    record a local tombstone so a re-pull can't resurrect it and the delete propagates onward.
+    Idempotent — deleting an already-absent id is a no-op success — and per-user (a user can only
+    delete its own objects). Records a device high-watermark receipt (best-effort)."""
+    outcome = store.apply_sync_deletions(
+        user_id, [{"object_type": item.object_type, "object_id": item.object_id} for item in request.items]
+    )
+    if request.device_id and request.cursor:
+        try:
+            store.record_sync_receipt(
+                user_id, request.device_id, cursor=request.cursor,
+                status="accepted", stats={"deletions": outcome["applied"]},
+            )
+        except Exception:
+            pass  # best-effort high-watermark; a missing/revoked device must not fail apply
+    return {"applied": outcome["applied"], "cursor": request.cursor, "results": outcome["results"]}
 
 
 @app.get("/v1/diagnostics", response_model=DiagnosticsResponse)

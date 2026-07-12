@@ -42,13 +42,39 @@ private struct PushDeviceResponse: Codable {
     let id: String
 }
 
+/// One deletion from the LOCAL deletions feed GET /v1/sync/deletions. CONTENT-FREE — just an id +
+/// its type — because a DELETE never bumps captures.rowid, so deletions ride their own monotonic
+/// `seq` feed rather than the capture feed. Pushed to hosted so a local forget removes the hosted
+/// copy and reaches other devices.
+private struct PushDeletionItem: Codable {
+    let seq: Int
+    let object_type: String
+    let object_id: String
+}
+
+private struct PushDeletionPage: Codable {
+    let items: [PushDeletionItem]
+    let next_seq: Int
+    let has_more: Bool
+}
+
 extension AppState {
 
     // MARK: Client-side sync state (cursor + device id in UserDefaults)
 
+    /// Separate cursor for the DELETIONS feed. Deletions have their OWN monotonic feed (a DELETE
+    /// never bumps a capture's rowid), so pushing them needs its own high-watermark, advanced only
+    /// after the hosted apply is acked (mirroring the capture push cursor).
+    static let pushDeletionCursorDefaultsKey = "cortexPushDeletionCursor.v1"
+
     private var pushCursor: Int {
         get { UserDefaults.standard.integer(forKey: AppState.pushCursorDefaultsKey) }
         set { UserDefaults.standard.set(newValue, forKey: AppState.pushCursorDefaultsKey) }
+    }
+
+    private var pushDeletionCursor: Int {
+        get { UserDefaults.standard.integer(forKey: AppState.pushDeletionCursorDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: AppState.pushDeletionCursorDefaultsKey) }
     }
 
     private var pushDeviceID: String {
@@ -85,9 +111,11 @@ extension AppState {
         pushPendingCount = 0
     }
 
-    /// Clear the persisted push cursor + device id (on sign-out / account switch).
+    /// Clear the persisted push cursor + deletion cursor + device id (on sign-out / account switch)
+    /// so a different account never inherits a stale watermark and resyncs from 0.
     func clearPushSyncState() {
         UserDefaults.standard.removeObject(forKey: AppState.pushCursorDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: AppState.pushDeletionCursorDefaultsKey)
         UserDefaults.standard.removeObject(forKey: AppState.pushDeviceIDDefaultsKey)
     }
 
@@ -172,6 +200,11 @@ extension AppState {
                 pushCursor = cursor
                 if !page.has_more { break }
             }
+            // Phase 2: push local DELETIONS (forget/purge) up to hosted on their own cursor, so a
+            // deletion propagates local -> hosted -> other devices. Runs after the capture push so a
+            // delete never races ahead of the create it removes. Content-free; the E2EE gate does
+            // NOT apply (a deletion carries no plaintext — just an id).
+            try await pushDeletionsPhase()
             pushPendingCount = 0
             pushSyncState = .synced(Date())
         } catch let e2ee as CortexE2EEError {
@@ -183,6 +216,38 @@ extension AppState {
             // Offline / server error / token gone: leave the cursor unadvanced; the next 5-min tick
             // (or the next learn nudge) resumes from where it stopped. No data is lost — it stays local.
             pushSyncState = .error(CortexCloudAuth.describe(error))
+        }
+    }
+
+    // MARK: Deletion push (local forget/purge -> hosted, on a separate cursor)
+
+    /// Read this Mac's local deletions feed (tombstones newer than the deletion cursor) and push
+    /// them to the hosted account so a forget removes the hosted copy and reaches other devices.
+    /// Content-free (ids only). Advances the deletion cursor ONLY after the hosted apply is acked,
+    /// so a mid-backlog failure resumes at the last uploaded deletion (a safe idempotent re-apply:
+    /// deleting an already-absent id is a no-op success). Errors propagate to the caller so the tick
+    /// surfaces them and leaves BOTH cursors unadvanced past their last acked point.
+    private func pushDeletionsPhase() async throws {
+        var cursor = pushDeletionCursor
+        while true {
+            // 1. Pull local deletions newer than the cursor (from the LOCAL backend).
+            let pageData = try await request(
+                path: "/v1/sync/deletions?after_seq=\(cursor)&limit=200",
+                method: "GET"
+            )
+            let page = try JSONDecoder().decode(PushDeletionPage.self, from: pageData)
+            if page.items.isEmpty { break }
+            // 2. Apply the batch on hosted (idempotent: deleting an absent id is a no-op success).
+            let body: [String: Any] = [
+                "device_id": pushDeviceID,
+                "cursor": String(page.next_seq),
+                "items": page.items.map { ["object_type": $0.object_type, "object_id": $0.object_id] },
+            ]
+            _ = try await cloudRequest(path: "/v1/sync/deletions", body: body)
+            // 3. Advance + persist the cursor ONLY after the batch is acked.
+            cursor = page.next_seq
+            pushDeletionCursor = cursor
+            if !page.has_more { break }
         }
     }
 

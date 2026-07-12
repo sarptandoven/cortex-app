@@ -2975,6 +2975,16 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 results = []
                 review_gated_sources: dict[str, bool] = {}
                 for item in normalized_items:
+                    # Anti-resurrection guard (Phase-2 Slice 3, mirrors main.py): never re-create a
+                    # capture whose id was already forgotten (a sync_tombstone exists) — the deletion
+                    # is authoritative and the tombstone re-propagates it. Skip the out-of-order create.
+                    if store.is_tombstoned(user_id, "capture", item["client_capture_id"]):
+                        results.append({
+                            "client_capture_id": item["client_capture_id"],
+                            "capture_id": "",
+                            "status": "tombstoned",
+                        })
+                        continue
                     # Zero-access (E2EE) blind-relay branch (ADDITIVE, mirrors main.py): store the
                     # client's ciphertext opaquely, derive NO memory/task/entity/embedding, apply the
                     # same approved/pending passthrough gate. Absent ciphertext -> plaintext path below.
@@ -3059,6 +3069,53 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass  # best-effort high-watermark; a missing/revoked device must not fail ingest
                 self._send_json({"applied": len(results), "cursor": cursor, "results": results})
+                return
+            if method == "GET" and path == "/v1/sync/deletions":
+                # Phase-2 outbound DELETIONS feed (mirrors main.py): tombstones newer than a monotonic
+                # seq cursor, CONTENT-FREE (just ids). A DELETE never bumps captures.rowid, so
+                # deletions ride their own feed for the desktop app to push to / pull from hosted.
+                self._send_json(store.capture_tombstone_page(
+                    user_id,
+                    _int_param(params, "after_seq", 0, 0, 2**63 - 1),
+                    _int_param(params, "limit", 100, 1, 500),
+                ))
+                return
+            if method == "POST" and path == "/v1/sync/deletions":
+                # Phase-2 inbound DELETIONS apply (mirrors main.py): delete each named capture/memory
+                # + derivatives via the SAME safe primitive the local forget path uses, and record a
+                # local tombstone so a re-pull can't resurrect it and the delete propagates onward.
+                # Idempotent (deleting an absent id is a no-op success), per-user.
+                body = self._json_body()
+                raw_items = body.get("items") if isinstance(body.get("items"), list) else []
+                try:
+                    if len(raw_items) > 500:
+                        raise ValueError("items must contain at most 500 entries")
+                    normalized_items: list[dict[str, Any]] = []
+                    for raw in raw_items:
+                        if not isinstance(raw, dict):
+                            raise ValueError("each item must be an object")
+                        object_type = str(raw.get("object_type") or "").strip()
+                        if object_type not in {"capture", "memory"}:
+                            raise ValueError("object_type must be capture or memory")
+                        object_id = str(raw.get("object_id") or "").strip()
+                        if not object_id or len(object_id) > 80:
+                            raise ValueError("object_id is required (at most 80 characters)")
+                        normalized_items.append({"object_type": object_type, "object_id": object_id})
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
+                outcome = store.apply_sync_deletions(user_id, normalized_items)
+                device_id = str(body.get("device_id") or "").strip()[:80]
+                cursor = str(body.get("cursor") or "").strip()[:160]
+                if device_id and cursor:
+                    try:
+                        store.record_sync_receipt(
+                            user_id, device_id, cursor=cursor,
+                            status="accepted", stats={"deletions": outcome["applied"]},
+                        )
+                    except Exception:
+                        pass  # best-effort high-watermark; a missing/revoked device must not fail apply
+                self._send_json({"applied": outcome["applied"], "cursor": cursor, "results": outcome["results"]})
                 return
             if method == "GET" and path == "/v1/diagnostics":
                 self._send_json(store.diagnostics(user_id))

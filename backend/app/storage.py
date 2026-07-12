@@ -2937,6 +2937,7 @@ class CortexStore:
         # below can rely on the column existing.
         self._ensure_memory_occurrences_column()
         self._ensure_encrypted_capture_columns()
+        self._ensure_sync_tombstones_table()
         self._ensure_provenance_substrate()
         self._ensure_event_fingerprints()
         self._ensure_belief_snapshot_search_index()
@@ -2982,6 +2983,166 @@ class CortexStore:
                     # store open converges, and nothing can touch captures before then.
                     if "duplicate column name" not in message and "no such table" not in message:
                         raise
+
+    def _ensure_sync_tombstones_table(self) -> None:
+        """Deletion propagation feed (Phase-2 Slice 3): its own MONOTONIC append-only log.
+
+        A DELETE does not bump `captures.rowid`, so the capture push feed (capture_change_page)
+        can never carry deletions — deletions need their OWN monotonic feed. This table is that
+        feed: `seq INTEGER PRIMARY KEY` is a per-DB rowid alias that strictly increases, so a
+        `seq`-cursor over it never ties or resets (mirroring how the capture feed rides
+        captures.rowid). One row is appended whenever a capture/memory is purged locally; the
+        deletions feed (capture_tombstone_page) reads seq > cursor, and applying a pulled deletion
+        writes a row here too so a re-pull can't resurrect it and the delete propagates onward.
+
+        Content-free by construction: only ids, never plaintext. `UNIQUE(user_id, object_type,
+        object_id)` makes recording idempotent (deleting an already-tombstoned id is a no-op),
+        so an echoed re-delete never appends a second row and the feed converges.
+
+        Created here (not in database.py's SCHEMA) with the same duplicate-tolerant CREATE-IF-NOT-
+        EXISTS mechanism as _ensure_encrypted_capture_columns, so legacy databases upgrade in place
+        and re-running is safe."""
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sync_tombstones (
+                  seq INTEGER PRIMARY KEY,
+                  user_id TEXT NOT NULL,
+                  object_type TEXT NOT NULL,
+                  object_id TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  UNIQUE(user_id, object_type, object_id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sync_tombstones_user_seq ON sync_tombstones(user_id, seq)"
+            )
+
+    def _record_tombstone_in_conn(self, conn, user_id: str, object_type: str, object_id: str, *, created_at: str) -> None:
+        """Append one deletion to the monotonic feed. Idempotent: a second delete of the same
+        (user_id, object_type, object_id) is IGNORED, so an echoed re-delete never grows the feed
+        or loops. Per-user by construction — a caller can only ever tombstone under its own
+        user_id. Content-free (ids only)."""
+        normalized_type = str(object_type or "").strip()
+        normalized_id = str(object_id or "").strip()
+        if normalized_type not in {"capture", "memory"} or not normalized_id:
+            return
+        conn.execute(
+            "INSERT OR IGNORE INTO sync_tombstones (user_id, object_type, object_id, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, normalized_type, normalized_id, created_at),
+        )
+
+    def capture_tombstone_page(self, user_id: str, after_seq: int, limit: int) -> dict[str, Any]:
+        """Outbound DELETIONS feed (Phase-2 Slice 3): tombstones with seq > after_seq, oldest first,
+        CONTENT-FREE (just ids). The desktop app pushes these to its hosted account, and pulls the
+        hosted account's deletions down, so a local forget removes the hosted copy and reaches other
+        devices. `seq` is a monotonic INTEGER PRIMARY KEY, so the cursor never ties or resets
+        (mirroring capture_change_page over captures.rowid). Per-user: every row is filtered by
+        user_id. Returns {items:[{seq, object_type, object_id}], next_seq, has_more}."""
+        limit = max(1, min(int(limit), 500))
+        after = max(0, int(after_seq))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT seq, object_type, object_id FROM sync_tombstones "
+                "WHERE user_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?",
+                (user_id, after, limit + 1),
+            ).fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items = [
+            {"seq": int(row["seq"]), "object_type": row["object_type"], "object_id": row["object_id"]}
+            for row in rows
+        ]
+        next_seq = items[-1]["seq"] if items else after
+        return {"items": items, "next_seq": next_seq, "has_more": has_more}
+
+    def apply_sync_deletions(self, user_id: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Inbound DELETIONS apply (Phase-2 Slice 3, mirrors sync_ingest for captures): for each
+        {object_type, object_id}, delete that capture/memory + its derivatives in THIS store via the
+        SAME safe delete primitive the local forget path uses (_delete_capture_in_conn /
+        delete_memory), which already writes a vault tombstone. It ALSO records a sync_tombstone here
+        so (a) a later re-pull of the same capture is skipped instead of resurrecting it, and (b) the
+        delete propagates ONWARD to a third device — without looping, because recording is idempotent
+        (INSERT OR IGNORE) and a hosted re-apply of an already-absent id is a no-op success.
+
+        Idempotent + per-user: deleting an id this store doesn't hold still records the tombstone (so
+        the anti-resurrection guard and onward propagation hold) and returns success. Every query is
+        scoped to user_id — a user can only delete its own objects. Returns {applied, results}."""
+        results: list[dict[str, Any]] = []
+        applied = 0
+        timestamp = now_iso()
+        for item in items or []:
+            object_type = str((item or {}).get("object_type") or "").strip()
+            object_id = str((item or {}).get("object_id") or "").strip()
+            if object_type not in {"capture", "memory"} or not object_id:
+                results.append({"object_type": object_type, "object_id": object_id, "status": "skipped"})
+                continue
+            # Each item is its OWN transaction. The per-item delete interleaves uncommitted DB rows
+            # with IMMEDIATE, durable vault (filesystem) deletes + block_restore tombstones; a single
+            # batch transaction meant a filesystem error on item N rolled back the DB rows of items
+            # 0..N-1 while their vault files were already destroyed — the DB claimed a capture alive
+            # that the source-of-truth vault had permanently lost. Per-item commit keeps DB + vault
+            # consistent for every completed item; a failure propagates so the endpoint errors, the
+            # client holds its cursor and retries the whole page, and re-deleting an already-gone id
+            # is an idempotent no-op.
+            with connect(self.db_path) as conn:
+                if object_type == "capture":
+                    self._delete_capture_in_conn(
+                        conn, user_id, object_id,
+                        timestamp=timestamp, reason="sync_deletion",
+                        event_metadata={"origin": "sync"},
+                    )
+                else:  # memory
+                    row = conn.execute(
+                        "SELECT id FROM memories WHERE user_id = ? AND id = ?", (user_id, object_id)
+                    ).fetchone()
+                    if row:
+                        edge_ids = self._purge_edges_for_objects(conn, user_id, [object_id])
+                        self._purge_memory_rows(conn, user_id, [object_id])
+                        self._event(conn, user_id, object_id, "memory", "deleted", {"hard_delete": True, "edge_count": len(edge_ids), "origin": "sync"})
+                        self.vault.delete_memory(object_id)
+                        for edge_id in edge_ids:
+                            self.vault.delete_edge(edge_id)
+                        self.vault.write_tombstone(
+                            user_id=user_id, object_type="memory", object_id=object_id,
+                            deleted_at=timestamp, reason="sync_deletion", related_ids=edge_ids,
+                            metadata={"edge_count": len(edge_ids), "origin": "sync"},
+                        )
+                # Record locally so a re-pull can't resurrect it AND the delete re-emits onward
+                # (idempotently — INSERT OR IGNORE never appends a duplicate, so no loop).
+                self._record_tombstone_in_conn(conn, user_id, object_type, object_id, created_at=timestamp)
+            applied += 1
+            results.append({"object_type": object_type, "object_id": object_id, "status": "applied"})
+        return {"applied": applied, "results": results}
+
+    def is_tombstoned(self, user_id: str, object_type: str, object_id: str) -> bool:
+        """True if `(object_type, object_id)` was deleted for this user (a sync_tombstone exists).
+        Guards the capture-apply path against resurrecting a capture whose id was already forgotten:
+        a pulled capture that arrives out of order (its create page after our delete page) must NOT
+        be re-created. Per-user scoped."""
+        normalized_type = str(object_type or "").strip()
+        normalized_id = str(object_id or "").strip()
+        if not normalized_type or not normalized_id:
+            return False
+        with connect(self.db_path) as conn:
+            return self._is_tombstoned_in_conn(conn, user_id, normalized_type, normalized_id)
+
+    def _is_tombstoned_in_conn(self, conn, user_id: str, object_type: str, object_id: str) -> bool:
+        """In-transaction variant of is_tombstoned (reuses the caller's connection). Tolerant of a
+        pre-migration DB that lacks the sync_tombstones table (returns False)."""
+        normalized_type = str(object_type or "").strip()
+        normalized_id = str(object_id or "").strip()
+        if not normalized_type or not normalized_id:
+            return False
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sync_tombstones WHERE user_id = ? AND object_type = ? AND object_id = ? LIMIT 1",
+                (user_id, normalized_type, normalized_id),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return False
+        return row is not None
 
     def _ensure_event_fingerprints(self) -> None:
         """Backfill the derived per-event hash once for legacy databases.
@@ -10138,6 +10299,10 @@ class CortexStore:
                     usable=(review_status == "approved"),
                     author_principal=principal,
                 )
+                if memory is None:
+                    # This derived memory was explicitly forgotten (tombstoned); honor the forget
+                    # rather than resurrecting it on capture re-processing.
+                    continue
                 memories.append(memory)
                 edges.append(self._edge(conn, user_id, capture_id, memory["id"], "contains", memory["id"], captured_at))
 
@@ -15099,6 +15264,9 @@ class CortexStore:
                 related_ids=edge_ids,
                 metadata={"edge_count": len(edge_ids)},
             )
+            # Sync-deletion feed (Phase-2 Slice 3): record the memory forget so it propagates to the
+            # hosted copy and other devices. Idempotent, content-free (id only).
+            self._record_tombstone_in_conn(conn, user_id, "memory", memory_id, created_at=timestamp)
         return True
 
     def _delete_capture_in_conn(
@@ -15154,6 +15322,11 @@ class CortexStore:
             related_ids=[*memory_ids, *task_ids, *edge_ids],
             metadata=metadata,
         )
+        # Sync-deletion feed (Phase-2 Slice 3): every LOCAL capture delete — user forget/purge,
+        # source-purge, OR an applied pulled deletion — appends a content-free tombstone so the
+        # deletion propagates local -> hosted -> other devices. Idempotent (INSERT OR IGNORE), so a
+        # re-delete of the same id never appends twice and the feed converges without looping.
+        self._record_tombstone_in_conn(conn, user_id, "capture", capture_id, created_at=timestamp)
         return {
             "capture_id": capture_id,
             "memory_ids": memory_ids,
@@ -26796,6 +26969,14 @@ class CortexStore:
             memory_id = stable_id("mem_", f"{user_id}:{author_principal_id}:{base_memory_id}")
         if source_account and external_id:
             memory_id = stable_id("mem_", f"{user_id}:{capture_id}:{base_memory_id}")
+        # Anti-resurrection: the memory id is deterministic (derived from user+capture+content), so
+        # re-processing a capture whose child memory the user explicitly FORGOT would recompute the
+        # same id and re-insert it. If that memory was tombstoned, honor the forget — skip the
+        # re-derivation entirely. The tombstone is per-(user,memory), so a genuinely new memory (new
+        # capture or changed content -> different id) is never suppressed, and un-forgetting isn't a
+        # feature. Returns None; the caller drops the record.
+        if self._is_tombstoned_in_conn(conn, user_id, "memory", memory_id):
+            return None
         kind = record.get("kind", "observation")
         layer = memory_layer(kind, record.get("layer"))
         topics = record.get("topics", [])

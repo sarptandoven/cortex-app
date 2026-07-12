@@ -4782,6 +4782,9 @@ final class AppState: ObservableObject {
                 method: "DELETE"
             )
             let response = try JSONDecoder().decode(PurgeSourceResponse.self, from: data)
+            // Propagate the purge to the hosted copy + other devices promptly (per-capture tombstones
+            // were recorded locally by the purge; nudge push-sync rather than wait for the 5-min tick).
+            Task { await pushSyncNudge() }
             purgingSource = nil
             await loadSourceStats()
             // Refresh EVERY surface that showed the purged source's data so the whole app reflects
@@ -7992,6 +7995,9 @@ final class AppState: ObservableObject {
             defer { inFlightMemoryIds.remove(memory.id) }
             do {
                 _ = try await request(path: "/v1/memories/\(memory.id)", method: "DELETE")
+                // Propagate the forget to the hosted copy + other devices promptly (a tombstone was
+                // recorded locally; nudge push-sync now instead of waiting for the 5-min tick).
+                Task { await pushSyncNudge() }
                 status = "Forgot memory"
                 await loadRecent()
                 await search()

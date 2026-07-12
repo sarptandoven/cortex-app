@@ -117,6 +117,47 @@ class SyncIngestResponse(BaseModel):
     results: list[SyncIngestItemResult]
 
 
+# --- Phase-2 deletion (purge/tombstone) propagation ----------------------------------------------
+
+class SyncDeletionItem(BaseModel):
+    """One deletion from the tombstone feed — CONTENT-FREE (just an object type + id). A DELETE
+    never bumps captures.rowid, so deletions ride their own monotonic feed rather than the capture
+    feed."""
+    seq: int = 0
+    object_type: Literal["capture", "memory"]
+    object_id: str = Field(..., min_length=1, max_length=80)
+
+
+class SyncDeletionPage(BaseModel):
+    """Outbound deletions feed: tombstones newer than a monotonic seq cursor, ids only."""
+    items: list[SyncDeletionItem]
+    next_seq: int
+    has_more: bool
+
+
+class SyncDeletionApplyItem(BaseModel):
+    object_type: Literal["capture", "memory"]
+    object_id: str = Field(..., min_length=1, max_length=80)
+
+
+class SyncDeletionApplyRequest(BaseModel):
+    device_id: str = Field(default="", max_length=80)
+    cursor: str = Field(default="", max_length=160)
+    items: list[SyncDeletionApplyItem] = Field(default_factory=list, max_length=500)
+
+
+class SyncDeletionApplyResult(BaseModel):
+    object_type: str
+    object_id: str
+    status: str
+
+
+class SyncDeletionApplyResponse(BaseModel):
+    applied: int
+    cursor: str
+    results: list[SyncDeletionApplyResult]
+
+
 class SourceImportRequest(BaseModel):
     paths: list[str] = Field(..., min_length=1, max_length=200)
     source_hint: str = Field(default="", max_length=80)

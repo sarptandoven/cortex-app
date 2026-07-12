@@ -78,15 +78,38 @@ private struct PullCapturePage: Codable {
     let has_more: Bool
 }
 
+/// One deletion from the HOSTED deletions feed GET /v1/sync/deletions. CONTENT-FREE (just an id +
+/// type) — a DELETE never bumps captures.rowid, so deletions ride their own monotonic `seq` feed.
+/// Applied LOCALLY so a forget on another device removes this Mac's copy too.
+private struct PullDeletionItem: Codable {
+    let seq: Int
+    let object_type: String
+    let object_id: String
+}
+
+private struct PullDeletionPage: Codable {
+    let items: [PullDeletionItem]
+    let next_seq: Int
+    let has_more: Bool
+}
+
 extension AppState {
 
     // MARK: Client-side pull state (cursor in UserDefaults)
 
     static let pullCursorDefaultsKey = "cortexPullCursor.v1"
+    /// Separate cursor for the DELETIONS feed (deletions have their own monotonic feed, so pulling
+    /// them needs its own high-watermark, advanced only after the local apply is acked).
+    static let pullDeletionCursorDefaultsKey = "cortexPullDeletionCursor.v1"
 
     private var pullCursor: Int {
         get { UserDefaults.standard.integer(forKey: AppState.pullCursorDefaultsKey) }
         set { UserDefaults.standard.set(newValue, forKey: AppState.pullCursorDefaultsKey) }
+    }
+
+    private var pullDeletionCursor: Int {
+        get { UserDefaults.standard.integer(forKey: AppState.pullDeletionCursorDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: AppState.pullDeletionCursorDefaultsKey) }
     }
 
     private var canPullSync: Bool { isSignedIn && !cloudSyncBaseURL.isEmpty && !requiresSignIn }
@@ -120,10 +143,11 @@ extension AppState {
         center.pendingCount = 0
     }
 
-    /// Clear the persisted pull cursor (on sign-out / account switch) so a different account never
-    /// inherits a stale watermark. Mirrors clearPushSyncState().
+    /// Clear the persisted pull cursor + deletion cursor (on sign-out / account switch) so a
+    /// different account never inherits a stale watermark. Mirrors clearPushSyncState().
     func clearPullSyncState() {
         UserDefaults.standard.removeObject(forKey: AppState.pullCursorDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: AppState.pullDeletionCursorDefaultsKey)
     }
 
     /// Kick a pull outside the 5-minute cadence (e.g. right after sign-in or window foreground).
@@ -227,12 +251,47 @@ extension AppState {
                 pullCursor = cursor
                 if !page.has_more { break }
             }
+            // Phase 2: pull hosted DELETIONS (a forget on another device / on hosted) and apply them
+            // LOCALLY, so a deletion reaches this Mac. Content-free (ids only); runs after the
+            // capture apply so a delete never races ahead of the create it removes.
+            try await pullDeletionsPhase()
             center.pendingCount = 0
             center.state = .synced(Date())
         } catch {
             // Offline / server error / token gone: leave the cursor unadvanced; the next 5-min
             // tick resumes from where it stopped. Nothing is lost — it stays in the account.
             center.state = .error(CortexCloudAuth.describe(error))
+        }
+    }
+
+    // MARK: Deletion pull (hosted forget/purge -> local, on a separate cursor)
+
+    /// Pull the hosted account's deletions (tombstones newer than the deletion cursor) and apply
+    /// them into the LOCAL store via /v1/sync/deletions, so a forget on hosted / another device
+    /// removes this Mac's copy too. Content-free (ids only). Advances the deletion cursor ONLY after
+    /// the local apply is acked, so a mid-backlog failure resumes at the last applied deletion (a
+    /// safe idempotent re-apply). Errors propagate to the caller so the tick surfaces them.
+    ///
+    /// Convergence: applying a pulled deletion writes a LOCAL tombstone, which the push worker then
+    /// re-emits to hosted — where it's a no-op (already deleted). The local /v1/sync/deletions apply
+    /// records the tombstone idempotently (INSERT OR IGNORE), so the local deletions feed never
+    /// grows a duplicate and this loop never re-pulls its own echo: it terminates.
+    private func pullDeletionsPhase() async throws {
+        var cursor = pullDeletionCursor
+        while true {
+            // 1. Fetch hosted deletions newer than the cursor (cloud-token authed, refresh-on-401).
+            let pageData = try await cloudGet(path: "/v1/sync/deletions?after_seq=\(cursor)&limit=200")
+            let page = try JSONDecoder().decode(PullDeletionPage.self, from: pageData)
+            if page.items.isEmpty { break }
+            // 2. Apply the batch into the LOCAL store (idempotent: absent id -> no-op success). The
+            //    local apply also writes a local tombstone so this delete propagates onward without
+            //    resurrecting the capture on a re-pull.
+            let applyItems = page.items.map { ["object_type": $0.object_type, "object_id": $0.object_id] }
+            _ = try await request(path: "/v1/sync/deletions", method: "POST", body: ["items": applyItems])
+            // 3. Advance + persist the cursor ONLY after the local apply succeeded.
+            cursor = page.next_seq
+            pullDeletionCursor = cursor
+            if !page.has_more { break }
         }
     }
 
