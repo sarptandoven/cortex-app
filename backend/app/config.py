@@ -35,6 +35,12 @@ class Settings:
     # Which MCP tool list scoped tokens are ADVERTISED by default: "core" (curated few) or
     # "full" (legacy complete list). Advertisement only — never affects authorization.
     mcp_tool_surface: str = "core"
+    # Streamable-HTTP compatibility for /mcp (ChatGPT deep-research connectors): when on (default),
+    # /mcp honors an Accept: text/event-stream request by returning the JSON-RPC response as a
+    # single SSE event and returns an Mcp-Session-Id on initialize. JSON clients (Claude Desktop /
+    # Cursor stdio bridge) are unaffected — they send Accept: application/json and get the exact
+    # same application/json body as before. Set CORTEX_MCP_STREAMABLE=0 to force JSON-only.
+    mcp_streamable: bool = True
     # The hosted runtime decision (roadmap D): "sharded_sqlite" is the sanctioned 10k-user
     # tier (sharded SQLite + sqlite-vec on one box); "postgres" gates on Postgres/pgvector
     # for post-10k multi-instance scale-out.
@@ -234,6 +240,8 @@ def load_settings() -> Settings:
         observability_enabled=_truthy_env("CORTEX_OBSERVABILITY_ENABLED"),
         embedding_provider=os.environ.get("CORTEX_EMBEDDING_PROVIDER", "hash").strip().lower() or "hash",
         mcp_tool_surface=(os.environ.get("CORTEX_MCP_TOOL_SURFACE", "core").strip().lower() or "core"),
+        # Default TRUE: unset -> streamable HTTP compat is on. Only an explicit falsey value disables it.
+        mcp_streamable=(os.environ.get("CORTEX_MCP_STREAMABLE", "1").strip().lower() not in {"0", "false", "no", "off"}),
         hosted_runtime_tier=(
             os.environ.get("CORTEX_HOSTED_RUNTIME_TIER", "sharded_sqlite").strip().lower().replace("-", "_")
             or "sharded_sqlite"

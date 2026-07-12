@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlencode
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .accounts import iso_utc, utc_now
@@ -4308,23 +4308,55 @@ register_oauth_broker_routes(app)
 # MCP protocol revisions /mcp can serve, newest first. The JSON-RPC shapes Cortex uses
 # (initialize, tools/list, tools/call, ping) are identical across these revisions, so
 # initialize echoes whichever revision the client requested and offers the newest otherwise.
-MCP_PROTOCOL_VERSIONS = ("2025-03-26", "2024-11-05")
+MCP_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+
+
+def _wants_event_stream(accept: str | None) -> bool:
+    """Whether the caller asked for an SSE response. ChatGPT's streamable-HTTP connector sends
+    `Accept: application/json, text/event-stream`; the Claude Desktop / Cursor stdio bridge sends
+    `Accept: application/json` only. We only switch to SSE when text/event-stream is explicitly
+    present AND the flag is on, so existing JSON clients are byte-identical to before."""
+    if not settings.mcp_streamable:
+        return False
+    return "text/event-stream" in (accept or "").lower()
+
+
+def _mcp_response(payload: dict[str, Any], *, event_stream: bool, session_id: str | None) -> Response:
+    """Render a completed JSON-RPC response either as application/json (default, unchanged) or,
+    for a streamable-HTTP client, as a single SSE `message` event over text/event-stream. The
+    Mcp-Session-Id (when present, i.e. on initialize) rides in a response header either way."""
+    headers = {"Mcp-Session-Id": session_id} if session_id else None
+    if event_stream:
+        body = json.dumps(payload, ensure_ascii=False)
+
+        async def _one_shot():
+            # One framed SSE event carrying the whole JSON-RPC response, then the stream ends.
+            yield f"event: message\ndata: {body}\n\n".encode("utf-8")
+
+        return StreamingResponse(_one_shot(), media_type="text/event-stream", headers=headers)
+    return JSONResponse(payload, headers=headers)
 
 
 @app.post("/mcp")
 async def mcp(request: Request, context: dict[str, Any] = Depends(mcp_auth)) -> Response:
     user_id = context["user_id"]
     token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
+    # Content negotiation (streamable HTTP). A MCP-Protocol-Version request header is accepted and
+    # ignored (never 400s) — initialize echoes the client's protocolVersion from the JSON-RPC body.
+    event_stream = _wants_event_stream(request.headers.get("accept"))
+    # Stateless sessions: echo a client-supplied Mcp-Session-Id back so a session-tracking client
+    # stays happy; we mint one only on initialize. No server-side session store is kept.
+    session_id = request.headers.get("mcp-session-id") or None
     raw = await request.body()
     try:
         message = json.loads(raw.decode("utf-8")) if raw else {}
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Request body must be valid JSON"}})
+        return _mcp_response({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Request body must be valid JSON"}}, event_stream=event_stream, session_id=None)
     if isinstance(message, list):
         # JSON-RPC batch arrays are not part of MCP; reject cleanly instead of tracebacking.
-        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "batch not supported"}})
+        return _mcp_response({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "batch not supported"}}, event_stream=event_stream, session_id=None)
     if not isinstance(message, dict):
-        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "request must be a JSON-RPC object"}})
+        return _mcp_response({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "request must be a JSON-RPC object"}}, event_stream=event_stream, session_id=None)
     method = message.get("method")
     if message.get("id") is None or (isinstance(method, str) and method.startswith("notifications/")):
         # JSON-RPC notification (no id, e.g. notifications/initialized): remote clients POST
@@ -4334,6 +4366,12 @@ async def mcp(request: Request, context: dict[str, Any] = Depends(mcp_auth)) -> 
         if method == "initialize":
             params = message.get("params") if isinstance(message.get("params"), dict) else {}
             requested_version = params.get("protocolVersion")
+            # Mint a session id on initialize ONLY for a streamable-HTTP client — one that either
+            # asked for text/event-stream or already supplied an Mcp-Session-Id. A JSON-only stdio
+            # bridge (Accept: application/json, no session header) gets NO extra header, so its
+            # initialize response stays byte-identical to before.
+            if session_id is None and settings.mcp_streamable and event_stream:
+                session_id = secrets.token_urlsafe(24)
             result = {
                 "protocolVersion": requested_version if requested_version in MCP_PROTOCOL_VERSIONS else MCP_PROTOCOL_VERSIONS[0],
                 "serverInfo": {"name": "cortex", "version": BACKEND_VERSION},
@@ -4357,10 +4395,11 @@ async def mcp(request: Request, context: dict[str, Any] = Depends(mcp_auth)) -> 
                 raise
             result = tool_call_result(value)
         else:
-            return JSONResponse({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32601, "message": f"Method not found: {method}"}})
-        return JSONResponse({"jsonrpc": "2.0", "id": message.get("id"), "result": jsonable_encoder(result)})
+            return _mcp_response({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32601, "message": f"Method not found: {method}"}}, event_stream=event_stream, session_id=None)
+        # Mcp-Session-Id is returned only on the initialize response (where it is minted).
+        return _mcp_response({"jsonrpc": "2.0", "id": message.get("id"), "result": jsonable_encoder(result)}, event_stream=event_stream, session_id=session_id if method == "initialize" else None)
     except Exception as exc:
-        return JSONResponse({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32000, "message": str(exc)}})
+        return _mcp_response({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32000, "message": str(exc)}}, event_stream=event_stream, session_id=None)
 
 
 def _safe_tool_error_message(exc: Exception) -> str:

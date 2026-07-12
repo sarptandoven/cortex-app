@@ -21056,9 +21056,15 @@ class CortexStore:
     # WRITE_TOOLS so drift is caught at test time, not in production.
     SCORECARD_READ_TOOL_PREFIXES = ("get_", "list_", "search_", "ask_", "resume_", "prepare_", "build_", "expand_", "use_", "would_", "draft_", "verify_")
     SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_", "record_", "import_")
+    # Exact read-tool names that don't carry a read prefix. The ChatGPT connector aliases `search`
+    # and `fetch` are pure reads (mcp_tools.READ_TOOLS) but have no underscore prefix — name them
+    # here so the scorecard classifier stays in parity with READ_TOOLS (drift guard: test_phase4).
+    SCORECARD_READ_TOOL_NAMES = ("search", "fetch")
 
     def _scorecard_tool_kind(self, tool_name: str) -> str:
         name = str(tool_name or "")
+        if name in self.SCORECARD_READ_TOOL_NAMES:
+            return "read"
         if name.startswith(self.SCORECARD_READ_TOOL_PREFIXES):
             return "read"
         if name.startswith(self.SCORECARD_WRITE_TOOL_PREFIXES):
@@ -30823,6 +30829,29 @@ class CortexStore:
             "updated_at": row["updated_at"] if "updated_at" in keys else row["captured_at"],
             "raw_excerpt": row["raw_excerpt"],
         }
+
+    def get_memory(self, user_id: str, memory_id: str) -> dict[str, Any] | None:
+        """Fetch a single memory by id for the ChatGPT-connector `fetch` tool. Scoped to the
+        caller's user_id (a foreign id returns None, never another user's row) and shaped
+        exactly like a search result item (_memory_from_row -> _shared_payload redaction), so
+        the full-document view a connector renders matches the search snippet it clicked from.
+        Returns None for unknown/foreign ids so the caller can surface a clean not-found error
+        instead of tracebacking. Read-only: no writes, no status change."""
+        memory_id = str(memory_id or "").strip()
+        if not memory_id:
+            return None
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+                (user_id, memory_id),
+            ).fetchone()
+        if row is None:
+            return None
+        payload = self._memory_from_row(row)
+        return self._shared_payload(
+            payload,
+            redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]),
+        )
 
     def _find_duplicate_memory(
         self,

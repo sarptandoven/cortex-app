@@ -66,6 +66,34 @@ TOOLS = [
         },
     },
     {
+        # ChatGPT deep-research / company-knowledge connectors require two tools named EXACTLY
+        # "search" and "fetch" with this compatibility schema. `search` is a thin read-only
+        # adapter over the same retrieval search_memory uses, projected to the {id,title,url}
+        # shape ChatGPT expects. It is an ADDITIONAL alias — search_memory is unchanged.
+        "name": "search",
+        "description": "Search Cortex memory and return lightweight results ({id, title, url}) for a connector to fetch. Read-only ChatGPT-connector alias over the same retrieval as search_memory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Natural-language search query."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        # ChatGPT connector `fetch`: given an id returned by `search`, return the full document
+        # ({id, title, text, url, metadata}). Read-only; unknown ids return a clean error result.
+        "name": "fetch",
+        "description": "Fetch the full text of one Cortex memory by id (as returned by `search`). Read-only ChatGPT-connector alias.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "The memory id returned by `search`."},
+            },
+            "required": ["id"],
+        },
+    },
+    {
         "name": "get_recent_context",
         "description": "Get recently captured Cortex memories.",
         "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10}}},
@@ -1305,6 +1333,13 @@ CORE_TOOL_NAMES = frozenset(
     }
 )
 
+# The ChatGPT deep-research / company-knowledge connector REQUIRES two tools named EXACTLY
+# `search` and `fetch`. A hosted deployment that fronts ChatGPT sets CORTEX_MCP_TOOL_SURFACE=chatgpt
+# so a read-scoped connector token is advertised exactly the pair ChatGPT expects (plus the read
+# essentials, harmless to a connector). Kept OUT of "core" so the default Claude/Cursor surface is
+# byte-identical to before; search/fetch stay callable under any surface when the token has read.
+CHATGPT_CONNECTOR_TOOL_NAMES = frozenset({"search", "fetch"})
+
 
 # Named tool surfaces (advertisement presets). A token is minted with a surface so each client sees
 # a stable, cap-appropriate list (Cursor caps at 40, ChatGPT at 128) that never churns mid-session —
@@ -1348,6 +1383,18 @@ MCP_TOOL_SURFACES: dict[str, frozenset[str]] = {
             "grade_twin_prediction",
         }
     ),
+    # ChatGPT deep-research / company-knowledge connector: the two tools it requires by name,
+    # plus a couple of harmless read helpers. Select with CORTEX_MCP_TOOL_SURFACE=chatgpt.
+    "chatgpt": frozenset(
+        {
+            "search",
+            "fetch",
+            "search_memory",
+            "get_context",
+            "ask_memory",
+            "list_capabilities",
+        }
+    ),
 }
 
 
@@ -1366,6 +1413,9 @@ READ_TOOLS = {
     "expand_context",
     "list_capabilities",
     "search_memory",
+    # ChatGPT deep-research connector aliases (read-only): search -> results, fetch -> document.
+    "search",
+    "fetch",
     "get_recent_context",
     "get_memory_graph",
     "get_product_loop",
@@ -1539,6 +1589,8 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "get_context": "Get Working Context",
     "ask_memory": "Ask Memory (cited)",
     "search_memory": "Search Memory",
+    "search": "Search (ChatGPT connector)",
+    "fetch": "Fetch Document (ChatGPT connector)",
     "get_entity_context": "Get Entity Context",
     "expand_context": "Expand Cited Context",
     "get_person_map": "Whole-Person Map",
@@ -1651,6 +1703,41 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "get_person_map": dict(_OUTPUT_OBJECT),
     "remember_this": dict(_OUTPUT_OBJECT),
     "list_capabilities": dict(_OUTPUT_OBJECT),
+    # ChatGPT connector contract: it validates structuredContent against these. `search` returns
+    # {results:[{id,title,url}]}; `fetch` returns {id,title,text,url,metadata}. Kept
+    # additionalProperties-open so extra fields never fail a strict validator.
+    "search": {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "title": {"type": "string"},
+                        "url": {"type": "string"},
+                    },
+                    "required": ["id", "title", "url"],
+                    "additionalProperties": True,
+                },
+            },
+        },
+        "required": ["results"],
+        "additionalProperties": True,
+    },
+    "fetch": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "title": {"type": "string"},
+            "text": {"type": "string"},
+            "url": {"type": "string"},
+            "metadata": {"type": ["object", "null"], "additionalProperties": True},
+        },
+        "required": ["id", "title", "text", "url"],
+        "additionalProperties": True,
+    },
 }
 
 
@@ -1950,6 +2037,24 @@ def _text_arg(args: dict[str, Any], key: str, default: str = "", *, max_chars: i
     if len(value) > max_chars:
         raise ValueError(f"MCP argument '{key}' exceeds {max_chars} characters.")
     return value
+
+
+def _connector_title(memory: dict[str, Any], *, max_chars: int = 120) -> str:
+    """A short human title for a memory in the ChatGPT-connector search/fetch shape: the
+    memory's summary if present, else the trimmed first non-empty line of its content. Never
+    empty (falls back to "Untitled memory") so a strict connector schema always validates."""
+    summary = str(memory.get("summary") or "").strip()
+    candidate = summary
+    if not candidate:
+        for line in str(memory.get("content") or "").splitlines():
+            line = line.strip()
+            if line:
+                candidate = line
+                break
+    candidate = candidate.strip() or "Untitled memory"
+    if len(candidate) > max_chars:
+        candidate = candidate[: max_chars - 1].rstrip() + "…"
+    return candidate
 
 
 def _text_list_arg(
@@ -2652,6 +2757,60 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             "surface": "full" if token_scopes is None or "advertise_full" in set(token_scopes or []) else "core",
             "tools": catalog,
             "expand_surface": "Mint a token with the advertise_full scope (or set CORTEX_MCP_TOOL_SURFACE=full) to advertise every tool; unadvertised tools remain callable when your scopes allow.",
+        }
+    if name == "search":
+        # ChatGPT connector `search`: thin adapter over the SAME retrieval search_memory uses.
+        # Projects each memory to the {id, title, url} shape ChatGPT expects; nothing else leaks.
+        query = _text_arg(args, "query")
+        payload = store.public_search_payload(user_id, query, 10)
+        results = []
+        for item in payload.get("results") or []:
+            if not isinstance(item, dict):
+                continue
+            memory_id = str(item.get("id") or "").strip()
+            if not memory_id:
+                continue
+            source_url = str(item.get("source_url") or "").strip()
+            results.append({
+                "id": memory_id,
+                "title": _connector_title(item),
+                "url": source_url or f"cortex://memory/{memory_id}",
+            })
+        return {"results": results}
+    if name == "fetch":
+        # ChatGPT connector `fetch`: full document for one id from `search`. Unknown/foreign id
+        # -> a clean structured error result (never an exception/500), so the connector can
+        # recover instead of the whole tool call erroring.
+        memory_id = _text_arg(args, "id", max_chars=200)
+        memory = store.get_memory(user_id, memory_id)
+        if memory is None:
+            return {
+                "id": memory_id,
+                "title": "Not found",
+                "text": "",
+                "url": f"cortex://memory/{memory_id}" if memory_id else "",
+                "metadata": None,
+                "error": "not_found",
+            }
+        source_url = str(memory.get("source_url") or "").strip()
+        return {
+            "id": memory_id,
+            "title": _connector_title(memory),
+            "text": str(memory.get("content") or ""),
+            "url": source_url or f"cortex://memory/{memory_id}",
+            "metadata": {
+                "layer": memory.get("layer"),
+                "kind": memory.get("kind"),
+                "source": memory.get("source"),
+                "source_url": memory.get("source_url"),
+                "confidence": memory.get("confidence"),
+                "importance": memory.get("importance"),
+                "sector": memory.get("sector"),
+                "created_at": memory.get("captured_at"),
+                "occurred_at": memory.get("occurred_at"),
+                "author_class": memory.get("author_class"),
+                "topics": memory.get("topics"),
+            },
         }
     if name == "search_memory":
         query = _text_arg(args, "query")
