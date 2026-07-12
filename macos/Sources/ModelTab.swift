@@ -16,6 +16,11 @@ struct ModelTab: View {
                 // purposeful connect nudge instead of a sad zero (see RecallHeadlineCard).
                 RecallHeadlineCard(state: state)
 
+                // Memory Wrapped — the same north-star number turned into a weekly, shareable
+                // object. Opens a screenshot-native card in a sheet; a genuine first week shows a
+                // gentle "check back after a week of use" instead of a share button on empty stats.
+                MemoryWrappedEntry(state: state)
+
                 // Tier 2 — the at-a-glance numbers (hidden until there is something to count).
                 HomeStatStrip(state: state, review: state.review)
 

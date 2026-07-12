@@ -4758,6 +4758,10 @@ final class AppState: ObservableObject {
         if let data = try? await request(path: "/v1/usage/headline?days=7", method: "GET"),
            let response = try? JSONDecoder().decode(RecallHeadline.self, from: data) {
             recallHeadline = response
+            // Memory Wrapped's weekly nudge rides the same refresh the Home headline uses. It is
+            // fully self-gating — opt-in OFF by default, at most once a week, never for an empty
+            // week — so this call is a no-op until the user turns it on, and never spams.
+            MemoryWrappedNotifier.maybeNotify(for: response)
         }
     }
 
