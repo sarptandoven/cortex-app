@@ -1053,11 +1053,11 @@ private struct OnboardingAddMemoryStep: View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .top, spacing: 22) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Add your first memory")
+                    Text("Bring your memory in")
                         .font(CortexDesign.Typography.display(26))
                         .foregroundColor(CortexDesign.ink)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Point Cortex at your notes and it distills the useful parts into memory. Add more later.")
+                    Text("Pick the path that fits you. Cortex distills whatever you bring into cited memory. You can add more any time.")
                         .font(CortexDesign.Typography.prose(15))
                         .lineSpacing(3)
                         .foregroundColor(CortexDesign.inkSecondary)
@@ -1068,6 +1068,21 @@ private struct OnboardingAddMemoryStep: View {
                     .padding(.top, 2)
             }
 
+            // Lead with the fastest path for the biggest first-run cohort: people arriving from
+            // ChatGPT / Claude / Gemini. One tap opens their export page; the file drops in here.
+            OnboardingLaneLabel(
+                systemImage: "bubble.left.and.text.bubble.right",
+                title: "Coming from ChatGPT, Claude, or Gemini?",
+                detail: "Bring that whole history in. It's the quickest way to get real memory in fast."
+            )
+            aiExportOption
+
+            // Then the local notes folder (the primary source path) and the one-tap sign-in apps.
+            OnboardingLaneLabel(
+                systemImage: "folder.badge.plus",
+                title: "Or point Cortex at your notes",
+                detail: "Choose a local notes folder and Cortex keeps it synced on this Mac."
+            )
             // The card carries the step's `.primary` while no source is live; once one is, the
             // card relaxes to `.secondary` ("Change source") and the footer Continue takes over.
             OnboardingConnectionCard(
@@ -1087,8 +1102,6 @@ private struct OnboardingAddMemoryStep: View {
             }
 
             appConnectGrid
-
-            aiExportOption
 
             sampleNotesOption
         }
@@ -1175,11 +1188,11 @@ private struct OnboardingAddMemoryStep: View {
         let sources = onboardingSources
         if !sources.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("…or connect an app: sign in once and Cortex pulls your data")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                OnboardingLaneLabel(
+                    systemImage: "person.crop.circle.badge.checkmark",
+                    title: "Or sign in to a source",
+                    detail: "Sign in once and Cortex imports your data with your consent."
+                )
                 LazyVGrid(
                     columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
                     spacing: 10
@@ -1925,6 +1938,36 @@ struct OnboardingConnectionCard: View {
         .embossedBorder()
         .shadow(color: CortexDesign.Elevation.rest.ambient.color, radius: CortexDesign.Elevation.rest.ambient.radius, y: CortexDesign.Elevation.rest.ambient.y)
         .shadow(color: CortexDesign.Elevation.rest.contact.color, radius: CortexDesign.Elevation.rest.contact.radius, y: CortexDesign.Elevation.rest.contact.y)
+    }
+}
+
+/// A calm lane label for the add-memory beat, so the "pick the easiest path" story reads at a glance:
+/// a wax glyph, a short serif title, and one honest supporting line. Purely a heading, no action.
+private struct OnboardingLaneLabel: View {
+    let systemImage: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(CortexDesign.accent)
+                .frame(width: 20)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(CortexDesign.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

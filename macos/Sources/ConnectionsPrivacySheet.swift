@@ -175,15 +175,25 @@ private struct ConnectionsPrivacyOverview: View {
         CortexDisclosure(
             isExpanded: $sourcesExpanded,
             systemImage: "tray.and.arrow.down",
-            title: "Sources",
+            title: "Bring your memory in",
             detail: sourcesGroupDetail,
-            help: "Notes, ChatGPT/Claude chat exports, and optional read-only connectors feed your memory."
+            help: "Import your AI chats, sign in to a source, or connect a folder on your Mac. Everything is distilled into memory that stays on this Mac."
         ) {
-            VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
-                ConnectionsObsidianSection(state: state)
-                AIChatsImportCard(state: state)
-                ImportDiffEntryCard(state: state)
+            VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
+                // The three inbound lanes, ordered by how fast they get a user's data in. AI-chat
+                // refugees are the biggest first-run cohort, so their one-tap guided export leads.
+                // Then one-tap sign-in sources, then the local folder / notes path. Each lane owns
+                // exactly one clear action set; nothing is a dead "reference only" tile.
+                inboundLaneAIChats
+                inboundLaneSignIn
+                inboundLaneFromYourMac
+
+                // The full connector catalog stays reachable as a quiet catch-all below the three
+                // lanes, for anything not surfaced above (Slack, Jira, Raindrop, Zotero, Calendar).
                 otherSourceConnections
+
+                ImportDiffEntryCard(state: state)
+
                 if notesHealth.isNeedsAttention
                     || state.sourceAccounts.contains(where: { $0.disconnected_at == nil && $0.needsAttention }) {
                     connectedNow
@@ -192,6 +202,48 @@ private struct ConnectionsPrivacyOverview: View {
             .padding(.top, 12)
         }
         .connectionsGroupCard()
+    }
+
+    /// Lane 1 — the one-tap guided AI-chat export. The obvious first thing for a ChatGPT / Claude /
+    /// Gemini refugee: a one-line label, then the card that deep-links to each vendor's export page,
+    /// surfaces the auto-detected export as a one-tap Import pill, and takes a drag-drop / file pick.
+    private var inboundLaneAIChats: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            InboundLaneHeader(
+                systemImage: "bubble.left.and.text.bubble.right",
+                title: "Import your AI chats",
+                detail: "Coming from ChatGPT, Claude, or Gemini? Bring that whole history in. One tap opens the export page, then Cortex imports it for you."
+            )
+            AIChatsImportCard(state: state)
+        }
+    }
+
+    /// Lane 2 — sign in once and Cortex imports with your consent. Real OAuth / token sources only
+    /// (Notion, Google Drive, GitHub, Outlook, Linear, Readwise, Limitless). A provider the hosted
+    /// broker hasn't configured yet degrades to a calm "Available soon" tile, never a broken button.
+    private var inboundLaneSignIn: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            InboundLaneHeader(
+                systemImage: "person.crop.circle.badge.checkmark",
+                title: "Sign in to a source",
+                detail: "Sign in once and Cortex imports your data with your consent. Read-only, and it stays on this Mac."
+            )
+            ConnectionsSignInSourcesSection(state: state)
+        }
+    }
+
+    /// Lane 3 — sources already on this Mac. The notes folder (the primary local path) plus a guided
+    /// Apple Notes card. No network, no account: choose once and Cortex keeps it synced locally.
+    private var inboundLaneFromYourMac: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            InboundLaneHeader(
+                systemImage: "desktopcomputer",
+                title: "From your Mac",
+                detail: "Point Cortex at a notes folder on this Mac, or bring your Apple Notes in. Nothing leaves your device."
+            )
+            ConnectionsObsidianSection(state: state)
+            AppleNotesImportCard(state: state)
+        }
     }
 
     private var sourcesGroupDetail: String {
@@ -278,9 +330,9 @@ private struct ConnectionsPrivacyOverview: View {
         CortexDisclosure(
             isExpanded: $advancedSourcesExpanded,
             systemImage: "square.grid.2x2",
-            title: "Add more sources",
+            title: "Browse all connectors",
             detail: advancedSourceDisclosureDetail,
-            accessibilityTitle: "Add more sources: Connections library"
+            accessibilityTitle: "Browse all connectors: Connections library"
         ) {
             ConnectionsDirectSourcesSection(state: state)
                 .padding(.top, 10)
@@ -293,7 +345,7 @@ private struct ConnectionsPrivacyOverview: View {
         if extraSources > 0 {
             return "\(extraSources) extra source\(extraSources == 1 ? "" : "s") connected"
         }
-        return "Optional extras, connect any time"
+        return "Everything else, connect any time"
     }
 
     private func privacySettings(summary: TrustSummaryResponse) -> some View {
@@ -1084,9 +1136,43 @@ private func makeGuidedStepTicker() -> Publishers.Autoconnect<Timer.TimerPublish
     Timer.publish(every: 2.5, on: .main, in: .common).autoconnect()
 }
 
-/// Import your ChatGPT / Claude history. There's no live sign-in for these (the providers don't
-/// offer one), so this card guides the export, auto-detects it in Downloads, and takes a
-/// drag-drop or file pick. Imported content is trusted and usable immediately.
+/// A calm lane heading for the "Bring your memory in" surface: a wax glyph, a serif title, and one
+/// honest line about what the lane does. Groups the three inbound paths so the surface reads as
+/// "how do I want to get my data in?" at a glance, without turning each lane into its own disclosure.
+private struct InboundLaneHeader: View {
+    let systemImage: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                    .fill(CortexDesign.accentSoft)
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+            }
+            .frame(width: 32, height: 32)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(CortexDesign.Typography.title)
+                    .foregroundColor(CortexDesign.ink)
+                Text(detail)
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// Import your ChatGPT / Claude / Gemini history. There's no live sign-in for these (the providers
+/// don't offer an import API), so the only real path is a guided export: one tap deep-links to the
+/// vendor's export page, Cortex auto-detects the downloaded file and surfaces a one-tap Import pill,
+/// and drag-drop / file pick are the fallback. Imported content is trusted and usable immediately.
 private struct AIChatsImportCard: View {
     @ObservedObject var state: AppState
     @State private var isTargeted = false
@@ -1096,9 +1182,9 @@ private struct AIChatsImportCard: View {
     @State private var guideExpanded = true
 
     private let steps = [
-        "In ChatGPT: Settings → Data controls → Export data. In Claude: Settings → Privacy → Export data.",
-        "The export arrives by email after a short wait. Watch your inbox for the download link.",
-        "Download the .zip, then drop it above or click Choose export file."
+        "Tap your provider below. It opens the export page in your browser, already on the right screen.",
+        "Ask for the export. The provider emails you a download link in a few minutes (ChatGPT, Claude, and Gemini all send it by email).",
+        "Download the file, then drop it here or click Choose export file. Cortex often spots it in Downloads on its own."
     ]
 
     private var hasCompletedImport: Bool {
@@ -1106,33 +1192,55 @@ private struct AIChatsImportCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "bubble.left.and.text.bubble.right")
-                    .font(.title3)
-                    .foregroundColor(CortexDesign.accent)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Import your ChatGPT or Claude chats")
-                        .font(.headline)
-                        .foregroundColor(CortexDesign.ink)
-                    Text("Drop your export file here. It's ready to use right away.")
-                        .font(.caption).foregroundColor(CortexDesign.inkSecondary).fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 12) {
+            // FRONT AND CENTER: the auto-detected export. If Cortex already found the file in
+            // Downloads, importing is a single prominent primary tap and nothing else is needed.
+            if let summary = state.detectedExportSummary {
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: "sparkles")
+                        .font(.title3)
+                        .foregroundColor(CortexDesign.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(summary)
+                            .font(.callout)
+                            .fontWeight(.semibold)
+                            .foregroundColor(CortexDesign.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("Ready to import. It's usable the moment it lands.")
+                            .font(.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                    }
+                    Spacer(minLength: 8)
+                    if state.importInFlight {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        CortexButton(title: "Import now", systemImage: "square.and.arrow.down", role: .primary, size: .regular) {
+                            state.importDetectedExports()
+                        }
+                    }
                 }
-                Spacer(minLength: 0)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).fill(CortexDesign.accentSoft))
+                .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.accent.opacity(0.3), lineWidth: 1))
             }
 
-            if let summary = state.detectedExportSummary {
-                HStack(spacing: 8) {
-                    Image(systemName: "sparkles").foregroundColor(CortexDesign.accent)
-                    Text(summary).font(.callout).foregroundColor(CortexDesign.ink).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 8)
-                    CortexButton(title: "Import", systemImage: "square.and.arrow.down", role: .secondary, size: .small) {
-                        state.importDetectedExports()
-                    }
-                    .disabled(state.importInFlight)
+            // ONE TAP PER VENDOR: deep-link straight to each provider's export page. This is the step
+            // people abandon, so it's the most prominent thing when no export has been detected yet.
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Get your export in one tap")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
+                    exportVendorButton("ChatGPT", systemImage: "bubble.left.and.bubble.right", urlString: "https://chatgpt.com/#settings/DataControls")
+                    exportVendorButton("Claude", systemImage: "sparkle", urlString: "https://claude.ai/settings/data-privacy-controls")
+                    exportVendorButton("Gemini", systemImage: "diamond", urlString: "https://takeout.google.com/")
                 }
-                .padding(10)
-                .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.accentSoft))
+                Text("The provider emails you a download link, usually within a few minutes. Grab the file, then Cortex takes it from there.")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             RoundedRectangle(cornerRadius: 10)
@@ -1142,7 +1250,7 @@ private struct AIChatsImportCard: View {
                 .overlay(
                     HStack(spacing: 8) {
                         if state.importInFlight { ProgressView().scaleEffect(0.7) }
-                        Text(state.importInFlight ? "Importing…" : "Drag your export here, or")
+                        Text(state.importInFlight ? "Importing…" : "Already have the file? Drop it here, or")
                             .font(.callout).foregroundColor(CortexDesign.inkSecondary)
                         if !state.importInFlight {
                             CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .secondary, size: .small) {
@@ -1169,20 +1277,21 @@ private struct AIChatsImportCard: View {
                 }
 
             DisclosureGroup(isExpanded: $guideExpanded) {
-                // Guided walkthrough: the highlight strolls through the steps on a loop while
-                // the disclosure is open, and clicking a step jumps it there. The one-click
-                // export links sit with step 1 so the first action is obvious.
+                // Guided walkthrough: the highlight strolls through the steps on a loop while the
+                // disclosure is open, and clicking a step jumps it there. Step 1 carries the same
+                // per-vendor deep-links so the first action is never more than one tap away.
                 GuidedStepWalkthrough(steps: steps, isActive: guideExpanded, textFont: .caption) { index in
                     if index == 0 {
                         HStack(spacing: 16) {
-                            exportSettingsLink("Open ChatGPT export settings", urlString: "https://chatgpt.com/#settings/DataControls")
-                            exportSettingsLink("Open Claude export settings", urlString: "https://claude.ai/settings/data-privacy-controls")
+                            exportSettingsLink("ChatGPT export page", urlString: "https://chatgpt.com/#settings/DataControls")
+                            exportSettingsLink("Claude export page", urlString: "https://claude.ai/settings/data-privacy-controls")
+                            exportSettingsLink("Gemini via Takeout", urlString: "https://takeout.google.com/")
                         }
                     }
                 }
                 .padding(.top, 6)
             } label: {
-                Text("How do I get my export?")
+                Text("Walk me through it")
             }
             .font(.caption)
             .foregroundColor(CortexDesign.inkSecondary)
@@ -1227,6 +1336,327 @@ private struct AIChatsImportCard: View {
             .underline()
         }
         .buttonStyle(.plain)
+    }
+
+    /// A prominent per-vendor deep-link tile: opens that provider's export page in one tap. The
+    /// biggest, most obvious action in the card, because requesting the export is where people stall.
+    private func exportVendorButton(_ name: String, systemImage: String, urlString: String) -> some View {
+        Button {
+            if let url = URL(string: urlString) {
+                NSWorkspace.shared.open(url)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+                Text(name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(CortexDesign.ink)
+                Spacer(minLength: 4)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(CortexDesign.inkSecondary)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous).fill(CortexDesign.cardBackground))
+            .embossedBorder(radius: CortexDesign.Radius.md)
+        }
+        .buttonStyle(.plain)
+        .help("Open the \(name) export page in your browser")
+        .accessibilityLabel("Open the \(name) export page")
+    }
+}
+
+/// Lane 2's tiles: the real "sign in once, import with consent" sources — one prominent tap each.
+/// This is a curated shelf of the connectors that genuinely support account sign-in (managed OAuth,
+/// GitHub device flow, or a pasted read-only token), so a user can go straight from "I use Notion"
+/// to a consent screen without hunting the full library. It reuses the SAME connect dispatch the
+/// library uses (one code path, no drift) and degrades honestly: a managed-OAuth provider the hosted
+/// broker hasn't configured yet shows a calm "Available soon" tile, never a broken button.
+private struct ConnectionsSignInSourcesSection: View {
+    @ObservedObject var state: AppState
+    @State private var selectedTokenConnector: SourceConnectorCatalogItem?
+
+    /// The curated sign-in set, in priority order. Notion leads (best consent UX: a page picker),
+    /// then the Google/GitHub/Microsoft sign-ins, then the token-issue sources. Only ids that are
+    /// actually in the catalog and wired render, so the shelf can't drift into dead tiles.
+    private static let signInSourceIDs = [
+        "notion", "google-drive", "github", "outlook", "gmail", "linear", "readwise", "limitless",
+    ]
+
+    private var signInConnectors: [SourceConnectorCatalogItem] {
+        Self.signInSourceIDs.compactMap { id in
+            state.sourceConnectorCatalog.first { $0.id == id }
+        }
+        .filter { state.isDirectConnectorSyncWired($0) }
+        // App Store builds are local-first: outbound HTTPS is stripped, so account sign-in can't
+        // sync. Show nothing rather than a dead tile (mirrors the library's filter). The notes +
+        // export + Apple Notes lanes, which work locally, still carry the surface.
+        .filter { _ in !DistributionMode.isAppStore }
+    }
+
+    /// Whether this connector can be connected right now (a live consent path exists). A managed-OAuth
+    /// connector whose provider isn't configured on the broker AND that has no pasted-token fallback
+    /// is NOT connectable yet, so its tile degrades to "Available soon" instead of a broken button.
+    private func isConnectable(_ connector: SourceConnectorCatalogItem) -> Bool {
+        if connector.connectionSetup?.supportsDeviceFlow == true { return true }
+        if connector.connectionSetup?.supportsManagedOAuth == true {
+            if state.managedOAuthIsConfigured(connector) { return true }
+            return hasUsableTokenFallback(connector)
+        }
+        // Pure token connectors (Linear, Readwise, Limitless) are always connectable via their setup.
+        return !(connector.connectionSetup?.credential_fields.isEmpty ?? true)
+    }
+
+    private func hasUsableTokenFallback(_ connector: SourceConnectorCatalogItem) -> Bool {
+        !(connector.connectionSetup?.credential_fields.isEmpty ?? true)
+    }
+
+    private func isConnected(_ connector: SourceConnectorCatalogItem) -> Bool {
+        state.activeSourceAccounts.contains { account in
+            account.source == connector.id || (connector.source_ids ?? []).contains(account.source)
+        }
+    }
+
+    /// A short honest verb for each tile: "Sign in" for a real sign-in, "Connect" for token sources,
+    /// "Synced" once connected, "Available soon" when the provider isn't configured yet.
+    private func cta(_ connector: SourceConnectorCatalogItem) -> String {
+        if isConnected(connector) { return "Synced" }
+        if !isConnectable(connector) { return "Available soon" }
+        if connector.connectionSetup?.supportsDeviceFlow == true { return "Sign in" }
+        if connector.connectionSetup?.supportsManagedOAuth == true, state.managedOAuthIsConfigured(connector) {
+            return "Sign in"
+        }
+        return "Connect"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if state.sourceConnectorCatalog.isEmpty {
+                ConnectionsRetryState(
+                    state: state,
+                    title: "Checking sign-in sources",
+                    detail: "Cortex is loading the sources you can sign in to."
+                ) {
+                    Task { await state.loadSourceConnectivity() }
+                }
+            } else if signInConnectors.isEmpty {
+                QuietState(
+                    title: "Sign-in sources unavailable in this build",
+                    detail: "Bring your memory in with an AI-chat export or a notes folder on your Mac instead."
+                )
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 10)], spacing: 10) {
+                    ForEach(signInConnectors) { connector in
+                        SignInSourceTile(
+                            connector: connector,
+                            connectable: isConnectable(connector),
+                            connected: isConnected(connector),
+                            starting: state.connectorOAuthStartingIDs.contains(connector.id)
+                                || state.connectorSyncingIDs.contains(connector.id),
+                            cta: cta(connector)
+                        ) {
+                            connectAction(connector)
+                        }
+                    }
+                }
+            }
+        }
+        .sheet(item: $selectedTokenConnector) { connector in
+            ConnectorTokenSetupSheet(state: state, connector: connector)
+                .frame(width: 640, height: 680)
+        }
+        .sheet(item: Binding(get: { state.githubDeviceFlow }, set: { state.githubDeviceFlow = $0 })) { prompt in
+            GitHubDeviceCodeView(state: state, prompt: prompt)
+                .frame(width: 460, height: 440)
+        }
+    }
+
+    /// The one connect path, shared with the Connections library's `libraryAction` (device flow →
+    /// managed OAuth → token sheet). A tile that isn't connectable never dispatches: the button is
+    /// disabled upstream, so tapping "Available soon" is a calm no-op, not a broken request.
+    private func connectAction(_ connector: SourceConnectorCatalogItem) {
+        guard isConnectable(connector) else { return }
+        if connector.connectionSetup?.supportsDeviceFlow == true {
+            state.startGitHubDeviceFlow(connector)
+            return
+        }
+        if connector.connectionSetup?.supportsManagedOAuth == true {
+            if state.managedOAuthIsConfigured(connector) {
+                state.startManagedOAuthConnector(connector)
+                return
+            }
+            // Managed OAuth advertised but not configured on the broker: fall through to the durable
+            // integration-token setup when the connector ships one (Notion), else do nothing.
+            if hasUsableTokenFallback(connector) {
+                selectedTokenConnector = connector
+            }
+            return
+        }
+        selectedTokenConnector = connector
+    }
+}
+
+/// One prominent one-tap sign-in tile. Real brand mark, the source name, and a single honest verb.
+/// A not-yet-configured provider renders calm and disabled with "Available soon"; a connected source
+/// wears a moss check. Never a broken button.
+private struct SignInSourceTile: View {
+    let connector: SourceConnectorCatalogItem
+    let connectable: Bool
+    let connected: Bool
+    let starting: Bool
+    let cta: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    private var tint: Color { connectorBrandTint(connector.id) }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 11) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                        .fill(tint.opacity(connectable ? 0.14 : 0.08))
+                    Image(systemName: connectorLibraryIcon(connector.id))
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(connectable ? tint : CortexDesign.inkFaint)
+                }
+                .frame(width: 34, height: 34)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(connector.name)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(CortexDesign.ink)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundColor(subtitleColor)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                if starting {
+                    ProgressView().controlSize(.small)
+                } else if connected {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundColor(CortexDesign.sealMoss)
+                } else if connectable {
+                    Image(systemName: "arrow.right.circle.fill")
+                        .foregroundColor(CortexDesign.accent)
+                } else {
+                    Image(systemName: "clock")
+                        .foregroundColor(CortexDesign.inkFaint)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(hovering && connectable ? CortexDesign.accentSoft : CortexDesign.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+            .embossedBorder(radius: CortexDesign.Radius.md)
+            .opacity(connectable || connected ? 1 : 0.7)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .disabled((!connectable && !connected) || starting)
+        .help(connectable
+              ? "Sign in to \(connector.name) and import your data, read-only"
+              : "One-tap sign-in for \(connector.name) is coming soon")
+        .accessibilityLabel(connectable ? "Sign in to \(connector.name)" : "\(connector.name): sign-in coming soon")
+    }
+
+    private var subtitle: String {
+        if connected { return "Synced" }
+        if starting { return "Opening sign-in…" }
+        return cta
+    }
+
+    private var subtitleColor: Color {
+        if connected { return CortexDesign.sealMoss }
+        if !connectable { return CortexDesign.inkFaint }
+        return CortexDesign.inkSecondary
+    }
+}
+
+/// Lane 3's second card: bring your Apple Notes in. There's no Apple Notes import API, so the honest
+/// path is a short guided export: open Notes, export the notes you want, then drop the file here.
+/// It reuses the SAME import plumbing the AI-chat card uses (importAIChatExport / importFromPath), so
+/// there's one import path and the file lands as trusted, usable memory.
+private struct AppleNotesImportCard: View {
+    @ObservedObject var state: AppState
+    @State private var isTargeted = false
+    @State private var guideExpanded = false
+
+    private let steps = [
+        "Open the Notes app, select the notes you want, then use the File menu and pick Export as PDF (or use the Shortcuts app to save them as text).",
+        "Save the exported file somewhere easy to find, like your Desktop or Downloads.",
+        "Drop the file here, or click Choose export file. Cortex distills it into cited memory.",
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "note.text")
+                    .font(.title3)
+                    .foregroundColor(CortexDesign.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Bring in your Apple Notes")
+                        .font(.headline)
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Export the notes you want, then Cortex imports them. Nothing leaves your Mac.")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
+                .foregroundColor(isTargeted ? CortexDesign.accent : CortexDesign.hairline)
+                .frame(height: 58)
+                .overlay(
+                    HStack(spacing: 8) {
+                        if state.importInFlight { ProgressView().scaleEffect(0.7) }
+                        Text(state.importInFlight ? "Importing…" : "Drop your exported notes here, or")
+                            .font(.callout).foregroundColor(CortexDesign.inkSecondary)
+                        if !state.importInFlight {
+                            CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .secondary, size: .small) {
+                                state.importAIChatExport()
+                            }
+                        }
+                    }
+                )
+                .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
+                    guard let provider = providers.first else { return false }
+                    provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                        var resolved: String?
+                        if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                            resolved = url.standardizedFileURL.path
+                        } else if let url = item as? URL {
+                            resolved = url.standardizedFileURL.path
+                        }
+                        guard let path = resolved else { return }
+                        Task { @MainActor in await state.importFromPath(path) }
+                    }
+                    return true
+                }
+
+            DisclosureGroup(isExpanded: $guideExpanded) {
+                GuidedStepWalkthrough(steps: steps, isActive: guideExpanded, textFont: .caption) { _ in
+                    EmptyView()
+                }
+                .padding(.top, 6)
+            } label: {
+                Text("How do I export from Apple Notes?")
+            }
+            .font(.caption)
+            .foregroundColor(CortexDesign.inkSecondary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).fill(connectionsPanelBackground))
+        .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.hairline, lineWidth: 1))
     }
 }
 
