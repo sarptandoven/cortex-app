@@ -19,6 +19,7 @@ from typing import Any, Iterable
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+from .config import APP_BRAND
 from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
@@ -742,7 +743,7 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "knowledge-base", "name": "Knowledge base", "category": "Research", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Knowledge base connector coverage for local notes and read-later services."},
     {"id": "twitter-x", "name": "Twitter/X", "category": "Social", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Twitter/X account connector is required before this can be a primary source."},
     {"id": "apple-notes", "name": "Apple Notes", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local Apple Notes integration is the intended source path."},
-    {"id": "obsidian", "name": "Cortex Notes", "category": "Notes", "auth": "local_folder", "live_status": "import_ready", "scopes": [], "notes": "Local notes-folder integration is the intended connector path."},
+    {"id": "obsidian", "name": f"{APP_BRAND} Notes", "category": "Notes", "auth": "local_folder", "live_status": "import_ready", "scopes": [], "notes": "Local notes-folder integration is the intended connector path."},
 )
 
 
@@ -1415,7 +1416,7 @@ def _copy_setup_fields(fields: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
 CONNECTOR_SETUP_GUIDES: dict[str, dict[str, Any]] = {
     "obsidian": {"help_url": "https://trydoppl.com", "steps": [
         "Click Choose Folder and pick your notes folder (the folder that holds your .md notes).",
-        "Cortex reads those notes and keeps them in sync as you edit — everything stays on your Mac.",
+        f"{APP_BRAND} reads those notes and keeps them in sync as you edit — everything stays on your Mac.",
     ]},
     "github": {"help_url": "https://github.com/settings/tokens", "steps": [
         "Open github.com → Settings → Developer settings → Personal access tokens → Fine-grained tokens.",
@@ -1423,7 +1424,7 @@ CONNECTOR_SETUP_GUIDES: dict[str, dict[str, Any]] = {
         "Copy the token, paste it below, then choose the repositories to sync.",
     ]},
     "slack": {"help_url": "https://api.slack.com/apps", "steps": [
-        "Open api.slack.com/apps → Create New App → From scratch. Name it (e.g. Cortex) and pick your workspace.",
+        f"Open api.slack.com/apps → Create New App → From scratch. Name it (e.g. {APP_BRAND}) and pick your workspace.",
         "In the left sidebar open OAuth & Permissions, scroll to Scopes → User Token Scopes.",
         "Add channels:history and channels:read (add groups:history and groups:read too if you want private channels).",
         "Scroll back up and click Install to Workspace, then Allow.",
@@ -1447,15 +1448,15 @@ CONNECTOR_SETUP_GUIDES: dict[str, dict[str, Any]] = {
     ]},
     "gmail": {"help_url": "https://support.google.com/mail", "steps": [
         "Click Sign in with Google and grant read-only Gmail access.",
-        "Cortex syncs your recent mail; you can disconnect anytime.",
+        f"{APP_BRAND} syncs your recent mail; you can disconnect anytime.",
     ]},
     "outlook": {"help_url": "https://support.microsoft.com/outlook", "steps": [
         "Click Sign in with Microsoft and grant read access to your mail.",
-        "Cortex syncs your recent mail; you can disconnect anytime.",
+        f"{APP_BRAND} syncs your recent mail; you can disconnect anytime.",
     ]},
     "notion": {"help_url": "https://www.notion.so/my-integrations", "steps": [
         "Click Sign in with Notion (or create an internal integration at notion.so/my-integrations and paste its token).",
-        "Share the pages or databases you want Cortex to read with the integration.",
+        f"Share the pages or databases you want {APP_BRAND} to read with the integration.",
     ]},
     "google-drive": {"help_url": "https://support.google.com/drive", "steps": [
         "Click Sign in with Google and grant read-only Drive access.",
@@ -1464,12 +1465,12 @@ CONNECTOR_SETUP_GUIDES: dict[str, dict[str, Any]] = {
     "chatgpt": {"help_url": "https://help.openai.com/en/articles/7260999-how-do-i-export-my-chatgpt-history-and-data", "steps": [
         "In ChatGPT: Settings → Data controls → Export data → Confirm export.",
         "OpenAI emails you a link — download the .zip (it contains conversations.json).",
-        "Drop it into Cortex or your Downloads folder; Cortex detects and imports it automatically.",
+        f"Drop it into {APP_BRAND} or your Downloads folder; {APP_BRAND} detects and imports it automatically.",
     ]},
     "claude": {"help_url": "https://support.anthropic.com", "steps": [
         "In Claude: Settings → Account → Export data.",
-        "Download the export, then drop it into Cortex or your Downloads folder.",
-        "Cortex detects and imports it automatically — re-export anytime to add new chats.",
+        f"Download the export, then drop it into {APP_BRAND} or your Downloads folder.",
+        f"{APP_BRAND} detects and imports it automatically — re-export anytime to add new chats.",
     ]},
 }
 
@@ -4277,10 +4278,10 @@ class CortexStore:
                 next_action = f"Review {pending} pending capture{'s' if pending != 1 else ''}."
             elif obsidian_empty_sync:
                 status = "empty"
-                next_action = "No Markdown notes were found in this notes folder. Choose a folder with notes before Cortex can build memory."
+                next_action = f"No Markdown notes were found in this notes folder. Choose a folder with notes before {APP_BRAND} can build memory."
             elif sync_incomplete:
                 status = "syncing"
-                next_action = "Cortex is still scanning this notes folder in batches."
+                next_action = f"{APP_BRAND} is still scanning this notes folder in batches."
             elif planned_connector and (current_captures or active_memories):
                 status = "imported"
                 next_action = "Local records are available; direct account sign-in sync is still planned for this source."
@@ -4452,13 +4453,13 @@ class CortexStore:
         if summary["needs_attention"]:
             recommendations.append("Resolve source account or sync errors before relying on those memories.")
         if summary["empty"]:
-            recommendations.append("Choose a notes folder with Markdown notes before Cortex can build memory from it.")
+            recommendations.append(f"Choose a notes folder with Markdown notes before {APP_BRAND} can build memory from it.")
         if summary["syncing"]:
             recommendations.append("Wait for source processing to finish before judging Review and Ask coverage.")
         if summary["needs_review"]:
             recommendations.append("Review pending source captures so they can become trusted model memory.")
         if not summary["sources_with_data"]:
-            recommendations.append("Connect your notes or local AI tools so Cortex can start building reviewed memory.")
+            recommendations.append(f"Connect your notes or local AI tools so {APP_BRAND} can start building reviewed memory.")
         if not recommendations:
             recommendations.append("Source readiness is healthy for local beta use.")
         return {
@@ -11879,7 +11880,7 @@ class CortexStore:
         _cited_ids = {str(item.get("id")) for item in cited_results}
         self._log_retrieval_feedback(user_id, query, cited_results, [item for item in candidates if str(item.get("id")) not in _cited_ids])
         if citations:
-            lines = [f"Cortex found {len(citations)} cited item{'s' if len(citations) != 1 else ''} for this question:"]
+            lines = [f"{APP_BRAND} found {len(citations)} cited item{'s' if len(citations) != 1 else ''} for this question:"]
             for citation in citations[:5]:
                 citation_source = citation["source_url"] or citation["source"]
                 lines.append(f"[{citation['index']}] {citation['excerpt']} ({citation_source})")
@@ -11887,7 +11888,7 @@ class CortexStore:
                 missing_fields = ", ".join(evidence.get("missing_fields") or [])
                 lines.append("")
                 lines.append(
-                    f"Coverage check: Cortex found related citations, but not enough evidence for {missing_fields}. "
+                    f"Coverage check: {APP_BRAND} found related citations, but not enough evidence for {missing_fields}. "
                     "Use these citations as context and verify before acting."
                 )
             if conflicts:
@@ -11923,7 +11924,7 @@ class CortexStore:
                     },
                 )
         else:
-            answer = "Cortex did not find a cited item for this question yet. Import or approve more source material, then ask again."
+            answer = f"{APP_BRAND} did not find a cited item for this question yet. Import or approve more source material, then ask again."
         if conflicts:
             answer_status = "conflicted"
         elif citations and evidence.get("status") == "low_confidence":
@@ -11946,7 +11947,7 @@ class CortexStore:
                 "reason": answer_status,
                 "missing_fields": list(evidence.get("missing_fields") or []),
                 "suggested_action": (
-                    "Capture or approve the missing fact so Cortex can answer it from cited memory next time."
+                    f"Capture or approve the missing fact so {APP_BRAND} can answer it from cited memory next time."
                 ),
             }
         return {
@@ -14087,7 +14088,7 @@ class CortexStore:
 
         return {
             "cortex_generated": True,
-            "title": "Cortex — Start Here",
+            "title": f"{APP_BRAND} — Start Here",
             "entity_count": len(nodes),
             "community_count": len({c for c in community.values()}) if community else 0,
             "folders": folders,
@@ -14871,7 +14872,7 @@ class CortexStore:
         if cited_preferences or cited_style:
             next_actions.append("Shape the output using the cited preferences and style signals.")
         if status == "limited":
-            next_actions.append("Ask the user for confirmation before taking action because Cortex has limited cited context.")
+            next_actions.append(f"Ask the user for confirmation before taking action because {APP_BRAND} has limited cited context.")
         if not next_actions:
             next_actions.append("Ask for more context before acting.")
         instructions = [
@@ -15159,7 +15160,7 @@ class CortexStore:
 
     def _action_brief_markdown(self, brief: dict[str, Any]) -> str:
         lines = [
-            "# Cortex Action Brief",
+            f"# {APP_BRAND} Action Brief",
             "",
             f"Generated: {brief['generated_at']}",
             f"Task: {brief.get('task') or 'unspecified'}",
@@ -16251,7 +16252,7 @@ class CortexStore:
                 "action": "capture",
                 "label": "Connect Source",
                 "title": "Start memory sync",
-                "detail": "Connect local AI tools or your notes so Cortex can sync memory into Review.",
+                "detail": f"Connect local AI tools or your notes so {APP_BRAND} can sync memory into Review.",
             }
         elif stats["pending_captures"] > 0:
             primary = {
@@ -16263,7 +16264,7 @@ class CortexStore:
         elif not reuse_done:
             primary = {
                 "action": "reuse",
-                "label": "Ask Cortex",
+                "label": f"Ask {APP_BRAND}",
                 "title": "Use your personal model",
                 "detail": "Ask a cited question or let connected AI tools read approved memory.",
             }
@@ -16272,7 +16273,7 @@ class CortexStore:
                 "action": "done",
                 "label": "Loop Complete",
                 "title": "Loop complete today",
-                "detail": "You connected, reviewed, and used cited memory. Keep Cortex nearby as work changes.",
+                "detail": f"You connected, reviewed, and used cited memory. Keep {APP_BRAND} nearby as work changes.",
             }
 
         def step(key: str, title: str, done: bool, detail: str) -> dict[str, Any]:
@@ -16282,7 +16283,7 @@ class CortexStore:
         steps = [
             step("capture", "Sync", capture_done, f"{captured_today} synced today, {stats['captures']} total."),
             step("review", "Review", review_done, f"{stats['pending_captures']} waiting for review."),
-            step("reuse", "Use", reuse_done, f"{used_today} cited Cortex use{'s' if used_today != 1 else ''} today."),
+            step("reuse", "Use", reuse_done, f"{used_today} cited {APP_BRAND} use{'s' if used_today != 1 else ''} today."),
             step("done", "Return", return_done, f"{streak_days} day streak."),
         ]
         completion = round((sum(1 for item in steps if item["status"] == "done") / len(steps)) * 100)
@@ -17780,7 +17781,7 @@ class CortexStore:
         return best
 
     def _render_context_markdown(self, pack: dict[str, Any]) -> str:
-        lines = ["# Cortex Context Pack", ""]
+        lines = [f"# {APP_BRAND} Context Pack", ""]
         if pack.get("task"):
             lines.append(f"Task: {pack['task']}")
         lines.append(f"Intent: {pack.get('intent')} | Coverage: {(pack.get('coverage') or {}).get('status')}")
@@ -17832,7 +17833,7 @@ class CortexStore:
         redact = bool(user_settings["redact_sensitive_context"])
 
         lines = [
-            "# Cortex Memory View",
+            f"# {APP_BRAND} Memory View",
             "",
             f"Generated: {now_iso()}",
         ]
@@ -17842,11 +17843,11 @@ class CortexStore:
             lines.append(f"Sector: {sector}")
         lines.extend([
             "",
-            "Use this Cortex context as partial, cited memory for this conversation. Treat it as coverage-limited, follow the user's newest message when there is conflict, and ask when coverage is missing.",
+            f"Use this {APP_BRAND} context as partial, cited memory for this conversation. Treat it as coverage-limited, follow the user's newest message when there is conflict, and ask when coverage is missing.",
             "",
             "## Suggested Assistant Instruction",
             "",
-            "Use the Cortex context below as scoped memory for this conversation. When a memory is relevant, ground the answer in it and mention the memory ID if useful. If the context conflicts with the user's newest message, follow the newest message and note the mismatch.",
+            f"Use the {APP_BRAND} context below as scoped memory for this conversation. When a memory is relevant, ground the answer in it and mention the memory ID if useful. If the context conflicts with the user's newest message, follow the newest message and note the mismatch.",
             "",
             "## Relevant Memories",
             "",
@@ -17963,7 +17964,7 @@ class CortexStore:
 
         profile: dict[str, Any] = {
             "generated_at": now_iso(),
-            "name": "Cortex Personal Adaptation Profile",
+            "name": f"{APP_BRAND} Personal Adaptation Profile",
             "query": query,
             "sector": sector,
             "readiness": readiness,
@@ -18121,7 +18122,7 @@ class CortexStore:
             evidence_by_id[item["id"]] = item
 
         operating_principles = [
-            f"Use this Cortex adaptation layer when acting as {target}.",
+            f"Use this {APP_BRAND} adaptation layer when acting as {target}.",
             "Do not claim to be the user or imply complete access to the user's mind.",
             "Follow the user's newest message over older memory when they conflict.",
             "Use cited memories as behavioral guidance, not as immutable facts.",
@@ -18159,7 +18160,7 @@ class CortexStore:
 
         artifact: dict[str, Any] = {
             "generated_at": now_iso(),
-            "name": "Cortex Agent Adaptation Layer",
+            "name": f"{APP_BRAND} Agent Adaptation Layer",
             "target": target,
             "query": profile["query"],
             "readiness": profile["readiness"],
@@ -18188,7 +18189,7 @@ class CortexStore:
 
     def _agent_adaptation_markdown(self, artifact: dict[str, Any]) -> str:
         lines = [
-            "# Cortex Agent Adaptation Layer",
+            f"# {APP_BRAND} Agent Adaptation Layer",
             "",
             f"Generated: {artifact['generated_at']}",
             f"Target: {artifact['target']}",
@@ -18262,7 +18263,7 @@ class CortexStore:
 
     def _personal_profile_markdown(self, profile: dict[str, Any]) -> str:
         lines = [
-            "# Cortex Personal Adaptation Profile",
+            f"# {APP_BRAND} Personal Adaptation Profile",
             "",
             f"Generated: {profile['generated_at']}",
             f"Readiness: {profile['readiness']}/100",
@@ -18963,7 +18964,7 @@ class CortexStore:
             "Vault layout",
             "ok" if not missing_dirs else "warn",
             "Vault folders are present." if not missing_dirs else "Missing folders: " + ", ".join(missing_dirs),
-            None if not missing_dirs else "Restart Cortex or create a backup to recreate missing folders.",
+            None if not missing_dirs else f"Restart {APP_BRAND} or create a backup to recreate missing folders.",
         )
 
         if latest_backup:
@@ -19004,7 +19005,7 @@ class CortexStore:
             if check.get("action")
         ]
         if status == "ok":
-            recommended_actions = ["No action needed. Keep using Cortex and keep periodic backups enabled."]
+            recommended_actions = [f"No action needed. Keep using {APP_BRAND} and keep periodic backups enabled."]
 
         return {
             "status": status,
@@ -19452,7 +19453,7 @@ class CortexStore:
     def restore_latest_backup(self, user_id: str) -> dict[str, Any]:
         latest = self.latest_backup()
         if not latest:
-            raise FileNotFoundError("No Cortex backup archives are available")
+            raise FileNotFoundError(f"No {APP_BRAND} backup archives are available")
         preserved_tombstones = list(self.vault.iter_tombstones(user_id))
         restored = self.vault.restore_from_zip_backup(Path(latest["backup_path"]))
         for tombstone in preserved_tombstones:
@@ -20384,7 +20385,7 @@ class CortexStore:
 
     def export_markdown(self, user_id: str) -> str:
         data = self.export_json(user_id)
-        lines = ["# Cortex Export", "", f"Exported: {data['exported_at']}", "", "## Stats", ""]
+        lines = [f"# {APP_BRAND} Export", "", f"Exported: {data['exported_at']}", "", "## Stats", ""]
         for key, value in data["stats"].items():
             if not isinstance(value, list):
                 lines.append(f"- {key}: {value}")
@@ -20904,11 +20905,11 @@ class CortexStore:
     def require_agent_access(self, user_id: str, capability: str) -> None:
         user_settings = self.settings(user_id)
         labels = {
-            "read": "Agent memory reads are disabled in Cortex Trust controls.",
-            "write": "Agent memory writes are disabled in Cortex Trust controls.",
-            "export": "Agent context exports are disabled in Cortex Trust controls.",
-            "maintenance": "Agent maintenance actions are disabled in Cortex Trust controls.",
-            "destructive": "Agent destructive actions are disabled in Cortex Trust controls.",
+            "read": f"Agent memory reads are disabled in {APP_BRAND} Trust controls.",
+            "write": f"Agent memory writes are disabled in {APP_BRAND} Trust controls.",
+            "export": f"Agent context exports are disabled in {APP_BRAND} Trust controls.",
+            "maintenance": f"Agent maintenance actions are disabled in {APP_BRAND} Trust controls.",
+            "destructive": f"Agent destructive actions are disabled in {APP_BRAND} Trust controls.",
         }
         setting_by_capability = {
             "read": "allow_agent_reads",
@@ -20919,7 +20920,7 @@ class CortexStore:
         }
         key = setting_by_capability.get(capability)
         if key and not user_settings[key]:
-            raise PermissionError(labels.get(capability, "Agent action is disabled in Cortex Trust controls."))
+            raise PermissionError(labels.get(capability, f"Agent action is disabled in {APP_BRAND} Trust controls."))
 
     def agent_payload(self, user_id: str, value: Any) -> Any:
         payload = self._shared_payload(value, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
@@ -22960,7 +22961,7 @@ class CortexStore:
                 "recomputed_payload_sha256": recomputed,
                 "record_counts": actual_counts,
                 "note": (
-                    "Verified legacy unsigned bundle payload. Re-export from Cortex v2 before import."
+                    f"Verified legacy unsigned bundle payload. Re-export from {APP_BRAND} v2 before import."
                     if verified
                     else "Legacy bundle payload verification failed."
                 ),
@@ -24079,7 +24080,7 @@ class CortexStore:
             "knowledge_gap": (
                 {
                     "reason": "insufficient_evidence",
-                    "suggested_action": "Capture the missing preference or decision so Cortex only needs to ask once.",
+                    "suggested_action": f"Capture the missing preference or decision so {APP_BRAND} only needs to ask once.",
                 }
                 if known_unknown
                 else None
@@ -30989,9 +30990,9 @@ class CortexStore:
         if open_task_count:
             actions.append(f"Clear or update {open_task_count} follow-up{'s' if open_task_count != 1 else ''}.")
         if captured_today == 0:
-            actions.append("Connect one useful source so Cortex has fresh memory to review.")
+            actions.append(f"Connect one useful source so {APP_BRAND} has fresh memory to review.")
         if top_topics:
-            actions.append(f"Use Cortex's #{top_topics[0]['topic']} memory before your next AI session.")
+            actions.append(f"Use {APP_BRAND}'s #{top_topics[0]['topic']} memory before your next AI session.")
         if not recent_decisions:
             actions.append("Approve the next important decision so it is easy to retrieve later.")
         return actions[:5]

@@ -2806,6 +2806,10 @@ final class BackendSupervisor {
         environment["CORTEX_MCP_API_KEY"] = normalizedMCPAPIKey
         environment["CORTEX_MCP_API_KEY_SCOPES"] = "read,write,export,maintenance"
         environment["CORTEX_PUBLIC_BASE_URL"] = "http://127.0.0.1:8766"
+        // App Store Guideline 4: the backend also emits user-visible strings (connector names, source
+        // health, sync status, trust errors). Pass our display name so those rebrand to match the app
+        // (Doppl in the MAS build, Cortex in the DMG). The backend defaults to "Cortex" when unset.
+        environment["CORTEX_APP_BRAND"] = DistributionMode.appDisplayName
         // Turn on real on-device semantic embeddings when the local model is bundled (offline, no
         // API key). If it's absent for any reason, leave the provider unset so the backend uses its
         // deterministic hash fallback rather than attempting a network download.
@@ -4349,7 +4353,7 @@ final class AppState: ObservableObject {
             method: "POST",
             body: [
                 "token": token,
-                "label": "Cortex notes bridge",
+                "label": "\(DistributionMode.appDisplayName) notes bridge",
                 "scopes": ["read", "write"]
             ]
         )
@@ -6737,7 +6741,7 @@ final class AppState: ObservableObject {
                 let pairing = try JSONDecoder().decode(BrowserExtensionPairing.self, from: data)
                 let base = pairing.base_url
                 let info = """
-                Cortex universal API — connect any app to your memory (read-only):
+                \(DistributionMode.appDisplayName) universal API — connect any app to your memory (read-only):
 
                 Base URL: \(base)
                 Token:    \(pairing.token)
@@ -7907,7 +7911,7 @@ final class AppState: ObservableObject {
             // A SHORT connection-details string: a credential, not memory. Labeled so the user never
             // mistakes it for their data.
             let details = """
-            Cortex connector for \(integration.name) (a secure connection, not your data)
+            \(DistributionMode.appDisplayName) connector for \(integration.name) (a secure connection, not your data)
 
             Connector URL: \(connectorURL)
             Connector key: \(token)
@@ -8086,7 +8090,7 @@ final class AppState: ObservableObject {
         registerMCPTokenInBackground(for: integration)
         let token = AppState.loadOrCreateMCPToken(for: integration.id)
         let info = """
-        Cortex local memory API — \(integration.name)
+        \(DistributionMode.appDisplayName) local memory API — \(integration.name)
 
         Base URL:      \(endpoint)
         Bearer token:  \(token)
@@ -8394,10 +8398,10 @@ final class AppState: ObservableObject {
 
     private func integrationGuide(for integration: AIIntegration) -> String {
         let targetPaths = integration.configTargets.isEmpty
-            ? "This app uses fallback connection details from Cortex."
+            ? "This app uses fallback connection details from \(DistributionMode.appDisplayName)."
             : integration.configTargets.map { "- \($0.label): \($0.url.path)" }.joined(separator: "\n")
         return """
-        Cortex integration: \(integration.name)
+        \(DistributionMode.appDisplayName) integration: \(integration.name)
 
         What this does:
         \(integration.summary)
@@ -8411,12 +8415,12 @@ final class AppState: ObservableObject {
         Fallback connection preview:
         \(mcpConfigJSON(redactToken: true))
 
-        Local Cortex service:
+        Local \(DistributionMode.appDisplayName) service:
         Base URL: \(endpoint)
         Token: copy fallback connection details from Backup & recovery only if this app asks for them.
 
         Assistant rule:
-        Search Cortex memory before asking the user to repeat project, person, decision, or open-loop details. Prefer cited memory search or agent adaptation when another app needs approved personal memory.
+        Search \(DistributionMode.appDisplayName) memory before asking the user to repeat project, person, decision, or open-loop details. Prefer cited memory search or agent adaptation when another app needs approved personal memory.
 
         After connecting:
         \(integration.restartHint)
@@ -8520,7 +8524,7 @@ final class AppState: ObservableObject {
 
     func copyLocalAPISettings() {
         let text = """
-        Cortex local API
+        \(DistributionMode.appDisplayName) local API
         Base URL: \(endpoint)
         API token: \(apiKey)
         Vault: \(vaultPath)
@@ -8943,7 +8947,7 @@ final class AppState: ObservableObject {
                     ?? FileManager.default.temporaryDirectory
                 let timestamp = ISO8601DateFormatter().string(from: Date())
                     .replacingOccurrences(of: ":", with: "-")
-                let fileURL = directory.appendingPathComponent("Cortex-Support-\(timestamp).json")
+                let fileURL = directory.appendingPathComponent("\(DistributionMode.appDisplayName)-Support-\(timestamp).json")
                 try data.write(to: fileURL, options: [.atomic])
                 lastSupportBundlePath = fileURL.path
                 status = "Support bundle saved"
@@ -9349,7 +9353,7 @@ final class AppState: ObservableObject {
                 ?? FileManager.default.temporaryDirectory
             let timestamp = ISO8601DateFormatter().string(from: Date())
                 .replacingOccurrences(of: ":", with: "-")
-            let fileURL = directory.appendingPathComponent("Cortex-Export-\(timestamp).\(isMarkdown ? "md" : "json")")
+            let fileURL = directory.appendingPathComponent("\(DistributionMode.appDisplayName)-Export-\(timestamp).\(isMarkdown ? "md" : "json")")
             try data.write(to: fileURL, options: [.atomic])
             status = "Export saved"
             NSWorkspace.shared.open(fileURL)
@@ -13011,7 +13015,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // operates on account-gated memory or exposes the local API. Offer only sign-in and Quit; the
         // rest returns once signed in. (menuOpenCortex brings up the main window, i.e. the sign-in wall.)
         if state.requiresSignIn {
-            addMenuItem(to: menu, title: "Sign in to Doppl…", action: #selector(menuOpenCortex), key: "")
+            addMenuItem(to: menu, title: "Sign in to \(DistributionMode.appDisplayName)…", action: #selector(menuOpenCortex), key: "")
             menu.addItem(.separator())
             addMenuItem(to: menu, title: "Quit \(appDisplayName)", action: #selector(menuQuit), key: "q")
             return menu

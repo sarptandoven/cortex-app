@@ -32,6 +32,7 @@ import math
 import re
 from typing import Any
 
+from .config import APP_BRAND
 from .embeddings import (
     embed_text,
     embedding_source_text,
@@ -296,9 +297,9 @@ def _classify_fact(
                 "score": round(float(score), 4),
                 "match": _memory_citation(memory),
                 "note": (
-                    "Cortex holds a newer version that contradicts this."
+                    f"{APP_BRAND} holds a newer version that contradicts this."
                     if status == "stale"
-                    else "Cortex holds a memory that contradicts this."
+                    else f"{APP_BRAND} holds a memory that contradicts this."
                 ),
             }
 
@@ -310,7 +311,7 @@ def _classify_fact(
                 "status": "stale",
                 "score": round(float(top_score), 4),
                 "match": _memory_citation(top_memory),
-                "note": "Cortex holds a newer version of this.",
+                "note": f"{APP_BRAND} holds a newer version of this.",
             }
         return {
             **base,
@@ -437,7 +438,7 @@ def compare_vendor_memory(
 
     caveats = [
         "This is a read-only preview: nothing was imported. Import the 'missing' facts through the normal capture path.",
-        "A confirmed / conflicting / stale verdict always cites a real Cortex memory id; unmatched facts stay 'missing' rather than guess a match.",
+        f"A confirmed / conflicting / stale verdict always cites a real {APP_BRAND} memory id; unmatched facts stay 'missing' rather than guess a match.",
     ]
     if not matcher.semantic:
         caveats.append(

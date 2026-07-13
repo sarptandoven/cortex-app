@@ -29,7 +29,7 @@ from .authn import (
     RateLimited,
     token_verify_hash,
 )
-from .config import load_settings
+from .config import APP_BRAND, load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
 from .mcp_tools import CORE_TOOL_NAMES, MCP_TOOL_SURFACES, TOOLS, call_tool, export_tool_schema, tool_call_result, tools_for_scopes
@@ -73,7 +73,7 @@ if settings.mcp_api_key:
         token_id="tok_local_mcp",
     )
 
-app = FastAPI(title="Cortex API", version="0.1.0")
+app = FastAPI(title=f"{APP_BRAND} API", version="0.1.0")
 
 
 def _cors_origins() -> list[str]:
@@ -335,7 +335,7 @@ def _api_token_has_scope(scoped: dict[str, Any], required_scope: str) -> bool:
 
 def _assert_api_token_scope(scoped: dict[str, Any], required_scope: str) -> None:
     if not _api_token_has_scope(scoped, required_scope):
-        raise HTTPException(status_code=403, detail=f"Cortex API token requires {required_scope} scope")
+        raise HTTPException(status_code=403, detail=f"{APP_BRAND} API token requires {required_scope} scope")
 
 
 def _assert_api_token_trust(user_id: str, required_scope: str) -> None:
@@ -350,12 +350,12 @@ def _global_token_user_id(x_cortex_user: str | None) -> str:
     if requested_user and requested_user != settings.default_user_id and settings.shard_mode != "local":
         raise HTTPException(
             status_code=403,
-            detail="Global Cortex API token cannot select another user in sharded mode; use a scoped user token",
+            detail=f"Global {APP_BRAND} API token cannot select another user in sharded mode; use a scoped user token",
         )
     if requested_user and requested_user != settings.default_user_id and settings.require_scoped_api_tokens:
         raise HTTPException(
             status_code=403,
-            detail="Global Cortex API token cannot select another user when scoped API tokens are required",
+            detail=f"Global {APP_BRAND} API token cannot select another user when scoped API tokens are required",
         )
     return requested_user or settings.default_user_id
 
@@ -415,7 +415,7 @@ def _enforce_memory_quota(user_id: str) -> None:
 
 def auth(request: Request, authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
+        raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} API token")
     token = authorization.split(" ", 1)[1].strip()
     if settings.api_key:
         if hmac.compare_digest(token, settings.api_key):
@@ -429,25 +429,25 @@ def auth(request: Request, authorization: str | None = Header(default=None), x_c
     scoped = store.authenticate_api_token(token, user_id=x_cortex_user)
     if scoped:
         if x_cortex_user and scoped["user_id"] != x_cortex_user:
-            raise HTTPException(status_code=403, detail="Cortex API token does not match requested user")
+            raise HTTPException(status_code=403, detail=f"{APP_BRAND} API token does not match requested user")
         required_scope = _required_api_scope(request.method, request.url.path)
         _assert_api_token_scope(scoped, required_scope)
         _assert_api_token_trust(scoped["user_id"], required_scope)
         _enforce_rate_limit(scoped["user_id"])
         return scoped["user_id"]
-    raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
+    raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} API token")
 
 
 def mcp_auth(authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> dict[str, Any]:
     if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Cortex MCP token")
+        raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} MCP token")
     token = authorization.split(" ", 1)[1].strip()
     if settings.api_key and hmac.compare_digest(token, settings.api_key):
         user_id = _global_token_user_id(x_cortex_user)
         return {
             "user_id": user_id,
             "token_id": "admin",
-            "label": "Cortex app token",
+            "label": f"{APP_BRAND} app token",
             "audience": "admin",
             "scopes": ["read", "write", "export", "maintenance", "destructive"],
             "admin": True,
@@ -455,10 +455,10 @@ def mcp_auth(authorization: str | None = Header(default=None), x_cortex_user: st
     scoped = store.authenticate_mcp_token(token, user_id=x_cortex_user)
     if scoped:
         if x_cortex_user and scoped["user_id"] != x_cortex_user:
-            raise HTTPException(status_code=403, detail="Cortex MCP token does not match requested user")
+            raise HTTPException(status_code=403, detail=f"{APP_BRAND} MCP token does not match requested user")
         _enforce_rate_limit(scoped["user_id"])
         return scoped
-    raise HTTPException(status_code=401, detail="Missing or invalid Cortex MCP token")
+    raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} MCP token")
 
 
 def admin_auth(authorization: str | None = Header(default=None)) -> bool:
@@ -466,11 +466,11 @@ def admin_auth(authorization: str | None = Header(default=None)) -> bool:
     operator's global CORTEX_API_KEY. Scoped per-user tokens can never perform
     these actions."""
     if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Cortex admin token")
+        raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} admin token")
     token = authorization.split(" ", 1)[1].strip()
     if settings.api_key and hmac.compare_digest(token, settings.api_key):
         return True
-    raise HTTPException(status_code=403, detail="Cortex admin operations require the control-plane admin token")
+    raise HTTPException(status_code=403, detail=f"{APP_BRAND} admin operations require the control-plane admin token")
 
 
 def _capture_page(message: str = "", status: str = "ready", token: str = "", title: str = "", url: str = "", content: str = "") -> str:
@@ -1104,20 +1104,20 @@ def google_oauth_callback(
     error_description: str | None = Query(default=None, max_length=1000),
 ) -> HTMLResponse:
     if error:
-        detail = error_description or "Google did not authorize Cortex."
+        detail = error_description or f"Google did not authorize {APP_BRAND}."
         return _google_oauth_callback_page("Google sign-in was not completed", detail, success=False)
 
     pending = _pop_google_oauth_pending(state or "")
     if not pending:
         return _google_oauth_callback_page(
             "Google sign-in expired",
-            "Return to Cortex and start the connection again. No account was connected.",
+            f"Return to {APP_BRAND} and start the connection again. No account was connected.",
             success=False,
         )
     if not code:
         return _google_oauth_callback_page(
             "Google sign-in did not return a code",
-            "Return to Cortex and start the connection again. No account was connected.",
+            f"Return to {APP_BRAND} and start the connection again. No account was connected.",
             success=False,
         )
 
@@ -1153,7 +1153,7 @@ def google_oauth_callback(
         label = str(account.get("account_label") or "Google")
         return _google_oauth_callback_page(
             "Google is connected",
-            f"{label} is connected. Return to Cortex; the first sync will start automatically.",
+            f"{label} is connected. Return to {APP_BRAND}; the first sync will start automatically.",
             success=True,
         )
     except ValueError as exc:
@@ -1219,20 +1219,20 @@ def managed_oauth_callback(
     error_description: str | None = Query(default=None, max_length=1000),
 ) -> HTMLResponse:
     if error:
-        detail = error_description or "The service did not authorize Cortex."
+        detail = error_description or f"The service did not authorize {APP_BRAND}."
         return _google_oauth_callback_page("Sign-in was not completed", detail, success=False)
 
     pending = _pop_managed_oauth_pending(state or "")
     if not pending:
         return _google_oauth_callback_page(
             "Sign-in expired",
-            "Return to Cortex and start the connection again. No account was connected.",
+            f"Return to {APP_BRAND} and start the connection again. No account was connected.",
             success=False,
         )
     if not code:
         return _google_oauth_callback_page(
             "Sign-in did not return a code",
-            "Return to Cortex and start the connection again. No account was connected.",
+            f"Return to {APP_BRAND} and start the connection again. No account was connected.",
             success=False,
         )
 
@@ -1265,7 +1265,7 @@ def managed_oauth_callback(
         label = str(account.get("account_label") or "Source")
         return _google_oauth_callback_page(
             "Source is connected",
-            f"{label} is connected. Return to Cortex; the first sync will start automatically.",
+            f"{label} is connected. Return to {APP_BRAND}; the first sync will start automatically.",
             success=True,
         )
     except ValueError as exc:
@@ -2986,7 +2986,7 @@ def import_portable_bundle(payload: ImportBundleRequest, user_id: str = Depends(
 @app.get("/.well-known/cortex.json")
 def manifest() -> dict[str, Any]:
     return {
-        "name": "Cortex",
+        "name": APP_BRAND,
         "description": "Shared memory for AI assistants.",
         "api": {"base_url": settings.public_base_url, "version": BACKEND_VERSION},
         "health": store.health_payload(mode="fastapi", auth=bool(settings.api_key)),
@@ -3239,16 +3239,16 @@ def _session_data_plane_user(token: str, x_cortex_user: str | None) -> str:
     status. Never grants admin; never accepted by admin_auth/mcp_auth."""
     runtime = auth_runtime
     if runtime is None:
-        raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
+        raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} API token")
     session = runtime.service.verify_session(token)
     if session is None:
-        raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
+        raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} API token")
     user_id = str(session["user_id"])
     if x_cortex_user and x_cortex_user != user_id:
-        raise HTTPException(status_code=403, detail="Cortex session does not match requested user")
+        raise HTTPException(status_code=403, detail=f"{APP_BRAND} session does not match requested user")
     registry_user = store.get_user(user_id)
     if registry_user is not None and str(registry_user.get("status") or "") != "active":
-        raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
+        raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} API token")
     _enforce_rate_limit(user_id)
     return user_id
 
@@ -3624,7 +3624,7 @@ def auth_oauth_callback(
         raise HTTPException(status_code=status, detail=detail)
 
     if error:
-        return _fail("The provider did not authorize Cortex.", 400)
+        return _fail(f"The provider did not authorize {APP_BRAND}.", 400)
     try:
         identity = runtime.oidc.complete(provider, state=state, code=code)
     except OidcError as exc:

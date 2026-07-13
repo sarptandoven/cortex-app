@@ -55,7 +55,7 @@ check(
     re.search(r'DISTRIBUTION_MODE"\s*!=\s*"app-store".*?obsidian-cortex-plugin', build, re.S) is not None,
     "build.sh: Obsidian plugin payload gated to non-app-store (2.5.2)",
 )
-check("no runnable helper scripts or plugin payload" in build, "build.sh: asserts no runnable code in app-store bundle (2.5.2)")
+check("no source scripts, runnable helpers, plugin payload" in build, "build.sh: asserts no runnable code in app-store bundle (2.5.2)")
 
 # ---------------------------------------------------------------- entitlements
 ent = load_plist(MACOS / "AppStore.entitlements")
@@ -72,6 +72,7 @@ collected = {d.get("NSPrivacyCollectedDataType") for d in priv.get("NSPrivacyCol
 # Accounts collect email + name — the manifest MUST declare them (must match the ASC nutrition label).
 check("NSPrivacyCollectedDataTypeEmailAddress" in collected, "PrivacyInfo: declares Email collection (accounts)")
 check("NSPrivacyCollectedDataTypeName" in collected, "PrivacyInfo: declares Name collection (accounts)")
+check("NSPrivacyCollectedDataTypeOtherUserContent" in collected, "PrivacyInfo: declares User Content collection (memory sync)")
 api_types = {d.get("NSPrivacyAccessedAPIType") for d in priv.get("NSPrivacyAccessedAPITypes", [])}
 for reason in ("FileTimestamp", "UserDefaults", "SystemBootTime"):
     check(f"NSPrivacyAccessedAPICategory{reason}" in api_types, f"PrivacyInfo: declares {reason} required-reason API")
@@ -85,6 +86,7 @@ check(bool(info.get("NSScreenCaptureUsageDescription")), "Info.plist: screen-cap
 
 # ---------------------------------------------------------------- Swift gating (2.5.2 install paths)
 swift = read(MACOS / "Sources" / "CortexApp.swift")
+model_tab = read(MACOS / "Sources" / "ModelTab.swift")
 check(
     re.search(r"func installObsidianPluginIfPossible[\s\S]{0,1200}?guard !DistributionMode\.isAppStore", swift) is not None,
     "CortexApp: installObsidianPluginIfPossible gated off in app-store mode (2.5.2)",
@@ -97,6 +99,35 @@ check(
     re.search(r'func mcpServerDefinition[\s\S]{0,2000}?if DistributionMode\.isAppStore[\s\S]{0,600}?"type": "http"', swift) is not None,
     "CortexApp: mcpServerDefinition returns an HTTP descriptor (no runnable command) in app-store mode",
 )
+check(
+    'environment["CORTEX_APP_BRAND"] = DistributionMode.appDisplayName' in swift,
+    "CortexApp: passes the distribution brand into the bundled backend (Guideline 4)",
+)
+for stale_copy in (
+    '"Sign in to Doppl…"',
+    "This app uses fallback connection details from Cortex.",
+    "Cortex integration: \\(integration.name)",
+    "Local Cortex service:",
+    '"label": "Cortex notes bridge"',
+    "Search Cortex memory before asking the user",
+    'appendingPathComponent("Cortex-Support-',
+    'appendingPathComponent("Cortex-Export-',
+    "Cortex universal API —",
+    "Cortex connector for \\(integration.name)",
+    "Cortex local memory API —",
+    "Cortex local API",
+):
+    check(stale_copy not in swift, "CortexApp: no hardcoded cross-channel brand copy", stale_copy)
+check('Text("CORTEX NOTICED")' not in model_tab, "ModelTab: Mirror Moment stamp follows the distribution brand")
+
+# ---------------------------------------------------------------- packaging + founder handoff
+package = read(MACOS / "package_app_store.sh")
+check("Mac App Distribution:" in package, "package_app_store: recognizes current Mac App Distribution identity")
+check("Mac Installer Distribution:" in package, "package_app_store: recognizes current Mac Installer Distribution identity")
+check("Required privacy manifest is missing" in package, "package_app_store: fails closed when PrivacyInfo.xcprivacy is missing")
+check("APPSTORE_PY_SOURCE_COUNT" in package, "package_app_store: reports and rejects Python source files")
+check("APPSTORE_SCRIPT_HELPER_COUNT" in package, "package_app_store: reports and rejects runnable script helpers")
+check("APPSTORE_CRYPTO_PAYLOAD_COUNT" in package, "package_app_store: reports and rejects OpenSSL/AWS-LC payloads")
 
 # ---------------------------------------------------------------- report
 print(f"App Store compliance lint: {checks - len(failures)}/{checks} checks passed")

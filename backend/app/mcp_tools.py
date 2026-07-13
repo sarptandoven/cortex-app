@@ -5,7 +5,7 @@ import re
 from typing import Any
 from urllib.parse import unquote
 
-from .config import load_settings
+from .config import APP_BRAND, load_settings
 from .extractor import extract_context
 from .storage import CortexStore
 
@@ -20,7 +20,7 @@ MCP_SYNC_COMMENT_MAX = 50
 TOOLS = [
     {
         "name": "remember_this",
-        "description": "Save text into Cortex memory with extraction, source metadata, and graph links.",
+        "description": f"Save text into {APP_BRAND} memory with extraction, source metadata, and graph links.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -34,7 +34,7 @@ TOOLS = [
     },
     {
         "name": "search_memory",
-        "description": "Search Cortex memory across saved context and return results with retrieval diagnostics.",
+        "description": f"Search {APP_BRAND} memory across saved context and return results with retrieval diagnostics.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -71,7 +71,7 @@ TOOLS = [
         # adapter over the same retrieval search_memory uses, projected to the {id,title,url}
         # shape ChatGPT expects. It is an ADDITIONAL alias — search_memory is unchanged.
         "name": "search",
-        "description": "Search Cortex memory and return lightweight results ({id, title, url}) for a connector to fetch. Read-only ChatGPT-connector alias over the same retrieval as search_memory.",
+        "description": f"Search {APP_BRAND} memory and return lightweight results ({{id, title, url}}) for a connector to fetch. Read-only ChatGPT-connector alias over the same retrieval as search_memory.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -84,7 +84,7 @@ TOOLS = [
         # ChatGPT connector `fetch`: given an id returned by `search`, return the full document
         # ({id, title, text, url, metadata}). Read-only; unknown ids return a clean error result.
         "name": "fetch",
-        "description": "Fetch the full text of one Cortex memory by id (as returned by `search`). Read-only ChatGPT-connector alias.",
+        "description": f"Fetch the full text of one {APP_BRAND} memory by id (as returned by `search`). Read-only ChatGPT-connector alias.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -95,32 +95,32 @@ TOOLS = [
     },
     {
         "name": "get_recent_context",
-        "description": "Get recently captured Cortex memories.",
+        "description": f"Get recently captured {APP_BRAND} memories.",
         "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10}}},
     },
     {
         "name": "get_memory_graph",
-        "description": "Return the active Cortex graph of sources, memories, tasks, entities, and relationships.",
+        "description": f"Return the active {APP_BRAND} graph of sources, memories, tasks, entities, and relationships.",
         "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 150}}},
     },
     {
         "name": "get_daily_review",
-        "description": "Return today's Cortex review: pending captures, open loops, decisions, topics, and recommended actions.",
+        "description": f"Return today's {APP_BRAND} review: pending captures, open loops, decisions, topics, and recommended actions.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_product_loop",
-        "description": "Return the Cortex model-building loop state: signal, review, access, and return.",
+        "description": f"Return the {APP_BRAND} model-building loop state: signal, review, access, and return.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_memory_quality_report",
-        "description": "Return Cortex memory quality coverage for citations, dates, review state, memory layers, and source health.",
+        "description": f"Return {APP_BRAND} memory quality coverage for citations, dates, review state, memory layers, and source health.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_personal_profile",
-        "description": "Return a cited Cortex personal adaptation profile grouped by memory layer, coverage, sources, and limitations.",
+        "description": f"Return a cited {APP_BRAND} personal adaptation profile grouped by memory layer, coverage, sources, and limitations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -181,7 +181,7 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string", "default": "writing style"},
                 "limit": {"type": "integer", "default": 6},
-                "draft": {"type": "string", "description": "Optional draft to check against cited Cortex style memory."},
+                "draft": {"type": "string", "description": f"Optional draft to check against cited {APP_BRAND} style memory."},
                 "format": {"type": "string", "default": "json", "enum": ["json", "markdown"]},
                 "sector": {"type": "string"},
             },
@@ -189,7 +189,7 @@ TOOLS = [
     },
     {
         "name": "get_project_context",
-        "description": "Return cited Cortex memory for a project, workspace, person, or topic.",
+        "description": f"Return cited {APP_BRAND} memory for a project, workspace, person, or topic.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -217,12 +217,12 @@ TOOLS = [
     },
     {
         "name": "list_supported_import_sources",
-        "description": "List source exports Cortex can import, including chat, email, notes, docs, work tools, and knowledge-base formats.",
+        "description": f"List source exports {APP_BRAND} can import, including chat, email, notes, docs, work tools, and knowledge-base formats.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "list_source_connectors",
-        "description": "List Cortex source connectors, account health, and sync state so connected tools can feed the user's memory layer.",
+        "description": f"List {APP_BRAND} source connectors, account health, and sync state so connected tools can feed the user's memory layer.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -233,7 +233,7 @@ TOOLS = [
     },
     {
         "name": "connect_source_account",
-        "description": "Register or refresh a connected source account that Cortex should model, such as Gmail, Notion, Slack, Drive, GitHub, local notes, or an AI chat tool.",
+        "description": f"Register or refresh a connected source account that {APP_BRAND} should model, such as Gmail, Notion, Slack, Drive, GitHub, local notes, or an AI chat tool.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -254,7 +254,7 @@ TOOLS = [
     },
     {
         "name": "sync_source_records",
-        "description": "Send records from a connected source account into Cortex with durable citations and cursor state.",
+        "description": f"Send records from a connected source account into {APP_BRAND} with durable citations and cursor state.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -286,7 +286,7 @@ TOOLS = [
     },
     {
         "name": "sync_connected_sources",
-        "description": "Run due sync jobs for already connected Cortex sources using locally stored source configuration and credentials.",
+        "description": f"Run due sync jobs for already connected {APP_BRAND} sources using locally stored source configuration and credentials.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -296,7 +296,7 @@ TOOLS = [
     },
     {
         "name": "sync_github",
-        "description": "Fetch GitHub issues and pull requests with a read-only token, then sync them into Cortex with stable citations.",
+        "description": f"Fetch GitHub issues and pull requests with a read-only token, then sync them into {APP_BRAND} with stable citations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -319,7 +319,7 @@ TOOLS = [
     },
     {
         "name": "sync_gmail",
-        "description": "Fetch Gmail messages with a read-only OAuth access token, then sync them into Cortex with stable message citations.",
+        "description": f"Fetch Gmail messages with a read-only OAuth access token, then sync them into {APP_BRAND} with stable message citations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -343,7 +343,7 @@ TOOLS = [
     },
     {
         "name": "sync_google_drive",
-        "description": "Fetch Google Drive docs and text files with a read-only OAuth access token, then sync them into Cortex with stable Drive citations.",
+        "description": f"Fetch Google Drive docs and text files with a read-only OAuth access token, then sync them into {APP_BRAND} with stable Drive citations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -367,7 +367,7 @@ TOOLS = [
     },
     {
         "name": "sync_outlook",
-        "description": "Fetch Outlook messages with a read-only Microsoft Graph access token, then sync them into Cortex with stable message citations.",
+        "description": f"Fetch Outlook messages with a read-only Microsoft Graph access token, then sync them into {APP_BRAND} with stable message citations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -390,7 +390,7 @@ TOOLS = [
     },
     {
         "name": "sync_slack",
-        "description": "Fetch recent Slack channel messages with a read-only token, then sync them into Cortex with stable citations.",
+        "description": f"Fetch recent Slack channel messages with a read-only token, then sync them into {APP_BRAND} with stable citations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -429,7 +429,7 @@ TOOLS = [
     },
     {
         "name": "sync_readwise",
-        "description": "Fetch Readwise highlights with a read-only token, then sync them into Cortex with stable citations.",
+        "description": f"Fetch Readwise highlights with a read-only token, then sync them into {APP_BRAND} with stable citations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -469,7 +469,7 @@ TOOLS = [
     },
     {
         "name": "sync_raindrop",
-        "description": "Fetch Raindrop bookmarks and highlights with a read-only token, then sync them into Cortex with stable citations.",
+        "description": f"Fetch Raindrop bookmarks and highlights with a read-only token, then sync them into {APP_BRAND} with stable citations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -492,7 +492,7 @@ TOOLS = [
     },
     {
         "name": "sync_zotero",
-        "description": "Fetch Zotero items, notes, and annotations from the local desktop API by default, then sync them into Cortex with stable citations.",
+        "description": f"Fetch Zotero items, notes, and annotations from the local desktop API by default, then sync them into {APP_BRAND} with stable citations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -515,7 +515,7 @@ TOOLS = [
     },
     {
         "name": "sync_linear",
-        "description": "Fetch Linear issues with a personal API key, then sync them into Cortex with stable citations.",
+        "description": f"Fetch Linear issues with a personal API key, then sync them into {APP_BRAND} with stable citations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -536,7 +536,7 @@ TOOLS = [
     },
     {
         "name": "sync_jira",
-        "description": "Fetch Jira Cloud issues with an Atlassian account email and API token, then sync them into Cortex with stable /browse issue citations.",
+        "description": f"Fetch Jira Cloud issues with an Atlassian account email and API token, then sync them into {APP_BRAND} with stable /browse issue citations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -559,7 +559,7 @@ TOOLS = [
     },
     {
         "name": "sync_notion",
-        "description": "Fetch Notion pages shared with an integration token, then sync them into Cortex with stable citations.",
+        "description": f"Fetch Notion pages shared with an integration token, then sync them into {APP_BRAND} with stable citations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -582,7 +582,7 @@ TOOLS = [
     },
     {
         "name": "build_context_pack",
-        "description": "Build a scoped Cortex memory view for ChatGPT, Claude, Cursor, or another assistant.",
+        "description": f"Build a scoped {APP_BRAND} memory view for ChatGPT, Claude, Cursor, or another assistant.",
         "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "limit": {"type": "integer", "default": 12}, "target": {"type": "string", "default": "mcp-agent"}, "sector": {"type": "string"}}},
     },
     {
@@ -613,7 +613,7 @@ TOOLS = [
     },
     {
         "name": "get_decisions",
-        "description": "Search decisions in Cortex memory.",
+        "description": f"Search decisions in {APP_BRAND} memory.",
         "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": "decision"}, "sector": {"type": "string"}}},
     },
     {
@@ -645,13 +645,13 @@ TOOLS = [
     },
     {
         "name": "get_belief_proof",
-        "description": "Reconstruct what Cortex believed at valid-time X as known at transaction-time Y, with chain-sealed snapshot receipts, an anchorable hash-chain segment, and Merkle inclusion paths for normal-sized histories. Read-only.",
+        "description": f"Reconstruct what {APP_BRAND} believed at valid-time X as known at transaction-time Y, with chain-sealed snapshot receipts, an anchorable hash-chain segment, and Merkle inclusion paths for normal-sized histories. Read-only.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "topic": {"type": "string", "description": "Belief or topic to prove."},
                 "valid_at": {"type": "string", "description": "Optional ISO-8601 real-world time being asked about."},
-                "known_at": {"type": "string", "description": "Optional ISO-8601 transaction-time cutoff for what Cortex had recorded."},
+                "known_at": {"type": "string", "description": f"Optional ISO-8601 transaction-time cutoff for what {APP_BRAND} had recorded."},
                 "expected_head": {"type": "string", "description": "Optional externally pinned integrity-chain head for the known_at prefix."},
                 "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 50},
             },
@@ -672,7 +672,7 @@ TOOLS = [
     },
     {
         "name": "get_tool_scorecard",
-        "description": "Return a per-host scorecard of how connected agents use Cortex memory: memory-usage rate, retrieval coverage mix, conflict exposure, and answer-grading faithfulness. Read-only, computed from the local audit log.",
+        "description": f"Return a per-host scorecard of how connected agents use {APP_BRAND} memory: memory-usage rate, retrieval coverage mix, conflict exposure, and answer-grading faithfulness. Read-only, computed from the local audit log.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -693,7 +693,7 @@ TOOLS = [
     },
     {
         "name": "submit_answer_for_grading",
-        "description": "Submit an answer produced with Cortex context for deterministic faithfulness grading: each factual claim is checked against memory and returned as consistent, contradicted, or unsupported, with citations. Results accrue to the host scorecard.",
+        "description": f"Submit an answer produced with {APP_BRAND} context for deterministic faithfulness grading: each factual claim is checked against memory and returned as consistent, contradicted, or unsupported, with citations. Results accrue to the host scorecard.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -736,7 +736,7 @@ TOOLS = [
     },
     {
         "name": "get_memory_stats",
-        "description": "Return Cortex memory counts, top topics, and top entities.",
+        "description": f"Return {APP_BRAND} memory counts, top topics, and top entities.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -756,57 +756,57 @@ TOOLS = [
     },
     {
         "name": "get_memory_diagnostics",
-        "description": "Return local Cortex storage health and maintenance diagnostics.",
+        "description": f"Return local {APP_BRAND} storage health and maintenance diagnostics.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_reliability_report",
-        "description": "Return a user-readable Cortex reliability report with health checks, backup state, and recommended recovery actions.",
+        "description": f"Return a user-readable {APP_BRAND} reliability report with health checks, backup state, and recommended recovery actions.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_support_bundle",
-        "description": "Return a sanitized Cortex support bundle with operational health, counts, trust state, and safe event metadata. It omits captured text and memory content.",
+        "description": f"Return a sanitized {APP_BRAND} support bundle with operational health, counts, trust state, and safe event metadata. It omits captured text and memory content.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "create_memory_backup",
-        "description": "Create a local backup of the Cortex database.",
+        "description": f"Create a local backup of the {APP_BRAND} database.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "delete_memory_backups",
-        "description": "Delete local Cortex backup archives so older deleted data is not retained there.",
+        "description": f"Delete local {APP_BRAND} backup archives so older deleted data is not retained there.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "restore_latest_memory_backup",
-        "description": "Restore Cortex vault records from the latest local backup archive and rebuild the local search index.",
+        "description": f"Restore {APP_BRAND} vault records from the latest local backup archive and rebuild the local search index.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "delete_all_user_data",
-        "description": "Delete the current user's Cortex data from the local vault and index. Includes backup archives by default.",
+        "description": f"Delete the current user's {APP_BRAND} data from the local vault and index. Includes backup archives by default.",
         "inputSchema": {"type": "object", "properties": {"include_backups": {"type": "boolean", "default": True}}},
     },
     {
         "name": "repair_memory_storage",
-        "description": "Back up Cortex, remove stale local index rows, and rebuild search for active memories.",
+        "description": f"Back up {APP_BRAND}, remove stale local index rows, and rebuild search for active memories.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "rebuild_memory_search",
-        "description": "Rebuild the Cortex full-text search index for active memories.",
+        "description": f"Rebuild the {APP_BRAND} full-text search index for active memories.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "rebuild_index_from_vault",
-        "description": "Rebuild the local Cortex SQLite search index from user-owned vault files on disk.",
+        "description": f"Rebuild the local {APP_BRAND} SQLite search index from user-owned vault files on disk.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "export_memory",
-        "description": "Export Cortex memory as JSON data or Markdown text.",
+        "description": f"Export {APP_BRAND} memory as JSON data or Markdown text.",
         "inputSchema": {"type": "object", "properties": {"format": {"type": "string", "default": "markdown"}}},
     },
     {
@@ -825,7 +825,7 @@ TOOLS = [
     },
     {
         "name": "export_memory_bundle",
-        "description": "Export the whole memory as one self-verifying, restorable bundle: the full export payload wrapped in an integrity manifest (chain head + payload sha256 + record counts). Hand it to another Cortex instance or keep it as a cold archive; it can be verified byte-for-byte before restore. Carries the full corpus out of Cortex custody.",
+        "description": f"Export the whole memory as one self-verifying, restorable bundle: the full export payload wrapped in an integrity manifest (chain head + payload sha256 + record counts). Hand it to another {APP_BRAND} instance or keep it as a cold archive; it can be verified byte-for-byte before restore. Carries the full corpus out of {APP_BRAND} custody.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -842,7 +842,7 @@ TOOLS = [
     },
     {
         "name": "import_memory_bundle",
-        "description": "Verify and idempotently import memories from a signed portable bundle into this Cortex tenant. Pin expected_signing_key_id to preserve the source author trust class.",
+        "description": f"Verify and idempotently import memories from a signed portable bundle into this {APP_BRAND} tenant. Pin expected_signing_key_id to preserve the source author trust class.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -854,7 +854,7 @@ TOOLS = [
     },
     {
         "name": "write_obsidian_pages",
-        "description": "Write/refresh the distilled, cited Cortex pages (Profile, People) inside the connected Obsidian vault's Cortex/ folder.",
+        "description": f"Write/refresh the distilled, cited {APP_BRAND} pages (Profile, People) inside the connected Obsidian vault's {APP_BRAND}/ folder.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -890,19 +890,19 @@ TOOLS = [
     },
     {
         "name": "get_trust_summary",
-        "description": "Return Cortex trust settings, risk flags, source counts, and recent agent activity.",
+        "description": f"Return {APP_BRAND} trust settings, risk flags, source counts, and recent agent activity.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_audit_log",
-        "description": "Return recent Cortex audit events for captures, approvals, archives, settings, backups, and agent tool calls.",
+        "description": f"Return recent {APP_BRAND} audit events for captures, approvals, archives, settings, backups, and agent tool calls.",
         "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 30}}},
     },
     {
         "name": "consolidate_memory",
         "description": (
             "Run a bounded, auditable sleep-time consolidation pass: resolve only conflicts that "
-            "meet Cortex's deterministic safety rules and precompute verified hot context packs. "
+            f"meet {APP_BRAND}'s deterministic safety rules and precompute verified hot context packs. "
             "Source memories remain authoritative; all decisions and cache artifacts are recorded."
         ),
         "inputSchema": {
@@ -1012,7 +1012,7 @@ TOOLS = [
     {
         "name": "list_capabilities",
         "description": (
-            "Discover this Cortex: memory counts, the scopes your token holds, which tool surface "
+            f"Discover this {APP_BRAND}: memory counts, the scopes your token holds, which tool surface "
             "is active, and the full tool catalog with required scopes."
         ),
         "inputSchema": {"type": "object", "properties": {}},
@@ -1020,7 +1020,7 @@ TOOLS = [
     {
         "name": "use_cortex",
         "description": (
-            "One entry point for the user's memory. Describe the task in natural language and Cortex "
+            f"One entry point for the user's memory. Describe the task in natural language and {APP_BRAND} "
             "routes it to the right retrieval — a cited answer, a working context pack, an entity/"
             "person briefing, or a keyword search — and returns cited results. Call this when unsure "
             "which specific tool to use."
@@ -1165,7 +1165,7 @@ TOOLS = [
     },
     {
         "name": "draft_as_me",
-        "description": "Compile a cited voice pack for drafting in the user's voice: style evidence, relevant preferences, user-authored hard constraints (vetoes), and relevant context. The calling agent writes the draft; Cortex supplies the compiled persona.",
+        "description": f"Compile a cited voice pack for drafting in the user's voice: style evidence, relevant preferences, user-authored hard constraints (vetoes), and relevant context. The calling agent writes the draft; {APP_BRAND} supplies the compiled persona.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1181,7 +1181,7 @@ TOOLS = [
         "description": (
             "Record how a would_i prediction turned out. outcome (correct/incorrect/unclear) "
             "measures prediction accuracy; answerability (answerable/unknown/unclear) separately "
-            "labels whether Cortex had enough memory evidence for calibration."
+            f"labels whether {APP_BRAND} had enough memory evidence for calibration."
         ),
         "inputSchema": {
             "type": "object",
@@ -1294,7 +1294,7 @@ TOOLS = [
     },
     {
         "name": "get_proactive_alerts",
-        "description": "Return proactive alerts Cortex raised (e.g. a new capture contradicting a high-trust memory). Budget-capped per day and always dismissible. Read-only.",
+        "description": f"Return proactive alerts {APP_BRAND} raised (e.g. a new capture contradicting a high-trust memory). Budget-capped per day and always dismissible. Read-only.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1586,6 +1586,7 @@ _OPEN_WORLD_TOOLS = DIRECT_CONNECTOR_SYNC_TOOLS | {
 }
 
 _TOOL_TITLE_OVERRIDES: dict[str, str] = {
+    "use_cortex": f"Use {APP_BRAND}",
     "get_context": "Get Working Context",
     "ask_memory": "Ask Memory (cited)",
     "search_memory": "Search Memory",
@@ -1595,7 +1596,7 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "expand_context": "Expand Cited Context",
     "get_person_map": "Whole-Person Map",
     "remember_this": "Remember This",
-    "list_capabilities": "List Cortex Capabilities",
+    "list_capabilities": f"List {APP_BRAND} Capabilities",
     "start_agent_session": "Start Agent Session",
     "checkpoint_agent_session": "Checkpoint Agent Session",
     "resume_agent_session": "Resume Agent Session",
@@ -1877,7 +1878,7 @@ def export_openapi(
         }
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Cortex Memory", "version": version, "description": "Cited personal-memory context for AI agents."},
+        "info": {"title": f"{APP_BRAND} Memory", "version": version, "description": "Cited personal-memory context for AI agents."},
         "servers": [{"url": base_url.rstrip("/")}],
         "paths": paths,
     }
@@ -1907,7 +1908,7 @@ CORTEX_RESOURCES: list[dict[str, Any]] = [
     {"uri": "cortex://profile/person-map", "name": "Whole-person map", "description": "Cited profile + knowledge-graph picture of the user.", "mimeType": "application/json"},
     {"uri": "cortex://profile/personal", "name": "Personal profile", "description": "Distilled, cited profile grouped by memory layer.", "mimeType": "application/json"},
     {"uri": "cortex://profile/adaptation", "name": "Agent adaptation guide", "description": "Cited operating instructions for an AI assistant acting for the user.", "mimeType": "application/json"},
-    {"uri": "cortex://schema/capabilities", "name": "Cortex capabilities", "description": "Memory counts + the tool catalog.", "mimeType": "application/json"},
+    {"uri": "cortex://schema/capabilities", "name": f"{APP_BRAND} capabilities", "description": "Memory counts + the tool catalog.", "mimeType": "application/json"},
     {"uri": "cortex://review/daily", "name": "Daily review", "description": "Today's pending captures, open loops, decisions, and topics.", "mimeType": "application/json"},
 ]
 CORTEX_RESOURCE_TEMPLATES: list[dict[str, Any]] = [
@@ -1964,7 +1965,7 @@ def read_resource(store: CortexStore, user_id: str, uri: str, token_scopes: list
             "neighborhood": store.entity_neighborhood(user_id, name),
         }
     else:
-        raise ValueError(f"Unknown Cortex resource: {uri}")
+        raise ValueError(f"Unknown {APP_BRAND} resource: {uri}")
     payload = store.agent_payload(user_id, payload)
     return {"contents": [{"uri": target, "mimeType": "application/json", "text": json.dumps(payload, ensure_ascii=False)}]}
 
@@ -2012,7 +2013,7 @@ def get_prompt(store: CortexStore, user_id: str, name: str, args: dict[str, Any]
             "decisions, commitments, and open loops. Keep memory_id/source on every point; if "
             "coverage is thin, say so.\n\n" + _cited(payload)
         )
-    raise ValueError(f"Unknown Cortex prompt: {name}")
+    raise ValueError(f"Unknown {APP_BRAND} prompt: {name}")
 
 
 def _bool_arg(args: dict[str, Any], key: str, default: bool = False) -> bool:
@@ -2311,7 +2312,7 @@ def _style_profile_payload(query: str, style: list[dict[str, Any]], preferences:
 
 def _style_profile_markdown(profile: dict[str, Any]) -> str:
     lines = [
-        "# Cortex Style Profile",
+        f"# {APP_BRAND} Style Profile",
         "",
         f"Query: {profile.get('query') or 'writing style'}",
         f"Status: {profile.get('status') or 'limited'}",
@@ -2505,7 +2506,7 @@ def _procedure_payload(query: str, procedures: list[dict[str, Any]]) -> dict[str
 
 
 def _procedure_markdown(payload: dict[str, Any]) -> str:
-    lines = ["# Cortex Procedure", ""]
+    lines = [f"# {APP_BRAND} Procedure", ""]
     checklist = payload.get("execution_checklist") if isinstance(payload.get("execution_checklist"), list) else []
     if checklist:
         lines.extend(["## Execution Checklist", ""])
@@ -3556,7 +3557,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         return store.trust_summary(user_id)
     if name == "get_audit_log":
         return store.audit_log(user_id, _bounded_int_arg(args, "limit", 30))
-    raise ValueError(f"Unknown Cortex tool: {name}")
+    raise ValueError(f"Unknown {APP_BRAND} tool: {name}")
 
 
 def tool_result_text(value: Any) -> str:

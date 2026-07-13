@@ -9,6 +9,7 @@ import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -211,7 +212,38 @@ def _load_model2vec_model() -> Any:
             return _MODEL2VEC_MODEL
         from model2vec import StaticModel  # noqa: PLC0415 — guarded, optional bundled dependency
 
-        model = StaticModel.from_pretrained(key)
+        model_path = Path(local_path).expanduser() if local_path else None
+        if model_path is not None and model_path.is_dir():
+            # The MAS build bundles the complete model, so load it directly from its
+            # three local data files. StaticModel.from_pretrained imports the Hugging
+            # Face network stack even for a local path; that unnecessarily pulled an
+            # AWS-LC/OpenSSL binary into our loopback-only worker and made offline
+            # semantics depend on ssl. Direct construction keeps the exact same
+            # Model2Vec inference math with no network or crypto runtime at all.
+            from safetensors import safe_open  # noqa: PLC0415
+            from tokenizers import Tokenizer  # noqa: PLC0415
+
+            tensor_file = safe_open(model_path / "model.safetensors", framework="numpy")
+            embeddings = tensor_file.get_tensor("embeddings")
+            try:
+                weights = tensor_file.get_tensor("weights")
+            except Exception:
+                weights = None
+            try:
+                mapping = tensor_file.get_tensor("mapping")
+            except Exception:
+                mapping = None
+            tokenizer = Tokenizer.from_file(str(model_path / "tokenizer.json"))
+            config = json.loads((model_path / "config.json").read_text(encoding="utf-8"))
+            model = StaticModel(
+                vectors=embeddings,
+                tokenizer=tokenizer,
+                weights=weights,
+                token_mapping=mapping,
+                config=config,
+            )
+        else:
+            model = StaticModel.from_pretrained(key)
         _MODEL2VEC_MODEL = model
         _MODEL2VEC_MODEL_KEY = key
         return model

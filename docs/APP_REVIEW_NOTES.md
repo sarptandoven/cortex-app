@@ -5,8 +5,7 @@ and put the demo credentials in the **Sign-In Information** fields (they are not
 This addresses the four issues raised in the previous review and reflects the current build,
 which **requires a signed-in account**.
 
-> The Mac App Store build is named **Doppl** (the engine/product is "Cortex" internally, so
-> "Cortex" and "Doppl" refer to the same app in the notes below). The **Doppl** app menu shows
+> The Mac App Store build is named **Doppl**. The **Doppl** app menu shows
 > **Quit Doppl (⌘Q)**.
 
 ---
@@ -17,7 +16,7 @@ which **requires a signed-in account**.
 (Health check: `https://api.signindoppl.com/health` returns `{"status":"ok", ...}`.)
 
 **No account needed to review the app.** The sign-in screen has a
-**"Explore with sample notes — no account needed"** button. Tapping it dismisses the sign-in screen
+**"Explore with sample notes, no account needed"** button. Tapping it dismisses the sign-in screen
 and runs the entire app **locally on the Mac** (no network, no account): the bundled sample notes are
 distilled on-device and Home / Constellation / Ask / Review become fully exercisable. Use this to
 review every feature offline.
@@ -34,7 +33,7 @@ their AI tools. Sign-in + sync run over HTTPS (`https://api.signindoppl.com`) us
 networking stack (Swift `URLSession`).
 
 **How to review every feature (no account, no downloads, no files needed):**
-1. Launch Doppl. On the sign-in screen tap **"Explore with sample notes — no account needed"**
+1. Launch Doppl. On the sign-in screen tap **"Explore with sample notes, no account needed"**
    (or, to review account sync, sign in with the demo account above / Sign in with Apple).
 2. Choose **Explore with sample notes** — Doppl loads a small bundled set of example notes and
    distills them **on-device** (a progress bar shows it building). No network is required for this.
@@ -57,7 +56,7 @@ devices and (b) be reached by your AI assistants and tools through the account. 
 account-based functionality per 5.1.1(v), which is why sign-in is required.
 
 **In-app account deletion (5.1.1(v)).** A signed-in user can permanently delete their account and
-all of its data from within the app: open **Connections** (the settings surface) → the **Cortex
+all of its data from within the app: open **Connections** (the settings surface) → the **Doppl
 Cloud** section → **Delete account…** → confirm. This calls `DELETE /v1/auth/account`, which
 crypto-shreds the user's key material, deletes their memory (and backups), and revokes every
 session — no website detour needed.
@@ -104,7 +103,7 @@ the status‑bar menu.
 - Data collected: the account **email** and **name** the user provides at sign‑in, and the **memory
   content** the user chooses to add to their account (their own notes/thoughts) — all **Linked** to
   the account, used only to operate the account (**App Functionality**), **not** used for tracking,
-  and never shared with third parties for advertising. See `PrivacyInfo.xcprivacy`.
+  and never shared with third parties for advertising. See `macos/PrivacyInfo.xcprivacy`.
 
 ---
 

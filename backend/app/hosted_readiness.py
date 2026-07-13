@@ -3,7 +3,7 @@ from __future__ import annotations
 from ipaddress import ip_address
 from urllib.parse import urlparse
 
-from .config import Settings
+from .config import APP_BRAND, Settings
 
 
 HOSTED_VECTOR_BACKENDS = {"pgvector", "postgres-pgvector"}
@@ -140,7 +140,7 @@ def _hosted_database_check(hosted_mode: bool, hosted_database_url: str, runtime_
         return {
             "name": "hosted_database",
             "status": "ok",
-            "detail": "Local mode uses SQLite and the local Cortex vault.",
+            "detail": f"Local mode uses SQLite and the local {APP_BRAND} vault.",
         }
     if runtime_tier == "sharded_sqlite":
         # The sanctioned 10k tier: per-tenant sharded SQLite on one box. The primary store IS

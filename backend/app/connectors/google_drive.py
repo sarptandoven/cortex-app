@@ -9,6 +9,7 @@ from typing import Any, Callable
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
+from ..config import APP_BRAND
 from ._redaction import connector_error_payload
 
 
@@ -364,7 +365,7 @@ def _truncate_body(value: str, limit: int = 12000) -> str:
     text = _clean_text(value)
     if len(text) <= limit:
         return text
-    return f"{text[:limit].rstrip()}\n[truncated by Cortex Google Drive connector]"
+    return f"{text[:limit].rstrip()}\n[truncated by {APP_BRAND} Google Drive connector]"
 
 
 def _max_iso(left: str | None, right: str | None) -> str | None:

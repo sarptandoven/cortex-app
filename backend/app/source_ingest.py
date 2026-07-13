@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import quote
 
+from .config import APP_BRAND
 from .sqlite_runtime import sqlite3
 
 
@@ -415,7 +416,7 @@ class SourceRecord:
         return SourceRecord(
             source=self.source,
             title=self.title,
-            content=self.content[:MAX_RECORD_CHARS] + "\n\n[Truncated by Cortex importer.]",
+            content=self.content[:MAX_RECORD_CHARS] + f"\n\n[Truncated by {APP_BRAND} importer.]",
             source_url=self.source_url,
             metadata={**self.metadata, "truncated": True},
         )

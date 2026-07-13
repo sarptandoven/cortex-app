@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+from .config import APP_BRAND
 from .vault_markdown import (
     atomic_write_text,
     parse_memory_markdown,
@@ -82,7 +83,7 @@ ENTITY_KIND_TO_MOC_DIR = {"person": "People", "project": "Projects", "org": "Org
 # Machine-owned vault pages (N3/N4/N5). Like the MOC folders, these are DELIBERATELY not in
 # VAULT_DIRECTORIES / RESTORE_DIRECTORIES, so reconcile (globs memories/** only) and backup ignore
 # them; they still sync via git/iCloud (that is the point — a browsable vault). Fully regenerable.
-HOME_PAGE_FILENAME = "Cortex — Start Here.md"
+HOME_PAGE_FILENAME = f"{APP_BRAND} — Start Here.md"
 DAILY_DIRECTORY = "Journal"
 CONSTELLATION_CANVAS_FILENAME = "Constellation.canvas"
 # A generated daily page is named exactly YYYY-MM-DD.md. Pruning/listing keys on this shape so a
@@ -187,7 +188,7 @@ class CortexVault:
             self._write_json(
                 self.manifest_path,
                 {
-                    "name": "Cortex Vault",
+                    "name": f"{APP_BRAND} Vault",
                     "format": VAULT_FORMAT,
                     "version": VAULT_VERSION,
                     "created_at": vault_now(),
@@ -225,7 +226,7 @@ class CortexVault:
         gitignore_path = self.root / ".gitignore"
         if not gitignore_path.exists():
             gitignore = (
-                "# Cortex vault — sync the durable records (Markdown notes + JSON), not the\n"
+                f"# {APP_BRAND} vault — sync the durable records (Markdown notes + JSON), not the\n"
                 "# rebuildable index, local backups, temp files, or secrets.\n"
                 "*.sqlite\n"
                 "*.sqlite-*\n"
@@ -245,16 +246,16 @@ class CortexVault:
         readme_path = self.root / "README.md"
         if not readme_path.exists():
             readme = (
-                "# Your Cortex Vault\n\n"
-                "This folder is your Cortex memory, stored as plain files you own.\n\n"
+                f"# Your {APP_BRAND} Vault\n\n"
+                f"This folder is your {APP_BRAND} memory, stored as plain files you own.\n\n"
                 "- `memories/` — your memories as Markdown notes (YAML frontmatter + text). Open\n"
-                "  this folder in any Markdown editor. Edit a note and Cortex picks up the\n"
+                f"  this folder in any Markdown editor. Edit a note and {APP_BRAND} picks up the\n"
                 "  change; add a note and it becomes a memory; delete one to remove it.\n"
                 "- `captures/`, `entities/`, `tasks/`, ... — supporting records.\n"
-                "- The SQLite index and `credentials.json` are Cortex's private working files —\n"
+                f"- The SQLite index and `credentials.json` are {APP_BRAND}'s private working files —\n"
                 "  the index is rebuildable from these notes and `credentials.json` holds secrets,\n"
                 "  so both are excluded from sync by `.gitignore`.\n\n"
-                "Even if Cortex goes away, these Markdown files stay readable and yours.\n"
+                f"Even if {APP_BRAND} goes away, these Markdown files stay readable and yours.\n"
             )
             try:
                 atomic_write_text(readme_path, readme)
@@ -1460,7 +1461,7 @@ class CortexVault:
         backup_path = Path(backup_path).expanduser().resolve()
         backups_dir = self.backups_dir.resolve()
         if backup_path.parent != backups_dir:
-            raise ValueError("backup path must be inside the Cortex backups directory")
+            raise ValueError(f"backup path must be inside the {APP_BRAND} backups directory")
         if not backup_path.is_file() or backup_path.suffix != ".zip":
             raise FileNotFoundError(f"backup not found: {backup_path}")
 

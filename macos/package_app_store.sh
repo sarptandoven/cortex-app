@@ -74,11 +74,12 @@ Builds the Mac App Store (sandboxed, local-first) .pkg for Doppl/Cortex.
 
 Environment (all optional; absent => clean dry run + founder checklist):
   CORTEX_APPSTORE_SIGN_IDENTITY        App signing identity. Accepts
-                                       'Apple Distribution: ...' or legacy
+                                       'Apple Distribution: ...',
+                                       'Mac App Distribution: ...', or legacy
                                        '3rd Party Mac Developer Application: ...'.
   CORTEX_APPSTORE_INSTALLER_IDENTITY   Installer identity for productbuild.
-                                       Accepts 'Apple Distribution Installer: ...'
-                                       or '3rd Party Mac Developer Installer: ...'.
+                                       Accepts 'Mac Installer Distribution: ...'
+                                       or legacy '3rd Party Mac Developer Installer: ...'.
   CORTEX_MAS_PROFILE                   Path to the Mac App Store provisioning
                                        profile (embedded at
                                        Contents/embedded.provisionprofile).
@@ -88,7 +89,7 @@ Environment (all optional; absent => clean dry run + founder checklist):
 Optional upload (App Store Connect); the step runs only when creds are present
 and CORTEX_APPSTORE_UPLOAD=1:
   CORTEX_APPSTORE_UPLOAD=1             Enable the upload step.
-  CORTEX_ASC_API_KEY_ID                App Store Connect API key id (notarytool/altool).
+  CORTEX_ASC_API_KEY_ID                App Store Connect API key id (altool).
   CORTEX_ASC_API_ISSUER_ID             App Store Connect API issuer id.
   CORTEX_ASC_API_KEY_PATH              Path to the .p8 API key.
   CORTEX_ASC_APPLE_ID                  Apple ID (alternative to API key).
@@ -143,7 +144,7 @@ find_identity() {
 
 # --- Resolve the app signing identity (modern first, then legacy). ---------
 if [[ -z "$SIGN_IDENTITY" ]]; then
-  SIGN_IDENTITY="$(find_identity "Apple Distribution:" "3rd Party Mac Developer Application:")"
+  SIGN_IDENTITY="$(find_identity "Apple Distribution:" "Mac App Distribution:" "3rd Party Mac Developer Application:")"
 fi
 if [[ -z "$SIGN_IDENTITY" ]]; then
   SIGN_IDENTITY="-"
@@ -153,7 +154,7 @@ fi
 # Installer certs are not codesigning-policy identities, so look them up in the
 # basic (unfiltered) identity list.
 if [[ -z "$INSTALLER_IDENTITY" ]]; then
-  INSTALLER_IDENTITY="$(find_identity --policy basic "Apple Distribution Installer:" "3rd Party Mac Developer Installer:")"
+  INSTALLER_IDENTITY="$(find_identity --policy basic "Mac Installer Distribution:" "Apple Distribution Installer:" "3rd Party Mac Developer Installer:")"
 fi
 
 PROFILE_PRESENT="0"
@@ -181,13 +182,13 @@ log "mode                : $SIGNING_STATUS"
 # upload candidate. This never aborts the run.
 MISSING=()
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
-  MISSING+=("Apple Distribution app-signing certificate (or legacy '3rd Party Mac Developer Application') for team $TEAM_ID — set CORTEX_APPSTORE_SIGN_IDENTITY")
+  MISSING+=("Apple Distribution or Mac App Distribution app-signing certificate (or legacy '3rd Party Mac Developer Application') for team $TEAM_ID — set CORTEX_APPSTORE_SIGN_IDENTITY")
 fi
 if [[ "$PROFILE_PRESENT" != "1" ]]; then
   MISSING+=("Mac App Store provisioning profile for $BUNDLE_ID — set CORTEX_MAS_PROFILE to its path")
 fi
 if [[ -z "$INSTALLER_IDENTITY" ]]; then
-  MISSING+=("Mac Installer Distribution certificate ('Apple Distribution Installer' or legacy '3rd Party Mac Developer Installer') — set CORTEX_APPSTORE_INSTALLER_IDENTITY")
+  MISSING+=("Mac Installer Distribution certificate (or legacy '3rd Party Mac Developer Installer') — set CORTEX_APPSTORE_INSTALLER_IDENTITY")
 fi
 if [[ ${#MISSING[@]} -gt 0 ]]; then
   section "MISSING FOR AN UPLOADABLE BUILD (dry run will proceed)"
@@ -195,6 +196,49 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
 fi
 
 mkdir -p "$OUT_DIR"
+
+# A file at CORTEX_MAS_PROFILE is not enough: it must be an Apple-signed, unexpired profile for
+# this exact team/bundle and it must authorize Sign in with Apple. Validate those founder-controlled
+# facts before spending time on the build or ever reporting uploadable=true.
+PROFILE_VALIDATION_STATUS="not-present"
+PROFILE_INFO="$OUT_DIR/provisioning-profile-decoded.plist"
+if [[ "$PROFILE_PRESENT" == "1" ]]; then
+  if ! security cms -D -i "$PROFILE" > "$PROFILE_INFO" 2>/dev/null; then
+    echo "CORTEX_MAS_PROFILE is not a decodable Apple provisioning profile: $PROFILE" >&2
+    exit 2
+  fi
+  PROFILE_APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$PROFILE_INFO" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_INFO" 2>/dev/null \
+    || true)"
+  EXPECTED_APP_ID="$TEAM_ID.$BUNDLE_ID"
+  if [[ "$PROFILE_APP_ID" != "$EXPECTED_APP_ID" ]]; then
+    echo "Provisioning profile application identifier is '$PROFILE_APP_ID'; expected '$EXPECTED_APP_ID'." >&2
+    exit 2
+  fi
+  PROFILE_TEAM_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.team-identifier' "$PROFILE_INFO" 2>/dev/null || true)"
+  if [[ "$PROFILE_TEAM_ID" != "$TEAM_ID" ]]; then
+    echo "Provisioning profile team identifier is '$PROFILE_TEAM_ID'; expected '$TEAM_ID'." >&2
+    exit 2
+  fi
+  PROFILE_SIWA="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.applesignin' "$PROFILE_INFO" 2>/dev/null || true)"
+  if [[ "$PROFILE_SIWA" != *"Default"* ]]; then
+    echo "Provisioning profile does not authorize Sign in with Apple (Default). Regenerate it after enabling the capability." >&2
+    exit 2
+  fi
+  PROFILE_KEYCHAIN_GROUPS="$(plutil -extract 'Entitlements.keychain-access-groups' json -o - "$PROFILE_INFO" 2>/dev/null || true)"
+  if [[ "$PROFILE_KEYCHAIN_GROUPS" != *"\"$EXPECTED_APP_ID\""* && "$PROFILE_KEYCHAIN_GROUPS" != *"\"$TEAM_ID.*\""* ]]; then
+    echo "Provisioning profile does not authorize the app keychain group '$EXPECTED_APP_ID'. Enable Keychain Sharing and regenerate it." >&2
+    exit 2
+  fi
+  PROFILE_EXPIRATION="$(plutil -extract ExpirationDate raw -o - "$PROFILE_INFO" 2>/dev/null || true)"
+  NOW_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  if [[ -z "$PROFILE_EXPIRATION" || "$PROFILE_EXPIRATION" < "$NOW_UTC" ]]; then
+    echo "Provisioning profile is expired or has no valid expiration date: ${PROFILE_EXPIRATION:-<missing>}." >&2
+    exit 2
+  fi
+  PROFILE_VALIDATION_STATUS="validated"
+  log "provisioning profile validated for $EXPECTED_APP_ID (Sign in with Apple; expires $PROFILE_EXPIRATION)"
+fi
 
 # --- Build the sandboxed app-store .app via build.sh. ----------------------
 # Passing CORTEX_PROVISIONING_PROFILE makes build.sh embed the profile at
@@ -222,6 +266,29 @@ if [[ "$APP_MODE" != "app-store" ]]; then
   exit 2
 fi
 
+# Independent whole-bundle content audit. Keep this in the packager as a second
+# fail-closed layer so a future build.sh refactor cannot silently reintroduce the
+# Python sources, console scripts, or static crypto payloads that App Review scans.
+APPSTORE_PY_SOURCE_COUNT="$(find "$APP" -type f -name '*.py' | wc -l | tr -d ' ')"
+APPSTORE_SCRIPT_HELPER_COUNT=0
+while IFS= read -r candidate; do
+  if [[ "$(head -c 2 "$candidate" 2>/dev/null || true)" == '#!' ]]; then
+    APPSTORE_SCRIPT_HELPER_COUNT=$((APPSTORE_SCRIPT_HELPER_COUNT + 1))
+  fi
+done < <(find "$APP" -type f)
+APPSTORE_CRYPTO_PAYLOAD_COUNT=0
+while IFS= read -r native; do
+  if otool -L "$native" 2>/dev/null | grep -Eiq 'lib(ssl|crypto)' \
+    || strings -a "$native" 2>/dev/null | grep -Eq 'OPENSSL_armcap|SSL_CTX_|AWS[-_]LC'; then
+    APPSTORE_CRYPTO_PAYLOAD_COUNT=$((APPSTORE_CRYPTO_PAYLOAD_COUNT + 1))
+  fi
+done < <(find "$APP" -type f \( -name '*.so' -o -name '*.dylib' -o -name 'Python' -o -name 'python3.12' \))
+if [[ "$APPSTORE_PY_SOURCE_COUNT" != "0" || "$APPSTORE_SCRIPT_HELPER_COUNT" != "0" || "$APPSTORE_CRYPTO_PAYLOAD_COUNT" != "0" ]]; then
+  echo "App Store content audit failed: .py=$APPSTORE_PY_SOURCE_COUNT scripts=$APPSTORE_SCRIPT_HELPER_COUNT crypto_payloads=$APPSTORE_CRYPTO_PAYLOAD_COUNT" >&2
+  exit 2
+fi
+log "  content audit passed: zero .py sources, runnable script helpers, and OpenSSL/AWS-LC payloads"
+
 # --- App Store required artifacts injected into the built bundle. ----------
 # These mutate ONLY the build-output bundle (never the source Info.plist), so
 # the Developer-ID/DMG path is untouched. We mutate before re-signing below.
@@ -234,50 +301,29 @@ if [[ -f "$PRIVACY_SRC" ]]; then
   cp "$PRIVACY_SRC" "$RES_DIR/PrivacyInfo.xcprivacy"
   log "  copied $PRIVACY_SRC -> Contents/Resources/PrivacyInfo.xcprivacy"
 else
-  # Robust fallback: generate a local-first (collects nothing) manifest so the
-  # MAS build always ships a privacy manifest even if the source file is absent.
-  log "  WARNING: $PRIVACY_SRC not found; writing a generated local-first privacy manifest."
-  cat > "$RES_DIR/PrivacyInfo.xcprivacy" <<'PRIVACY'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>NSPrivacyTracking</key>
-  <false/>
-  <key>NSPrivacyTrackingDomains</key>
-  <array/>
-  <key>NSPrivacyCollectedDataTypes</key>
-  <array/>
-  <key>NSPrivacyAccessedAPITypes</key>
-  <array>
-    <dict>
-      <key>NSPrivacyAccessedAPIType</key>
-      <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
-      <key>NSPrivacyAccessedAPITypeReasons</key>
-      <array><string>C617.1</string></array>
-    </dict>
-    <dict>
-      <key>NSPrivacyAccessedAPIType</key>
-      <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
-      <key>NSPrivacyAccessedAPITypeReasons</key>
-      <array><string>CA92.1</string></array>
-    </dict>
-    <dict>
-      <key>NSPrivacyAccessedAPIType</key>
-      <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
-      <key>NSPrivacyAccessedAPITypeReasons</key>
-      <array><string>35F9.1</string></array>
-    </dict>
-    <dict>
-      <key>NSPrivacyAccessedAPIType</key>
-      <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
-      <key>NSPrivacyAccessedAPITypeReasons</key>
-      <array><string>E174.1</string></array>
-    </dict>
-  </array>
-</dict>
-</plist>
-PRIVACY
+  echo "Required privacy manifest is missing: $PRIVACY_SRC" >&2
+  exit 2
+fi
+
+# Fail closed if the source manifest drifts from the account-backed product. A silent
+# "collects nothing" fallback would package successfully but contradict both the real app and
+# App Store Connect. These three linked, non-tracking, app-functionality declarations are the
+# release contract documented in APP_REVIEW_NOTES.md and the founder runbook.
+PRIVACY_BUNDLE="$RES_DIR/PrivacyInfo.xcprivacy"
+plutil -lint "$PRIVACY_BUNDLE" >/dev/null
+PRIVACY_XML="$(plutil -convert xml1 -o - "$PRIVACY_BUNDLE")"
+for data_type in \
+  NSPrivacyCollectedDataTypeEmailAddress \
+  NSPrivacyCollectedDataTypeName \
+  NSPrivacyCollectedDataTypeOtherUserContent; do
+  if [[ "$PRIVACY_XML" != *"<string>${data_type}</string>"* ]]; then
+    echo "Privacy manifest is missing required collected-data declaration: $data_type" >&2
+    exit 2
+  fi
+done
+if [[ "$(plutil -extract NSPrivacyTracking raw -o - "$PRIVACY_BUNDLE")" != "false" ]]; then
+  echo "Privacy manifest must declare NSPrivacyTracking=false" >&2
+  exit 2
 fi
 
 # 2) Export-compliance declaration. The app-store build strips _ssl/ssl.py, so
@@ -369,11 +415,27 @@ elif [[ "$DO_UPLOAD" != "1" ]]; then
   UPLOAD_STATUS="skipped-disabled"
   log "  Uploadable pkg built. Set CORTEX_APPSTORE_UPLOAD=1 to upload, or upload manually via Transporter."
 elif [[ -n "$ASC_API_KEY_ID" && -n "$ASC_API_ISSUER_ID" && -n "$ASC_API_KEY_PATH" ]]; then
-  log "  Uploading with notarytool/altool using App Store Connect API key $ASC_API_KEY_ID ..."
-  if xcrun --find altool >/dev/null 2>&1; then
-    xcrun altool --upload-app -f "$PKG" -t macos \
-      --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID" \
-      && UPLOAD_STATUS="uploaded" || UPLOAD_STATUS="upload-failed"
+  log "  Uploading with altool using App Store Connect API key $ASC_API_KEY_ID ..."
+  if [[ ! -f "$ASC_API_KEY_PATH" ]]; then
+    UPLOAD_STATUS="upload-failed"
+    log "  API key file not found: $ASC_API_KEY_PATH"
+  elif xcrun --find altool >/dev/null 2>&1; then
+    # altool accepts the key ID + issuer on its command line, but discovers the
+    # corresponding AuthKey_<ID>.p8 only in a small set of fixed private_keys
+    # directories. Put a temporary, permission-restricted symlink in its
+    # current-directory lookup path so CORTEX_ASC_API_KEY_PATH is actually used.
+    ASC_KEY_LOOKUP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/doppl-asc-key.XXXXXX")"
+    chmod 700 "$ASC_KEY_LOOKUP_ROOT"
+    mkdir -m 700 "$ASC_KEY_LOOKUP_ROOT/private_keys"
+    ASC_API_KEY_ABS="$(cd "$(dirname "$ASC_API_KEY_PATH")" && pwd)/$(basename "$ASC_API_KEY_PATH")"
+    ln -s "$ASC_API_KEY_ABS" "$ASC_KEY_LOOKUP_ROOT/private_keys/AuthKey_${ASC_API_KEY_ID}.p8"
+    if (cd "$ASC_KEY_LOOKUP_ROOT" && xcrun altool --upload-app -f "$PKG" -t macos \
+      --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID"); then
+      UPLOAD_STATUS="uploaded"
+    else
+      UPLOAD_STATUS="upload-failed"
+    fi
+    rm -rf "$ASC_KEY_LOOKUP_ROOT"
   else
     log "  altool unavailable; falling back to Transporter CLI (iTMSTransporter)."
     UPLOAD_STATUS="manual-transporter"
@@ -413,19 +475,21 @@ Only the Apple Developer account owner can do these. Do them in order.
        - Name: $APP_NAME
        - Bundle ID: $BUNDLE_ID  (register the explicit App ID first in
          Certificates, Identifiers & Profiles if it does not exist)
+       - App Store version: $VERSION  (must match CFBundleShortVersionString)
        - SKU + primary language as desired
 
   3. In Certificates, Identifiers & Profiles, generate the signing certs:
-       - "Apple Distribution" (app signing)            [or legacy
+       - "Apple Distribution" or "Mac App Distribution" (app signing) [or legacy
          "3rd Party Mac Developer Application"]
        - "Mac Installer Distribution" (.pkg signing)   [or legacy
          "3rd Party Mac Developer Installer"]
      Install both (with private keys) into this Mac's login keychain.
 
-  4. Create the Mac App Store provisioning profile for $BUNDLE_ID (App Store
-     distribution) with the App Sandbox + Keychain-sharing entitlements that
-     match macos/AppStore.entitlements. Download it and point CORTEX_MAS_PROFILE
-     at the .provisionprofile file.
+  4. On the $BUNDLE_ID App ID, enable Sign in with Apple (Default/primary) and
+     Keychain Sharing. Then create its Mac App Store distribution profile.
+     Download it and point CORTEX_MAS_PROFILE at the .provisionprofile file;
+     this script verifies the team, exact app id, SIWA, keychain group, and
+     expiration before it builds.
 
   5. Export compliance: already handled in-build — this script sets
      ITSAppUsesNonExemptEncryption = false in the app bundle (the app-store
@@ -434,15 +498,16 @@ Only the Apple Developer account owner can do these. Do them in order.
 
   6. Re-run this script with the identities + profile set:
        export CORTEX_APPSTORE_SIGN_IDENTITY="Apple Distribution: ... ($TEAM_ID)"
-       export CORTEX_APPSTORE_INSTALLER_IDENTITY="Apple Distribution Installer: ... ($TEAM_ID)"
+       export CORTEX_APPSTORE_INSTALLER_IDENTITY="Mac Installer Distribution: ... ($TEAM_ID)"
        export CORTEX_MAS_PROFILE="/path/to/${APP_NAME}_Mac_App_Store.provisionprofile"
        ./macos/package_app_store.sh
      The report must then show "status": "upload-candidate" and "uploadable": true.
 
   7. Upload the signed .pkg:
        - EITHER set CORTEX_APPSTORE_UPLOAD=1 with App Store Connect API creds
-         (CORTEX_ASC_API_KEY_ID / _ISSUER_ID / _KEY_PATH) or Apple-ID creds
-         (CORTEX_ASC_APPLE_ID / _APP_PASSWORD) and re-run this script,
+         (CORTEX_ASC_API_KEY_ID / CORTEX_ASC_API_ISSUER_ID /
+         CORTEX_ASC_API_KEY_PATH) or Apple-ID creds
+         (CORTEX_ASC_APPLE_ID / CORTEX_ASC_APP_PASSWORD) and re-run this script,
        - OR open Transporter.app and drag in:
              $PKG
 
@@ -484,7 +549,13 @@ cat > "$REPORT" <<EOF
   "app_signing_identity": "$SIGN_IDENTITY",
   "installer_identity": "${INSTALLER_IDENTITY:-}",
   "provisioning_profile": "$PROFILE_STATUS",
+  "provisioning_profile_validation": "$PROFILE_VALIDATION_STATUS",
   "privacy_manifest": "$PRIVACY_STATUS",
+  "content_audit": {
+    "python_source_files": $APPSTORE_PY_SOURCE_COUNT,
+    "runnable_script_helpers": $APPSTORE_SCRIPT_HELPER_COUNT,
+    "openssl_or_awslc_payloads": $APPSTORE_CRYPTO_PAYLOAD_COUNT
+  },
   "installer_package": "$INSTALLER_STATUS",
   "upload_status": "$UPLOAD_STATUS",
   "pkg": "$PKG",

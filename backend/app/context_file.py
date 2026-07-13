@@ -38,6 +38,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from .config import APP_BRAND
+
 
 # --- Style catalog ------------------------------------------------------------------
 
@@ -225,7 +227,7 @@ def render_context_block(
         # (and its markers) is still written so the file gets a clear, honest state
         # instead of silently doing nothing.
         lines = [
-            "_Cortex has no well-supported memory yet for this profile. Nothing was cited, so"
+            f"_{APP_BRAND} has no well-supported memory yet for this profile. Nothing was cited, so"
             " nothing is written here. Sync again once you have more memory._"
         ]
 
@@ -238,7 +240,7 @@ def render_context_block(
     footer_date = _utc_date_iso()
     footer = [
         "",
-        f"_Compiled by Cortex on {footer_date} — edits inside this block are overwritten;"
+        f"_Compiled by {APP_BRAND} on {footer_date} — edits inside this block are overwritten;"
         " keep your own notes outside the markers._",
     ]
     lines.extend(footer)
@@ -494,7 +496,7 @@ def validate_context_file_path(raw_path: str, *, vault_root: Optional[str] = Non
     if vault_root:
         vault_resolved = _resolve_best_effort(Path(vault_root).expanduser())
         if resolved == vault_resolved or _is_relative_to(resolved, vault_resolved):
-            raise ValueError("path must not be inside the Cortex vault")
+            raise ValueError(f"path must not be inside the {APP_BRAND} vault")
 
     resolved_lower = str(resolved).lower()
     for prefix in _SYSTEM_DIR_PREFIXES:

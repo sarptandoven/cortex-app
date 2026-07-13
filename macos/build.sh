@@ -228,6 +228,20 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
     fi
     # (Bundled backend deps under Resources/python are scanned after they are
     # installed, at the end of this bundled-Python block.)
+
+    # Ship a sourceless runtime, not a general-purpose Python SDK. The MAS app only
+    # needs importable bytecode; source files and CPython's build helper scripts add
+    # executable-code surface that App Review can reasonably treat as a script host.
+    rm -rf "$PY_STDLIB/config-3.12-darwin"
+    rm -f "$PY_STDLIB/ctypes/macholib/fetch_macholib"
+    "$PYTHON_FRAMEWORK_SOURCE/bin/python3.12" -m compileall -b -q -q "$PY_STDLIB"
+    find "$PY_STDLIB" -type f -name '*.py' -delete
+    find "$PY_STDLIB" -type d -name '__pycache__' -prune -exec rm -rf {} +
+    if [[ ! -f "$PY_STDLIB/encodings/__init__.pyc" || ! -f "$PY_STDLIB/urllib/parse.pyc" ]]; then
+      echo "ERROR: app-store stdlib bytecode compilation is incomplete" >&2
+      exit 3
+    fi
+    echo "  app-store: bundled stdlib compiled to sourceless .pyc runtime"
   fi
 
   ln -sfn python3.12 "$PY_VERSION/bin/python3"
@@ -261,6 +275,48 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
       echo "warning: bundling the local embedding model failed ($CORTEX_MODEL2VEC_MODEL)" >&2
       rm -rf "$RES/model2vec"
     fi
+
+    if [[ "$DISTRIBUTION_MODE" == "app-store" ]]; then
+      # hf-xet is an OPTIONAL Hugging Face download accelerator. The model is already
+      # bundled above, so MAS never needs it; its native wheel statically embeds
+      # AWS-LC/OpenSSL/TLS code and would contradict our no-non-exempt-encryption
+      # declaration. pip console entrypoints are likewise development helpers, not
+      # product runtime. Remove both before compiling dependencies to bytecode.
+      rm -rf \
+        "$PY_RUNTIME_DEPS"/hf_xet "$PY_RUNTIME_DEPS"/hf_xet-*.dist-info \
+        "$PY_RUNTIME_DEPS"/huggingface_hub "$PY_RUNTIME_DEPS"/huggingface_hub-*.dist-info \
+        "$PY_RUNTIME_DEPS"/httpx "$PY_RUNTIME_DEPS"/httpx-*.dist-info \
+        "$PY_RUNTIME_DEPS"/httpcore "$PY_RUNTIME_DEPS"/httpcore-*.dist-info \
+        "$PY_RUNTIME_DEPS"/fsspec "$PY_RUNTIME_DEPS"/fsspec-*.dist-info \
+        "$PY_RUNTIME_DEPS/bin"
+      find "$PY_RUNTIME_DEPS/numpy" -type d -name include -prune -exec rm -rf {} + 2>/dev/null || true
+      find "$PY_RUNTIME_DEPS/numpy" -type f \( -name '*.a' -o -name '*.h' \) -delete 2>/dev/null || true
+      "$PYTHON_FRAMEWORK_SOURCE/bin/python3.12" -m compileall -b -q -q "$PY_RUNTIME_DEPS"
+      find "$PY_RUNTIME_DEPS" -type f -name '*.py' -delete
+      find "$PY_RUNTIME_DEPS" -type d -name '__pycache__' -prune -exec rm -rf {} +
+      if [[ -n "$(find "$PY_RUNTIME_DEPS" -type f -name '*.py' -print -quit)" ]]; then
+        echo "ERROR: app-store dependency bundle still contains Python source" >&2
+        exit 3
+      fi
+      if [[ -e "$PY_RUNTIME_DEPS/hf_xet" || -e "$PY_RUNTIME_DEPS/huggingface_hub" || -e "$PY_RUNTIME_DEPS/httpx" || -e "$PY_RUNTIME_DEPS/httpcore" ]]; then
+        echo "ERROR: app-store network-only Python dependencies survived pruning" >&2
+        exit 3
+      fi
+      # Prove the shipping offline semantic path, not merely /health. Blocking ssl
+      # here makes the smoke fail if a future change reintroduces an implicit TLS or
+      # Hugging Face import. The expected potion-base-8M output is native 256-dim.
+      if ! CORTEX_EMBEDDING_PROVIDER=model2vec \
+        CORTEX_EMBEDDING_STRICT=1 \
+        CORTEX_EMBEDDING_DIMENSIONS=256 \
+        CORTEX_MODEL2VEC_PATH="$RES/model2vec" \
+        PYTHONPATH="$RES/backend:$PY_RUNTIME_DEPS" PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+        "$PYTHON_FRAMEWORK_SOURCE/bin/python3.12" -S -c \
+          "import sys; sys.modules['ssl']=None; from app.embeddings import embed_text_result; r=embed_text_result('offline semantic smoke'); assert r.provider=='model2vec' and r.dimensions==256 and len(r.vector)==256"; then
+        echo "ERROR: app-store offline Model2Vec embedding smoke failed" >&2
+        exit 3
+      fi
+      echo "  app-store: sourceless dependencies, no network-only wheels, offline Model2Vec smoke passed"
+    fi
   fi
   if [[ "$DISTRIBUTION_MODE" == "app-store" ]]; then
     # 'itms-services' scan of the now-installed backend wheels (Resources/python).
@@ -280,12 +336,12 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
     # shell scripts that ride along inside dependency wheels (e.g. tqdm/completion.sh) and assert
     # the MCP stdio bridge is absent (it is Developer-ID-only). Bytecode (.pyc) of the backend is
     # fine — it is the app's own engine, run only by the app, never installed into other apps.
-    find "$RES" -type f -name '*.sh' -delete 2>/dev/null || true
+    find "$APP" -type f -name '*.sh' -delete 2>/dev/null || true
     if [[ -e "$RES/scripts/cortex_mcp_stdio.py" ]]; then
       echo "ERROR: app-store bundle must not ship the runnable MCP stdio bridge (Guideline 2.5.2)" >&2
       exit 3
     fi
-    LEFTOVER_SH="$(find "$RES" -type f -name '*.sh' 2>/dev/null | head -n 5)"
+    LEFTOVER_SH="$(find "$APP" -type f -name '*.sh' 2>/dev/null | head -n 5)"
     if [[ -n "$LEFTOVER_SH" ]]; then
       echo "ERROR: app-store bundle still contains shell scripts:" >&2
       echo "$LEFTOVER_SH" >&2
@@ -299,7 +355,48 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
       find "$RES" \( -name 'obsidian-cortex-plugin' -o -name 'main.js' \) 2>/dev/null >&2
       exit 3
     fi
-    echo "  app-store: no runnable helper scripts or plugin payload in bundle (2.5.2)"
+
+    # Whole-bundle source + shebang guard. This deliberately scans Frameworks too;
+    # the earlier check only covered Resources and missed CPython/pip helpers.
+    LEFTOVER_PY="$(find "$APP" -type f -name '*.py' 2>/dev/null | head -n 5)"
+    if [[ -n "$LEFTOVER_PY" ]]; then
+      echo "ERROR: app-store bundle still contains Python source:" >&2
+      echo "$LEFTOVER_PY" >&2
+      exit 3
+    fi
+    LEFTOVER_DEV="$(find "$APP" -type f \( -name '*.o' -o -name '*.a' -o -name '*.h' \) 2>/dev/null | head -n 5)"
+    if [[ -n "$LEFTOVER_DEV" ]]; then
+      echo "ERROR: app-store bundle still contains compiler/development payload:" >&2
+      echo "$LEFTOVER_DEV" >&2
+      exit 3
+    fi
+    LEFTOVER_SHEBANG=""
+    while IFS= read -r candidate; do
+      if [[ "$(head -c 2 "$candidate" 2>/dev/null || true)" == '#!' ]]; then
+        LEFTOVER_SHEBANG+="${candidate}"$'\n'
+      fi
+    done < <(find "$APP" -type f)
+    if [[ -n "$LEFTOVER_SHEBANG" ]]; then
+      echo "ERROR: app-store bundle still contains runnable script helpers:" >&2
+      printf '%s' "$LEFTOVER_SHEBANG" | head -n 10 >&2
+      exit 3
+    fi
+
+    # No native payload may link or statically embed the OpenSSL/AWS-LC runtime.
+    # System URLSession owns the app's HTTPS paths; the Python worker is loopback-only.
+    FLAGGED_CRYPTO=""
+    while IFS= read -r native; do
+      if otool -L "$native" 2>/dev/null | grep -Eiq 'lib(ssl|crypto)' \
+        || strings -a "$native" 2>/dev/null | grep -Eq 'OPENSSL_armcap|SSL_CTX_|AWS[-_]LC'; then
+        FLAGGED_CRYPTO+="${native}"$'\n'
+      fi
+    done < <(find "$APP" -type f \( -name '*.so' -o -name '*.dylib' -o -name 'Python' -o -name 'python3.12' \))
+    if [[ -n "$FLAGGED_CRYPTO" ]]; then
+      echo "ERROR: app-store bundle contains a native OpenSSL/AWS-LC payload:" >&2
+      printf '%s' "$FLAGGED_CRYPTO" | head -n 10 >&2
+      exit 3
+    fi
+    echo "  app-store: no source scripts, runnable helpers, plugin payload, or bundled OpenSSL/AWS-LC (2.5.1/2.5.2)"
   fi
 fi
 

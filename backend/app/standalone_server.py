@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .config import load_settings
+from .config import APP_BRAND, load_settings
 from .context_file import (
     DEFAULT_STYLE as CONTEXT_FILE_DEFAULT_STYLE,
     SUPPORTED_STYLES as CONTEXT_FILE_SUPPORTED_STYLES,
@@ -143,7 +143,7 @@ def _start_standalone_worker() -> threading.Thread | None:
             try:
                 _run_standalone_worker_tick(limit=limit)
             except Exception as exc:  # pragma: no cover - defensive server loop
-                print(f"Cortex standalone worker error: {exc}", flush=True)
+                print(f"{APP_BRAND} standalone worker error: {exc}", flush=True)
             time.sleep(interval_seconds)
 
     thread = threading.Thread(target=worker_loop, name="cortex-standalone-worker", daemon=True)
@@ -272,23 +272,23 @@ def _hosted_readiness_contract() -> dict:
     return hosted_readiness_contract(settings, runtime=runtime)
 
 
-ROOT_HTML = """
+ROOT_HTML = f"""
 <!doctype html>
 <html>
   <head>
-    <title>Cortex Local API</title>
+    <title>{APP_BRAND} Local API</title>
     <style>
-      body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 40px; line-height: 1.45; max-width: 760px; }
-      code { background: #f3f3f3; padding: 2px 5px; border-radius: 4px; }
-      .status { display: inline-block; padding: 4px 8px; border-radius: 999px; background: #e8f7ed; color: #116329; font-weight: 600; }
+      body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 40px; line-height: 1.45; max-width: 760px; }}
+      code {{ background: #f3f3f3; padding: 2px 5px; border-radius: 4px; }}
+      .status {{ display: inline-block; padding: 4px 8px; border-radius: 999px; background: #e8f7ed; color: #116329; font-weight: 600; }}
     </style>
   </head>
   <body>
-    <p class="status">Cortex backend is running</p>
-    <h1>Cortex Local API</h1>
+    <p class="status">{APP_BRAND} backend is running</p>
+    <h1>{APP_BRAND} Local API</h1>
     <p>This local service stores and retrieves shared AI memory for the macOS app and MCP-compatible tools.</p>
     <p>Useful checks: <code>/health</code>, <code>/ready</code>, <code>/.well-known/cortex.json</code>.</p>
-    <p>Authenticated API endpoints require the Cortex token configured in the app.</p>
+    <p>Authenticated API endpoints require the {APP_BRAND} token configured in the app.</p>
   </body>
 </html>
 """
@@ -563,7 +563,7 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
 <!doctype html>
 <html>
   <head>
-    <title>Cortex Capture</title>
+    <title>{APP_BRAND} Capture</title>
     <style>
       body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 32px; line-height: 1.45; max-width: 760px; color: #1f2328; }}
       label {{ display: block; font-weight: 600; margin-top: 14px; }}
@@ -578,12 +578,12 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
   </head>
   <body>
     <p class="status {status_class}">{escaped_status}</p>
-    <h1>Save to Cortex</h1>
-    <p class="hint">Capture selected text, page context, links, or notes into your local Cortex memory.</p>
+    <h1>Save to {APP_BRAND}</h1>
+    <p class="hint">Capture selected text, page context, links, or notes into your local {APP_BRAND} memory.</p>
     {f"<p><strong>{escaped_message}</strong></p>" if escaped_message else ""}
     <form method="post" action="/capture">
       <label>Token</label>
-      <input name="token" value="" autocomplete="off" placeholder="Paste Cortex token" />
+      <input name="token" value="" autocomplete="off" placeholder="Paste {APP_BRAND} token" />
       <label>Title</label>
       <input name="title" value="{escaped_title}" />
       <label>Source URL</label>
@@ -591,7 +591,7 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
       <label>Content</label>
       <textarea name="content">{escaped_content}</textarea>
       <input type="hidden" name="source" value="browser-capture" />
-      <button type="submit">Save to Cortex</button>
+      <button type="submit">Save to {APP_BRAND}</button>
     </form>
   </body>
 </html>
@@ -599,7 +599,7 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
 
 
 class CortexRequestHandler(BaseHTTPRequestHandler):
-    server_version = "CortexStandalone/0.1"
+    server_version = f"{APP_BRAND}Standalone/0.1"
     # Socket read timeout (seconds). Without it a client that declares a Content-Length but sends
     # fewer bytes would block the handler thread forever in rfile.read() while holding one of the
     # (default 8) concurrency-gate slots — 8 such stalls wedge the whole server. 30s sits safely
@@ -687,7 +687,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if not REQUEST_GUARDS.acquire_slot():
                 self.close_connection = True
                 self._send_json(
-                    {"detail": "Cortex is busy handling other requests; retry shortly."},
+                    {"detail": f"{APP_BRAND} is busy handling other requests; retry shortly."},
                     status=HTTPStatus.SERVICE_UNAVAILABLE,
                     retry_after=1,
                 )
@@ -738,7 +738,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/.well-known/cortex.json":
                 self._send_json({
-                    "name": "Cortex",
+                    "name": APP_BRAND,
                     "description": "Shared memory for AI assistants.",
                     "api": {"base_url": settings.public_base_url, "version": BACKEND_VERSION},
                     "health": store.health_payload(mode="standalone", auth=bool(settings.api_key)),
@@ -763,7 +763,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         self._send_text(_capture_page(str(exc), "error", token, title, source_url, payload), status=HTTPStatus.FORBIDDEN, media_type="text/html")
                         return
                     if not user_id:
-                        self._send_text(_capture_page("Missing or invalid Cortex capture token", "error", token, title, source_url, payload), status=HTTPStatus.UNAUTHORIZED, media_type="text/html")
+                        self._send_text(_capture_page(f"Missing or invalid {APP_BRAND} capture token", "error", token, title, source_url, payload), status=HTTPStatus.UNAUTHORIZED, media_type="text/html")
                         return
                     try:
                         saved = self._save_capture(user_id, payload, source, title, source_url)
@@ -787,7 +787,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_text(_capture_page(str(exc), "error", token, title, source_url, content), status=HTTPStatus.FORBIDDEN, media_type="text/html")
                     return
                 if not user_id:
-                    self._send_text(_capture_page("Missing or invalid Cortex capture token", "error", token, title, source_url, content), status=HTTPStatus.UNAUTHORIZED, media_type="text/html")
+                    self._send_text(_capture_page(f"Missing or invalid {APP_BRAND} capture token", "error", token, title, source_url, content), status=HTTPStatus.UNAUTHORIZED, media_type="text/html")
                     return
                 try:
                     saved = self._save_capture(user_id, content, source, title, source_url)
@@ -799,7 +799,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/connectors/google/oauth/callback":
                 error_value = (params.get("error") or [""])[0]
                 if error_value:
-                    detail = (params.get("error_description") or ["Google did not authorize Cortex."])[0]
+                    detail = (params.get("error_description") or [f"Google did not authorize {APP_BRAND}."])[0]
                     self._send_text(
                         _google_oauth_callback_page("Google sign-in was not completed", detail, success=False),
                         status=HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -813,7 +813,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_text(
                         _google_oauth_callback_page(
                             "Google sign-in expired",
-                            "Return to Cortex and start the connection again. No account was connected.",
+                            f"Return to {APP_BRAND} and start the connection again. No account was connected.",
                             success=False,
                         ),
                         status=HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -824,7 +824,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_text(
                         _google_oauth_callback_page(
                             "Google sign-in did not return a code",
-                            "Return to Cortex and start the connection again. No account was connected.",
+                            f"Return to {APP_BRAND} and start the connection again. No account was connected.",
                             success=False,
                         ),
                         status=HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -863,7 +863,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_text(
                         _google_oauth_callback_page(
                             "Google is connected",
-                            f"{label} is connected. Return to Cortex; the first sync will start automatically.",
+                            f"{label} is connected. Return to {APP_BRAND}; the first sync will start automatically.",
                             success=True,
                         ),
                         media_type="text/html",
@@ -878,7 +878,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/connectors/oauth/callback":
                 error_value = (params.get("error") or [""])[0]
                 if error_value:
-                    detail = (params.get("error_description") or ["The service did not authorize Cortex."])[0]
+                    detail = (params.get("error_description") or [f"The service did not authorize {APP_BRAND}."])[0]
                     self._send_text(
                         _google_oauth_callback_page("Sign-in was not completed", detail, success=False),
                         status=HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -892,7 +892,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_text(
                         _google_oauth_callback_page(
                             "Sign-in expired",
-                            "Return to Cortex and start the connection again. No account was connected.",
+                            f"Return to {APP_BRAND} and start the connection again. No account was connected.",
                             success=False,
                         ),
                         status=HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -903,7 +903,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_text(
                         _google_oauth_callback_page(
                             "Sign-in did not return a code",
-                            "Return to Cortex and start the connection again. No account was connected.",
+                            f"Return to {APP_BRAND} and start the connection again. No account was connected.",
                             success=False,
                         ),
                         status=HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -939,7 +939,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_text(
                         _google_oauth_callback_page(
                             "Source is connected",
-                            f"{label} is connected. Return to Cortex; the first sync will start automatically.",
+                            f"{label} is connected. Return to {APP_BRAND}; the first sync will start automatically.",
                             success=True,
                         ),
                         media_type="text/html",
@@ -3310,17 +3310,17 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
     def _auth_user(self, method: str, path: str) -> str | None:
         authorization = self.headers.get("Authorization", "")
         if not authorization.lower().startswith("bearer "):
-            self._send_json({"detail": "Missing or invalid Cortex API token"}, status=HTTPStatus.UNAUTHORIZED)
+            self._send_json({"detail": f"Missing or invalid {APP_BRAND} API token"}, status=HTTPStatus.UNAUTHORIZED)
             return None
         token = authorization.split(" ", 1)[1].strip()
         if settings.api_key:
             if hmac.compare_digest(token, settings.api_key):
                 requested_user = self.headers.get("X-Cortex-User")
                 if requested_user and requested_user != settings.default_user_id and settings.shard_mode != "local":
-                    self._send_json({"detail": "Global Cortex API token cannot select another user in sharded mode; use a scoped user token"}, status=HTTPStatus.FORBIDDEN)
+                    self._send_json({"detail": f"Global {APP_BRAND} API token cannot select another user in sharded mode; use a scoped user token"}, status=HTTPStatus.FORBIDDEN)
                     return None
                 if requested_user and requested_user != settings.default_user_id and settings.require_scoped_api_tokens:
-                    self._send_json({"detail": "Global Cortex API token cannot select another user when scoped API tokens are required"}, status=HTTPStatus.FORBIDDEN)
+                    self._send_json({"detail": f"Global {APP_BRAND} API token cannot select another user when scoped API tokens are required"}, status=HTTPStatus.FORBIDDEN)
                     return None
                 return requested_user or settings.default_user_id
         try:
@@ -3330,11 +3330,11 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         if scoped:
             requested_user = self.headers.get("X-Cortex-User")
             if requested_user and scoped["user_id"] != requested_user:
-                self._send_json({"detail": "Cortex API token does not match requested user"}, status=HTTPStatus.FORBIDDEN)
+                self._send_json({"detail": f"{APP_BRAND} API token does not match requested user"}, status=HTTPStatus.FORBIDDEN)
                 return None
             required_scope = _required_api_scope(method, path)
             if not _api_token_has_scope(scoped, required_scope):
-                self._send_json({"detail": f"Cortex API token requires {required_scope} scope"}, status=HTTPStatus.FORBIDDEN)
+                self._send_json({"detail": f"{APP_BRAND} API token requires {required_scope} scope"}, status=HTTPStatus.FORBIDDEN)
                 return None
             try:
                 _require_api_token_trust(scoped["user_id"], required_scope)
@@ -3342,27 +3342,27 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"detail": str(exc)}, status=HTTPStatus.FORBIDDEN)
                 return None
             return scoped["user_id"]
-        self._send_json({"detail": "Missing or invalid Cortex API token"}, status=HTTPStatus.UNAUTHORIZED)
+        self._send_json({"detail": f"Missing or invalid {APP_BRAND} API token"}, status=HTTPStatus.UNAUTHORIZED)
         return None
 
     def _auth_mcp(self) -> dict | None:
         authorization = self.headers.get("Authorization", "")
         if not authorization.lower().startswith("bearer "):
-            self._send_json({"detail": "Missing or invalid Cortex MCP token"}, status=HTTPStatus.UNAUTHORIZED)
+            self._send_json({"detail": f"Missing or invalid {APP_BRAND} MCP token"}, status=HTTPStatus.UNAUTHORIZED)
             return None
         token = authorization.split(" ", 1)[1].strip()
         if settings.api_key and hmac.compare_digest(token, settings.api_key):
             requested_user = self.headers.get("X-Cortex-User")
             if requested_user and requested_user != settings.default_user_id and settings.shard_mode != "local":
-                self._send_json({"detail": "Global Cortex API token cannot select another user in sharded mode; use a scoped user token"}, status=HTTPStatus.FORBIDDEN)
+                self._send_json({"detail": f"Global {APP_BRAND} API token cannot select another user in sharded mode; use a scoped user token"}, status=HTTPStatus.FORBIDDEN)
                 return None
             if requested_user and requested_user != settings.default_user_id and settings.require_scoped_api_tokens:
-                self._send_json({"detail": "Global Cortex API token cannot select another user when scoped API tokens are required"}, status=HTTPStatus.FORBIDDEN)
+                self._send_json({"detail": f"Global {APP_BRAND} API token cannot select another user when scoped API tokens are required"}, status=HTTPStatus.FORBIDDEN)
                 return None
             return {
                 "user_id": requested_user or settings.default_user_id,
                 "token_id": "admin",
-                "label": "Cortex app token",
+                "label": f"{APP_BRAND} app token",
                 "audience": "admin",
                 "scopes": ["read", "write", "export", "maintenance", "destructive"],
                 "admin": True,
@@ -3373,7 +3373,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             scoped = store.authenticate_mcp_token(token)
         if scoped:
             return scoped
-        self._send_json({"detail": "Missing or invalid Cortex MCP token"}, status=HTTPStatus.UNAUTHORIZED)
+        self._send_json({"detail": f"Missing or invalid {APP_BRAND} MCP token"}, status=HTTPStatus.UNAUTHORIZED)
         return None
 
     def _auth_token(self, token: str | None, *, required_scope: str = "write") -> str | None:
@@ -3472,13 +3472,13 @@ def serve(host: str = "127.0.0.1", port: int | None = None) -> None:
     server = ThreadingHTTPServer((host, resolved_port), CortexRequestHandler)
     worker_thread = _start_standalone_worker()
     if worker_thread is not None:
-        print("Cortex standalone worker running for queued memory jobs", flush=True)
-    print(f"Cortex standalone backend running on http://{host}:{resolved_port}", flush=True)
+        print(f"{APP_BRAND} standalone worker running for queued memory jobs", flush=True)
+    print(f"{APP_BRAND} standalone backend running on http://{host}:{resolved_port}", flush=True)
     server.serve_forever()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the dependency-light Cortex local backend.")
+    parser = argparse.ArgumentParser(description=f"Run the dependency-light {APP_BRAND} local backend.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args()

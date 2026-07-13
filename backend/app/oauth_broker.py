@@ -33,6 +33,8 @@ from urllib.parse import urlencode
 from urllib.request import Request as URLLibRequest, urlopen
 from urllib.error import HTTPError, URLError
 
+from .config import APP_BRAND
+
 # The route handlers below annotate `request: "Request"`. Because `from __future__ import
 # annotations` makes every annotation a STRING, FastAPI resolves "Request" against THIS module's
 # globals when it builds the routes — so module-global "Request" MUST be FastAPI's Request, not
@@ -212,7 +214,7 @@ class OAuthBrokerRegistry:
         if not state.strip():
             raise BrokerError("state is required.")
         if not _redirect_uri_is_allowed(redirect_uri):
-            raise BrokerError("redirect_uri is not an allowed Cortex loopback callback.", status=400)
+            raise BrokerError(f"redirect_uri is not an allowed {APP_BRAND} loopback callback.", status=400)
         params: dict[str, str] = {
             "client_id": client_id,
             "redirect_uri": redirect_uri,
@@ -234,7 +236,7 @@ class OAuthBrokerRegistry:
         if not code.strip():
             raise BrokerError("code is required.")
         if not _redirect_uri_is_allowed(redirect_uri):
-            raise BrokerError("redirect_uri is not an allowed Cortex loopback callback.", status=400)
+            raise BrokerError(f"redirect_uri is not an allowed {APP_BRAND} loopback callback.", status=400)
         form: dict[str, str] = {
             "grant_type": "authorization_code",
             "code": code,

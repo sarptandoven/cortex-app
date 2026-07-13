@@ -34,7 +34,9 @@ import json
 import re
 from typing import Any
 
-WRITEBACK_DIRNAME = "Cortex"
+from .config import APP_BRAND
+
+WRITEBACK_DIRNAME = APP_BRAND
 PEOPLE_DIRNAME = "People"
 README_FILENAME = "README.md"
 PROFILE_FILENAME = "Profile.md"
@@ -88,19 +90,19 @@ def render_readme() -> str:
     lines = _frontmatter([
         (GENERATED_MARKER_KEY, True),
         (PAGE_KIND_KEY, "readme"),
-        ("title", "Cortex — generated pages"),
+        ("title", f"{APP_BRAND} — generated pages"),
     ])
     lines.extend([
         "",
-        "# Cortex — generated pages",
+        f"# {APP_BRAND} — generated pages",
         "",
-        "Cortex maintains this folder. Every page here is **generated from your cited memory**",
-        "and is rewritten whenever Cortex refreshes it — edits to generated pages will be lost.",
+        f"{APP_BRAND} maintains this folder. Every page here is **generated from your cited memory**",
+        f"and is rewritten whenever {APP_BRAND} refreshes it — edits to generated pages will be lost.",
         "",
         "- Every bullet cites the memory id and source it came from.",
         "- Files marked `cortex_generated: true` are machine-owned; your own notes in this",
         "  folder (without that marker) are never modified, and are ingested like any note.",
-        "- Generated pages are **excluded from Cortex ingestion**, so Cortex never re-reads",
+        f"- Generated pages are **excluded from {APP_BRAND} ingestion**, so {APP_BRAND} never re-reads",
         "  its own output as new evidence.",
         "",
         "Pages:",
@@ -129,7 +131,7 @@ def render_profile_page(profile: dict[str, Any]) -> str:
     lines.append("")
     if not sections:
         lines.extend([
-            "Cortex does not yet have enough cited signal to say anything here honestly.",
+            f"{APP_BRAND} does not yet have enough cited signal to say anything here honestly.",
             "",
         ])
     for section in sections:
@@ -236,7 +238,7 @@ def render_person_page(context: dict[str, Any]) -> str:
             lines.append(f"- **{label}** ({relation}){suffix}")
         lines.append("")
     if not wrote_any and not topics and not connections:
-        lines.extend(["Cortex has no cited evidence about this person yet.", ""])
+        lines.extend([f"{APP_BRAND} has no cited evidence about this person yet.", ""])
     return "\n".join(lines).rstrip("\n") + "\n"
 
 

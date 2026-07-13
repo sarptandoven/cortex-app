@@ -7,6 +7,14 @@ from pathlib import Path
 
 INSECURE_DEV_API_KEY = "dev-local-key"
 
+# Product brand shown in USER-VISIBLE backend strings (connector names, source-health messages,
+# sync status, trust/capability errors, vault page titles, MCP resource/tool prose). The macOS app
+# passes its own display name via CORTEX_APP_BRAND at backend launch: the direct-download build sends
+# "Cortex", the sandboxed Mac App Store build sends "Doppl". Default is "Cortex" so existing tests and
+# the DMG build are unchanged; only when the env is set to "Doppl" do user-visible strings rebrand.
+# App Store Guideline 4: the sandboxed build must never render the other brand's name on screen.
+APP_BRAND = (os.environ.get("CORTEX_APP_BRAND") or "Cortex").strip() or "Cortex"
+
 
 @dataclass(frozen=True)
 class Settings:

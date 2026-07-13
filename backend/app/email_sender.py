@@ -33,6 +33,8 @@ from email.message import EmailMessage
 from typing import Protocol
 from urllib.parse import quote
 
+from .config import APP_BRAND
+
 _logger = logging.getLogger("cortex.auth.email")
 
 # Default SMTP submission timeout (seconds). Kept short so a wedged relay can
@@ -81,7 +83,7 @@ def render_auth_email(
     token: str,
     *,
     app_url: str,
-    product: str = "Cortex",
+    product: str = APP_BRAND,
 ) -> tuple[str, str]:
     """Render an auth email as ``(subject, plaintext_body)``.
 

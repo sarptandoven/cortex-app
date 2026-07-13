@@ -623,7 +623,7 @@ struct MirrorMomentCard: View {
     var body: some View {
         if let insight {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
-                Text("CORTEX NOTICED")
+                Text("\(DistributionMode.appDisplayName.uppercased()) NOTICED")
                     .font(CortexDesign.Typography.stamp)
                     .kerning(0.8)
                     .foregroundColor(CortexDesign.accent)
