@@ -70,7 +70,7 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         self.assertIn("Already synced local memory stays available", source)
         self.assertIn("state.discoverDirectConnectorOptions", source)
         self.assertIn("Find \\(field.displayLabel)", source)
-        self.assertIn("Select the \\(field.displayLabel.lowercased()) Cortex should keep synced.", source)
+        self.assertIn("Select the \\(field.displayLabel.lowercased()) \\(DistributionMode.appDisplayName) should keep synced.", source)
         self.assertNotIn("Advanced source sync", source)
 
         display_text = source.lower()
@@ -305,8 +305,9 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         self.assertIn('"maxRecords": 5000', app_source)
         self.assertIn("community-plugins.json", app_source)
         self.assertIn("enabledPlugins.append(Self.obsidianPluginID)", app_source)
-        # The plugin-bridge status is user-facing, so it no longer names Obsidian.
-        self.assertIn("Cortex bridge installed.", app_source)
+        # The plugin-bridge status is user-facing, so it no longer names Obsidian, and the brand
+        # name is routed through DistributionMode.appDisplayName (Doppl in MAS, Cortex in the DMG).
+        self.assertIn("\\(DistributionMode.appDisplayName) bridge installed.", app_source)
 
     def test_connections_advanced_shows_mcp_permissions_and_audit_summary(self) -> None:
         source = CONNECTIONS_SHEET.read_text(encoding="utf-8")

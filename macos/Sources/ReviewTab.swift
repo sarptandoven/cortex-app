@@ -91,7 +91,7 @@ struct ReviewHeaderSection: View {
                     Text("Review")
                         .font(CortexDesign.Typography.display(22))
                         .foregroundColor(CortexDesign.ink)
-                    Text("Approve what Cortex should remember. Archive the rest.")
+                    Text("Approve what \(DistributionMode.appDisplayName) should remember. Archive the rest.")
                         .font(CortexDesign.Typography.body)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -769,7 +769,7 @@ struct ReviewInboxSection: View {
                 // U-REV5: the destructive "Archive N shown" confirm — same wax-seal beat as approve-all.
                 let archiveBatch = Array(orderedVisibleCaptures.prefix(10))
                 ReviewWaxSealConfirm(
-                    message: "Archive \(archiveBatch.count) shown item\(archiveBatch.count == 1 ? "" : "s")? Cortex won't remember them; your original notes stay in your source.",
+                    message: "Archive \(archiveBatch.count) shown item\(archiveBatch.count == 1 ? "" : "s")? \(DistributionMode.appDisplayName) won't remember them; your original notes stay in your source.",
                     confirmTitle: "Archive \(archiveBatch.count) shown",
                     onConfirm: {
                         withAnimation(CortexMotion.press) { confirmArchiveShown = false }
@@ -1056,11 +1056,11 @@ struct ReviewInboxSection: View {
     private var emptyDetail: String {
         if (state.review?.stats.memories ?? 0) == 0 {
             if state.hasConnectedSourceAccount || state.hasConnectedObsidianVault {
-                return "Sync your source. New memories will appear here before Cortex uses them."
+                return "Sync your source. New memories will appear here before \(DistributionMode.appDisplayName) uses them."
             }
-            return "Connect notes first. New memories will appear here before Cortex uses them."
+            return "Connect notes first. New memories will appear here before \(DistributionMode.appDisplayName) uses them."
         }
-        return "All caught up. New synced items will appear here before Cortex uses them."
+        return "All caught up. New synced items will appear here before \(DistributionMode.appDisplayName) uses them."
     }
 }
 
@@ -1404,7 +1404,7 @@ struct ReviewQueueCaptureCard: View {
             if confirmArchive {
                 // The in-card wax-seal archive confirm (replaces the native confirmationDialog).
                 ReviewWaxSealConfirm(
-                    message: "Archive this review item? Cortex won't remember it; your original note stays in your source. We'll only ask this once.",
+                    message: "Archive this review item? \(DistributionMode.appDisplayName) won't remember it; your original note stays in your source. We'll only ask this once.",
                     confirmTitle: "Archive",
                     onConfirm: {
                         archiveConfirmedOnce = true
@@ -1810,7 +1810,7 @@ struct ReviewQueuePreviewList: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "hourglass")
                     .foregroundColor(CortexDesign.inkSecondary)
-                Text("Cortex is preparing this item.")
+                Text("\(DistributionMode.appDisplayName) is preparing this item.")
             }
             .font(CortexDesign.Typography.body)
             .foregroundColor(CortexDesign.inkSecondary)

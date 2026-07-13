@@ -261,7 +261,7 @@ final class QuickCapture {
         }
         guard ensureAccessibilityPermission() else {
             NotchNotifier.shared.show(
-                title: "Cortex needs Accessibility",
+                title: "\(DistributionMode.appDisplayName) needs Accessibility",
                 subtitle: "Opening System Settings › Privacy › Accessibility…",
                 style: .info
             )
@@ -357,7 +357,7 @@ final class QuickCapture {
         }
         guard ensureScreenRecordingPermission() else {
             NotchNotifier.shared.show(
-                title: "Cortex needs Screen Recording",
+                title: "\(DistributionMode.appDisplayName) needs Screen Recording",
                 subtitle: "Opening System Settings › Privacy › Screen Recording…",
                 style: .info
             )
@@ -380,7 +380,7 @@ final class QuickCapture {
             if trimmed.isEmpty {
                 NotchNotifier.shared.show(
                     title: "No text found",
-                    subtitle: "Cortex couldn't read any text in that capture.",
+                    subtitle: "\(DistributionMode.appDisplayName) couldn't read any text in that capture.",
                     style: .info
                 )
             } else {
@@ -429,7 +429,7 @@ final class QuickCapture {
     private func deliver(_ text: String) {
         onCapturedText?(text, "quick-capture")
         NotchNotifier.shared.show(
-            title: "Saved to Cortex",
+            title: "Saved to \(DistributionMode.appDisplayName)",
             subtitle: QuickCapture.preview(of: text),
             style: .captured
         )

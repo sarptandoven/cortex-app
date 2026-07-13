@@ -44,11 +44,11 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .privateVault:
-            return "Cortex keeps memory private on this Mac."
+            return "\(DistributionMode.appDisplayName) keeps memory private on this Mac."
         case .firstSource:
             return "Connect one memory source so reviewed memory has citations."
         case .reviewMemory:
-            return "Approve one useful item before Cortex uses it."
+            return "Approve one useful item before \(DistributionMode.appDisplayName) uses it."
         case .askUse:
             return "Ask once and check the citations."
         case .trustBackup:

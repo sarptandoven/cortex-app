@@ -37,8 +37,8 @@ struct ReviewProactiveAlertsSection: View {
         if !state.proactiveAlerts.isEmpty {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
                 SectionHeader(
-                    title: "Cortex noticed",
-                    detail: "New notes that disagree with trusted memory. Dismissals teach Cortex what not to flag."
+                    title: "\(DistributionMode.appDisplayName) noticed",
+                    detail: "New notes that disagree with trusted memory. Dismissals teach \(DistributionMode.appDisplayName) what not to flag."
                 )
                 ForEach(state.proactiveAlerts) { alert in
                     ReviewProactiveAlertCard(
@@ -149,7 +149,7 @@ struct ReviewProactiveAlertCard: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(isInFlight)
-                .help("Not worth flagging: Cortex stops raising pairs like this")
+                .help("Not worth flagging: \(DistributionMode.appDisplayName) stops raising pairs like this")
                 Button {
                     resolve("accepted")
                 } label: {
@@ -198,7 +198,7 @@ struct ReviewTwinGradingSection: View {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
                 SectionHeader(
                     title: "Grade your twin",
-                    detail: "Cortex made these predictions from your memory. Grading them builds an accuracy record you can check."
+                    detail: "\(DistributionMode.appDisplayName) made these predictions from your memory. Grading them builds an accuracy record you can check."
                 )
                 ForEach(ungraded.prefix(Self.visibleCount)) { prediction in
                     ReviewTwinGradingCard(
@@ -321,7 +321,7 @@ struct AskTwinPredictionCard: View {
                 .foregroundColor(CortexDesign.ink)
 
             Text(isInsufficient
-                 ? "Cortex only predicts from cited memory, and there isn't enough on this yet. It won't invent a preference."
+                 ? "\(DistributionMode.appDisplayName) only predicts from cited memory, and there isn't enough on this yet. It won't invent a preference."
                  : prediction.rationale)
                 .font(CortexDesign.Typography.body)
                 .foregroundColor(CortexDesign.inkSecondary)
@@ -467,7 +467,7 @@ struct TwinScorecardCard: View {
                     .foregroundColor(CortexDesign.accent)
                 Spacer(minLength: 0)
             }
-            Text("When asked \u{201C}would I\u{2026}\u{201D}, Cortex predicts from your memory and keeps score.")
+            Text("When asked \u{201C}would I\u{2026}\u{201D}, \(DistributionMode.appDisplayName) predicts from your memory and keeps score.")
                 .font(CortexDesign.Typography.body)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -646,7 +646,7 @@ struct ConnectionsToolUsageSection: View {
                             .foregroundColor(budgetValue == 0 ? CortexDesign.inkFaint : CortexDesign.accent)
                     }
                 }
-                Text("Cortex flags at most this many conflicts a day. Zero turns alerts off. Dismissing an alert teaches Cortex not to raise pairs like it.")
+                Text("\(DistributionMode.appDisplayName) flags at most this many conflicts a day. Zero turns alerts off. Dismissing an alert teaches \(DistributionMode.appDisplayName) not to raise pairs like it.")
                     .font(CortexDesign.Typography.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)

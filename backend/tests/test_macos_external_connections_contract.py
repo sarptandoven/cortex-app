@@ -118,7 +118,7 @@ class IntegrationCardContractTests(unittest.TestCase):
         self.assertIn("Copy API details", self.source)
         # Live one-click actions replace the old data-blob "Copy memory pack".
         self.assertIn("Install in ", self.source)
-        self.assertIn("Add Cortex to ", self.source)
+        self.assertIn("Add \\(DistributionMode.appDisplayName) to ", self.source)
 
     def test_full_catalog_is_visible_not_only_installable(self) -> None:
         # The category grid must not filter to supportsInstall-only tools.
@@ -152,7 +152,7 @@ class ConnectionsSheetExternalAccessTests(unittest.TestCase):
         # The web-chat row no longer copies a memory blob out of Cortex; it opens the
         # live-connector wizard so ChatGPT/Claude web read memory on demand, in place.
         self.assertIn("browserAssistantRow", self.source)
-        self.assertIn("Add Cortex as a live connector", self.source)
+        self.assertIn("Add \\(DistributionMode.appDisplayName) as a live connector", self.source)
         self.assertIn("never copied out", self.source)
         self.assertIn("state.presentConnectToolsWizard()", self.source)
         self.assertNotIn("state.copyMemoryPack()", self.source)

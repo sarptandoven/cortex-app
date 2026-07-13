@@ -209,7 +209,7 @@ private struct PillView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(CortexDesign.accent)
                     Button(action: onOpen) {
-                        Text("Open Cortex")
+                        Text("Open \(DistributionMode.appDisplayName)")
                             .font(CortexDesign.Typography.caption)
                             .frame(maxWidth: .infinity)
                     }

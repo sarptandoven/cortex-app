@@ -178,7 +178,7 @@ private struct ConstellationOverlayView: View {
                     Text("Your Constellation")
                         .font(CortexDesign.Typography.title)
                         .foregroundColor(CortexDesign.ink)
-                    Text("The people, projects and topics Cortex has connected. Zoom, pan, and tap a point to see its connections.")
+                    Text("The people, projects and topics \(DistributionMode.appDisplayName) has connected. Zoom, pan, and tap a point to see its connections.")
                         .font(CortexDesign.Typography.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                 }

@@ -81,7 +81,7 @@ struct SourceConnectorStatusCard: View {
                         }
                         Button("Cancel", role: .cancel) {}
                     } message: {
-                        Text("Cortex stops syncing this folder. Memory already synced and reviewed is kept and stays available to Ask. You can reconnect a folder later.")
+                        Text("\(DistributionMode.appDisplayName) stops syncing this folder. Memory already synced and reviewed is kept and stays available to Ask. You can reconnect a folder later.")
                     }
                 }
 
@@ -139,18 +139,18 @@ struct SourceConnectorStatusCard: View {
 
     private var statusDetail: String {
         if needsAttention {
-            return attentionDetail ?? "Cortex lost permission to read this folder, usually after it moved or macOS revoked access. Choose the folder again to resume syncing."
+            return attentionDetail ?? "\(DistributionMode.appDisplayName) lost permission to read this folder, usually after it moved or macOS revoked access. Choose the folder again to resume syncing."
         }
         if needsContent {
-            return "Cortex could not find usable notes there. Choose a notes library with real content."
+            return "\(DistributionMode.appDisplayName) could not find usable notes there. Choose a notes library with real content."
         }
         if connected {
             if !state.hasConnectedObsidianVault {
-                return "Reconnect the notes folder on this Mac so Cortex can keep syncing."
+                return "Reconnect the notes folder on this Mac so \(DistributionMode.appDisplayName) can keep syncing."
             }
-            return "Cortex keeps these notes synced. Review approves memory before Ask uses it."
+            return "\(DistributionMode.appDisplayName) keeps these notes synced. Review approves memory before Ask uses it."
         }
-        return "Choose a notes folder once. Cortex syncs locally and keeps citations attached."
+        return "Choose a notes folder once. \(DistributionMode.appDisplayName) syncs locally and keeps citations attached."
     }
 
     private var primaryButtonTitle: String {

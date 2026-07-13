@@ -376,7 +376,7 @@ struct MemoryWrappedCard: View {
             Text("Measured by")
                 .font(.system(size: 15, weight: .regular))
                 .foregroundColor(Night.inkSecondary)
-            Text("Cortex")
+            Text(DistributionMode.appDisplayName)
                 .font(.system(size: 22, weight: .semibold, design: .serif))
                 .foregroundColor(Night.ink)
         }
@@ -506,7 +506,7 @@ struct MemoryWrappedShareSheet: View {
             CortexToggle(title: "Notify me weekly", isOn: $notifyWeekly)
             Text(notifyWeekly
                  ? (notificationsDenied
-                    ? "Notifications are off for Cortex. Turn them on in System Settings to get your weekly nudge when a new card is ready."
+                    ? "Notifications are off for \(DistributionMode.appDisplayName). Turn them on in System Settings to get your weekly nudge when a new card is ready."
                     : "On. You'll get one nudge a week when a new card is ready, and only on weeks with real recalls.")
                  : "Off. Turn this on for one nudge a week when a new card is ready, only on weeks with real recalls.")
                 .font(CortexDesign.Typography.caption)
@@ -520,7 +520,7 @@ struct MemoryWrappedShareSheet: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "exclamationmark.triangle")
                         .foregroundColor(CortexDesign.gold)
-                    Text("Notifications are off for Cortex, so this nudge can't be delivered yet.")
+                    Text("Notifications are off for \(DistributionMode.appDisplayName), so this nudge can't be delivered yet.")
                         .font(CortexDesign.Typography.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -603,7 +603,7 @@ struct MemoryWrappedShareSheet: View {
             image: cardImage,
             failed: renderFailed,
             stampText: "MEMORY WRAPPED",
-            sealText: "Cortex",
+            sealText: DistributionMode.appDisplayName,
             onRetry: { Task { @MainActor in renderCard() } }
         )
     }
@@ -859,7 +859,7 @@ enum MemoryWrappedNotifier {
 
         let model = MemoryWrappedModel.build(from: headline)
         let title = "Your Memory Wrapped is ready"
-        let body = "\(model.notificationTail) this week. Open Cortex to see and share your card."
+        let body = "\(model.notificationTail) this week. Open \(DistributionMode.appDisplayName) to see and share your card."
 
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in

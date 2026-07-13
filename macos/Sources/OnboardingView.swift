@@ -397,7 +397,7 @@ struct OnboardingView: View {
             Text("Your Archive is ready")
                 .font(CortexDesign.Typography.display(26))
                 .foregroundColor(CortexDesign.ink)
-            Text("Now use it where you work. Ask in Cortex with ⌃⌥Space, or let Claude, ChatGPT, and Cursor cite your memory.")
+            Text("Now use it where you work. Ask in \(DistributionMode.appDisplayName) with ⌃⌥Space, or let Claude, ChatGPT, and Cursor cite your memory.")
                 .font(.callout)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .multilineTextAlignment(.center)
@@ -666,7 +666,7 @@ private struct OnboardingRestoreSignInStep: View {
     /// than an empty string when the email isn't recorded (e.g. a browser/social session).
     private var signedInIdentity: String {
         let recorded = state.cloudAccountEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        return recorded.isEmpty ? "your Cortex account" : recorded
+        return recorded.isEmpty ? "your \(DistributionMode.appDisplayName) account" : recorded
     }
 
     private func providerButtonLabel(_ provider: CloudAuthProvider) -> String {
@@ -1096,7 +1096,7 @@ private struct OnboardingAddMemoryStep: View {
                         .font(CortexDesign.Typography.display(26))
                         .foregroundColor(CortexDesign.ink)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Pick the path that fits you. Cortex distills whatever you bring into cited memory. You can add more any time.")
+                    Text("Pick the path that fits you. \(DistributionMode.appDisplayName) distills whatever you bring into cited memory. You can add more any time.")
                         .font(CortexDesign.Typography.prose(15))
                         .lineSpacing(3)
                         .foregroundColor(CortexDesign.inkSecondary)
@@ -1119,8 +1119,8 @@ private struct OnboardingAddMemoryStep: View {
             // Then the local notes folder (the primary source path) and the one-tap sign-in apps.
             OnboardingLaneLabel(
                 systemImage: "folder.badge.plus",
-                title: "Or point Cortex at your notes",
-                detail: "Choose a local notes folder and Cortex keeps it synced on this Mac."
+                title: "Or point \(DistributionMode.appDisplayName) at your notes",
+                detail: "Choose a local notes folder and \(DistributionMode.appDisplayName) keeps it synced on this Mac."
             )
             // The card carries the step's `.primary` while no source is live; once one is, the
             // card relaxes to `.secondary` ("Change source") and the footer Continue takes over.
@@ -1167,7 +1167,7 @@ private struct OnboardingAddMemoryStep: View {
             }
             .disabled(loadingSamples || state.isBusy)
 
-            Text("No files of your own yet? Try Cortex on a small set of example notes.")
+            Text("No files of your own yet? Try \(DistributionMode.appDisplayName) on a small set of example notes.")
                 .font(.caption)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1231,7 +1231,7 @@ private struct OnboardingAddMemoryStep: View {
                 OnboardingLaneLabel(
                     systemImage: "person.crop.circle.badge.checkmark",
                     title: "Or sign in to a source",
-                    detail: "Sign in once and Cortex imports your data with your consent."
+                    detail: "Sign in once and \(DistributionMode.appDisplayName) imports your data with your consent."
                 )
                 LazyVGrid(
                     columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
@@ -1326,7 +1326,7 @@ private struct OnboardingAddMemoryStep: View {
                 let ext = url.pathExtension.lowercased()
                 if !isDirectory && !ext.isEmpty
                     && !OnboardingAddMemoryStep.acceptedExportExtensions.contains(ext) {
-                    dropFeedback = "Cortex can import a ChatGPT or Claude export: a .zip, its conversations.json, a .jsonl, a .txt transcript, or the unzipped folder. \(ext.uppercased()) files aren't supported here."
+                    dropFeedback = "\(DistributionMode.appDisplayName) can import a ChatGPT or Claude export: a .zip, its conversations.json, a .jsonl, a .txt transcript, or the unzipped folder. \(ext.uppercased()) files aren't supported here."
                     return
                 }
                 dropFeedback = nil
@@ -1353,10 +1353,10 @@ private struct OnboardingAddMemoryStep: View {
 
     private var connectDetail: String {
         if state.onboardingHasSource {
-            return "Cortex found usable memory from your connected source. Continue when ready."
+            return "\(DistributionMode.appDisplayName) found usable memory from your connected source. Continue when ready."
         }
         if state.hasConnectedObsidianVault {
-            return "Cortex checks connected notes on launch and every 30 minutes, then distills new memory with citations."
+            return "\(DistributionMode.appDisplayName) checks connected notes on launch and every 30 minutes, then distills new memory with citations."
         }
         return "Choose a local notes folder, or drag in a ChatGPT / Claude export. Everything stays on your Mac."
     }
@@ -1619,7 +1619,7 @@ private struct OnboardingFinishStep: View {
                     .font(CortexDesign.Typography.display(26))
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("As memory accumulates, Cortex draws Your Constellation. Review it, then it's ready wherever you work: in Cortex, and in the AI tools you connected.")
+                Text("As memory accumulates, \(DistributionMode.appDisplayName) draws Your Constellation. Review it, then it's ready wherever you work: in \(DistributionMode.appDisplayName), and in the AI tools you connected.")
                     .font(CortexDesign.Typography.prose(15))
                     .lineSpacing(3)
                     .foregroundColor(CortexDesign.inkSecondary)
@@ -1909,7 +1909,7 @@ private struct OnboardingQuickCaptureRow: View {
             HStack(alignment: .center, spacing: 8) {
                 CortexButton(title: "Show me the notch", systemImage: "bell.badge", role: .ghost, size: .small) {
                     NotchNotifier.shared.show(
-                        title: "Saved to Cortex",
+                        title: "Saved to \(DistributionMode.appDisplayName)",
                         subtitle: "This is what a quick capture looks like.",
                         style: .captured
                     )

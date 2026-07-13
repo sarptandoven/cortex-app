@@ -116,7 +116,7 @@ struct MenuBarQuickPanel: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(CortexDesign.accent)
             }
-            Text("Cortex")
+            Text(DistributionMode.appDisplayName)
                 .font(.system(size: 15, weight: .semibold, design: .serif))
                 .foregroundColor(CortexDesign.ink)
             Spacer()
@@ -255,7 +255,7 @@ struct MenuBarQuickPanel: View {
                     Button {
                         continueInCortex()
                     } label: {
-                        Label("Continue in Cortex", systemImage: "arrow.up.forward.app")
+                        Label("Continue in \(DistributionMode.appDisplayName)", systemImage: "arrow.up.forward.app")
                             .font(.caption)
                             .fontWeight(.medium)
                     }
@@ -290,7 +290,7 @@ struct MenuBarQuickPanel: View {
                         retryAsk()
                     }
                     .disabled(asking || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    CortexButton(title: "Open Cortex", role: .secondary, size: .small) {
+                    CortexButton(title: "Open \(DistributionMode.appDisplayName)", role: .secondary, size: .small) {
                         onOpenApp()
                     }
                     Spacer(minLength: 0)
@@ -310,7 +310,7 @@ struct MenuBarQuickPanel: View {
             askHero
             let suggestions = Array(state.onboardingAskSuggestions.prefix(2))
             if suggestions.isEmpty {
-                quietRow(icon: "quote.bubble", text: "Ask a question and Cortex answers from your own memory, with citations.")
+                quietRow(icon: "quote.bubble", text: "Ask a question and \(DistributionMode.appDisplayName) answers from your own memory, with citations.")
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Try asking")
@@ -500,7 +500,7 @@ struct MenuBarQuickPanel: View {
 
     private var footer: some View {
         HStack(spacing: 6) {
-            footerAction("Open Cortex", icon: "macwindow", action: onOpenApp)
+            footerAction("Open \(DistributionMode.appDisplayName)", icon: "macwindow", action: onOpenApp)
             footerBadgeAction(
                 "Review", icon: "checklist", badge: pendingCount, action: onOpenReview
             )

@@ -55,16 +55,21 @@ class MacOSSignInQualityContractTests(unittest.TestCase):
         self.assertIn("ScrollView", source)
 
     def test_native_apple_button_is_full_width_and_entitlement_gated(self) -> None:
-        # The Apple button renders ONLY when it can actually work: the build carries the
-        # applesignin entitlement AND the hosted backend advertises apple as a configured
-        # provider. (The old shape always rendered it and merely .disabled() it — a dead
-        # button on ad-hoc builds, a confirmed audit defect.)
+        # The Apple button renders whenever the build carries the applesignin entitlement
+        # (canUseNativeAppleSignIn). It must NOT also depend on the /v1/auth/providers list:
+        # native SIWA has no web client_secret, so that list deliberately never contains "apple",
+        # and gating on it made SIWA permanently dead code while GitHub/Google browser buttons
+        # rendered — the exact Guideline 4.8 violation. The native endpoint
+        # /v1/auth/oauth/apple/native always exists and returns a clear error if the backend has
+        # no Apple client id, so the button is a real control, never a dead one.
         source = CORTEX_CLOUD_AUTH.read_text(encoding="utf-8")
 
         self.assertIn("hasAppleSignInEntitlement", source)
         self.assertIn("com.apple.developer.applesignin", source)
         self.assertIn(".frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)", source)
-        self.assertIn("canUseNativeAppleSignIn && backendOffersApple", source)
+        self.assertIn("if canUseNativeAppleSignIn {", source)
+        # 4.8 regression guard: SIWA must never again be gated on the web-provider list.
+        self.assertNotIn("canUseNativeAppleSignIn && backendOffersApple", source)
         # Provider-aware sign-in: a real labeled button per configured provider (never a
         # dead one), discovered from GET /v1/auth/providers.
         self.assertIn("loadCloudAuthProviders", source)

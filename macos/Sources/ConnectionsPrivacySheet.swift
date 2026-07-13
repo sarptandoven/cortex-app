@@ -139,7 +139,7 @@ private struct ConnectionsPrivacyOverview: View {
                         ConnectionsRetryState(
                             state: state,
                             title: "Preparing privacy controls",
-                            detail: "Cortex is reading local privacy settings and connection history."
+                            detail: "\(DistributionMode.appDisplayName) is reading local privacy settings and connection history."
                         ) {
                             Task {
                                 await state.loadTrust()
@@ -212,7 +212,7 @@ private struct ConnectionsPrivacyOverview: View {
             InboundLaneHeader(
                 systemImage: "bubble.left.and.text.bubble.right",
                 title: "Import your AI chats",
-                detail: "Coming from ChatGPT, Claude, or Gemini? Bring that whole history in. One tap opens the export page, then Cortex imports it for you."
+                detail: "Coming from ChatGPT, Claude, or Gemini? Bring that whole history in. One tap opens the export page, then \(DistributionMode.appDisplayName) imports it for you."
             )
             AIChatsImportCard(state: state)
         }
@@ -226,7 +226,7 @@ private struct ConnectionsPrivacyOverview: View {
             InboundLaneHeader(
                 systemImage: "person.crop.circle.badge.checkmark",
                 title: "Sign in to a source",
-                detail: "Sign in once and Cortex imports your data with your consent. Read-only, and it stays on this Mac."
+                detail: "Sign in once and \(DistributionMode.appDisplayName) imports your data with your consent. Read-only, and it stays on this Mac."
             )
             ConnectionsSignInSourcesSection(state: state)
         }
@@ -239,7 +239,7 @@ private struct ConnectionsPrivacyOverview: View {
             InboundLaneHeader(
                 systemImage: "desktopcomputer",
                 title: "From your Mac",
-                detail: "Point Cortex at a notes folder on this Mac, or bring your Apple Notes in. Nothing leaves your device."
+                detail: "Point \(DistributionMode.appDisplayName) at a notes folder on this Mac, or bring your Apple Notes in. Nothing leaves your device."
             )
             ConnectionsObsidianSection(state: state)
             AppleNotesImportCard(state: state)
@@ -261,7 +261,7 @@ private struct ConnectionsPrivacyOverview: View {
             systemImage: "wand.and.stars",
             title: "Use your memory in AI apps",
             detail: aiAppsGroupDetail,
-            help: "Connect Claude Desktop, Cursor, or any MCP app to read reviewed memory with citations. ChatGPT and Claude web reach it through a live connector. Cortex never copies your memory out."
+            help: "Connect Claude Desktop, Cursor, or any MCP app to read reviewed memory with citations. ChatGPT and Claude web reach it through a live connector. \(DistributionMode.appDisplayName) never copies your memory out."
         ) {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
                 ConnectionsAIToolsSection(state: state)
@@ -284,7 +284,7 @@ private struct ConnectionsPrivacyOverview: View {
         if detected > 0 {
             return "\(detected) AI app\(detected == 1 ? "" : "s") detected on this Mac. Connect Claude Desktop, ChatGPT, Cursor, or web chats."
         }
-        return "Connect Claude Desktop, ChatGPT, Cursor, and other AI apps live. Your memory stays in Cortex."
+        return "Connect Claude Desktop, ChatGPT, Cursor, and other AI apps live. Your memory stays in \(DistributionMode.appDisplayName)."
     }
 
     // MARK: Group 3 — Privacy & data (permissions, stored data, backups, export)
@@ -429,7 +429,7 @@ private struct ConnectionsPrivacyOverview: View {
             isExpanded: $activityMetricsExpanded,
             systemImage: "gauge.with.needle",
             title: "Activity & alerts",
-            detail: "How tools use memory, and how often Cortex may interrupt"
+            detail: "How tools use memory, and how often \(DistributionMode.appDisplayName) may interrupt"
         ) {
             ConnectionsToolUsageSection(state: state)
                 .padding(.top, 10)
@@ -619,7 +619,7 @@ private struct ConnectionsObsidianSection: View {
         if let obsidianReadiness {
             return "\(obsidianReadiness.syncPlanDisplayTitle), synced automatically."
         }
-        return "Choose the local source Cortex should keep synced automatically."
+        return "Choose the local source \(DistributionMode.appDisplayName) should keep synced automatically."
     }
 
     var body: some View {
@@ -633,7 +633,7 @@ private struct ConnectionsObsidianSection: View {
                 ConnectionsRetryState(
                     state: state,
                     title: "Checking notes connection",
-                    detail: "Cortex is checking available local notes."
+                    detail: "\(DistributionMode.appDisplayName) is checking available local notes."
                 ) {
                     Task { await state.loadSourceConnectivity() }
                 }
@@ -647,7 +647,7 @@ private struct ConnectionsObsidianSection: View {
                     attentionDetail: notesHealth.detail
                 )
             } else {
-                QuietState(title: "Notes connection unavailable", detail: "Restart Cortex after the private memory store is ready.")
+                QuietState(title: "Notes connection unavailable", detail: "Restart \(DistributionMode.appDisplayName) after the private memory store is ready.")
             }
         }
     }
@@ -790,7 +790,7 @@ private struct ConnectionsDirectSourcesSection: View {
                 ConnectionsRetryState(
                     state: state,
                     title: "Checking connections",
-                    detail: "Cortex is loading available read-only connections."
+                    detail: "\(DistributionMode.appDisplayName) is loading available read-only connections."
                 ) {
                     Task { await state.loadSourceConnectivity() }
                 }
@@ -1184,7 +1184,7 @@ private struct AIChatsImportCard: View {
     private let steps = [
         "Tap your provider below. It opens the export page in your browser, already on the right screen.",
         "Ask for the export. The provider emails you a download link in a few minutes (ChatGPT, Claude, and Gemini all send it by email).",
-        "Download the file, then drop it here or click Choose export file. Cortex often spots it in Downloads on its own."
+        "Download the file, then drop it here or click Choose export file. \(DistributionMode.appDisplayName) often spots it in Downloads on its own."
     ]
 
     private var hasCompletedImport: Bool {
@@ -1259,7 +1259,7 @@ private struct AIChatsImportCard: View {
                     exportVendorButton("Claude", systemImage: "sparkle", urlString: "https://claude.ai/settings/data-privacy-controls")
                     exportVendorButton("Gemini", systemImage: "diamond", urlString: "https://takeout.google.com/")
                 }
-                Text("The provider emails you a download link, usually within a few minutes. Grab the file, then Cortex takes it from there.")
+                Text("The provider emails you a download link, usually within a few minutes. Grab the file, then \(DistributionMode.appDisplayName) takes it from there.")
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkFaint)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1377,7 +1377,7 @@ private struct AIChatsImportCard: View {
         }
         .buttonStyle(.plain)
         .help(isWaiting
-              ? "Waiting for your \(name) export. Reopen the export page any time; Cortex imports the file automatically when it lands."
+              ? "Waiting for your \(name) export. Reopen the export page any time; \(DistributionMode.appDisplayName) imports the file automatically when it lands."
               : "Open the \(name) export page in your browser")
         .accessibilityLabel(isWaiting ? "Waiting for your \(name) export; reopen the export page" : "Open the \(name) export page")
     }
@@ -1510,7 +1510,7 @@ private struct ConnectionsSignInSourcesSection: View {
                 ConnectionsRetryState(
                     state: state,
                     title: "Checking sign-in sources",
-                    detail: "Cortex is loading the sources you can sign in to."
+                    detail: "\(DistributionMode.appDisplayName) is loading the sources you can sign in to."
                 ) {
                     Task { await state.loadSourceConnectivity() }
                 }
@@ -1662,7 +1662,7 @@ private struct AppleNotesImportCard: View {
     private let steps = [
         "Open the Notes app, select the notes you want, then use the File menu and pick Export as PDF (or use the Shortcuts app to save them as text).",
         "Save the exported file somewhere easy to find, like your Desktop or Downloads.",
-        "Drop the file here, or click Choose export file. Cortex distills it into cited memory.",
+        "Drop the file here, or click Choose export file. \(DistributionMode.appDisplayName) distills it into cited memory.",
     ]
 
     var body: some View {
@@ -1675,7 +1675,7 @@ private struct AppleNotesImportCard: View {
                     Text("Bring in your Apple Notes")
                         .font(.headline)
                         .foregroundColor(CortexDesign.ink)
-                    Text("Export the notes you want, then Cortex imports them. Nothing leaves your Mac.")
+                    Text("Export the notes you want, then \(DistributionMode.appDisplayName) imports them. Nothing leaves your Mac.")
                         .font(.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1751,7 +1751,7 @@ private struct ImportDiffEntryCard: View {
                     Text("See what the AIs think of you")
                         .font(.headline)
                         .foregroundColor(CortexDesign.ink)
-                    Text("Compare a ChatGPT, Claude, or Gemini memory export against your Cortex, with citations.")
+                    Text("Compare a ChatGPT, Claude, or Gemini memory export against your \(DistributionMode.appDisplayName), with citations.")
                         .font(.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1770,7 +1770,7 @@ private struct ImportDiffEntryCard: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help("Open “What the AIs think of you”: compare an AI memory export against your Cortex.")
+        .help("Open “What the AIs think of you”: compare an AI memory export against your \(DistributionMode.appDisplayName).")
     }
 }
 
@@ -1976,7 +1976,7 @@ private struct ConnectionsDirectSourceRow: View {
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("This removes the review items and memory Cortex synced from \(connector.name). Approved memory from this connection is deleted and can only be recovered from a backup. To stop syncing while keeping memory, use Pause instead.")
+                    Text("This removes the review items and memory \(DistributionMode.appDisplayName) synced from \(connector.name). Approved memory from this connection is deleted and can only be recovered from a backup. To stop syncing while keeping memory, use Pause instead.")
                 }
             } else if canDisconnect {
                 // A connector that's connected/configured but has no deletable import (an OAuth or
@@ -2003,7 +2003,7 @@ private struct ConnectionsDirectSourceRow: View {
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("Cortex stops syncing \(connector.name) and forgets its saved connection, so it won't resume on its own. Memory already synced from this source is kept: remove it from Privacy & data → Manage stored data. To pause without forgetting the connection, use Pause instead.")
+                    Text("\(DistributionMode.appDisplayName) stops syncing \(connector.name) and forgets its saved connection, so it won't resume on its own. Memory already synced from this source is kept: remove it from Privacy & data → Manage stored data. To pause without forgetting the connection, use Pause instead.")
                 }
             }
         }
@@ -2309,7 +2309,7 @@ private struct ConnectorTokenSetupSheet: View {
                         .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).fill(CortexDesign.accentSoft))
                     }
                     if setup == nil {
-                        QuietState(title: "Setup contract unavailable", detail: "Update Cortex and try this connection again.")
+                        QuietState(title: "Setup contract unavailable", detail: "Update \(DistributionMode.appDisplayName) and try this connection again.")
                     } else {
                         if !requiredFields.isEmpty {
                             VStack(alignment: .leading, spacing: 12) {
@@ -2388,11 +2388,11 @@ private struct ConnectorTokenSetupSheet: View {
     private var headerDetail: String {
         switch setup?.mode {
         case "native-local-connector":
-            return "Cortex reads this local source and sends useful memory to Review first."
+            return "\(DistributionMode.appDisplayName) reads this local source and sends useful memory to Review first."
         case "native-token-connector":
-            return "Cortex uses your token for read-only sync and sends useful memory to Review first."
+            return "\(DistributionMode.appDisplayName) uses your token for read-only sync and sends useful memory to Review first."
         default:
-            return "Cortex sends useful memory to Review first, with citations preserved."
+            return "\(DistributionMode.appDisplayName) sends useful memory to Review first, with citations preserved."
         }
     }
 
@@ -2584,7 +2584,7 @@ private struct ConnectorTokenSetupSheet: View {
                 if options.isEmpty {
                     discoveryMessages[field.name] = "No \(field.displayLabel.lowercased()) found for this account."
                 } else {
-                    discoveryMessages[field.name] = "Select the \(field.displayLabel.lowercased()) Cortex should keep synced."
+                    discoveryMessages[field.name] = "Select the \(field.displayLabel.lowercased()) \(DistributionMode.appDisplayName) should keep synced."
                 }
             } catch {
                 discoveryMessages[field.name] = CortexRecoveryText.failureStatus("Find \(field.displayLabel.lowercased())", error: error)
@@ -2860,9 +2860,9 @@ private struct ConnectionsAIToolsSection: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "AI tools & permissions",
-                detail: "Every connection is live: your tools read Cortex on demand. Your memory only ever lives here."
+                detail: "Every connection is live: your tools read \(DistributionMode.appDisplayName) on demand. Your memory only ever lives here."
             )
-            .help("Claude Desktop, Cursor and other MCP apps read reviewed memory with citations. ChatGPT and Claude web reach it through a live connector. Cortex never copies your memory out.")
+            .help("Claude Desktop, Cursor and other MCP apps read reviewed memory with citations. ChatGPT and Claude web reach it through a live connector. \(DistributionMode.appDisplayName) never copies your memory out.")
 
             // The hero front door, first: the guided wizard opens as a top-level sheet.
             connectWizardEntry
@@ -2991,7 +2991,7 @@ private struct ConnectionsAIToolsSection: View {
                         state.copyMCPConfig()
                         flashCopied(.toolConfig)
                     }
-                    .help("Copies the Cortex MCP configuration to paste into Claude Desktop or another compatible tool.")
+                    .help("Copies the \(DistributionMode.appDisplayName) MCP configuration to paste into Claude Desktop or another compatible tool.")
                 }
             }
         }
@@ -3109,7 +3109,7 @@ private struct ConnectionsAIToolsSection: View {
                         // #6: only flip to "Token copied" after the token is actually minted + copied.
                         state.pairBrowserExtension(onPaired: { flashCopied(.extensionPairing) })
                     }
-                    .help("Mints a read-only pairing token and copies it for the Cortex browser extension.")
+                    .help("Mints a read-only pairing token and copies it for the \(DistributionMode.appDisplayName) browser extension.")
 
                     CortexButton(
                         title: copiedCluster == .apiDetails ? "Copied" : "Copy API details",
@@ -3130,7 +3130,7 @@ private struct ConnectionsAIToolsSection: View {
                     Image(systemName: "arrow.turn.down.right")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(CortexDesign.accent)
-                    Text("Paste this token into the Cortex browser extension's Options, then click Cortex on a supported site.")
+                    Text("Paste this token into the \(DistributionMode.appDisplayName) browser extension's Options, then click \(DistributionMode.appDisplayName) on a supported site.")
                         .font(.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -3235,7 +3235,7 @@ private struct ConnectionsAIToolsSection: View {
                         Task { await state.syncContextFile(path: path) }
                     }
                     .disabled(state.syncingContextFilePath != nil)
-                    .help("Renders your cited profile into this file's Cortex-managed block.")
+                    .help("Renders your cited profile into this file's \(DistributionMode.appDisplayName)-managed block.")
                 }
             }
             if let result {
@@ -3260,7 +3260,7 @@ private struct ConnectionsAIToolsSection: View {
                 ) {
                     Task { await state.loadContextFilePreview() }
                 }
-                .help("See exactly what Cortex will write before you sync any file.")
+                .help("See exactly what \(DistributionMode.appDisplayName) will write before you sync any file.")
                 Spacer(minLength: 0)
             }
 
@@ -3378,9 +3378,9 @@ private struct ConnectionsAIToolsSection: View {
             return "These apps can read reviewed memory with citations."
         }
         if !detectedConnectable.isEmpty {
-            return "Enable this only when you want reviewed memory available outside Cortex."
+            return "Enable this only when you want reviewed memory available outside \(DistributionMode.appDisplayName)."
         }
-        return "Connect Claude Desktop, Cursor, or any MCP app with one click. ChatGPT and Claude web reach your memory through a live connector; nothing is copied out of Cortex."
+        return "Connect Claude Desktop, Cursor, or any MCP app with one click. ChatGPT and Claude web reach your memory through a live connector; nothing is copied out of \(DistributionMode.appDisplayName)."
     }
 
     /// The ChatGPT / Claude-web path, given equal footing with MCP installs: opens the wizard to add
@@ -3403,11 +3403,11 @@ private struct ConnectionsAIToolsSection: View {
                         .font(CortexDesign.Typography.stamp)
                         .kerning(0.8)
                         .foregroundColor(CortexDesign.inkFaint)
-                    Text("Add Cortex as a live connector")
+                    Text("Add \(DistributionMode.appDisplayName) as a live connector")
                         .font(.title3)
                         .fontWeight(.semibold)
                         .foregroundColor(CortexDesign.ink)
-                    Text("Hand the web chat a connector link and key so it reads your memory on demand. Your memory stays in Cortex, never copied out.")
+                    Text("Hand the web chat a connector link and key so it reads your memory on demand. Your memory stays in \(DistributionMode.appDisplayName), never copied out.")
                         .font(.callout)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -3419,7 +3419,7 @@ private struct ConnectionsAIToolsSection: View {
                     // U-CONN6: land directly on the remote-connector path instead of the generic pick grid.
                     remoteConnectorWizard = true
                 }
-                .help("Opens the wizard to add Cortex as a live connector in ChatGPT or Claude web. It reads your memory on demand; nothing is copied out.")
+                .help("Opens the wizard to add \(DistributionMode.appDisplayName) as a live connector in ChatGPT or Claude web. It reads your memory on demand; nothing is copied out.")
             }
         }
         .padding(14)
@@ -3574,7 +3574,7 @@ struct ConnectAppWizard: View {
     private var headerSubtitle: String {
         switch step {
         case .pick: return "Pick the tool you want to give access to your reviewed memory."
-        case .connect: return selected.map { "Add Cortex to \($0.name)." } ?? "Add Cortex to your tool."
+        case .connect: return selected.map { "Add \(DistributionMode.appDisplayName) to \($0.name)." } ?? "Add \(DistributionMode.appDisplayName) to your tool."
         case .verify: return selected.map { "Check that \($0.name) can reach your memory." } ?? "Check the connection."
         case .done: return "You're set. Your memory is available where you work."
         }
@@ -3684,7 +3684,7 @@ struct ConnectAppWizard: View {
                     CortexButton(title: "Finish", systemImage: "checkmark", role: .primary, size: .large) {
                         withAnimation(.easeInOut(duration: 0.2)) { step = .done }
                     }
-                    .help("The connection is set up on Cortex's side. This tool confirms it on its own end.")
+                    .help("The connection is set up on \(DistributionMode.appDisplayName)'s side. This tool confirms it on its own end.")
                 } else {
                     CortexButton(title: "Finish", systemImage: "checkmark", role: .primary, size: .large) {
                         withAnimation(.easeInOut(duration: 0.2)) { step = .done }
@@ -3783,7 +3783,7 @@ struct ConnectAppWizard: View {
             }
             .disabled(!DistributionMode.isAppStore && count == 0)
             .help(DistributionMode.isAppStore
-                  ? "Copies the Cortex setup config to paste into each AI app's MCP settings."
+                  ? "Copies the \(DistributionMode.appDisplayName) setup config to paste into each AI app's MCP settings."
                   : "Wires up every AI app detected on this Mac at once. A backup is saved before any config change.")
         }
         .padding(14)
@@ -3881,7 +3881,7 @@ struct ConnectAppWizard: View {
         VStack(alignment: .leading, spacing: 14) {
             pasteInstructions([
                 "Click Install in \(tool.name) below.",
-                "\(tool.name) pops up to confirm the Cortex connection. Approve it.",
+                "\(tool.name) pops up to confirm the \(DistributionMode.appDisplayName) connection. Approve it.",
                 "That's it. \(tool.name) is connected live."
             ])
             CortexButton(title: "Install in \(tool.name)", systemImage: "arrow.down.app", role: .primary, size: .large) {
@@ -3910,7 +3910,7 @@ struct ConnectAppWizard: View {
             HStack(alignment: .top, spacing: 7) {
                 Image(systemName: "clock.badge.questionmark")
                     .foregroundColor(CortexDesign.inkSecondary)
-                Text("A live Cortex connection for \(tool.name) is not supported yet. Cortex never copies your memory out, so there's nothing to paste here. Open \(tool.name) alongside Cortex in the meantime.")
+                Text("A live \(DistributionMode.appDisplayName) connection for \(tool.name) is not supported yet. \(DistributionMode.appDisplayName) never copies your memory out, so there's nothing to paste here. Open \(tool.name) alongside \(DistributionMode.appDisplayName) in the meantime.")
                     .font(.callout)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3941,15 +3941,15 @@ struct ConnectAppWizard: View {
             } else {
                 pasteInstructions([
                     "Click Connect & restart \(tool.name) below.",
-                    "Cortex writes the connection into \(tool.name) and restarts it for you (a backup is saved first).",
-                    "\(tool.name) reopens with Cortex live."
+                    "\(DistributionMode.appDisplayName) writes the connection into \(tool.name) and restarts it for you (a backup is saved first).",
+                    "\(tool.name) reopens with \(DistributionMode.appDisplayName) live."
                 ])
                 HStack(spacing: 10) {
                     CortexButton(title: "Connect & restart \(tool.name)", systemImage: "link.circle", role: .primary, size: .large) {
                         state.connectAndRelaunch(for: tool)
                         didCopy = true
                     }
-                    .help("Writes the Cortex server into \(tool.name)'s config file and restarts it for you.")
+                    .help("Writes the \(DistributionMode.appDisplayName) server into \(tool.name)'s config file and restarts it for you.")
                     CortexButton(title: "Copy config instead", systemImage: "doc.on.doc", role: .ghost, size: .large) {
                         state.copyMCPConfig(for: tool)
                         didCopy = true
@@ -4281,7 +4281,7 @@ private struct RemoteMCPConnectBody: View {
                 HStack(alignment: .top, spacing: 7) {
                     Image(systemName: "person.crop.circle.badge.exclamationmark")
                         .foregroundColor(CortexDesign.gold)
-                    Text("Sign in and sync first so \(tool.name) can reach your memory through the hosted connector. Nothing is copied out of Cortex.")
+                    Text("Sign in and sync first so \(tool.name) can reach your memory through the hosted connector. Nothing is copied out of \(DistributionMode.appDisplayName).")
                         .font(.callout)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -4300,7 +4300,7 @@ private struct RemoteMCPConnectBody: View {
                     prepare()
                 }
                 .disabled(!state.isSignedIn || preparing)
-                .help("Mints the Cortex connector URL and key for \(tool.name). Paste each into its own field in \(tool.name).")
+                .help("Mints the \(DistributionMode.appDisplayName) connector URL and key for \(tool.name). Paste each into its own field in \(tool.name).")
                 if preparing {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
@@ -4375,7 +4375,7 @@ private struct RemoteMCPConnectBody: View {
                     .fill(CortexDesign.sealMoss)
                     .frame(width: 7, height: 7)
                     .padding(.top, 3)
-                Text("The key is a secure connection, not your data. Your memory stays in Cortex and is served on demand.")
+                Text("The key is a secure connection, not your data. Your memory stays in \(DistributionMode.appDisplayName) and is served on demand.")
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -4437,21 +4437,21 @@ private struct RemoteMCPConnectBody: View {
                 "In ChatGPT, open Settings, then Connectors, then Advanced, and turn on Developer mode.",
                 "Choose Create, then paste the Connector URL below into the URL field.",
                 "Set Authentication to API key (Bearer), then paste the Connector key below into the key field.",
-                "Choose Create. Cortex appears as a connector ChatGPT can read on demand.",
+                "Choose Create. \(DistributionMode.appDisplayName) appears as a connector ChatGPT can read on demand.",
             ]
         case "claude":
             return [
                 "In Claude on the web, open Settings, then Connectors, and choose Add custom connector.",
                 "Paste the Connector URL below into the remote MCP server URL field.",
                 "Choose API key or Bearer token authentication, then paste the Connector key below.",
-                "Save. Cortex is now a connector Claude reaches live.",
+                "Save. \(DistributionMode.appDisplayName) is now a connector Claude reaches live.",
             ]
         default:
             return [
                 "Open \(tool.name)'s custom or remote connector settings.",
                 "Paste the Connector URL below as the remote MCP server URL.",
                 "Choose Bearer or API key authentication, then paste the Connector key below.",
-                "Save the connector. Cortex is served live; nothing is copied out.",
+                "Save the connector. \(DistributionMode.appDisplayName) is served live; nothing is copied out.",
             ]
         }
     }
@@ -4485,7 +4485,7 @@ private struct RemoteMCPConnectBody: View {
 
     private func copyBoth() {
         let details = """
-        Cortex connector for \(tool.name) (a secure connection, not your data)
+        \(DistributionMode.appDisplayName) connector for \(tool.name) (a secure connection, not your data)
 
         Connector URL: \(connectorURL ?? "")
         Connector key: \(connectorKey ?? "")
@@ -4519,7 +4519,7 @@ private struct ConnectionsGuidedMCPSetup: View {
     private let steps = [
         "Open your AI app's MCP settings (Claude Desktop: Settings → Developer → Edit Config).",
         "Paste the configuration below into the mcpServers block, then save.",
-        "Quit and reopen the app. Cortex memory tools appear once it restarts."
+        "Quit and reopen the app. \(DistributionMode.appDisplayName) memory tools appear once it restarts."
     ]
 
     /// Redacted preview of the connection JSON — the real token is copied, never shown. Rendered
@@ -5173,7 +5173,7 @@ private struct ConnectionsActiveSourcesSection: View {
         VStack(alignment: .leading, spacing: 8) {
             if activeAccounts.isEmpty {
                 if accountsNeedingContent.isEmpty {
-                    QuietState(title: "No source connected", detail: "Connect a local source once. Cortex syncs after that.")
+                    QuietState(title: "No source connected", detail: "Connect a local source once. \(DistributionMode.appDisplayName) syncs after that.")
                 } else {
                     QuietState(title: "Choose a source with content", detail: "The selected folder did not produce usable memory yet.")
                 }
@@ -5259,7 +5259,7 @@ struct GitHubDeviceCodeView: View {
                 Text("Sign in with GitHub")
                     .font(.system(size: 19, weight: .semibold))
                     .foregroundColor(CortexDesign.ink)
-                Text("Cortex reads your GitHub activity so your memory can cite it. Read-only: Cortex never writes to your repositories.")
+                Text("\(DistributionMode.appDisplayName) reads your GitHub activity so your memory can cite it. Read-only: \(DistributionMode.appDisplayName) never writes to your repositories.")
                     .font(.system(size: 12))
                     .foregroundColor(CortexDesign.inkSecondary)
                     .multilineTextAlignment(.center)

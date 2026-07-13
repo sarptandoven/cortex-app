@@ -134,7 +134,7 @@ enum ImportDiffStatus: String, CaseIterable {
         case .confirmed: return "Confirmed"
         case .conflicting: return "Conflicting"
         case .stale: return "Out of date"
-        case .missing: return "Cortex doesn't know this"
+        case .missing: return "\(DistributionMode.appDisplayName) doesn't know this"
         }
     }
 
@@ -157,10 +157,10 @@ enum ImportDiffStatus: String, CaseIterable {
 
     var blurb: String {
         switch self {
-        case .confirmed: return "Your export and Cortex agree."
-        case .conflicting: return "Your export says something Cortex remembers differently."
-        case .stale: return "Cortex has a newer version of this."
-        case .missing: return "This isn't in your Cortex yet."
+        case .confirmed: return "Your export and \(DistributionMode.appDisplayName) agree."
+        case .conflicting: return "Your export says something \(DistributionMode.appDisplayName) remembers differently."
+        case .stale: return "\(DistributionMode.appDisplayName) has a newer version of this."
+        case .missing: return "This isn't in your \(DistributionMode.appDisplayName) yet."
         }
     }
 }
@@ -265,7 +265,7 @@ struct ImportDiffView: View {
                 Text("What the AIs think of you")
                     .font(CortexDesign.Typography.title)
                     .foregroundColor(CortexDesign.ink)
-                Text("Paste a ChatGPT, Claude, or Gemini memory export and see it checked, with citations, against your Cortex.")
+                Text("Paste a ChatGPT, Claude, or Gemini memory export and see it checked, with citations, against your \(DistributionMode.appDisplayName).")
                     .font(CortexDesign.Typography.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -435,7 +435,7 @@ struct ImportDiffView: View {
             CortexEmptyState(
                 systemImage: "sparkle.magnifyingglass",
                 title: "See what an AI remembers about you",
-                message: "Export your memory from ChatGPT, Claude, or Gemini, paste it above, and Cortex will tell you what it can confirm, what conflicts, and what it already knew that the export missed."
+                message: "Export your memory from ChatGPT, Claude, or Gemini, paste it above, and \(DistributionMode.appDisplayName) will tell you what it can confirm, what conflicts, and what it already knew that the export missed."
             )
             .frame(maxWidth: .infinity)
 
@@ -492,7 +492,7 @@ struct ImportDiffView: View {
                 }
                 .disabled(comparing)
             }
-            Text("Each AI emails your export as a file. Download it, then drop it above. We never send the export anywhere except your own Cortex.")
+            Text("Each AI emails your export as a file. Download it, then drop it above. We never send the export anywhere except your own \(DistributionMode.appDisplayName).")
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)
@@ -509,7 +509,7 @@ struct ImportDiffView: View {
     private var comparingState: some View {
         HStack(spacing: CortexDesign.Space.sm) {
             ProgressView().scaleEffect(0.8)
-            Text("Reading your export and checking it against your Cortex…")
+            Text("Reading your export and checking it against your \(DistributionMode.appDisplayName)…")
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkSecondary)
         }
@@ -543,7 +543,7 @@ struct ImportDiffView: View {
             }
 
             if facts.isEmpty {
-                Text("Cortex couldn't read any facts from that export. Try pasting the raw export text or JSON.")
+                Text("\(DistributionMode.appDisplayName) couldn't read any facts from that export. Try pasting the raw export text or JSON.")
                     .font(CortexDesign.Typography.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -580,7 +580,7 @@ struct ImportDiffView: View {
                     stats: [
                         (confirms, "confirms", CortexDesign.sealMoss),
                         (disputes, "disputes", CortexDesign.gold),
-                        (missing, "new to Cortex", ImportDiffStatus.missing.tone),
+                        (missing, "new to \(DistributionMode.appDisplayName)", ImportDiffStatus.missing.tone),
                     ],
                     ground: CortexDesign.quietBackground
                 )
@@ -588,7 +588,7 @@ struct ImportDiffView: View {
                     .fill(CortexDesign.hairline)
                     .frame(width: 1)
                 verdictLedger(
-                    title: "Your Cortex",
+                    title: "Your \(DistributionMode.appDisplayName)",
                     stats: [
                         (remembers, "it already knew your export forgot", CortexDesign.sealMoss),
                     ],
@@ -694,7 +694,7 @@ struct ImportDiffView: View {
                         .disabled(true)
                     } else if !addable.isEmpty {
                         CortexButton(
-                            title: "Add all \(addable.count) to Cortex",
+                            title: "Add all \(addable.count) to \(DistributionMode.appDisplayName)",
                             systemImage: "plus.circle",
                             role: .secondary,
                             size: .small
@@ -739,7 +739,7 @@ struct ImportDiffView: View {
                         .foregroundColor(CortexDesign.inkSecondary)
                     Spacer(minLength: 0)
                 }
-                Text("Cortex already remembers these; your \(result.displayVendorLabel) export doesn't.")
+                Text("\(DistributionMode.appDisplayName) already remembers these; your \(result.displayVendorLabel) export doesn't.")
                     .font(CortexDesign.Typography.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -794,7 +794,7 @@ struct ImportDiffView: View {
                 result = diff
                 persistLastDiff()
             } else {
-                errorText = "Couldn't compare that export right now. Check that Cortex is running and try again."
+                errorText = "Couldn't compare that export right now. Check that \(DistributionMode.appDisplayName) is running and try again."
             }
         }
     }
@@ -1156,16 +1156,16 @@ struct ImportDiffFactRow: View {
     private var tensionActionRow: some View {
         HStack(spacing: CortexDesign.Space.sm) {
             if alreadyAdded {
-                Label("Updated in Cortex", systemImage: "checkmark.seal.fill")
+                Label("Updated in \(DistributionMode.appDisplayName)", systemImage: "checkmark.seal.fill")
                     .font(CortexDesign.Typography.caption)
                     .foregroundColor(CortexDesign.sealMoss)
             } else if keptCortex {
-                Label("Kept Cortex's version", systemImage: "checkmark.circle")
+                Label("Kept \(DistributionMode.appDisplayName)'s version", systemImage: "checkmark.circle")
                     .font(CortexDesign.Typography.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
             } else {
                 CortexButton(
-                    title: adding ? "Updating…" : "Update Cortex with this",
+                    title: adding ? "Updating…" : "Update \(DistributionMode.appDisplayName) with this",
                     systemImage: "arrow.triangle.2.circlepath",
                     role: .secondary,
                     size: .small
@@ -1178,13 +1178,13 @@ struct ImportDiffFactRow: View {
                     }
                 }
                 .disabled(adding)
-                CortexButton(title: "Keep Cortex's", role: .ghost, size: .small) {
+                CortexButton(title: "Keep \(DistributionMode.appDisplayName)'s", role: .ghost, size: .small) {
                     onKeepCortex()
                 }
                 .disabled(adding)
             }
             if !(fact.match?.memory_id ?? "").isEmpty || !((fact.match?.content ?? "").isEmpty) {
-                CortexButton(title: "Open in Cortex", systemImage: "arrow.up.right.square", role: .ghost, size: .small) {
+                CortexButton(title: "Open in \(DistributionMode.appDisplayName)", systemImage: "arrow.up.right.square", role: .ghost, size: .small) {
                     onOpenMatch()
                 }
             }
@@ -1207,7 +1207,7 @@ struct ImportDiffFactRow: View {
                 // remembers" line becomes a tap-through into it; otherwise it stays plain text so we
                 // never offer a dead link.
                 let canOpen = !(match.memory_id ?? "").isEmpty
-                let remembers = Text("Cortex remembers: \(MemoryText.displayProse(content, maxLength: 320))")
+                let remembers = Text("\(DistributionMode.appDisplayName) remembers: \(MemoryText.displayProse(content, maxLength: 320))")
                     .font(CortexDesign.Typography.prose(13))
                     .lineSpacing(3)
                     .foregroundColor(CortexDesign.inkSecondary)
@@ -1221,7 +1221,7 @@ struct ImportDiffFactRow: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Open this memory in Cortex")
+                    .help("Open this memory in \(DistributionMode.appDisplayName)")
                     .accessibilityAddTraits(.isButton)
                 } else {
                     remembers
@@ -1241,12 +1241,12 @@ struct ImportDiffFactRow: View {
     private var addRow: some View {
         HStack(spacing: CortexDesign.Space.sm) {
             if alreadyAdded {
-                Label("Added to Cortex", systemImage: "checkmark.seal.fill")
+                Label("Added to \(DistributionMode.appDisplayName)", systemImage: "checkmark.seal.fill")
                     .font(CortexDesign.Typography.caption)
                     .foregroundColor(CortexDesign.sealMoss)
             } else {
                 CortexButton(
-                    title: adding ? "Adding…" : "Add to Cortex",
+                    title: adding ? "Adding…" : "Add to \(DistributionMode.appDisplayName)",
                     systemImage: "plus",
                     role: .secondary,
                     size: .small
@@ -1413,19 +1413,19 @@ struct ImportDiffShareModel {
 
     /// The hero line on the card and in the copy-summary fallback.
     var headlineText: String {
-        "What \(vendorLabel) thinks it knows about me, checked against my Cortex."
+        "What \(vendorLabel) thinks it knows about me, checked against my \(DistributionMode.appDisplayName)."
     }
 
     /// The honest plain-text fallback for "Copy summary".
     var clipboardSummary: String {
         var lines: [String] = []
-        lines.append("What \(vendorLabel) thinks it knows about me, checked against my Cortex:")
+        lines.append("What \(vendorLabel) thinks it knows about me, checked against my \(DistributionMode.appDisplayName):")
         lines.append("· \(factsRead) fact\(factsRead == 1 ? "" : "s") read from the export")
         lines.append("· \(confirms) confirmed")
         lines.append("· \(disputes) disputed")
-        lines.append("· \(missing) new to Cortex")
-        lines.append("· \(remembers) my Cortex already knew that the export forgot")
-        lines.append("Measured by Cortex.")
+        lines.append("· \(missing) new to \(DistributionMode.appDisplayName)")
+        lines.append("· \(remembers) my \(DistributionMode.appDisplayName) already knew that the export forgot")
+        lines.append("Measured by \(DistributionMode.appDisplayName).")
         return lines.joined(separator: "\n")
     }
 }
@@ -1524,8 +1524,8 @@ struct ImportDiffShareCard: View {
         HStack(alignment: .lastTextBaseline, spacing: 40) {
             stat(model.confirms, "CONFIRMED", Night.moss)
             stat(model.disputes, "DISPUTED", Night.gold)
-            stat(model.missing, "NEW TO CORTEX", Night.accent)
-            stat(model.remembers, "CORTEX KNEW", Night.ink)
+            stat(model.missing, "NEW TO \(DistributionMode.appDisplayName.uppercased())", Night.accent)
+            stat(model.remembers, "\(DistributionMode.appDisplayName.uppercased()) KNEW", Night.ink)
             Spacer(minLength: 0)
             branding
         }
@@ -1554,7 +1554,7 @@ struct ImportDiffShareCard: View {
             Text("Measured by")
                 .font(.system(size: 15, weight: .regular))
                 .foregroundColor(Night.inkSecondary)
-            Text("Cortex")
+            Text(DistributionMode.appDisplayName)
                 .font(.system(size: 22, weight: .semibold, design: .serif))
                 .foregroundColor(Night.ink)
         }
@@ -1647,7 +1647,7 @@ struct ImportDiffShareSheet: View {
             image: cardImage,
             failed: renderFailed,
             stampText: "MEMORY DIFF",
-            sealText: "Cortex",
+            sealText: DistributionMode.appDisplayName,
             onRetry: { Task { @MainActor in renderCard() } }
         )
     }

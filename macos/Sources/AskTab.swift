@@ -36,7 +36,7 @@ struct AskTab: View {
                         AskEmptyGuidance(
                             state: state,
                             title: "Ask your notes",
-                            detail: "Cortex answers from your reviewed notes, with sources.",
+                            detail: "\(DistributionMode.appDisplayName) answers from your reviewed notes, with sources.",
                             showActionsWhenMemoryExists: false
                         )
                         AskSuggestedQuestions(state: state)
@@ -113,7 +113,7 @@ struct AskTab: View {
         if state.hasConnectedSourceAccount || state.hasConnectedObsidianVault {
             return "Sync your source, then approve one useful item in Review."
         }
-        return "Connect notes or a source. Cortex answers only from reviewed memory."
+        return "Connect notes or a source. \(DistributionMode.appDisplayName) answers only from reviewed memory."
     }
 }
 
@@ -369,7 +369,7 @@ struct AskMemoryContextStrip: View {
             return "\(pendingCount) synced item\(pendingCount == 1 ? "" : "s") waiting in Review before Ask can use them."
         }
         if sourceCount > 0 {
-            return "Cortex is connected, but reviewed memory is not ready yet."
+            return "\(DistributionMode.appDisplayName) is connected, but reviewed memory is not ready yet."
         }
         return "Connect notes or a source, then approve useful memory in Review."
     }
@@ -920,7 +920,7 @@ struct AskResponseSection: View {
                 // point straight at the matches, which are auto-opened just below.
                 AskQuietState(
                     title: "Related memory, no single answer",
-                    detail: "Cortex found memory related to your question but not a confident cited answer. The closest matches are open below - skim them, or ask something more specific.",
+                    detail: "\(DistributionMode.appDisplayName) found memory related to your question but not a confident cited answer. The closest matches are open below - skim them, or ask something more specific.",
                     systemImage: "text.magnifyingglass"
                 )
                 .onAppear { citedMemoriesExpanded = true }
@@ -1146,7 +1146,7 @@ struct AskResultsSection: View {
     var body: some View {
         Group {
             if state.searchResults.isEmpty && !state.hasSearched {
-                AskQuietState(title: "Ask your notes", detail: "Cortex answers from your reviewed notes, with sources.")
+                AskQuietState(title: "Ask your notes", detail: "\(DistributionMode.appDisplayName) answers from your reviewed notes, with sources.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if state.searchResults.isEmpty {
                 AskQuietState(title: "No cited result matched", detail: "Try a more specific question, or review new synced items.")
@@ -1859,7 +1859,7 @@ struct AskMarginCitationCard: View {
                         .lineLimit(1)
                 }
                 .foregroundColor(CortexDesign.inkFaint)
-                .help("The original file for this citation was moved or deleted. The quoted excerpt above is still what Cortex used.")
+                .help("The original file for this citation was moved or deleted. The quoted excerpt above is still what \(DistributionMode.appDisplayName) used.")
             }
 
             // U-ASK4: per-citation copy. Always present (not hover-gated) so keyboard and VoiceOver

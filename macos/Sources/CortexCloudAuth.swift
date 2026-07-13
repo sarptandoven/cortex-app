@@ -65,9 +65,9 @@ enum CortexCloudAuthError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidHostedURL:
-            return "That Cortex Cloud URL is not valid. Use something like https://api.signindoppl.com."
+            return "That \(DistributionMode.appDisplayName) Cloud URL is not valid. Use something like https://api.signindoppl.com."
         case .badResponse:
-            return "Cortex Cloud returned an unexpected response."
+            return "\(DistributionMode.appDisplayName) Cloud returned an unexpected response."
         case .httpStatus(let code, let body):
             switch code {
             case 401, 403:
@@ -75,15 +75,15 @@ enum CortexCloudAuthError: LocalizedError {
             case 429:
                 return "Too many sign-in attempts. Wait a minute, then try again."
             case 500...599:
-                return "Cortex Cloud is temporarily unavailable (HTTP \(code)). Try again shortly."
+                return "\(DistributionMode.appDisplayName) Cloud is temporarily unavailable (HTTP \(code)). Try again shortly."
             default:
                 let detail = (body?.isEmpty == false) ? " (\(body!))" : ""
-                return "Cortex Cloud sign-in failed (HTTP \(code))\(detail)."
+                return "\(DistributionMode.appDisplayName) Cloud sign-in failed (HTTP \(code))\(detail)."
             }
         case .pollTimedOut:
             return "Browser sign-in did not complete in time. Try again."
         case .missingRefreshToken:
-            return "No Cortex Cloud session is stored. Sign in again."
+            return "No \(DistributionMode.appDisplayName) Cloud session is stored. Sign in again."
         }
     }
 }
@@ -152,7 +152,7 @@ extension AppState {
     }
 
     /// Message shown when a cloud-auth action is attempted in a build where it is disabled.
-    static let cloudAuthUnavailableMessage = "Cortex Cloud is not available in this version."
+    static let cloudAuthUnavailableMessage = "\(DistributionMode.appDisplayName) Cloud is not available in this version."
 
     /// The default hosted API the sign-in surface targets when the user hasn't entered another.
     /// Read from Info.plist `CortexHostedAPIURL` so the backend domain can be changed with a
@@ -366,7 +366,7 @@ extension AppState {
             return
         }
         cloudAuthBusy = true
-        cloudAuthMessage = "Signing in to Cortex Cloud..."
+        cloudAuthMessage = "Signing in to \(DistributionMode.appDisplayName) Cloud..."
         defer { cloudAuthBusy = false }
         do {
             let data = try await cloudPost(base: base, path: "/v1/auth/login", body: [
@@ -376,7 +376,7 @@ extension AppState {
             ])
             let tokens = try JSONDecoder().decode(CortexCloudTokenResponse.self, from: data)
             applySignedInSession(base: base, tokens: tokens, fallbackEmail: email)
-            cloudAuthMessage = "Signed in to Cortex Cloud."
+            cloudAuthMessage = "Signed in to \(DistributionMode.appDisplayName) Cloud."
         } catch {
             cloudAuthMessage = CortexCloudAuth.describe(error)
         }
@@ -390,7 +390,7 @@ extension AppState {
             return
         }
         cloudAuthBusy = true
-        cloudAuthMessage = "Creating your Cortex account..."
+        cloudAuthMessage = "Creating your \(DistributionMode.appDisplayName) account..."
         do {
             _ = try await cloudPost(base: base, path: "/v1/auth/signup", body: [
                 "email": email.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -416,7 +416,7 @@ extension AppState {
             return
         }
         cloudAuthBusy = true
-        cloudAuthMessage = "Opening Cortex Cloud sign-in in your browser..."
+        cloudAuthMessage = "Opening \(DistributionMode.appDisplayName) Cloud sign-in in your browser..."
         defer { cloudAuthBusy = false }
         do {
             let startData = try await cloudPost(base: base, path: "/v1/auth/app/start", body: [:])
@@ -479,10 +479,10 @@ extension AppState {
                     if consecutiveFailures >= maxConsecutiveFailures {
                         // Repeated failures — the connection is genuinely down. End cleanly with a
                         // clear reason (defer clears cloudAuthBusy) rather than spinning silently.
-                        cloudAuthMessage = "Lost the connection to Cortex Cloud while waiting for browser sign-in. Check your network, then try again. You can also Cancel."
+                        cloudAuthMessage = "Lost the connection to \(DistributionMode.appDisplayName) Cloud while waiting for browser sign-in. Check your network, then try again. You can also Cancel."
                         return
                     }
-                    cloudAuthMessage = "Still waiting on Cortex Cloud. The connection is slow; finish sign-in in your browser, or Cancel."
+                    cloudAuthMessage = "Still waiting on \(DistributionMode.appDisplayName) Cloud. The connection is slow; finish sign-in in your browser, or Cancel."
                     continue
                 }
                 consecutiveFailures = 0
@@ -495,7 +495,7 @@ extension AppState {
                         account: poll.account
                     )
                     applySignedInSession(base: base, tokens: tokens, fallbackEmail: poll.account?.email ?? "")
-                    cloudAuthMessage = "Signed in to Cortex Cloud."
+                    cloudAuthMessage = "Signed in to \(DistributionMode.appDisplayName) Cloud."
                     return
                 }
                 tick += 1
@@ -560,13 +560,13 @@ extension AppState {
         }
         resetToLocalDefaults()
         cloudAuthMessage = remoteSessionEnded
-            ? "Signed out of Cortex Cloud."
-            : "Signed out on this Mac. Could not reach Cortex Cloud to end the session remotely, so it will expire automatically."
+            ? "Signed out of \(DistributionMode.appDisplayName) Cloud."
+            : "Signed out on this Mac. Could not reach \(DistributionMode.appDisplayName) Cloud to end the session remotely, so it will expire automatically."
     }
 
     private func performDeleteCloudAccount(password: String, alsoDeleteLocal: Bool) async {
         guard isSignedIn, !cloudSyncBaseURL.isEmpty else {
-            cloudAuthMessage = "You are not signed into a Cortex account."
+            cloudAuthMessage = "You are not signed into a \(DistributionMode.appDisplayName) account."
             return
         }
         cloudAuthBusy = true
@@ -589,11 +589,11 @@ extension AppState {
             }
             resetToLocalDefaults()
             if alsoDeleteLocal && localWiped {
-                cloudAuthMessage = "Your Cortex Cloud account, its synced copy, and this Mac's local memory were permanently deleted. Nothing recoverable remains."
+                cloudAuthMessage = "Your \(DistributionMode.appDisplayName) Cloud account, its synced copy, and this Mac's local memory were permanently deleted. Nothing recoverable remains."
             } else if alsoDeleteLocal {
-                cloudAuthMessage = "Your Cortex Cloud account and its synced copy were deleted, but erasing this Mac's local memory did not finish. Open \"Delete All Local Data\" in settings to remove it."
+                cloudAuthMessage = "Your \(DistributionMode.appDisplayName) Cloud account and its synced copy were deleted, but erasing this Mac's local memory did not finish. Open \"Delete All Local Data\" in settings to remove it."
             } else {
-                cloudAuthMessage = "Your Cortex Cloud account and its synced copy were permanently deleted. Your memory on this Mac stays local. Use \"Delete All Local Data\" to erase it from this device."
+                cloudAuthMessage = "Your \(DistributionMode.appDisplayName) Cloud account and its synced copy were permanently deleted. Your memory on this Mac stays local. Use \"Delete All Local Data\" to erase it from this device."
             }
         } catch {
             cloudAuthMessage = CortexCloudAuth.describe(error)
@@ -604,8 +604,8 @@ extension AppState {
     /// the standard expiry message.
     func handleCloudSessionExpired() {
         resetToLocalDefaults()
-        cloudAuthMessage = "Your Cortex Cloud session expired. Sign in again."
-        status = "Your Cortex Cloud session expired. Sign in again."
+        cloudAuthMessage = "Your \(DistributionMode.appDisplayName) Cloud session expired. Sign in again."
+        status = "Your \(DistributionMode.appDisplayName) Cloud session expired. Sign in again."
     }
 
     // MARK: Session application / teardown
@@ -735,17 +735,17 @@ enum CortexCloudAuth {
             case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
                 return "You appear to be offline. Check your internet connection and try again."
             case .timedOut:
-                return "Cortex Cloud took too long to respond. Check the URL and that the server is reachable."
+                return "\(DistributionMode.appDisplayName) Cloud took too long to respond. Check the URL and that the server is reachable."
             case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
-                return "Could not reach Cortex Cloud at that address. Check the URL and that the server is running."
+                return "Could not reach \(DistributionMode.appDisplayName) Cloud at that address. Check the URL and that the server is running."
             case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
                  .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid, .clientCertificateRejected:
-                return "Could not establish a secure (HTTPS) connection to Cortex Cloud. On a corporate or VPN network, check with your IT admin."
+                return "Could not establish a secure (HTTPS) connection to \(DistributionMode.appDisplayName) Cloud. On a corporate or VPN network, check with your IT admin."
             default:
                 break
             }
         }
-        return "Cortex Cloud sign-in failed. \(error.localizedDescription)"
+        return "\(DistributionMode.appDisplayName) Cloud sign-in failed. \(error.localizedDescription)"
     }
 }
 
@@ -884,7 +884,7 @@ struct CortexCloudSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Cortex Cloud")
+            Text("\(DistributionMode.appDisplayName) Cloud")
                 .font(.headline)
 
             // In the Mac App Store build the app is local-first only: there is no in-app
@@ -892,7 +892,7 @@ struct CortexCloudSection: View {
             // replaced with a short explanation. The direct / notarized-DMG build keeps the
             // full sign-in form below unchanged.
             if !state.isCloudAuthAvailable {
-                Text("This version of Cortex is local-first only. Your memory stays on this Mac; there is no cloud account to sign in to.")
+                Text("This version of \(DistributionMode.appDisplayName) is local-first only. Your memory stays on this Mac; there is no cloud account to sign in to.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -936,7 +936,7 @@ struct CortexCloudSection: View {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.seal.fill")
                     .foregroundColor(.green)
-                Text("Signed in as \(state.cloudAccountEmail.isEmpty ? "your Cortex Cloud account" : state.cloudAccountEmail)")
+                Text("Signed in as \(state.cloudAccountEmail.isEmpty ? "your \(DistributionMode.appDisplayName) Cloud account" : state.cloudAccountEmail)")
                     .font(.subheadline)
             }
             pushSyncStatusView
@@ -963,7 +963,7 @@ struct CortexCloudSection: View {
             // the user permanently delete their account and data from within the app.
             if showDeleteConfirm {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("This permanently deletes your Cortex Cloud account and its synced copy from the server. This cannot be undone. Your memory on this Mac stays local. To erase it from this device, use \"Delete All Local Data\" in the data settings.")
+                    Text("This permanently deletes your \(DistributionMode.appDisplayName) Cloud account and its synced copy from the server. This cannot be undone. Your memory on this Mac stays local. To erase it from this device, use \"Delete All Local Data\" in the data settings.")
                         .font(CortexDesign.Typography.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -980,7 +980,7 @@ struct CortexCloudSection: View {
                     CortexToggle(title: "Also delete local memory on this Mac", isOn: $alsoDeleteLocalMemory)
                     Text(alsoDeleteLocalMemory
                          ? "This Mac's local copy will be erased too. Nothing recoverable remains."
-                         : "Your local copy on this Mac stays. You can keep using Cortex locally on this device.")
+                         : "Your local copy on this Mac stays. You can keep using \(DistributionMode.appDisplayName) locally on this device.")
                         .font(CortexDesign.Typography.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1221,7 +1221,7 @@ struct CortexCloudSection: View {
 
     private var zeroAccessDisabledControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Zero-access encrypts your synced memory with a key only on your devices. Cortex cannot read it. Save your recovery code; it's the ONLY way to restore on another device.")
+            Text("Zero-access encrypts your synced memory with a key only on your devices. \(DistributionMode.appDisplayName) cannot read it. Save your recovery code; it's the ONLY way to restore on another device.")
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1245,7 +1245,7 @@ struct CortexCloudSection: View {
 
     private var zeroAccessEnabledControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("On. Cortex cannot read your memory: it's encrypted with a key only on your devices before it syncs. Keep your recovery code safe; it's the only way to restore on another device.")
+            Text("On. \(DistributionMode.appDisplayName) cannot read your memory: it's encrypted with a key only on your devices before it syncs. Keep your recovery code safe; it's the only way to restore on another device.")
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1287,7 +1287,7 @@ struct CortexCloudSection: View {
             }
 
             if isForcedFirstReveal {
-                Text("Save this now. It is the ONLY way to restore your encrypted memory on another Mac or if you reinstall. Cortex cannot recover it for you.")
+                Text("Save this now. It is the ONLY way to restore your encrypted memory on another Mac or if you reinstall. \(DistributionMode.appDisplayName) cannot recover it for you.")
                     .font(CortexDesign.Typography.caption)
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1397,7 +1397,10 @@ struct CortexCloudSection: View {
         // A sign-out where the remote session could NOT be ended is not a clean success — it's a
         // qualified outcome the user should notice. Classify it as an error tint (not green) even
         // though it contains "signed out". (A5a — keep the honesty visible.)
-        if lower.contains("could not reach cortex cloud to end the session") {
+        // Match a brand-neutral fragment: the message interpolates the app display name
+        // ("… Could not reach Cortex/Doppl Cloud to end the session remotely …"), so keying
+        // off the brand word would miss the App Store build.
+        if lower.contains("to end the session remotely") {
             return .error
         }
         if lower.contains("signed in") || lower.contains("signed out")
@@ -1473,10 +1476,15 @@ struct CortexCloudSection: View {
     private var signInForm: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Sign in with Apple — native (ASAuthorization). Shown ONLY when this build is actually
-            // signed with the Apple Sign In entitlement AND the hosted backend has Apple configured.
-            // Otherwise a native button could only open the OS sheet and then fail, so we hide it
-            // rather than present a dead, disabled control. (Guideline 4.8: native SIWA when usable.)
-            if canUseNativeAppleSignIn && backendOffersApple {
+            // signed with the Apple Sign In entitlement. Native SIWA does NOT depend on the web
+            // provider list from /v1/auth/providers — that list deliberately never contains "apple"
+            // (native SIWA has no web client_secret, so it must never render as a browser button), so
+            // gating on backendOffersApple made this button permanently dead while the GitHub/Google
+            // browser buttons rendered. That is the exact Guideline 4.8 violation (SIWA must be offered
+            // as an equivalent option whenever third-party social login is). The native endpoint
+            // /v1/auth/oauth/apple/native always exists and returns a clear error if the backend has no
+            // Apple client id, so this is a real, honest control — never a dead one.
+            if canUseNativeAppleSignIn {
                 SignInWithAppleButton(.signIn) { request in
                     request.requestedScopes = [.fullName, .email]
                 } onCompletion: { result in
@@ -1613,7 +1621,7 @@ struct CortexCloudSection: View {
             .font(CortexDesign.Typography.caption)
             .foregroundColor(CortexDesign.inkSecondary)
 
-            Text("After sign-in, Cortex opens setup: connect a source, review memory, then wire Claude Desktop, ChatGPT, or another AI tool.")
+            Text("After sign-in, \(DistributionMode.appDisplayName) opens setup: connect a source, review memory, then wire Claude Desktop, ChatGPT, or another AI tool.")
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1623,7 +1631,7 @@ struct CortexCloudSection: View {
     /// Whether the native Sign in with Apple hero is being shown (the recommended path is Apple),
     /// so no browser provider should also be promoted to the wax primary.
     private var appleHeroShown: Bool {
-        canUseNativeAppleSignIn && backendOffersApple
+        canUseNativeAppleSignIn
     }
 
     /// The email "Sign in" gets the wax primary only when the surface has no other wax seal — i.e.
@@ -1647,7 +1655,7 @@ struct CortexCloudSection: View {
         if state.hasPreviewedBefore && !isSignedIn {
             return "Welcome back. Pick up where you left off, or sign in to sync your memory across your devices."
         }
-        return "Sign in, then setup will help you connect memory sources and wire Cortex into Claude Desktop, ChatGPT, or other AI tools."
+        return "Sign in, then setup will help you connect memory sources and wire \(DistributionMode.appDisplayName) into Claude Desktop, ChatGPT, or other AI tools."
     }
 
     /// The hosted API the sign-in targets: the user's entry if present, else the default.

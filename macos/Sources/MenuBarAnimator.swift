@@ -268,37 +268,37 @@ final class MenuBarAnimator {
             button.imagePosition = .imageOnly
             button.title = ""
             button.image = idleImage
-            button.toolTip = "Cortex: click to ask your memory (⌃⌥Space)"
+            button.toolTip = "\(DistributionMode.appDisplayName): click to ask your memory (⌃⌥Space)"
         case .syncing:
             button.imagePosition = .imageOnly
             button.title = ""
             button.image = spinnerFrames.first ?? idleImage
-            button.toolTip = "Cortex: syncing your memory…"
+            button.toolTip = "\(DistributionMode.appDisplayName): syncing your memory…"
         case .attention(let count):
             button.image = attentionImage ?? idleImage
             button.title = " \(count > 99 ? "99+" : String(count))"
             button.imagePosition = .imageLeading
-            button.toolTip = "Cortex: \(count) item\(count == 1 ? "" : "s") waiting for review"
+            button.toolTip = "\(DistributionMode.appDisplayName): \(count) item\(count == 1 ? "" : "s") waiting for review"
         case .success:
             button.imagePosition = .imageOnly
             button.title = ""
             button.image = successImage ?? idleImage
-            button.toolTip = "Cortex: sync complete"
+            button.toolTip = "\(DistributionMode.appDisplayName): sync complete"
         case .learned:
             button.imagePosition = .imageOnly
             button.title = ""
             button.image = learnedFrames.first ?? idleImage
-            button.toolTip = "Cortex: learned something new"
+            button.toolTip = "\(DistributionMode.appDisplayName): learned something new"
         case .captured:
             button.imagePosition = .imageOnly
             button.title = ""
             button.image = capturedFrames.first ?? idleImage
-            button.toolTip = "Cortex: captured to memory"
+            button.toolTip = "\(DistributionMode.appDisplayName): captured to memory"
         }
         // Safety net: if symbol rendering ever fails, fall back to a visible text title.
         if button.image == nil && button.title.isEmpty {
             button.imagePosition = .noImage
-            button.title = "Cortex"
+            button.title = DistributionMode.appDisplayName
         }
     }
 
@@ -308,7 +308,7 @@ final class MenuBarAnimator {
     /// (crisp, never stretched) and centered (never clipped), optionally rotated. Marking it a
     /// template makes the menu bar tint it correctly on light/dark bars.
     private static func bakeSymbol(_ name: String, pointSize: CGFloat, rotationDegrees: CGFloat = 0) -> NSImage? {
-        guard let base = NSImage(systemSymbolName: name, accessibilityDescription: "Cortex") else { return nil }
+        guard let base = NSImage(systemSymbolName: name, accessibilityDescription: DistributionMode.appDisplayName) else { return nil }
         let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
         let symbol = base.withSymbolConfiguration(config) ?? base
         let symbolSize = symbol.size
@@ -356,7 +356,7 @@ final class MenuBarAnimator {
     /// template glyphs.
     private static func bakeTintedSymbol(_ name: String, pointSize: CGFloat, tint: NSColor,
                                          scale: CGFloat, canvasScale: CGFloat) -> NSImage? {
-        guard let base = NSImage(systemSymbolName: name, accessibilityDescription: "Cortex") else { return nil }
+        guard let base = NSImage(systemSymbolName: name, accessibilityDescription: DistributionMode.appDisplayName) else { return nil }
         let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
         let symbol = base.withSymbolConfiguration(config) ?? base
         let natural = symbol.size

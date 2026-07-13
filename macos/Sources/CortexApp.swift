@@ -1984,7 +1984,7 @@ enum AIIntegrationCatalog {
             name: "Claude Desktop",
             category: .oneClick,
             systemImage: "sparkles",
-            summary: "Adds Cortex memory tools directly inside Claude Desktop.",
+            summary: "Adds \(DistributionMode.appDisplayName) memory tools directly inside Claude Desktop.",
             restartHint: "Quit and reopen Claude Desktop after installing.",
             bundleIdentifiers: ["com.anthropic.claudefordesktop", "com.anthropic.Claude"],
             configTargets: [
@@ -1998,13 +1998,13 @@ enum AIIntegrationCatalog {
             name: "Cursor",
             category: .oneClick,
             systemImage: "cursorarrow.rays",
-            summary: "Gives Cursor agent sessions access to Cortex project memory and adaptation signals.",
-            restartHint: "Cursor pops up to confirm the Cortex connection. Approve it and you're live.",
+            summary: "Gives Cursor agent sessions access to \(DistributionMode.appDisplayName) project memory and adaptation signals.",
+            restartHint: "Cursor pops up to confirm the \(DistributionMode.appDisplayName) connection. Approve it and you're live.",
             bundleIdentifiers: ["com.todesktop.230313mzl4w4u92", "com.cursor.Cursor"],
             configTargets: [
                 IntegrationConfigTarget(label: "Cursor connection", root: .home, relativePath: ".cursor/mcp.json")
             ],
-            setupHint: "Use Cortex before implementation tasks: search memory for project decisions, people, and follow-ups.",
+            setupHint: "Use \(DistributionMode.appDisplayName) before implementation tasks: search memory for project decisions, people, and follow-ups.",
             browserURL: "https://cursor.com",
             connectionKind: .mcpDeeplink
         ),
@@ -2013,13 +2013,13 @@ enum AIIntegrationCatalog {
             name: "Windsurf",
             category: .oneClick,
             systemImage: "wind",
-            summary: "Connects Windsurf/Cascade to Cortex through a local bridge.",
-            restartHint: "Restart Windsurf after connecting Cortex.",
+            summary: "Connects Windsurf/Cascade to \(DistributionMode.appDisplayName) through a local bridge.",
+            restartHint: "Restart Windsurf after connecting \(DistributionMode.appDisplayName).",
             bundleIdentifiers: ["com.exafunction.windsurf", "com.codeium.windsurf"],
             configTargets: [
                 IntegrationConfigTarget(label: "Windsurf connection", root: .home, relativePath: ".codeium/windsurf/mcp_config.json")
             ],
-            setupHint: "Use Cortex in Cascade to retrieve saved decisions, project memory, and daily follow-ups.",
+            setupHint: "Use \(DistributionMode.appDisplayName) in Cascade to retrieve saved decisions, project memory, and daily follow-ups.",
             browserURL: "https://windsurf.com"
         ),
         AIIntegration(
@@ -2027,7 +2027,7 @@ enum AIIntegrationCatalog {
             name: "Zed",
             category: .oneClick,
             systemImage: "bolt.horizontal",
-            summary: "Adds Cortex as a context server so Zed's agent reads your reviewed memory.",
+            summary: "Adds \(DistributionMode.appDisplayName) as a context server so Zed's agent reads your reviewed memory.",
             restartHint: "Zed picks up the new context server automatically once the settings file is saved.",
             bundleIdentifiers: ["dev.zed.Zed", "dev.zed.Zed-Preview"],
             configTargets: [
@@ -2036,7 +2036,7 @@ enum AIIntegrationCatalog {
                 // macOS and Linux. Source: zed.dev/docs/ai/mcp.
                 IntegrationConfigTarget(label: "Zed settings", root: .home, relativePath: ".config/zed/settings.json")
             ],
-            setupHint: "Use Cortex in Zed's agent panel to search reviewed memory before asking the user to repeat context.",
+            setupHint: "Use \(DistributionMode.appDisplayName) in Zed's agent panel to search reviewed memory before asking the user to repeat context.",
             browserURL: "https://zed.dev"
         ),
         AIIntegration(
@@ -2044,14 +2044,14 @@ enum AIIntegrationCatalog {
             name: "Cline",
             category: .developer,
             systemImage: "hammer",
-            summary: "Installs Cortex memory tools for Cline agent workflows.",
+            summary: "Installs \(DistributionMode.appDisplayName) memory tools for Cline agent workflows.",
             restartHint: "Reload VS Code after installing.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [
                 IntegrationConfigTarget(label: "Cline connection settings", root: .applicationSupport, relativePath: "Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
             ],
             requiresExistingConfigTarget: true,
-            setupHint: "Use Cline with Cortex to search memory before asking the user to repeat project context.",
+            setupHint: "Use Cline with \(DistributionMode.appDisplayName) to search memory before asking the user to repeat project context.",
             browserURL: "https://cline.bot"
         ),
         AIIntegration(
@@ -2059,14 +2059,14 @@ enum AIIntegrationCatalog {
             name: "Roo Code",
             category: .developer,
             systemImage: "chevron.left.forwardslash.chevron.right",
-            summary: "Adds Cortex memory tools for Roo Code coding sessions.",
+            summary: "Adds \(DistributionMode.appDisplayName) memory tools for Roo Code coding sessions.",
             restartHint: "Reload VS Code after installing.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [
                 IntegrationConfigTarget(label: "Roo Code connection settings", root: .applicationSupport, relativePath: "Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json")
             ],
             requiresExistingConfigTarget: true,
-            setupHint: "Use Roo Code with Cortex to retrieve saved decisions, project memory, and open questions.",
+            setupHint: "Use Roo Code with \(DistributionMode.appDisplayName) to retrieve saved decisions, project memory, and open questions.",
             browserURL: nil
         ),
         AIIntegration(
@@ -2074,11 +2074,11 @@ enum AIIntegrationCatalog {
             name: "VS Code Copilot",
             category: .developer,
             systemImage: "rectangle.connected.to.line.below",
-            summary: "Connect Cortex to VS Code user or workspace AI tools.",
-            restartHint: "VS Code pops up to confirm the Cortex MCP server. Approve it and you're live.",
+            summary: "Connect \(DistributionMode.appDisplayName) to VS Code user or workspace AI tools.",
+            restartHint: "VS Code pops up to confirm the \(DistributionMode.appDisplayName) MCP server. Approve it and you're live.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [],
-            setupHint: "VS Code installs the Cortex MCP server from a one-click link; approve the prompt.",
+            setupHint: "VS Code installs the \(DistributionMode.appDisplayName) MCP server from a one-click link; approve the prompt.",
             browserURL: "https://code.visualstudio.com",
             connectionKind: .mcpDeeplink,
             cliCommandTemplate: "code --add-mcp '{\"name\":\"cortex\",{CONFIG_FIELDS}}'"
@@ -2088,11 +2088,11 @@ enum AIIntegrationCatalog {
             name: "Claude Code",
             category: .developer,
             systemImage: "terminal",
-            summary: "Connect Cortex memory tools to Claude Code.",
+            summary: "Connect \(DistributionMode.appDisplayName) memory tools to Claude Code.",
             restartHint: "Run the connection command from a terminal, then restart the Claude Code session.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use the connection command to connect Cortex to Claude Code.",
+            setupHint: "Use the connection command to connect \(DistributionMode.appDisplayName) to Claude Code.",
             browserURL: "https://docs.anthropic.com",
             connectionKind: .cliCommand,
             cliCommandTemplate: "claude mcp add-json cortex '{CONFIG}'"
@@ -2102,11 +2102,11 @@ enum AIIntegrationCatalog {
             name: "ChatGPT",
             category: .browser,
             systemImage: "message.badge",
-            summary: "Add Cortex as a live connector so ChatGPT can reach your reviewed memory on demand.",
-            restartHint: "In ChatGPT connector settings, paste the Cortex link and key, then save.",
+            summary: "Add \(DistributionMode.appDisplayName) as a live connector so ChatGPT can reach your reviewed memory on demand.",
+            restartHint: "In ChatGPT connector settings, paste the \(DistributionMode.appDisplayName) link and key, then save.",
             bundleIdentifiers: ["com.openai.chat"],
             configTargets: [],
-            setupHint: "ChatGPT reaches Cortex through a remote connector. Turn on developer mode, then add the Cortex link and key as a custom connector. Your memory stays in Cortex and is served live, never copied out.",
+            setupHint: "ChatGPT reaches \(DistributionMode.appDisplayName) through a remote connector. Turn on developer mode, then add the \(DistributionMode.appDisplayName) link and key as a custom connector. Your memory stays in \(DistributionMode.appDisplayName) and is served live, never copied out.",
             browserURL: "https://chatgpt.com/plugins",
             connectionKind: .remoteMCP
         ),
@@ -2115,11 +2115,11 @@ enum AIIntegrationCatalog {
             name: "Claude Web",
             category: .browser,
             systemImage: "sparkle.magnifyingglass",
-            summary: "Add Cortex as a live connector so Claude web can reach your reviewed memory on demand.",
-            restartHint: "In Claude connector settings, paste the Cortex link and key, then save.",
+            summary: "Add \(DistributionMode.appDisplayName) as a live connector so Claude web can reach your reviewed memory on demand.",
+            restartHint: "In Claude connector settings, paste the \(DistributionMode.appDisplayName) link and key, then save.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Claude Desktop connects live over MCP. On the web, add the Cortex remote connector: Customize then Connectors, add a custom connector, and paste the link and key. Your memory stays in Cortex, served live.",
+            setupHint: "Claude Desktop connects live over MCP. On the web, add the \(DistributionMode.appDisplayName) remote connector: Customize then Connectors, add a custom connector, and paste the link and key. Your memory stays in \(DistributionMode.appDisplayName), served live.",
             browserURL: "https://claude.ai/customize/connectors",
             connectionKind: .remoteMCP
         ),
@@ -2128,14 +2128,14 @@ enum AIIntegrationCatalog {
             name: "Gemini CLI",
             category: .developer,
             systemImage: "diamond",
-            summary: "Connect the Gemini CLI to Cortex over MCP so it reads your reviewed memory live.",
-            restartHint: "Restart the Gemini CLI so it picks up the Cortex connection.",
+            summary: "Connect the Gemini CLI to \(DistributionMode.appDisplayName) over MCP so it reads your reviewed memory live.",
+            restartHint: "Restart the Gemini CLI so it picks up the \(DistributionMode.appDisplayName) connection.",
             bundleIdentifiers: [],
             configTargets: [
                 IntegrationConfigTarget(label: "Gemini CLI settings", root: .home, relativePath: ".gemini/settings.json")
             ],
             requiresExistingConfigTarget: true,
-            setupHint: "The Gemini CLI connects to Cortex over MCP once its settings file exists.",
+            setupHint: "The Gemini CLI connects to \(DistributionMode.appDisplayName) over MCP once its settings file exists.",
             browserURL: "https://github.com/google-gemini/gemini-cli"
         ),
         AIIntegration(
@@ -2143,14 +2143,14 @@ enum AIIntegrationCatalog {
             name: "Perplexity",
             category: .browser,
             systemImage: "magnifyingglass.circle",
-            summary: "Add Cortex as a custom remote connector so Perplexity can reach your reviewed memory on demand.",
-            restartHint: "In Perplexity, add a custom remote connector, paste the Cortex link, and set the key as the API key.",
+            summary: "Add \(DistributionMode.appDisplayName) as a custom remote connector so Perplexity can reach your reviewed memory on demand.",
+            restartHint: "In Perplexity, add a custom remote connector, paste the \(DistributionMode.appDisplayName) link, and set the key as the API key.",
             bundleIdentifiers: [],
             configTargets: [],
             // Perplexity Pro/Enterprise supports user-added custom REMOTE MCP connectors: Settings >
             // Connectors > + Custom connector > Remote > MCP Server URL + API Key. Source:
             // perplexity.ai/help-center/en/articles/13915507-adding-custom-remote-connectors.
-            setupHint: "Perplexity reaches Cortex through a custom remote connector. Add the Cortex link and set the key as the API key. Your memory stays in Cortex, served live.",
+            setupHint: "Perplexity reaches \(DistributionMode.appDisplayName) through a custom remote connector. Add the \(DistributionMode.appDisplayName) link and set the key as the API key. Your memory stays in \(DistributionMode.appDisplayName), served live.",
             browserURL: "https://www.perplexity.ai/account/connectors",
             connectionKind: .remoteMCP
         ),
@@ -2159,14 +2159,14 @@ enum AIIntegrationCatalog {
             name: "Mistral Le Chat",
             category: .browser,
             systemImage: "wind.circle",
-            summary: "Add Cortex as a custom MCP connector so Le Chat can reach your reviewed memory on demand.",
-            restartHint: "In Le Chat, add a custom MCP connector, paste the Cortex link, and set the key as the bearer token.",
+            summary: "Add \(DistributionMode.appDisplayName) as a custom MCP connector so Le Chat can reach your reviewed memory on demand.",
+            restartHint: "In Le Chat, add a custom MCP connector, paste the \(DistributionMode.appDisplayName) link, and set the key as the bearer token.",
             bundleIdentifiers: [],
             // Mistral Le Chat supports user-added custom remote MCP connectors: + Add Connector >
             // Custom MCP Connector tab > name + Server URL + HTTP Bearer Token. Source:
             // mistral.ai/news/le-chat-mcp-connectors-memories and docs.mistral.ai le-chat connectors.
             configTargets: [],
-            setupHint: "Le Chat reaches Cortex through a custom MCP connector. Add the Cortex link and set the key as the bearer token. Your memory stays in Cortex, served live.",
+            setupHint: "Le Chat reaches \(DistributionMode.appDisplayName) through a custom MCP connector. Add the \(DistributionMode.appDisplayName) link and set the key as the bearer token. Your memory stays in \(DistributionMode.appDisplayName), served live.",
             browserURL: "https://chat.mistral.ai/chat",
             connectionKind: .remoteMCP
         ),
@@ -2176,10 +2176,10 @@ enum AIIntegrationCatalog {
             category: .browser,
             systemImage: "square.stack.3d.up",
             summary: "Browser reference while direct connectors are planned.",
-            restartHint: "Open Copilot when you want to work alongside Cortex.",
+            restartHint: "Open Copilot when you want to work alongside \(DistributionMode.appDisplayName).",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "A live Cortex connection for Microsoft Copilot is not supported yet. Open it alongside Cortex in the meantime.",
+            setupHint: "A live \(DistributionMode.appDisplayName) connection for Microsoft Copilot is not supported yet. Open it alongside \(DistributionMode.appDisplayName) in the meantime.",
             browserURL: "https://copilot.microsoft.com",
             referenceOnly: true
         ),
@@ -2188,14 +2188,14 @@ enum AIIntegrationCatalog {
             name: "Grok",
             category: .browser,
             systemImage: "xmark.circle",
-            summary: "Add Cortex as a custom connector so Grok can reach your reviewed memory on demand.",
-            restartHint: "In Grok, add a new custom connector, paste the Cortex link, and set the key for auth.",
+            summary: "Add \(DistributionMode.appDisplayName) as a custom connector so Grok can reach your reviewed memory on demand.",
+            restartHint: "In Grok, add a new custom connector, paste the \(DistributionMode.appDisplayName) link, and set the key for auth.",
             bundleIdentifiers: [],
             configTargets: [],
             // Grok supports user-added custom remote MCP connectors ("bring your own MCP"):
             // grok.com/connectors > New Connector > Custom > MCP server URL + auth. Oriented to
             // Grok Business/Enterprise. Source: docs.x.ai/grok/connectors.
-            setupHint: "Grok reaches Cortex through a custom connector (Grok Business or Enterprise). Add the Cortex link and set the key for auth. Your memory stays in Cortex, served live.",
+            setupHint: "Grok reaches \(DistributionMode.appDisplayName) through a custom connector (Grok Business or Enterprise). Add the \(DistributionMode.appDisplayName) link and set the key for auth. Your memory stays in \(DistributionMode.appDisplayName), served live.",
             browserURL: "https://grok.com/connectors",
             connectionKind: .remoteMCP
         ),
@@ -2204,15 +2204,15 @@ enum AIIntegrationCatalog {
             name: "Gemini",
             category: .browser,
             systemImage: "diamond.circle",
-            summary: "Add Cortex as a custom app so Gemini can reach your reviewed memory on demand.",
-            restartHint: "In Gemini's Connected Apps, add a custom app and paste the Cortex link.",
+            summary: "Add \(DistributionMode.appDisplayName) as a custom app so Gemini can reach your reviewed memory on demand.",
+            restartHint: "In Gemini's Connected Apps, add a custom app and paste the \(DistributionMode.appDisplayName) link.",
             bundleIdentifiers: [],
             configTargets: [],
             // Gemini web supports user-added custom remote MCP apps via Gemini Spark: Settings >
             // Connected Apps > Custom apps for Spark > Add a custom app > MCP server URL. Eligibility
             // is narrow (US only, 18+, personal Google account, English, Spark-eligible). Source:
             // support.google.com/gemini/answer/17209137.
-            setupHint: "Gemini reaches Cortex through a custom app in Connected Apps (needs Gemini Spark eligibility, US only for now). Add the Cortex link. Your memory stays in Cortex, served live.",
+            setupHint: "Gemini reaches \(DistributionMode.appDisplayName) through a custom app in Connected Apps (needs Gemini Spark eligibility, US only for now). Add the \(DistributionMode.appDisplayName) link. Your memory stays in \(DistributionMode.appDisplayName), served live.",
             browserURL: "https://gemini.google.com/apps",
             connectionKind: .remoteMCP
         ),
@@ -2222,10 +2222,10 @@ enum AIIntegrationCatalog {
             category: .browser,
             systemImage: "bubble.left.and.bubble.right",
             summary: "Browser reference for bot workflows.",
-            restartHint: "Open Poe when you want to work alongside Cortex.",
+            restartHint: "Open Poe when you want to work alongside \(DistributionMode.appDisplayName).",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "A live Cortex connection for Poe is not supported yet. Open it alongside Cortex in the meantime.",
+            setupHint: "A live \(DistributionMode.appDisplayName) connection for Poe is not supported yet. Open it alongside \(DistributionMode.appDisplayName) in the meantime.",
             browserURL: "https://poe.com",
             referenceOnly: true
         ),
@@ -2235,10 +2235,10 @@ enum AIIntegrationCatalog {
             category: .browser,
             systemImage: "book.pages",
             summary: "Browser reference while direct source connectors are planned.",
-            restartHint: "Open NotebookLM when you want to work alongside Cortex.",
+            restartHint: "Open NotebookLM when you want to work alongside \(DistributionMode.appDisplayName).",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "A live Cortex connection for NotebookLM is not supported yet. Open it alongside Cortex in the meantime.",
+            setupHint: "A live \(DistributionMode.appDisplayName) connection for NotebookLM is not supported yet. Open it alongside \(DistributionMode.appDisplayName) in the meantime.",
             browserURL: "https://notebooklm.google.com",
             referenceOnly: true
         ),
@@ -2247,11 +2247,11 @@ enum AIIntegrationCatalog {
             name: "LM Studio",
             category: .local,
             systemImage: "cpu",
-            summary: "Use Cortex local tool/API settings for local model workflows.",
-            restartHint: "Configure Cortex where your LM Studio workflow accepts local tools.",
+            summary: "Use \(DistributionMode.appDisplayName) local tool/API settings for local model workflows.",
+            restartHint: "Configure \(DistributionMode.appDisplayName) where your LM Studio workflow accepts local tools.",
             bundleIdentifiers: ["com.lmstudio.lmstudio"],
             configTargets: [],
-            setupHint: "Use Cortex's local API or tool bridge with local model agents that support tools.",
+            setupHint: "Use \(DistributionMode.appDisplayName)'s local API or tool bridge with local model agents that support tools.",
             browserURL: "https://lmstudio.ai",
             connectionKind: .httpAPI
         ),
@@ -2260,11 +2260,11 @@ enum AIIntegrationCatalog {
             name: "Open WebUI",
             category: .local,
             systemImage: "server.rack",
-            summary: "Connect self-hosted Open WebUI through Cortex API or local tools.",
+            summary: "Connect self-hosted Open WebUI through \(DistributionMode.appDisplayName) API or local tools.",
             restartHint: "Update your tool/server configuration, then restart Open WebUI.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Configure Open WebUI or its pipelines to call Cortex on localhost.",
+            setupHint: "Configure Open WebUI or its pipelines to call \(DistributionMode.appDisplayName) on localhost.",
             browserURL: "https://openwebui.com",
             connectionKind: .httpAPI
         ),
@@ -2273,11 +2273,11 @@ enum AIIntegrationCatalog {
             name: "LibreChat",
             category: .local,
             systemImage: "globe.desk",
-            summary: "Connect team chat deployments through Cortex local tool/API settings.",
+            summary: "Connect team chat deployments through \(DistributionMode.appDisplayName) local tool/API settings.",
             restartHint: "Update your LibreChat tool configuration and restart the service.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use Cortex as a local memory source for LibreChat where custom tools are enabled.",
+            setupHint: "Use \(DistributionMode.appDisplayName) as a local memory source for LibreChat where custom tools are enabled.",
             browserURL: "https://www.librechat.ai",
             connectionKind: .httpAPI
         ),
@@ -2286,7 +2286,7 @@ enum AIIntegrationCatalog {
             name: "AnythingLLM",
             category: .local,
             systemImage: "tray.and.arrow.down",
-            summary: "Connect AnythingLLM workflows through Cortex local API where available.",
+            summary: "Connect AnythingLLM workflows through \(DistributionMode.appDisplayName) local API where available.",
             restartHint: "Configure local API or tool support in the workspace.",
             bundleIdentifiers: [],
             configTargets: [],
@@ -2502,7 +2502,7 @@ enum CortexRecoveryText {
             return urlRecoveryText(urlError.code)
         }
         if error is DecodingError {
-            return "Cortex received an unexpected response. Click Reconnect, then try again."
+            return "\(DistributionMode.appDisplayName) received an unexpected response. Click Reconnect, then try again."
         }
 
         let nsError = error as NSError
@@ -2524,13 +2524,13 @@ enum CortexRecoveryText {
             return "This app and local memory engine may be out of sync. Click Reconnect, then try again."
         }
         if lowered.contains("http 409") || lowered.contains("conflict") || lowered.contains("database is locked") {
-            return "Cortex is finishing another change. Wait a moment, then try again."
+            return "\(DistributionMode.appDisplayName) is finishing another change. Wait a moment, then try again."
         }
         if lowered.contains("http 413") || lowered.contains("request entity too large") || lowered.contains("payload too large") {
             return "That source is too large. Sync a narrower source or fewer notes."
         }
         if lowered.contains("http 429") || lowered.contains("too many requests") {
-            return "Cortex is busy. Wait a moment, then try again."
+            return "\(DistributionMode.appDisplayName) is busy. Wait a moment, then try again."
         }
         if lowered.contains("http 5") || lowered.contains("internal server error") || lowered.contains("bad gateway") || lowered.contains("service unavailable") {
             return "Local memory engine hit a problem. Click Reconnect, then try again."
@@ -2554,10 +2554,10 @@ enum CortexRecoveryText {
             return "That tool connection could not be updated automatically. Open Advanced settings, then Copy tool config."
         }
         if lowered.contains("data couldn") || lowered.contains("correct format") || lowered.contains("decoding") {
-            return "Cortex received an unexpected response. Click Reconnect, then try again."
+            return "\(DistributionMode.appDisplayName) received an unexpected response. Click Reconnect, then try again."
         }
         if lowered.contains("operation not permitted") || lowered.contains("permission denied") || lowered.contains("not authorized") || lowered.contains("sandbox") {
-            return "Cortex needs permission for those notes. Choose the folder again from Advanced settings."
+            return "\(DistributionMode.appDisplayName) needs permission for those notes. Choose the folder again from Advanced settings."
         }
         if lowered.contains("no such file") || lowered.contains("file doesn") || lowered.contains("file not found") {
             return "That file is no longer available. Choose it again or refresh Advanced settings."
@@ -2572,11 +2572,11 @@ enum CortexRecoveryText {
         case 404:
             return "This app and local memory engine may be out of sync. Click Reconnect, then try again."
         case 409:
-            return "Cortex is finishing another change. Wait a moment, then try again."
+            return "\(DistributionMode.appDisplayName) is finishing another change. Wait a moment, then try again."
         case 413:
             return "That source is too large. Sync a narrower source or fewer notes."
         case 429:
-            return "Cortex is busy. Wait a moment, then try again."
+            return "\(DistributionMode.appDisplayName) is busy. Wait a moment, then try again."
         case 500...599:
             return "Local memory engine hit a problem. Click Reconnect, then try again."
         default:
@@ -2606,7 +2606,7 @@ enum CortexRecoveryText {
     private static func cocoaRecoveryText(_ code: Int) -> String {
         switch code {
         case NSFileReadNoPermissionError, NSFileWriteNoPermissionError:
-            return "Cortex needs permission for those notes. Choose the folder again from Advanced settings."
+            return "\(DistributionMode.appDisplayName) needs permission for those notes. Choose the folder again from Advanced settings."
         case NSFileNoSuchFileError:
             return "That file is no longer available. Choose it again or refresh Advanced settings."
         default:
@@ -2705,7 +2705,7 @@ final class BackendSupervisor {
                 // failure now instead of leaving the user on a spinner. "failed" keeps this
                 // routed to the recovery card (see backendNeedsRecovery).
                 if tick > 1, let process, !process.isRunning {
-                    return "Local memory engine failed to start: port 8766 may already be in use. Quit any other Cortex instance (or whatever is using that port), then click Reconnect."
+                    return "Local memory engine failed to start: port 8766 may already be in use. Quit any other \(DistributionMode.appDisplayName) instance (or whatever is using that port), then click Reconnect."
                 }
                 if tick > 0, tick % 10 == 0 {
                     onProgress?("Starting the local memory engine (\(tick / 2)s)...")
@@ -2757,10 +2757,10 @@ final class BackendSupervisor {
         let normalizedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedMCPAPIKey = mcpAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedAPIKey.isEmpty && normalizedAPIKey != "dev-local-key" else {
-            throw NSError(domain: "Cortex", code: 4, userInfo: [NSLocalizedDescriptionKey: "Cortex API token is missing"])
+            throw NSError(domain: "Cortex", code: 4, userInfo: [NSLocalizedDescriptionKey: "\(DistributionMode.appDisplayName) API token is missing"])
         }
         guard !normalizedMCPAPIKey.isEmpty && normalizedMCPAPIKey != normalizedAPIKey else {
-            throw NSError(domain: "Cortex", code: 5, userInfo: [NSLocalizedDescriptionKey: "Cortex tool access token is missing"])
+            throw NSError(domain: "Cortex", code: 5, userInfo: [NSLocalizedDescriptionKey: "\(DistributionMode.appDisplayName) tool access token is missing"])
         }
 
         writeLog("Starting bundled backend from \(backendURL.path)")
@@ -2776,7 +2776,7 @@ final class BackendSupervisor {
         // launch would be silently killed by the sandbox, so fail with an explicit,
         // user-actionable error instead.
         if DistributionMode.isAppStore && !FileManager.default.isExecutableFile(atPath: pythonURL.path) {
-            throw NSError(domain: "Cortex", code: 6, userInfo: [NSLocalizedDescriptionKey: "The bundled memory engine runtime is missing from this build. Reinstall Cortex from the App Store."])
+            throw NSError(domain: "Cortex", code: 6, userInfo: [NSLocalizedDescriptionKey: "The bundled memory engine runtime is missing from this build. Reinstall \(DistributionMode.appDisplayName) from the App Store."])
         }
         writeLog("Python executable: \(pythonURL.path)")
         launched.executableURL = pythonURL
@@ -3867,7 +3867,7 @@ final class AppState: ObservableObject {
             return nil
         }
         if report.summary.needs_attention > 0 {
-            return "A connected source needs attention before Cortex can finish setup."
+            return "A connected source needs attention before \(DistributionMode.appDisplayName) can finish setup."
         }
         if report.sources.contains(where: { $0.status == "empty" }) {
             return "The connected source has no usable content yet. Choose notes or a source with real memory."
@@ -3879,7 +3879,7 @@ final class AppState: ObservableObject {
             return "The connected source is waiting for its first completed sync."
         }
         if report.sources.contains(where: { $0.captures > 0 || $0.pending > 0 || $0.approved > 0 || $0.active_memories > 0 }) {
-            return "Source data exists, but Cortex is still checking whether it is fresh and citable."
+            return "Source data exists, but \(DistributionMode.appDisplayName) is still checking whether it is fresh and citable."
         }
         return "Waiting for synced memory from the connected source."
     }
@@ -4171,7 +4171,7 @@ final class AppState: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                 NotchNotifier.shared.show(
                     title: "Welcome to \(DistributionMode.appDisplayName)",
-                    subtitle: "This is your notch. Cortex speaks here.",
+                    subtitle: "This is your notch. \(DistributionMode.appDisplayName) speaks here.",
                     style: .info
                 )
             }
@@ -4397,7 +4397,7 @@ final class AppState: ObservableObject {
             return
         }
         let panel = NSOpenPanel()
-        panel.title = "Choose Cortex Vault Folder"
+        panel.title = "Choose \(DistributionMode.appDisplayName) Vault Folder"
         panel.prompt = "Use Folder"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -4441,7 +4441,7 @@ final class AppState: ObservableObject {
             let data = try await request(path: "/v1/captures", method: "POST", body: body)
             let response = try JSONDecoder().decode(CaptureResponse.self, from: data)
             status = "Saved \(response.memories.count) memories"
-            notify("Cortex", "Saved \(response.memories.count) memories")
+            notify(DistributionMode.appDisplayName, "Saved \(response.memories.count) memories")
             await loadInbox()
             await loadRecent()
             await loadGraph()
@@ -4454,7 +4454,7 @@ final class AppState: ObservableObject {
             return true
         } catch {
             status = CortexRecoveryText.failureStatus("Save", error: error)
-            notify("Cortex", "Save failed")
+            notify(DistributionMode.appDisplayName, "Save failed")
             return false
         }
     }
@@ -5204,20 +5204,20 @@ final class AppState: ObservableObject {
                 }
                 let data = try await request(path: "/v1/tools/schema?format=openai", method: "GET")
                 let count = Self.toolSchemaCount(data)
-                return ConnectionTestResult(ok: true, message: "\(integration.name) config verified: \(count) Cortex tools available")
+                return ConnectionTestResult(ok: true, message: "\(integration.name) config verified: \(count) \(DistributionMode.appDisplayName) tools available")
             case .mcpDeeplink, .cliCommand, .httpAPI:
                 // These live outside any file we can inspect (a deeplink install inside the tool, a
                 // CLI registration, or another app's settings), so the test verifies Cortex's side
                 // and says exactly that.
                 let data = try await request(path: "/v1/tools/schema?format=openai", method: "GET")
                 let count = Self.toolSchemaCount(data)
-                return ConnectionTestResult(ok: true, message: "Cortex is reachable: \(count) tools available to \(integration.name)")
+                return ConnectionTestResult(ok: true, message: "\(DistributionMode.appDisplayName) is reachable: \(count) tools available to \(integration.name)")
             }
         } catch {
             // Connection-shaped failures (offline/timeout engine) get the friendly, actionable line;
             // a genuine HTTP/status error surfaces its (trimmed) message so the user has something to
             // act on rather than a misleading "is the app running?".
-            let generic = "Couldn't reach Cortex. Is the app running?"
+            let generic = "Couldn't reach \(DistributionMode.appDisplayName). Is the app running?"
             if isRetriableConnectionError(error) {
                 return ConnectionTestResult(ok: false, message: generic)
             }
@@ -5291,9 +5291,9 @@ final class AppState: ObservableObject {
         let tools = (listResult.json?["result"] as? [String: Any])?["tools"] as? [Any]
         let count = tools?.count ?? 0
         guard count > 0 else {
-            return ConnectionTestResult(ok: false, message: "\(integration.name) connected but no Cortex tools are advertised yet.")
+            return ConnectionTestResult(ok: false, message: "\(integration.name) connected but no \(DistributionMode.appDisplayName) tools are advertised yet.")
         }
-        return ConnectionTestResult(ok: true, message: "\(integration.name) is live: \(count) Cortex tool\(count == 1 ? "" : "s") reachable over the hosted connector.")
+        return ConnectionTestResult(ok: true, message: "\(integration.name) is live: \(count) \(DistributionMode.appDisplayName) tool\(count == 1 ? "" : "s") reachable over the hosted connector.")
     }
 
     /// Count the function objects in a /v1/tools/schema?format=openai payload without decoding each of
@@ -6380,7 +6380,7 @@ final class AppState: ObservableObject {
 
         let panel = NSOpenPanel()
         panel.title = "Select Notes Folder"
-        panel.message = "Allow Cortex to keep this notes folder synced into Review."
+        panel.message = "Allow \(DistributionMode.appDisplayName) to keep this notes folder synced into Review."
         panel.prompt = "Use This Folder"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -6419,7 +6419,7 @@ final class AppState: ObservableObject {
         guard connector.id == "calendar" else { return }
         let panel = NSOpenPanel()
         panel.title = "Select Calendar File"
-        panel.message = "Allow Cortex to sync this read-only calendar export into Review."
+        panel.message = "Allow \(DistributionMode.appDisplayName) to sync this read-only calendar export into Review."
         panel.prompt = "Sync Calendar"
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -6501,7 +6501,7 @@ final class AppState: ObservableObject {
         guard !managedOAuthIsConfigured(connector) else {
             return nil
         }
-        return "\(managedOAuthProviderDisplayName(provider)) sign-in is not configured for this Cortex build yet."
+        return "\(managedOAuthProviderDisplayName(provider)) sign-in is not configured for this \(DistributionMode.appDisplayName) build yet."
     }
 
     private func startManagedOAuthConnectorNow(_ connector: SourceConnectorCatalogItem, setup: SourceConnectorConnectionSetup) async {
@@ -6515,13 +6515,13 @@ final class AppState: ObservableObject {
         let clientID = configuredManagedOAuthClientID(provider: provider)
         guard !clientID.isEmpty else {
             status = "\(connector.name) sign-in needs a \(providerName) OAuth client ID in this build"
-            connectorLastMessages[connector.id] = "\(providerName) sign-in is not configured for this Cortex build yet."
+            connectorLastMessages[connector.id] = "\(providerName) sign-in is not configured for this \(DistributionMode.appDisplayName) build yet."
             return
         }
         let clientSecret = configuredManagedOAuthClientSecret(provider: provider)
         if ["notion", "microsoft"].contains(provider) && clientSecret.isEmpty {
             status = "\(connector.name) sign-in needs a \(providerName) OAuth client secret in this build"
-            connectorLastMessages[connector.id] = "\(providerName) sign-in is not configured for this Cortex build yet."
+            connectorLastMessages[connector.id] = "\(providerName) sign-in is not configured for this \(DistributionMode.appDisplayName) build yet."
             return
         }
         let pkce: (verifier: String, challenge: String)
@@ -6568,7 +6568,7 @@ final class AppState: ObservableObject {
                 return
             }
             NSWorkspace.shared.open(authURL)
-            connectorLastMessages[connector.id] = "Finish sign-in in your browser. Cortex will start the first sync automatically."
+            connectorLastMessages[connector.id] = "Finish sign-in in your browser. \(DistributionMode.appDisplayName) will start the first sync automatically."
             status = "Finish \(connector.name) sign-in in your browser"
             await waitForManagedOAuthCompletion(connector)
         } catch {
@@ -6671,7 +6671,7 @@ final class AppState: ObservableObject {
                 status = "Waiting for \(connector.name) sign-in in your browser (\(tick * 5)s)..."
             }
         }
-        connectorLastMessages[connector.id] = "Sign-in hasn't completed yet. Finish in the browser - Cortex connects automatically once it does. You can also click Connect again to re-check."
+        connectorLastMessages[connector.id] = "Sign-in hasn't completed yet. Finish in the browser - \(DistributionMode.appDisplayName) connects automatically once it does. You can also click Connect again to re-check."
         status = "\(connector.name) sign-in not finished yet"
     }
 
@@ -6717,7 +6717,7 @@ final class AppState: ObservableObject {
                 onPaired?()
                 let alert = NSAlert()
                 alert.messageText = "Browser extension paired"
-                alert.informativeText = "A read-only access token has been copied to your clipboard.\n\nIn the Cortex extension's Options:\n  • Base URL: \(pairing.base_url)\n  • Token: paste from clipboard\n\nThen click ◆ Cortex on a supported site to inject your cited context."
+                alert.informativeText = "A read-only access token has been copied to your clipboard.\n\nIn the \(DistributionMode.appDisplayName) extension's Options:\n  • Base URL: \(pairing.base_url)\n  • Token: paste from clipboard\n\nThen click ◆ \(DistributionMode.appDisplayName) on a supported site to inject your cited context."
                 alert.addButton(withTitle: "Done")
                 alert.runModal()
             } catch {
@@ -6760,7 +6760,7 @@ final class AppState: ObservableObject {
                 onCopied?()
                 let alert = NSAlert()
                 alert.messageText = "API connection info copied"
-                alert.informativeText = "A read-only token plus connection details (base URL, tool-schema endpoint, a curl example, and the MCP endpoint) were copied to your clipboard. Paste them into your app, the Cortex SDK, or an MCP client."
+                alert.informativeText = "A read-only token plus connection details (base URL, tool-schema endpoint, a curl example, and the MCP endpoint) were copied to your clipboard. Paste them into your app, the \(DistributionMode.appDisplayName) SDK, or an MCP client."
                 alert.addButton(withTitle: "Done")
                 alert.runModal()
                 status = "API connection info copied to clipboard."
@@ -6810,7 +6810,7 @@ final class AppState: ObservableObject {
         if let url = prompt.verificationURL {
             NSWorkspace.shared.open(url)
         }
-        connectorLastMessages[connector.id] = "Finish sign-in in your browser. Cortex starts the first sync automatically."
+        connectorLastMessages[connector.id] = "Finish sign-in in your browser. \(DistributionMode.appDisplayName) starts the first sync automatically."
         status = "Finish \(connector.name) sign-in in your browser"
 
         var interval = max(started.interval, 1)
@@ -6928,7 +6928,7 @@ final class AppState: ObservableObject {
         }
         githubDeviceFlow?.phase = .done
         githubDeviceFlow?.message = repositories.isEmpty
-            ? "Signed in. Cortex is building your memory."
+            ? "Signed in. \(DistributionMode.appDisplayName) is building your memory."
             : "Signed in. Importing \(repositories.count) repositor\(repositories.count == 1 ? "y" : "ies")."
         // Let the success state show briefly, then dismiss the sheet if it's still ours.
         let doneID = promptID
@@ -7563,12 +7563,12 @@ final class AppState: ObservableObject {
 
             announceLearned(count: synced.saved)  // celebrate only distilled memories, never queued/pending ones
             if synced.saved > 0 || synced.queued > 0 {
-                let bridge = pluginInstalled ? " Cortex bridge installed." : ""
+                let bridge = pluginInstalled ? " \(DistributionMode.appDisplayName) bridge installed." : ""
                 status = importSummary(synced, sourceName: connector.name) + bridge
             } else if synced.skipped > 0, !automatic {
-                status = pluginInstalled ? "\(connector.name) already up to date. Cortex bridge installed." : "\(connector.name) already up to date"
+                status = pluginInstalled ? "\(connector.name) already up to date. \(DistributionMode.appDisplayName) bridge installed." : "\(connector.name) already up to date"
             } else if !automatic {
-                status = pluginInstalled ? "\(connector.name) sync finished. Cortex bridge installed." : "\(connector.name) sync finished"
+                status = pluginInstalled ? "\(connector.name) sync finished. \(DistributionMode.appDisplayName) bridge installed." : "\(connector.name) sync finished"
             }
         } catch {
             if automatic {
@@ -7737,7 +7737,7 @@ final class AppState: ObservableObject {
             if let urlString = integration.browserURL, let url = URL(string: urlString) {
                 NSWorkspace.shared.open(url)
             }
-            status = "A live \(integration.name) connection is not supported yet. Opened it alongside Cortex."
+            status = "A live \(integration.name) connection is not supported yet. Opened it alongside \(DistributionMode.appDisplayName)."
             return
         }
         switch integration.connectionKind {
@@ -7823,7 +7823,7 @@ final class AppState: ObservableObject {
             _ = await registerMCPToken(for: integration)
             NSWorkspace.shared.open(url)
             markIntegrationConfigCopied(integration)
-            status = "Opening \(integration.name) to confirm the Cortex connection. Approve the prompt and you're live."
+            status = "Opening \(integration.name) to confirm the \(DistributionMode.appDisplayName) connection. Approve the prompt and you're live."
         }
     }
 
@@ -7871,7 +7871,7 @@ final class AppState: ObservableObject {
         guard !DistributionMode.isAppStore else { return }
         relaunchIntegrationApp(for: integration)
         if !integration.bundleIdentifiers.isEmpty {
-            status = "\(integration.name) connected. Restarting it so Cortex is live."
+            status = "\(integration.name) connected. Restarting it so \(DistributionMode.appDisplayName) is live."
         }
     }
 
@@ -7919,9 +7919,9 @@ final class AppState: ObservableObject {
                 NSWorkspace.shared.open(url)
             }
             if hostedToken != nil {
-                status = "Add Cortex as a connector in \(integration.name): paste the link and key (a secure connection, not your data)."
+                status = "Add \(DistributionMode.appDisplayName) as a connector in \(integration.name): paste the link and key (a secure connection, not your data)."
             } else {
-                status = "Add Cortex as a connector in \(integration.name): paste the link and key. Note: the hosted connector may not be enabled yet, so this key can only reach a self-hosted Cortex."
+                status = "Add \(DistributionMode.appDisplayName) as a connector in \(integration.name): paste the link and key. Note: the hosted connector may not be enabled yet, so this key can only reach a self-hosted \(DistributionMode.appDisplayName)."
             }
         }
     }
@@ -8164,7 +8164,7 @@ final class AppState: ObservableObject {
             // The sandbox can't write another app's config or fire an install deeplink batch, so the
             // honest one-click here is a copyable combined config the user pastes per app.
             copyMCPConfig()
-            status = "Copied the Cortex setup config. Paste it into each AI app's MCP settings."
+            status = "Copied the \(DistributionMode.appDisplayName) setup config. Paste it into each AI app's MCP settings."
             return
         }
         let detected = connectAllDetectedIntegrations
@@ -8624,7 +8624,7 @@ final class AppState: ObservableObject {
     /// Safe to call when signed out: it reports `.failed` and returns rather than reaching the network.
     func restoreFromAccount() async {
         guard isSignedIn, !cloudSyncBaseURL.isEmpty else {
-            restoreProgress = .failed("Sign in to your Cortex account to restore your memory.")
+            restoreProgress = .failed("Sign in to your \(DistributionMode.appDisplayName) account to restore your memory.")
             return
         }
 
@@ -8782,7 +8782,7 @@ final class AppState: ObservableObject {
                   !self.onboardingDismissedForSession,
                   !self.showOnboarding else { return }
             self.showOnboarding = true
-            self.status = "Connect a source to finish setting up Cortex."
+            self.status = "Connect a source to finish setting up \(DistributionMode.appDisplayName)."
         }
     }
 
@@ -8799,7 +8799,7 @@ final class AppState: ObservableObject {
         guard !onboardingComplete, !onboardingDismissedForSession, !showOnboarding else { return }
         setOnboardingStep(firstIncompleteOnboardingStep())
         showOnboarding = true
-        status = "Connect a source to finish setting up Cortex."
+        status = "Connect a source to finish setting up \(DistributionMode.appDisplayName)."
     }
 
     private func firstIncompleteOnboardingStep() -> OnboardingStep {
@@ -8815,7 +8815,7 @@ final class AppState: ObservableObject {
             case .firstSource:
                 status = onboardingSourceHealthMessage ?? "Connect a source, then review memory"
             case .reviewMemory:
-                status = "Approve one review item before asking Cortex"
+                status = "Approve one review item before asking \(DistributionMode.appDisplayName)"
             case .askUse:
                 status = "Ask once with citations before finishing"
             case .trustBackup:
@@ -9315,7 +9315,7 @@ final class AppState: ObservableObject {
                 diagnostics = nil
                 reliabilityReport = nil
                 resetOnboardingProgressAfterDataDeletion()
-                status = "Deleted local Cortex data"
+                status = "Deleted local \(DistributionMode.appDisplayName) data"
                 await loadSettings()
                 await loadInbox()
                 await loadRecent()
@@ -9400,9 +9400,9 @@ final class AppState: ObservableObject {
                 let versionComparison = compareVersion(manifest.version, appVersion)
                 let buildComparison = compareBuild(manifest.build, appBuild)
                 if versionComparison > 0 || (versionComparison == 0 && buildComparison > 0) {
-                    updateStatus = "Cortex \(manifest.version) (\(manifest.build)) is available"
+                    updateStatus = "\(DistributionMode.appDisplayName) \(manifest.version) (\(manifest.build)) is available"
                 } else {
-                    updateStatus = "Cortex is up to date"
+                    updateStatus = "\(DistributionMode.appDisplayName) is up to date"
                 }
             } catch {
                 updateStatus = CortexRecoveryText.failureStatus("Update check", error: error)
@@ -9990,7 +9990,7 @@ struct CortexSignInWall: View {
                             ink: vaultInk)
                         VaultTeachRow(
                             glyph: "circle.hexagongrid.fill",
-                            text: "Cortex builds one private, cited memory of you. On your Mac, never on ours.",
+                            text: "\(DistributionMode.appDisplayName) builds one private, cited memory of you. On your Mac, never on ours.",
                             ink: vaultInk)
                         VaultTeachRow(
                             glyph: "sparkles",
@@ -10562,7 +10562,7 @@ struct IntegrationCard: View {
         case .mcpDeeplink: return "Install in \(integration.name)"
         case .mcpConfig: return "Connect"
         case .cliCommand: return "Copy connect command"
-        case .remoteMCP: return "Add Cortex to \(integration.name)"
+        case .remoteMCP: return "Add \(DistributionMode.appDisplayName) to \(integration.name)"
         case .httpAPI: return "Copy API details"
         }
     }
@@ -10628,20 +10628,20 @@ struct IntegrationCard: View {
                 return "Connect once, then reopen the tool if it asks."
             }
             if integration.supportsInstall {
-                return "Cortex will show a Connect action after the app is installed."
+                return "\(DistributionMode.appDisplayName) will show a Connect action after the app is installed."
             }
         }
         if integration.referenceOnly {
-            return "A live Cortex connection for this tool is not supported yet."
+            return "A live \(DistributionMode.appDisplayName) connection for this tool is not supported yet."
         }
         if !integration.supportsInstall {
             switch integration.connectionKind {
             case .mcpDeeplink:
-                return "\(integration.name) will pop up to confirm the Cortex connection. One click, no restart."
+                return "\(integration.name) will pop up to confirm the \(DistributionMode.appDisplayName) connection. One click, no restart."
             case .cliCommand:
-                return "Copies the exact terminal command that registers Cortex with this tool."
+                return "Copies the exact terminal command that registers \(DistributionMode.appDisplayName) with this tool."
             case .remoteMCP:
-                return "Hands \(integration.name) a live connector link and key. Your memory stays in Cortex, served on demand."
+                return "Hands \(integration.name) a live connector link and key. Your memory stays in \(DistributionMode.appDisplayName), served on demand."
             case .httpAPI:
                 return "Copies the local API address and a scoped token for this stack."
             case .mcpConfig:
@@ -10840,7 +10840,7 @@ struct SourceReadinessPanel: View {
 
     private func displayRecommendation(_ value: String) -> String {
         if value.lowercased().contains("import one high-signal source") {
-            return "Connect a local source so Cortex can sync useful memory into Review."
+            return "Connect a local source so \(DistributionMode.appDisplayName) can sync useful memory into Review."
         }
         if value.lowercased().contains("local beta use") {
             return "Connections are healthy for current and planned sync."
@@ -11881,7 +11881,7 @@ struct SettingsUpdatesSection: View {
                 .foregroundColor(.secondary)
             if let manifest = state.updateManifest {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Latest: Cortex \(manifest.version) (\(manifest.build)) · \(manifest.channel)")
+                    Text("Latest: \(DistributionMode.appDisplayName) \(manifest.version) (\(manifest.build)) · \(manifest.channel)")
                         .fontWeight(.medium)
                     Text("Released: \(manifest.released_at) · macOS \(manifest.minimum_macos)+")
                         .font(.caption)
@@ -11914,7 +11914,7 @@ struct SettingsUpdatesSection: View {
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
-            Text("For the local beta, updates are manual: download the new DMG, quit Cortex, replace the app, and reopen. Your vault stays on disk.")
+            Text("For the local beta, updates are manual: download the new DMG, quit \(DistributionMode.appDisplayName), replace the app, and reopen. Your vault stays on disk.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -12109,7 +12109,7 @@ struct SettingsReliabilitySection: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Cortex checks the local database and repairs it if needed. Memory stays on this Mac; this can take a minute on large vaults.")
+            Text("\(DistributionMode.appDisplayName) checks the local database and repairs it if needed. Memory stays on this Mac; this can take a minute on large vaults.")
         }
     }
 
@@ -12255,7 +12255,7 @@ struct SettingsHealthSection: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Cortex rebuilds the local search index from your memories. Nothing is deleted; search may be briefly unavailable while it runs.")
+            Text("\(DistributionMode.appDisplayName) rebuilds the local search index from your memories. Nothing is deleted; search may be briefly unavailable while it runs.")
         }
     }
 
@@ -12323,7 +12323,7 @@ struct SettingsPrivacySection: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Privacy")
                 .font(.headline)
-            Text("Cortex does not monitor the clipboard, record the screen, capture ambient activity, or send background data.")
+            Text("\(DistributionMode.appDisplayName) does not monitor the clipboard, record the screen, capture ambient activity, or send background data.")
                 .font(.body)
                 .foregroundColor(.secondary)
         }
@@ -12341,7 +12341,7 @@ struct SettingsDataRecoverySection: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Data & Recovery")
                 .font(.headline)
-            Text("Backups and destructive actions affect only this Mac's Cortex memory folder.")
+            Text("Backups and destructive actions affect only this Mac's \(DistributionMode.appDisplayName) memory folder.")
                 .font(.body)
                 .foregroundColor(.secondary)
             HStack {
@@ -12397,7 +12397,7 @@ struct SettingsDataRecoverySection: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes local backup archives from the Cortex memory folder. Current memories are not deleted.")
+            Text("This removes local backup archives from the \(DistributionMode.appDisplayName) memory folder. Current memories are not deleted.")
         }
         .sheet(isPresented: $confirmDeleteAllData, onDismiss: { deleteAllConfirmationText = "" }) {
             deleteAllDataConfirmationSheet
@@ -12409,7 +12409,7 @@ struct SettingsDataRecoverySection: View {
 
     private var deleteAllDataConfirmationSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Delete all local Cortex data", systemImage: "exclamationmark.triangle.fill")
+            Label("Delete all local \(DistributionMode.appDisplayName) data", systemImage: "exclamationmark.triangle.fill")
                 .font(.headline)
                 .foregroundColor(.red)
             Text("This permanently erases every review item, memory, task, graph link, setting, event, and attachment from this vault. Your local backup archives are also removed.")
@@ -12608,7 +12608,7 @@ struct MemoryCard: View {
                             .disabled(isInFlight)
                             Button("Cancel", role: .cancel) {}
                         } message: {
-                            Text("Cortex will remove this saved memory from local search and exports.")
+                            Text("\(DistributionMode.appDisplayName) will remove this saved memory from local search and exports.")
                         }
                 }
             }
@@ -12800,7 +12800,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.toolTip = "Cortex: click to ask your memory (⌃⌥Space)"
+        statusItem.button?.toolTip = "\(DistributionMode.appDisplayName): click to ask your memory (⌃⌥Space)"
         // Click-split so both surfaces coexist on one status item WITHOUT statusItem.menu hijacking
         // every click: LEFT-click / hotkey → the rich "Cortex Spotlight" popover; RIGHT-click (or
         // ⌃-click) → a lean native menu (Open/Review/Ask/Sync/Connections/Quit).

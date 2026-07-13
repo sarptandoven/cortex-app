@@ -41,7 +41,7 @@ struct TrustSyncManifestSection: View {
                 TrustNotice(
                     systemImage: "icloud.slash",
                     title: "No sync devices registered",
-                    detail: "Cortex is still local-first. The manifest registry is ready for future multi-device materialization, but no remote sync device is active.",
+                    detail: "\(DistributionMode.appDisplayName) is still local-first. The manifest registry is ready for future multi-device materialization, but no remote sync device is active.",
                     color: .secondary
                 )
             } else {

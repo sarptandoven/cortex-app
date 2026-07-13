@@ -314,13 +314,13 @@ struct MemoryMapView: View {
             CortexEmptyState(
                 systemImage: "point.3.connected.trianglepath.dotted",
                 title: "Your Constellation",
-                message: "Your memory map appears as Cortex learns about you. Bring your memory in to draw the first stars.",
+                message: "Your memory map appears as \(DistributionMode.appDisplayName) learns about you. Bring your memory in to draw the first stars.",
                 actionTitle: "Bring your memory in"
             ) {
                 state.selectedTab = .review
             }
             CortexButton(
-                title: "Ask Cortex something",
+                title: "Ask \(DistributionMode.appDisplayName) something",
                 systemImage: "sparkle.magnifyingglass",
                 role: .ghost,
                 size: .small
@@ -1531,7 +1531,7 @@ private struct NodeDetailPanel: View {
                     ) {
                         onExplore(node)
                     }
-                    .help("Ask Cortex about \(node.label) and jump to the answer.")
+                    .help("Ask \(DistributionMode.appDisplayName) about \(node.label) and jump to the answer.")
                     .accessibilityLabel("Explore \(node.label) in Ask")
                 }
                 if let onSeeMemories {
@@ -2533,7 +2533,7 @@ struct ConstellationShareCard: View {
                     Text("Mapped by")
                         .font(.system(size: 15, weight: .regular))
                         .foregroundColor(Night.inkSecondary)
-                    Text("Cortex")
+                    Text(DistributionMode.appDisplayName)
                         .font(.system(size: 22, weight: .semibold, design: .serif))
                         .foregroundColor(Night.ink)
                 }
@@ -2584,7 +2584,7 @@ struct ConstellationTrophy: View {
     /// The mono stamp above the card ("YOUR CONSTELLATION" / "MEMORY WRAPPED").
     let stampText: String
     /// The wordmark inside the seal below the card.
-    var sealText: String = "Cortex"
+    var sealText: String = DistributionMode.appDisplayName
     /// Re-run the render.
     let onRetry: () -> Void
 
@@ -2765,7 +2765,7 @@ private struct ConstellationShareSheet: View {
             image: cardImage,
             failed: renderFailed,
             stampText: "YOUR CONSTELLATION",
-            sealText: "Cortex",
+            sealText: DistributionMode.appDisplayName,
             onRetry: { Task { @MainActor in renderCard() } }
         )
     }

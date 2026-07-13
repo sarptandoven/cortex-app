@@ -81,7 +81,7 @@ struct ModelTab: View {
                 if let profile = state.profile, !profile.sections.isEmpty {
                     VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
                         SectionHeader(
-                            title: "What Cortex has learned",
+                            title: "What \(DistributionMode.appDisplayName) has learned",
                             detail: ""
                         )
                         if let segments = profileStampSegments(for: profile) {
@@ -101,7 +101,7 @@ struct ModelTab: View {
                             ) {
                                 state.presentConnectToolsWizard(statusMessage: "Improve profile readiness")
                             }
-                            .help("Connect more of your notes and AI tools so Cortex has more to learn from.")
+                            .help("Connect more of your notes and AI tools so \(DistributionMode.appDisplayName) has more to learn from.")
                             .accessibilityLabel("Improve readiness by connecting more sources")
                         }
                     }
@@ -276,7 +276,7 @@ struct ConnectAIToolsHeroCard: View {
         if isConnected {
             return "\(connected) connected. Your memory travels with you into every AI you wire in."
         }
-        return "Not connected yet. Wire Cortex into the tools you already work in."
+        return "Not connected yet. Wire \(DistributionMode.appDisplayName) into the tools you already work in."
     }
 
     var body: some View {
@@ -664,7 +664,7 @@ struct MirrorMomentCard: View {
             .cortexCard(background: CortexDesign.accentSoft)
             .frame(maxWidth: 620, alignment: .leading)
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Cortex noticed: \(MemoryText.displayProse(insight.headline, maxLength: 180))")
+            .accessibilityLabel("\(DistributionMode.appDisplayName) noticed: \(MemoryText.displayProse(insight.headline, maxLength: 180))")
         }
     }
 }
@@ -701,7 +701,7 @@ struct ProfileCard: View {
     private var confidenceWhy: String {
         let count = section.elements.compactMap { $0.count }.reduce(0, +)
         if isEarlySignal {
-            return "This is a first hint. Cortex has seen it too few times to be sure."
+            return "This is a first hint. \(DistributionMode.appDisplayName) has seen it too few times to be sure."
         }
         if count > 0 {
             return "A pattern still taking shape. Seen \(count) time\(count == 1 ? "" : "s") so far."
@@ -1106,16 +1106,16 @@ struct HomeHeroSection: View {
         if state.connectedAIIntegrationCount > 0 {
             return "Connect notes so Ask can answer with citations."
         }
-        return "Connect once. Cortex keeps notes synced and brings new memory to Review."
+        return "Connect once. \(DistributionMode.appDisplayName) keeps notes synced and brings new memory to Review."
     }
 
     // The longer explanation lives in a tooltip so the hero stays one line tall.
     private var detailHelp: String? {
         if state.isLocalServiceReady && needsAttentionSources > 0 {
-            return "Cortex keeps already synced memory local. Fresh items resume once the source connection is fixed."
+            return "\(DistributionMode.appDisplayName) keeps already synced memory local. Fresh items resume once the source connection is fixed."
         }
         if state.isLocalServiceReady && activeSources == 0 && hasEmptySource {
-            return "Cortex scanned the selected source and could not find notes or records it can learn from."
+            return "\(DistributionMode.appDisplayName) scanned the selected source and could not find notes or records it can learn from."
         }
         return nil
     }
@@ -1123,7 +1123,7 @@ struct HomeHeroSection: View {
     private var actionTitle: String {
         switch heroState {
         case .gettingReady: return "Review memory"
-        case .starting: return "Start Cortex"
+        case .starting: return "Start \(DistributionMode.appDisplayName)"
         case .needsAttention: return "Open Connections"
         case .review: return "Review memory"
         case .dueSync: return "Sync now"
