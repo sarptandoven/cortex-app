@@ -225,8 +225,13 @@ if [[ "$PROFILE_PRESENT" == "1" ]]; then
     echo "Provisioning profile does not authorize Sign in with Apple (Default). Regenerate it after enabling the capability." >&2
     exit 2
   fi
-  PROFILE_KEYCHAIN_GROUPS="$(plutil -extract 'Entitlements.keychain-access-groups' json -o - "$PROFILE_INFO" 2>/dev/null || true)"
-  if [[ "$PROFILE_KEYCHAIN_GROUPS" != *"\"$EXPECTED_APP_ID\""* && "$PROFILE_KEYCHAIN_GROUPS" != *"\"$TEAM_ID.*\""* ]]; then
+  # PlistBuddy, not `plutil -extract ... json`: plutil refuses JSON output for decoded
+  # provisioning profiles (their DeveloperCertificates <data> blobs make the document
+  # non-JSON-serializable on current macOS), which silently emptied this variable and
+  # rejected VALID profiles. PlistBuddy prints the array fine (same approach as the SIWA
+  # check above). Apple issues the group as the exact app id OR the team wildcard "TEAM.*".
+  PROFILE_KEYCHAIN_GROUPS="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:keychain-access-groups' "$PROFILE_INFO" 2>/dev/null || true)"
+  if [[ "$PROFILE_KEYCHAIN_GROUPS" != *"$EXPECTED_APP_ID"* && "$PROFILE_KEYCHAIN_GROUPS" != *"$TEAM_ID.*"* ]]; then
     echo "Provisioning profile does not authorize the app keychain group '$EXPECTED_APP_ID'. Enable Keychain Sharing and regenerate it." >&2
     exit 2
   fi
