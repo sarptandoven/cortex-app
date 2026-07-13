@@ -22,6 +22,87 @@ signing gate left is the provisioning profile (Step 3).**
 
 ---
 
+## ⚡ RESUBMISSION FAST PATH (you already submitted once and got rejected)
+
+Because a Doppl build was already uploaded and reviewed, the following are DONE and
+need no action: developer membership + agreements, the App ID's existence, the App
+Store Connect app record, description/keywords/category/age rating, and the privacy
+nutrition labels (verify only, Step R4.4). What remains is ONLY what changed since
+the rejected build:
+
+**R1. Add Sign in with Apple to the App ID** (NEW capability this build requires).
+Portal → Identifiers → `com.cortex.doppl` → tick **Sign in with Apple** (primary
+App ID) and **Keychain Sharing** → Save. Full detail: Step 2 below.
+
+**R2. REGENERATE the provisioning profile.** Editing an App ID's capabilities
+invalidates existing profiles, and the new build's `applesignin` entitlement must
+be carried by the profile or upload validation fails. Portal → Profiles → create a
+new **Mac App Store Connect** profile for `com.cortex.doppl` (or click your old one
+→ Edit → Generate) → Download → save as `~/Doppl_Mac_App_Store.provisionprofile`.
+Full detail: Step 3 below.
+
+**R3. Backend env for SIWA** (NEW): `CORTEX_OIDC_APPLE_CLIENT_ID=com.cortex.doppl`
+on the hosted server + restart. Full detail: Step 4 below.
+
+**R4. In App Store Connect, update the rejected version (do NOT create a new app):**
+- R4.1 **Replace ALL screenshots** with `outputs/screenshots-build38/*.png`
+  (2880×1800, ready to upload as-is). The UI changed drastically since the rejected
+  build; stale screenshots that mismatch the binary are themselves a rejection
+  reason (2.3.3).
+- R4.2 **Replace the App Review Notes** with the current
+  `docs/APP_REVIEW_NOTES.md` (leads with the "Explore with sample notes, no account
+  needed" offline path).
+- R4.3 **Demo account:** verify the sign-in info you provided last time still
+  works, or create a fresh account in the app and update User name / Password.
+- R4.4 **Privacy labels sanity check** (only if the prior declaration differs):
+  Email Address + Name + Other User Content, Linked to you, NOT tracking, purpose
+  App Functionality; nothing else.
+
+**R5. Build the uploadable pkg** (one command, Step 5 below):
+```sh
+cd /Users/sarptandoven/conductor/workspaces/cortex-by-doppl/taipei
+CORTEX_MAS_PROFILE="$HOME/Doppl_Mac_App_Store.provisionprofile" ./macos/package_app_store.sh
+```
+Report must say `"uploadable": true`. Build 38 is higher than any previously
+uploaded build number, so ASC will accept it.
+
+**R6. Upload** the new `outputs/Doppl-AppStore-0.2.0-38/…38.pkg` via Transporter
+(same as last time). Wait for processing (15–60 min).
+
+**R7. Attach + reply + resubmit:**
+- On the rejected version's page → Build section → remove the old build if still
+  attached → **Add Build** → select build 38.
+- Open **Resolution Center** and REPLY to the rejection thread with the
+  point-by-point fix summary (template below) — replying in-thread materially
+  speeds re-review.
+- Re-confirm export compliance (**No** non-exempt encryption) → **Resubmit to App
+  Review**.
+
+**Resolution Center reply template** (edit the greeting, paste the rest):
+
+> Hello, thank you for the detailed review. We have addressed every point in this
+> new build (0.2.0, build 38):
+>
+> - **2.5.1 (non-public APIs):** The flagged symbols came from unused bundled
+>   Python stdlib extensions. The build now removes `_tkinter`, `_ssl`, and
+>   `_hashlib` entirely; the bundle links no OpenSSL and a symbol scan of every
+>   Mach-O is clean.
+> - **2.5.2 (installing executable code):** All plugin/bridge installer paths are
+>   removed from this build. The app never writes into other apps' directories and
+>   ships no runnable helper scripts; connecting an external tool is a guided,
+>   manual copy/paste performed by the user.
+> - **2.1(a) (app completeness / sign-in):** The review build can be exercised
+>   fully offline: on the sign-in screen, click "Explore with sample notes, no
+>   account needed." A working demo account is also provided in Sign-In
+>   Information. Sign in with Apple is now offered alongside the other options.
+> - **Guideline 4 (design/brand):** The app is now consistently branded "Doppl"
+>   across every surface, a standard macOS app menu with Quit is present, and all
+>   previously non-functional controls have been removed or made functional.
+>
+> Detailed reviewer notes are in the App Review Information section. Thank you!
+
+---
+
 ## Step 0 — Prerequisites (one-time)
 
 0.1 **Apple Developer Program membership** must be active ($99/yr). Verify at
