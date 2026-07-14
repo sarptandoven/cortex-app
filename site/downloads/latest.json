@@ -6,21 +6,21 @@
       "kind": "dmg",
       "sha256": "6a648003b548d4fb7cd0c4b063dda39e66a74b22a49af1ac467b8e569da637a5",
       "size_bytes": 88669172,
-      "url": "https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-38/Cortex-0.2.0-38.dmg"
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-38/Cortex-0.2.0-38.dmg"
     },
     {
       "filename": "Cortex-0.2.0-38.app.zip",
       "kind": "zip",
       "sha256": "72edd09bbf939ac11e1393939510f10a1143fd71fe23978c9e28e556c0ad0840",
       "size_bytes": 71074145,
-      "url": "https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-38/Cortex-0.2.0-38.app.zip"
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-38/Cortex-0.2.0-38.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
       "kind": "obsidian-plugin",
       "sha256": "2c6393ae04890ebe8590c84c6ce62f389e627a1744c48ee999ef10bd9020df69",
       "size_bytes": 3423,
-      "url": "https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-38/cortex-memory-0.1.0.zip"
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-38/cortex-memory-0.1.0.zip"
     }
   ],
   "beta_readiness": {
