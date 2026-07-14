@@ -2,31 +2,31 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-24.dmg",
+      "filename": "Cortex-0.2.0-38.dmg",
       "kind": "dmg",
-      "sha256": "fa46bf6b3ea0049a749e712ef95c9c82740321e5b9eff5daa3ce9bf6e03183d2",
-      "size_bytes": 88100822,
-      "url": "https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-24/Cortex-0.2.0-24.dmg"
+      "sha256": "6a648003b548d4fb7cd0c4b063dda39e66a74b22a49af1ac467b8e569da637a5",
+      "size_bytes": 88669172,
+      "url": "https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-38/Cortex-0.2.0-38.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-24.app.zip",
+      "filename": "Cortex-0.2.0-38.app.zip",
       "kind": "zip",
-      "sha256": "8f5a0799fd528086ffe9a4ad3cfb9493c5e0c915cdfdd63b4d18af1015dfd8c5",
-      "size_bytes": 68638075,
-      "url": "https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-24/Cortex-0.2.0-24.app.zip"
+      "sha256": "72edd09bbf939ac11e1393939510f10a1143fd71fe23978c9e28e556c0ad0840",
+      "size_bytes": 71074145,
+      "url": "https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-38/Cortex-0.2.0-38.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
       "kind": "obsidian-plugin",
-      "sha256": "0ed8d89797a6e6808f6f6dfa52c5e1f203e61c5bd0b8ec29b26cc9dde1ab8b4b",
+      "sha256": "2c6393ae04890ebe8590c84c6ce62f389e627a1744c48ee999ef10bd9020df69",
       "size_bytes": 3423,
-      "url": "https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-24/cortex-memory-0.1.0.zip"
+      "url": "https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-38/cortex-memory-0.1.0.zip"
     }
   ],
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.2.0-24.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-38.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
@@ -34,8 +34,8 @@
     "install_steps": [
       "Verify the downloaded DMG or ZIP against the release checksums.",
       "Open the DMG and drag Cortex.app to Applications.",
+      "The app is Developer ID signed and notarized by Apple; it opens with a normal double-click.",
       "Launch Cortex from Applications.",
-      "If macOS blocks an unnotarized local beta, Control-click Cortex.app and choose Open.",
       "Complete getting started by connecting a memory source, reviewing one memory, asking a cited question, then deciding on backup in Connections & Privacy."
     ],
     "known_limitations": [
@@ -70,7 +70,7 @@
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
-  "build": "24",
+  "build": "38",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
