@@ -626,21 +626,26 @@ def _public_footer(links: list[tuple[str, str]]) -> str:
 
 @app.get("/download", response_class=HTMLResponse)
 def download_page() -> Response:
-    """Where to get the Mac app. Points at the live product site (trydoppl.com), which hosts the
-    signed DMG + update feed (see docs/DISTRIBUTION.md)."""
+    """Where to get the Mac app. Links the Developer ID signed + Apple-notarized DMG directly
+    (GitHub Releases on the PUBLIC artifacts-only repo doppl-tech/releases; the source repo is
+    private, so its release URLs 404 publicly). Checksums + the update feed are served from
+    /downloads/ on this host (Caddy file_server over the deployed release)."""
+    dmg_url = "https://github.com/doppl-tech/releases/releases/download/v0.2.0-38/Cortex-0.2.0-38.dmg"
     body = (
         "    <h1>Download Doppl for Mac</h1>\n"
         '    <p class="lede">Doppl runs as a native macOS app with a local vault. Download it, open '
         "it, and sign in with your account to sync.</p>\n"
         '    <div class="cta">\n'
-        '      <a class="button primary" href="https://trydoppl.com" '
-        'style="width:auto;padding:12px 22px">Get Doppl for Mac</a>\n'
+        f'      <a class="button primary" href="{dmg_url}" '
+        'style="width:auto;padding:12px 22px">Download Doppl for Mac (.dmg)</a>\n'
         "    </div>\n"
+        '    <p>Signed and notarized by Apple, so it opens with a normal double-click. '
+        '<a href="/downloads/Cortex-0.2.0-38.checksums.txt">Verify the checksums</a>.</p>\n'
         "    <h2>Install</h2>\n"
         "    <ul>\n"
-        "      <li>Download the <code>.dmg</code> from the site.</li>\n"
-        "      <li>Open it and drag Doppl to Applications.</li>\n"
-        "      <li>Launch Doppl and sign in — your memory stays on your Mac.</li>\n"
+        "      <li>Open the downloaded <code>.dmg</code> and drag Doppl to Applications.</li>\n"
+        "      <li>Launch Doppl from Applications.</li>\n"
+        "      <li>Sign in, or explore with sample notes first — your memory stays on your Mac.</li>\n"
         "    </ul>\n"
         + _public_footer([("/", "Home"), ("/account/login", "Sign in"), ("/terms", "Terms"), ("/privacy", "Privacy")])
     )
