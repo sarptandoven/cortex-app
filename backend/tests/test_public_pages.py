@@ -56,11 +56,15 @@ class PublicPagesTests(unittest.TestCase):
         self.assertIn("Privacy Policy", privacy)
         self.assertIn("crypto-shred", privacy)  # reflects the real deletion behavior
 
-    def test_download_points_at_live_site_not_a_404_repo(self) -> None:
-        # Review finding: the download button linked to the private github.com/doppl-tech/cortex-app
-        # (a hard 404). It must point at the live product site instead.
+    def test_download_points_at_the_public_notarized_artifact(self) -> None:
+        # The download button must hand out the Developer ID signed + notarized DMG from the
+        # PUBLIC artifacts-only repo (doppl-tech/releases, verified live). It must never point
+        # at the private source repo (doppl-tech/cortex-app), whose release URLs are a hard 404
+        # for the public, and never bounce users to the waitlist-only marketing site.
         html = self.client.get("/download").text
-        self.assertIn("https://trydoppl.com", html)
+        self.assertIn("https://github.com/doppl-tech/releases/releases/download/", html)
+        self.assertIn(".dmg", html)
+        self.assertIn("checksums", html)
         self.assertNotIn("doppl-tech/cortex-app", html)
 
     def test_capture_page_is_branded_doppl(self) -> None:
