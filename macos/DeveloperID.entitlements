@@ -53,10 +53,22 @@
   <key>com.apple.security.cs.allow-dyld-environment-variables</key>
   <true/>
 
-  <!-- Sign in with Apple (Guideline 4.8 — required alongside Google/GitHub sign-in). -->
-  <key>com.apple.developer.applesignin</key>
-  <array>
-    <string>Default</string>
-  </array>
+  <!-- NO com.apple.developer.applesignin here, deliberately.
+
+       applesignin is a RESTRICTED entitlement: AMFI only honors it when an embedded
+       provisioning profile authorizes it. The Developer ID DMG embeds no profile, and
+       this same file signs every NESTED binary (the bundled python3.12 and
+       Python.app/Contents/MacOS/Python), which can never carry a profile at all. With
+       the key present, AMFI SIGKILLed the bundled interpreter at launch (exit 137, no
+       output) the moment we signed with a real Developer ID identity; ad-hoc builds
+       never hit this because AMFI does not enforce restricted entitlements for them.
+
+       Effect: the DMG build's Sign in with Apple button is hidden (the app gates it on
+       hasAppleSignInEntitlement), and users sign in with Google/GitHub/email. The Mac
+       App Store build keeps SIWA via AppStore.entitlements + its embedded provisioning
+       profile. If SIWA is ever wanted in the DMG channel, create a "Developer ID"
+       provisioning profile with the applesignin capability in the Apple portal, embed
+       it at Contents/embedded.provisionprofile, and add the key back for the MAIN app
+       binary only (never for nested binaries). -->
 </dict>
 </plist>

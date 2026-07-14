@@ -166,6 +166,12 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
     --exclude "ensurepip" \
     "$PYTHON_FRAMEWORK_SOURCE/lib/python3.12/" "$PY_STDLIB/"
 
+  # Notarization gate (EVERY build): config-3.12-darwin is CPython's embedding/link kit
+  # (python.o, Makefile, ...). python.o is an unsigned static Mach-O that Apple's notary
+  # service hard-rejects ("The binary is not signed"), and nothing at runtime uses this
+  # directory in either channel. The app-store branch below re-prunes it harmlessly.
+  rm -rf "$PY_STDLIB/config-3.12-darwin"
+
   # --- Strip non-public / deprecated-API C extensions Apple's App Store scanner rejects. ---
   # The bundled headless backend never uses these, and they link Tcl/Tk + OpenSSL symbols
   # (_tkinter: Tcl_*/TclBN_*; _ssl: SSL_CTX_set_options/SSL_CTX_clear_options/SSL_session_reused)
@@ -262,6 +268,10 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
       -r "$ROOT/../backend/runtime-requirements.txt"
     find "$PY_RUNTIME_DEPS" -type d -name "__pycache__" -prune -exec rm -rf {} +
     find "$PY_RUNTIME_DEPS" -type f -name "*.pyc" -delete
+    # Notarization hygiene: joblib ships intentionally-truncated .gz test pickles that the
+    # notary service cannot unpack and warns about ("could not be unpacked"). They are test
+    # fixtures, never imported at runtime; prune every bundled wheel's test/tests dirs.
+    find "$PY_RUNTIME_DEPS" -type d \( -name "test" -o -name "tests" \) -prune -exec rm -rf {} + 2>/dev/null || true
     # Bundle the local embedding model (~8MB) so semantics work fully offline with no API key and
     # no first-run network download. If bundling fails, the demo-integrity guard below decides:
     # dev builds warn LOUDLY but keep building; CORTEX_REQUIRE_MODEL=1 (exported unconditionally
