@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import ast
 import os
 from pathlib import Path
@@ -68,10 +69,20 @@ class AppBrandRoutingTests(unittest.TestCase):
             "X-Cortex-User",  # public protocol header; changing it would break clients
             "Authorization, Content-Type, X-Cortex-User",  # CORS form of that header
         }
+
+        def only_artifact_names(value: str) -> bool:
+            # Release ARTIFACT names/URLs are canonical, not brand copy: the direct-download
+            # channel genuinely ships files named Cortex-<version>.dmg/.app.zip/.checksums.txt
+            # (e.g. the /download page's GitHub-release href and its checksums link). Strip
+            # those tokens; if no "Cortex" remains, the string carries no brand prose.
+            return "Cortex" not in re.sub(r"Cortex-\d[\w.\-]*", "", value)
+
         leaks: list[str] = []
         for name in user_visible_modules:
             for line, value in _non_docstring_literals(APP / name):
                 if "Cortex" in value and value not in stable_internal_literals:
+                    if only_artifact_names(value):
+                        continue
                     leaks.append(f"{name}:{line}: {value!r}")
         self.assertEqual([], leaks, "hardcoded user-visible brand copy:\n" + "\n".join(leaks))
 
