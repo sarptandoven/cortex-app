@@ -15,6 +15,24 @@ INSECURE_DEV_API_KEY = "dev-local-key"
 # App Store Guideline 4: the sandboxed build must never render the other brand's name on screen.
 APP_BRAND = (os.environ.get("CORTEX_APP_BRAND") or "Cortex").strip() or "Cortex"
 
+# TLS trust for the BUNDLED interpreter. The app ships CPython inside Cortex.app; unlike system
+# Python it has no CA store and does not read the macOS keychain, so EVERY outbound HTTPS call
+# (GitHub device flow, Notion/Linear/Readwise connects, OAuth starts, connector syncs) died with
+# SSL: CERTIFICATE_VERIFY_FAILED on user machines. certifi ships in the bundled runtime deps —
+# point OpenSSL at its cacert.pem when nothing else configured it. Runs at config import time so
+# it lands before any ssl context is created, for every entrypoint (standalone server, worker,
+# MCP stdio bridge). Hosted/dev deployments with real cert stores are untouched (env respected).
+if not os.environ.get("SSL_CERT_FILE") or not os.path.isfile(os.environ.get("SSL_CERT_FILE", "")):
+    try:
+        import certifi  # bundled with the runtime deps; absent in minimal dev venvs is fine
+
+        _cacert = certifi.where()
+        if os.path.isfile(_cacert):
+            os.environ.setdefault("SSL_CERT_FILE", _cacert)
+            os.environ.setdefault("REQUESTS_CA_BUNDLE", _cacert)
+    except Exception:
+        pass
+
 
 @dataclass(frozen=True)
 class Settings:
