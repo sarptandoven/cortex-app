@@ -1416,6 +1416,9 @@ struct AskAnswerPanel: View {
     // U-ASK7: brief "Saved" confirmation for the save-as-note action.
     @State private var justSaved = false
     @State private var saving = false
+    // Honesty: brief error state when the save POST fails, so the control itself reports the
+    // failure instead of confirming a save that never happened.
+    @State private var saveFailed = false
 
     private var citationsByIndex: [Int: AskCitationItem] {
         Dictionary(citations.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
@@ -1512,6 +1515,7 @@ struct AskAnswerPanel: View {
         .onChange(of: answer) { _ in
             justCopied = false
             justSaved = false
+            saveFailed = false
             selectedCitation = nil
         }
     }
@@ -1527,15 +1531,17 @@ struct AskAnswerPanel: View {
             // synthesized answer isn't a read-only terminus. Hidden when no AppState is threaded in.
             if let state, !state.requiresSignIn {
                 CortexButton(
-                    title: justSaved ? "Saved" : "Save as note",
-                    systemImage: justSaved ? "checkmark" : "square.and.arrow.down",
+                    title: justSaved ? "Saved" : (saveFailed ? "Couldn't save" : "Save as note"),
+                    systemImage: justSaved ? "checkmark" : (saveFailed ? "exclamationmark.triangle" : "square.and.arrow.down"),
                     role: .ghost,
                     size: .small
                 ) {
                     saveAsNote()
                 }
-                .disabled(justSaved || saving)
-                .help("Save this answer and its sources back into your memory")
+                .disabled(justSaved || saving || saveFailed)
+                .help(saveFailed
+                      ? "The save didn't go through. Try again in a moment"
+                      : "Save this answer and its sources back into your memory")
             }
             // U-ASK7: share the answer through the standard macOS share sheet.
             AskAnswerShareButton(text: shareText)
@@ -1589,11 +1595,21 @@ struct AskAnswerPanel: View {
         let raw = q.isEmpty ? answerWithSources() : "Q: \(q)\n\n\(answerWithSources())"
         let body = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         Task { @MainActor in
-            await state.saveQuickCapture(body, "cortex-ask")
+            let saved = await state.saveQuickCapture(body, "cortex-ask")
             saving = false
-            justSaved = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
-                justSaved = false
+            if saved {
+                justSaved = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                    justSaved = false
+                }
+            } else {
+                // Honesty: never flash "Saved" when the POST failed. The notch already raised
+                // "Couldn't save capture"; flash a transient error on the button itself so the
+                // control the user clicked reports the failure, then restore it for a retry.
+                saveFailed = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                    saveFailed = false
+                }
             }
         }
     }

@@ -29,6 +29,10 @@ struct MenuBarQuickPanel: View {
     @State private var askTask: Task<Void, Never>?
     @State private var savingCapture = false
     @State private var captureSaved = false
+    /// True when the just-saved capture came back review_status == "approved" — only then may the
+    /// confirmation claim Ask can use it. Anything else (pending, or status unreadable) is honestly
+    /// "waiting in Review": in the default config new captures are pending and excluded from Ask.
+    @State private var captureSavedApproved = false
     @State private var captureFailed = false
     @FocusState private var fieldFocused: Bool
     @Namespace private var segment
@@ -420,6 +424,20 @@ struct MenuBarQuickPanel: View {
                 }
                 Spacer()
             }
+            // A failed Approve/Archive must be visible HERE: the popover is often the only surface
+            // open, and AppState only records the failure in captureActionErrors (the main-window
+            // Review tab renders it, but the panel didn't — a genuinely silent failure).
+            if let actionError = state.captureActionErrors[capture.id] {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundColor(CortexDesign.accent)
+                    Text(actionError)
+                        .font(.caption2)
+                        .foregroundColor(CortexDesign.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
         .padding(10)
         .padding(.leading, 10)
@@ -458,12 +476,27 @@ struct MenuBarQuickPanel: View {
 
             HStack(spacing: 10) {
                 // Honest states: green only after a verified save, and a visible (retry-able)
-                // failure instead of a silent swallow.
+                // failure instead of a silent swallow. "Ask can use it now" is only claimed when
+                // the backend echoed review_status == "approved"; the default config queues new
+                // captures as pending (excluded from Ask), so that case says so — and tapping the
+                // confirmation opens Review, where the approval actually happens.
                 if captureSaved {
-                    Label("Saved. Ask can use it now", systemImage: "checkmark.seal.fill")
-                        .font(.caption).fontWeight(.semibold)
-                        .foregroundColor(CortexDesign.sealMoss)
+                    if captureSavedApproved {
+                        Label("Saved. Ask can use it now", systemImage: "checkmark.seal.fill")
+                            .font(.caption).fontWeight(.semibold)
+                            .foregroundColor(CortexDesign.sealMoss)
+                            .transition(.scale(scale: 0.8).combined(with: .opacity))
+                    } else {
+                        Button { onOpenReview() } label: {
+                            Label("Saved. Waiting in Review", systemImage: "checkmark.seal")
+                                .font(.caption).fontWeight(.semibold)
+                                .foregroundColor(CortexDesign.ink)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open Review to approve it")
                         .transition(.scale(scale: 0.8).combined(with: .opacity))
+                    }
                 } else if captureFailed {
                     Label("Couldn't save. Try again", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
@@ -619,19 +652,25 @@ struct MenuBarQuickPanel: View {
         savingCapture = true
         captureFailed = false
         Task {
-            let ok = await state.captureFromPanel(text: text)
+            let result = await state.captureFromPanel(text: text)
             await MainActor.run {
                 savingCapture = false
-                guard ok else {
+                guard case .saved(let reviewStatus) = result else {
                     // The draft is kept so the user's thought never silently vanishes.
                     withAnimation(.easeOut(duration: 0.2)) { captureFailed = true }
                     return
                 }
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                     captureSaved = true
+                    // Only an explicit "approved" earns the "Ask can use it now" seal; pending or
+                    // unknown status must not overclaim (default config queues captures for review).
+                    captureSavedApproved = reviewStatus == "approved"
                     draft = ""
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                // The pending confirmation doubles as the tap-through to Review, so it lingers
+                // longer than the pure-celebration approved seal.
+                let dwell: TimeInterval = captureSavedApproved ? 1.8 : 4.0
+                DispatchQueue.main.asyncAfter(deadline: .now() + dwell) {
                     withAnimation(.easeOut(duration: 0.3)) { captureSaved = false }
                 }
             }

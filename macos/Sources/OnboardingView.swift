@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 
 /// A fast, delightful first-run walkthrough for Cortex — "The Archive".
@@ -114,6 +115,15 @@ struct OnboardingView: View {
             }
         }
         .background(OnboardingAmbientBackground())
+        // The GitHub tile on the Add-Memory step starts the device flow, and the browser then asks
+        // for a user code — so onboarding must present the code sheet itself. The only other hosts
+        // of GitHubDeviceCodeView live inside ConnectionsPrivacySheet, which is never in the
+        // hierarchy while the onboarding sheet is up (sibling sheets on the same presenter).
+        // Dismissing sets `githubDeviceFlow` back to nil via the binding, so the poll loop exits —
+        // matching the Connections sheet behavior.
+        .sheet(item: Binding(get: { state.githubDeviceFlow }, set: { state.githubDeviceFlow = $0 })) { prompt in
+            GitHubDeviceCodeView(state: state, prompt: prompt)
+        }
     }
 
     /// Enter the restore branch from the welcome beat. Always land on the sign-in stage — even when a
@@ -379,7 +389,13 @@ struct OnboardingView: View {
                 onRestore: { enterRestoreFlow() }
             )
         case .addMemory:
-            OnboardingAddMemoryStep(state: state, advance: advance)
+            OnboardingAddMemoryStep(
+                state: state,
+                advance: advance,
+                showNotice: { incoming in
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { notice = incoming }
+                }
+            )
         case .useIt:
             OnboardingUseItStep(state: state)
         case .finish:
@@ -1052,6 +1068,10 @@ private struct OnboardingAddMemoryStep: View {
     @ObservedObject var state: AppState
     /// Called after sample notes load so the walkthrough moves forward to the closing beat.
     let advance: () -> Void
+    /// Routes a failure up to the walkthrough's inline notice banner — the sheet's ONLY visible
+    /// voice — so sample-notes and export-import failures never report solely via the
+    /// `state.status` line that the onboarding sheet occludes.
+    let showNotice: (OnboardingNotice) -> Void
 
     @State private var loadingSamples = false
     @State private var dropTargeted = false
@@ -1139,6 +1159,21 @@ private struct OnboardingAddMemoryStep: View {
                 isBusy: state.isBusy || !state.connectorSyncingIDs.isEmpty || notesCatalogResolving
             ) {
                 runConnectAction()
+            }
+
+            // Inline outcome for the connect-notes card: syncLocalNotesFolder writes its guidance
+            // (empty folder, moved folder, …) to `connectorLastMessages`, which otherwise lands on
+            // a Connections surface the user can't see mid-onboarding. Echo it here so a connect
+            // that found no usable notes never resolves silently. Hidden while a connect is in
+            // flight and once a source is live (success is the card's own "Source connected" state).
+            if !state.onboardingHasSource,
+               !state.isBusy,
+               state.connectorSyncingIDs.isEmpty,
+               let connectMessage = state.connectorLastMessages[resolvedNotesConnector.id] {
+                OnboardingNoticeBanner(
+                    notice: OnboardingNotice(severity: .warning, title: nil, message: connectMessage)
+                )
+                .transition(.opacity)
             }
 
             appConnectGrid
@@ -1279,7 +1314,7 @@ private struct OnboardingAddMemoryStep: View {
                         if !state.importInFlight {
                             CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .ghost, size: .small) {
                                 dropFeedback = nil
-                                state.importAIChatExport()
+                                chooseExportFile()
                             }
                         }
                     }
@@ -1331,18 +1366,65 @@ private struct OnboardingAddMemoryStep: View {
                 }
                 dropFeedback = nil
                 let path = url.path
-                await state.importFromPath(path)
+                let imported = await state.importFromPath(path)
+                if !imported {
+                    showNotice(importFailureNotice())
+                }
             }
         }
         return true
+    }
+
+    /// Onboarding-aware variant of `AppState.importAIChatExport`: the identical picker, but it
+    /// checks the `importFromPath` result so a failed or empty import surfaces in the walkthrough's
+    /// notice banner instead of only writing the `state.status` line the onboarding sheet occludes.
+    private func chooseExportFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose export file"
+        panel.message = "Select your ChatGPT or Claude export: a .zip, its conversations.json, or the unzipped folder."
+        panel.prompt = "Import"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            .zip,
+            .json,
+            UTType(filenameExtension: "jsonl") ?? .data,
+        ]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            let imported = await state.importFromPath(url.standardizedFileURL.path)
+            if !imported {
+                showNotice(importFailureNotice())
+            }
+        }
+    }
+
+    /// The import's honest outcome for the notice banner: `importFromPath` writes a specific
+    /// plain-language reason to `state.status` on every non-imported path ("No conversations
+    /// found…", "Already imported, nothing new to add.", or the recovery text for a request
+    /// failure), so the banner names what actually happened.
+    private func importFailureNotice() -> OnboardingNotice {
+        OnboardingNotice(severity: .warning, title: "Nothing was imported", message: state.status)
     }
 
     private func exploreWithSampleNotes() {
         guard !loadingSamples else { return }
         loadingSamples = true
         Task {
-            await state.loadSampleNotes()
+            let loaded = await state.loadSampleNotes()
             loadingSamples = false
+            guard loaded else {
+                // Every loadSampleNotes failure path writes a plain-language `status`; surface it
+                // in the walkthrough's notice banner instead of advancing to the payoff beat as if
+                // the samples had loaded.
+                showNotice(OnboardingNotice(
+                    severity: .warning,
+                    title: "Sample notes didn't load",
+                    message: state.status
+                ))
+                return
+            }
             advance()
         }
     }

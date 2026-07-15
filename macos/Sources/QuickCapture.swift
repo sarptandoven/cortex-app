@@ -172,6 +172,11 @@ final class QuickCapture {
     private var isEnabled = false
     private var currentKeybind: KeyCombo?
 
+    /// Why the most recent `setEnabled` could not register its hotkey, in user-facing words — nil
+    /// when the hotkey registered (or quick capture is off). NSLog-only failures left the UI showing
+    /// a "live" shortcut that did nothing; surfaces (KeybindRecorderView) render this instead.
+    private(set) var lastRegistrationError: String?
+
     private init() {}
 
     // MARK: Enable / hotkey registration
@@ -187,6 +192,7 @@ final class QuickCapture {
         unregisterHotKey()
         isEnabled = enabled
         currentKeybind = keybind
+        lastRegistrationError = nil
 
         guard enabled else { return }
         guard let keybind else {
@@ -195,6 +201,7 @@ final class QuickCapture {
         }
         guard keybind.isRegistrable else {
             log("keybind \(keybind.displayString) has no command/control/option modifier — refusing to register a system-wide bare key.")
+            lastRegistrationError = "Add ⌘, ⌃, or ⌥ to this shortcut."
             return
         }
         registerHotKey(keybind)
@@ -228,6 +235,7 @@ final class QuickCapture {
         )
         if status != noErr {
             log("RegisterEventHotKey for \(combo.displayString) failed (status \(status)) — likely already claimed by another app.")
+            lastRegistrationError = "\(combo.displayString) is in use by another app. Try a different shortcut."
         } else {
             log("registered quick-capture hotkey \(combo.displayString).")
         }
@@ -544,6 +552,11 @@ private func quickCaptureHotKeyEventHandler(
 /// A small SwiftUI control that shows the current shortcut and records a new one. While recording, a
 /// local `NSEvent` monitor captures the next key-down (with its modifiers) and returns a `KeyCombo`
 /// via the binding. Escape cancels recording without changing the value.
+///
+/// Honesty guard: a combo without ⌘/⌃/⌥ can never be registered (QuickCapture refuses system-wide
+/// bare keys), so the recorder rejects it AT RECORD TIME — the pill tints wax-red with an inline
+/// hint and recording continues — instead of committing a "shortcut" that silently does nothing.
+/// A combo the OS refuses (claimed by another app) surfaces the same way after the commit.
 struct KeybindRecorderView: View {
     @Binding var combo: KeyCombo?
     /// Optional callback fired with the freshly recorded combo (in addition to updating the binding).
@@ -551,30 +564,44 @@ struct KeybindRecorderView: View {
 
     @State private var isRecording = false
     @State private var monitor: Any?
+    /// Inline error hint: why the last keystroke was rejected (no ⌘/⌃/⌥) or why the committed combo
+    /// could not be registered (claimed by another app). nil = no problem to show.
+    @State private var errorHint: String?
 
     var body: some View {
-        HStack(spacing: CortexDesign.Space.sm) {
-            Text(displayText)
-                .font(CortexDesign.Typography.hint)
-                .foregroundColor(isRecording ? CortexDesign.accent : CortexDesign.ink)
-                .frame(minWidth: 74, alignment: .center)
-                .padding(.vertical, 6)
-                .padding(.horizontal, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
-                        .fill(CortexDesign.cardBackground)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
-                        .stroke(isRecording ? CortexDesign.accent : CortexDesign.hairline, lineWidth: 1)
-                )
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack(spacing: CortexDesign.Space.sm) {
+                Text(displayText)
+                    .font(CortexDesign.Typography.hint)
+                    .foregroundColor(isRecording ? CortexDesign.accent : CortexDesign.ink)
+                    .frame(minWidth: 74, alignment: .center)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                            .fill(CortexDesign.cardBackground)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                            .stroke(
+                                isRecording || errorHint != nil ? CortexDesign.accent : CortexDesign.hairline,
+                                lineWidth: 1
+                            )
+                    )
 
-            Button(isRecording ? "Press keys…  (⎋ cancels)" : "Record shortcut") {
-                if isRecording { stopRecording() } else { startRecording() }
+                Button(isRecording ? "Press keys…  (⎋ cancels)" : "Record shortcut") {
+                    if isRecording { stopRecording() } else { startRecording() }
+                }
+                .font(CortexDesign.Typography.caption)
+                .buttonStyle(.plain)
+                .foregroundColor(CortexDesign.accent)
             }
-            .font(CortexDesign.Typography.caption)
-            .buttonStyle(.plain)
-            .foregroundColor(CortexDesign.accent)
+            if let errorHint {
+                Text(errorHint)
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .onDisappear { stopRecording() }
     }
@@ -586,6 +613,7 @@ struct KeybindRecorderView: View {
 
     private func startRecording() {
         isRecording = true
+        errorHint = nil
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
             // Escape cancels without recording.
             if event.keyCode == UInt16(kVK_Escape) {
@@ -593,9 +621,22 @@ struct KeybindRecorderView: View {
                 return nil
             }
             let recorded = KeyCombo(event: event)
+            guard recorded.isRegistrable else {
+                // A bare key (or shift-only combo) can never register system-wide. Do NOT commit —
+                // keep recording so the user can try again, and say why inline.
+                errorHint = "Add ⌘, ⌃, or ⌥ to the shortcut."
+                return nil
+            }
+            errorHint = nil
             combo = recorded
             onRecorded?(recorded)
             stopRecording()
+            // The binding write re-wired the hotkey synchronously (AppState.quickCaptureKeybind
+            // didSet → QuickCapture.setEnabled); surface an OS-level refusal (combo claimed by
+            // another app) that used to die in NSLog. Hop to the main actor for QuickCapture.
+            Task { @MainActor in
+                errorHint = QuickCapture.shared.lastRegistrationError
+            }
             return nil // swallow the event so it doesn't leak into the UI
         }
     }

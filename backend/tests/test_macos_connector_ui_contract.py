@@ -289,7 +289,15 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         self.assertIn("ChatGPT / Claude export", onboarding_source)
         self.assertIn(".onDrop(of: [.fileURL]", onboarding_source)
         self.assertIn("state.importFromPath(path)", onboarding_source)
-        self.assertIn("state.importAIChatExport()", onboarding_source)
+        # Previously this pinned a direct `state.importAIChatExport()` call, but that path was a
+        # confirmed silent-failure defect: importAIChatExport reports failures only via
+        # state.status, which the onboarding sheet occludes, so a failed/empty import looked
+        # identical to never having picked a file. The fixed behavior is an onboarding-aware
+        # picker (chooseExportFile) that runs the same NSOpenPanel, checks the importFromPath
+        # result, and surfaces failures in the walkthrough's own notice banner.
+        self.assertIn("private func chooseExportFile()", onboarding_source)
+        self.assertIn("state.importFromPath(url.standardizedFileURL.path)", onboarding_source)
+        self.assertIn("importFailureNotice()", onboarding_source)
         self.assertIn("state.importInFlight", onboarding_source)
 
     def test_obsidian_plugin_is_installed_and_configured_by_mac_app(self) -> None:

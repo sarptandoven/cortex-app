@@ -424,6 +424,8 @@ struct MemoryWrappedShareSheet: View {
     @State private var cardImage: NSImage?
     @State private var cardPNG: Data?
     @State private var copied = false
+    /// Transient "Saved" confirmation, mirroring `copied` — flipped only after the write succeeded.
+    @State private var saved = false
     /// True once a render attempt produced no bitmap — drives the retry state instead of an
     /// infinite spinner with Copy/Save/Share stuck disabled forever.
     @State private var renderFailed = false
@@ -463,7 +465,7 @@ struct MemoryWrappedShareSheet: View {
                     copyPNG()
                 }
                 .disabled(cardPNG == nil)
-                CortexButton(title: "Save PNG", systemImage: "square.and.arrow.down", role: .secondary) {
+                CortexButton(title: saved ? "Saved" : "Save PNG", systemImage: "square.and.arrow.down", role: .secondary) {
                     savePNG()
                 }
                 .disabled(cardPNG == nil)
@@ -662,6 +664,9 @@ struct MemoryWrappedShareSheet: View {
         }
     }
 
+    /// The save panel closes before the write runs, so a swallowed write error would read exactly
+    /// like success. Confirm ("Saved") only after the bytes actually landed; on failure (disk full,
+    /// unwritable volume) say so with an alert instead of pretending the file exists.
     private func savePNG() {
         guard let data = cardPNG else { return }
         let panel = NSSavePanel()
@@ -669,8 +674,21 @@ struct MemoryWrappedShareSheet: View {
         panel.nameFieldStringValue = "my-memory-wrapped.png"
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
-        if panel.runModal() == .OK, let url = panel.url {
-            try? data.write(to: url)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url)
+            saved = true
+            Task {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                saved = false
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Couldn't save the PNG"
+            alert.informativeText = "The file wasn't written to \(url.lastPathComponent). \(error.localizedDescription)"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Done")
+            alert.runModal()
         }
     }
 

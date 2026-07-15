@@ -14,6 +14,10 @@ struct CaptureResponse: Codable {
     let memories: [MemoryItem]
     let tasks: [TaskItem]
     let entities: [EntityItem]
+    /// Optional: the capture's review disposition ("approved" / "pending"). Today's POST
+    /// /v1/captures response omits it, so callers that need it fall back to
+    /// GET /v1/captures/{id}/status (see reviewStatusForCapture).
+    let review_status: String?
 }
 
 struct SourceImportResponse: Codable {
@@ -3623,6 +3627,11 @@ final class AppState: ObservableObject {
     // Same handoff, for the standalone Connect-an-AI-tool wizard opened from inside onboarding.
     private var pendingOpenWizardAfterOnboarding = false
     private var reopenOnboardingAfterWizard = false
+    // Same handoff, for surfaces opened from INSIDE the Connections sheet (the wizard's
+    // "Connect an app" hero and the import-diff "See what the AIs think of you" card): they
+    // dismiss Connections first and present in connectionsSheetDismissed().
+    private var pendingOpenWizardAfterConnections = false
+    private var pendingOpenImportDiffAfterConnections = false
     @Published var onboardingStep: OnboardingStep = OnboardingStep(rawValue: UserDefaults.standard.integer(forKey: "onboardingStep.v2")) ?? .privateVault
     @Published var firstSourceAdded: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstSourceImported.v1")
     @Published var firstMemoryReviewed: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstMemoryReviewed.v1")
@@ -4478,23 +4487,52 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Outcome of a menu-bar panel capture. `saved` carries the capture's review_status
+    /// ("approved" = Ask can use it now, "pending" = waiting in Review; nil = saved but the
+    /// status couldn't be read) so the panel's confirmation can be honest about usability.
+    enum PanelCaptureResult: Equatable {
+        case saved(reviewStatus: String?)
+        case failed
+    }
+
     /// Quick capture from the menu-bar panel: saves a manual memory via the same capture endpoint,
     /// then refreshes just the review/stats surfaces so the panel + icon counts update. Keeps its
     /// own in-flight state out of the shared `isBusy` so a 200ms save doesn't spin the menu-bar icon.
-    func captureFromPanel(text: String) async -> Bool {
+    func captureFromPanel(text: String) async -> PanelCaptureResult {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
+        guard !trimmed.isEmpty else { return .failed }
         do {
             let title = String(trimmed.prefix(60))
             let body: [String: Any] = ["content": trimmed, "source": "quick-capture", "title": title]
-            _ = try await request(path: "/v1/captures", method: "POST", body: body)
+            let data = try await request(path: "/v1/captures", method: "POST", body: body)
+            // The POST succeeded, so this is a save no matter what: the decode + status lookup
+            // below only refine the confirmation copy and must never turn success into failure.
+            let response = try? JSONDecoder().decode(CaptureResponse.self, from: data)
             await loadInbox()
             await loadReview()
             await loadStats()
-            return true
+            return .saved(reviewStatus: await reviewStatusForCapture(response))
         } catch {
-            return false
+            return .failed
         }
+    }
+
+    /// Best-effort review_status ("approved" / "pending") for a just-saved capture. Prefers the
+    /// field on the POST response when the backend echoes it, otherwise asks
+    /// GET /v1/captures/{id}/status. nil means "saved, status unknown" — never a save failure.
+    private func reviewStatusForCapture(_ response: CaptureResponse?) async -> String? {
+        if let status = response?.review_status { return status }
+        guard let id = response?.capture_id else { return nil }
+        struct CaptureStatusEnvelope: Codable {
+            struct Capture: Codable { let review_status: String? }
+            let capture: Capture
+        }
+        let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        guard let data = try? await request(path: "/v1/captures/\(encoded)/status", method: "GET"),
+              let envelope = try? JSONDecoder().decode(CaptureStatusEnvelope.self, from: data) else {
+            return nil
+        }
+        return envelope.capture.review_status
     }
 
     private func refreshAfterCapture() async {
@@ -4791,12 +4829,15 @@ final class AppState: ObservableObject {
     /// shared `isBusy`/status buffers (like captureFromPanel) so a fast capture doesn't spin the
     /// icon or overwrite the visible status line. The notch "captured" pill is raised by
     /// QuickCapture on the capture event itself; here we stamp lastCapturedAt and announce learning.
-    func saveQuickCapture(_ text: String, _ source: String) async {
+    /// Returns whether the POST actually landed so a calling control (e.g. Ask's "Save as note")
+    /// never confirms a save that didn't happen; the hotkey path ignores the result.
+    @discardableResult
+    func saveQuickCapture(_ text: String, _ source: String) async -> Bool {
         // Respect the required-account gate: write no memory while the sign-in wall is up (covers the
         // edge where quick-capture was enabled while signed in, then the user signed back out).
-        guard !requiresSignIn else { return }
+        guard !requiresSignIn else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
         lastCapturedAt = Date()
         do {
             let title = String(trimmed.prefix(60))
@@ -4806,10 +4847,12 @@ final class AppState: ObservableObject {
             await loadReview()
             await loadStats()
             announceLearned(count: 1)
+            return true
         } catch {
             // Quick capture is a background convenience; surface the failure in the notch rather
             // than clobbering the main status line.
             NotchNotifier.shared.show(title: "Couldn't save capture", subtitle: "Try again in a moment", style: .info)
+            return false
         }
     }
 
@@ -5550,6 +5593,18 @@ final class AppState: ObservableObject {
             showOnboarding = false
             return
         }
+        // Same handoff when invoked from INSIDE the Connections sheet ("Connect an app"): two
+        // sheets can't share one presenter, so setting showConnectToolsWizard while Connections
+        // is up would silently no-op. Dismiss Connections and present the wizard in its
+        // onDismiss (connectionsSheetDismissed).
+        if showConnectionsPrivacy {
+            // Mutually exclusive with the import-diff handoff: clear its pending flag so a stale
+            // one can't fire an unexpected sheet when Connections next dismisses.
+            pendingOpenImportDiffAfterConnections = false
+            pendingOpenWizardAfterConnections = true
+            showConnectionsPrivacy = false
+            return
+        }
         showConnectToolsWizard = true
     }
 
@@ -5569,6 +5624,18 @@ final class AppState: ObservableObject {
     func openImportDiff() {
         guard !requiresSignIn else {
             status = "Sign in to Doppl to compare an AI export against your memory."
+            return
+        }
+        // Sheet-over-sheet handoff when invoked from INSIDE the Connections sheet ("See what the
+        // AIs think of you" card): two sheets can't share one presenter, so setting showImportDiff
+        // while Connections is up would silently no-op. Dismiss Connections and present import-diff
+        // in its onDismiss (connectionsSheetDismissed).
+        if showConnectionsPrivacy {
+            // Mutually exclusive with the wizard handoff: clear its pending flag so a stale one
+            // can't fire an unexpected sheet when Connections next dismisses.
+            pendingOpenWizardAfterConnections = false
+            pendingOpenImportDiffAfterConnections = true
+            showConnectionsPrivacy = false
             return
         }
         showImportDiff = true
@@ -5620,9 +5687,28 @@ final class AppState: ObservableObject {
         showConnectionsPrivacy = true
     }
 
-    /// Called when the Connections sheet finishes dismissing. If we interrupted onboarding to get
-    /// here, return the user to onboarding (unless they finished or dismissed it meanwhile).
+    /// Called when the Connections sheet finishes dismissing. If a control inside Connections
+    /// handed off to the wizard or import-diff (sheets can't stack on one presenter), present the
+    /// pending surface now. Otherwise, if we interrupted onboarding to get here, return the user
+    /// to onboarding (unless they finished or dismissed it meanwhile).
     func connectionsSheetDismissed() {
+        if pendingOpenWizardAfterConnections {
+            pendingOpenWizardAfterConnections = false
+            // Carry the return-to-onboarding intent through the wizard so closing it still lands
+            // the user back in the walkthrough (mirrors reopenOnboardingAfterWizard semantics).
+            reopenOnboardingAfterWizard = reopenOnboardingAfterConnections
+            reopenOnboardingAfterConnections = false
+            showConnectToolsWizard = true
+            return
+        }
+        if pendingOpenImportDiffAfterConnections {
+            pendingOpenImportDiffAfterConnections = false
+            // Import-diff has no dismissed-handler to reopen onboarding from, so consume the
+            // reopen intent here rather than leaving a stale flag for a later Connections close.
+            reopenOnboardingAfterConnections = false
+            showImportDiff = true
+            return
+        }
         let shouldReopen = reopenOnboardingAfterConnections
         reopenOnboardingAfterConnections = false
         if shouldReopen, !onboardingComplete, !onboardingDismissedForSession {
@@ -5945,10 +6031,15 @@ final class AppState: ObservableObject {
     /// identically in App Store (sandboxed) and Developer-ID/DMG builds: the bundled notes are
     /// copied into a stable folder inside the app container that the sandboxed backend child can
     /// read, then synced through the existing local-notes distill path.
-    func loadSampleNotes() async {
+    /// Returns whether sample notes actually synced into memory, so the calling control (the
+    /// onboarding "Explore with sample notes" card) can advance only on a real success; every
+    /// failure path also writes a plain-language `status`. The result is discardable for callers
+    /// that surface `status` directly.
+    @discardableResult
+    func loadSampleNotes() async -> Bool {
         guard !obsidianSyncInFlight else {
             status = "A sync is already running, one moment…"
-            return
+            return false
         }
 
         // 1. Locate the bundled sample notes (shipped by the build at
@@ -5957,7 +6048,7 @@ final class AppState: ObservableObject {
             .appendingPathComponent("sample-notes", isDirectory: true),
               FileManager.default.fileExists(atPath: bundledSampleNotes.path) else {
             status = "Sample notes aren't available in this build. Connect a notes folder to get started."
-            return
+            return false
         }
 
         obsidianSyncInFlight = true
@@ -6010,7 +6101,7 @@ final class AppState: ObservableObject {
                 await loadSourceConnectivity()
                 await loadTrust()
                 status = "No sample notes found to load."
-                return
+                return false
             }
             syncedSomething = true
             // C1: remember that PREVIEW-ONLY sample memories now exist locally, so a subsequent
@@ -6037,6 +6128,7 @@ final class AppState: ObservableObject {
         } catch {
             status = CortexRecoveryText.failureStatus("Sample notes", error: error)
         }
+        return syncedSomething
     }
 
     /// C1: purge the PREVIEW-ONLY sample-notes source when a preview session transitions into a real

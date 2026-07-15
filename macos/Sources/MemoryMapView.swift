@@ -42,6 +42,15 @@ struct MemoryMapView: View {
     /// The cited neighborhood of the selected entity node, fetched on tap (nil for non-entity nodes).
     @State private var neighborhood: EntityNeighborhood?
     @State private var loadingNeighborhood = false
+    /// Panel stand-in for a connection target that isn't among the map's plotted nodes. The
+    /// neighborhood API ranks entities by memory count while the map caps by recency, so a listed
+    /// connection can name an entity the map doesn't plot; this node is built from the fetched
+    /// neighborhood's focal entity so tapping that row still navigates instead of silently
+    /// dismissing the panel.
+    @State private var offMapFocalNode: GraphNode?
+    /// In-panel feedback when navigating to an off-map connection fails, so the tap never reads as
+    /// a dead control (the main window's status line isn't visible from the Constellation overlay).
+    @State private var connectionError: String?
 
     // MARK: Camera — zoom anchored at canvas center, plus pan.
 
@@ -263,6 +272,7 @@ struct MemoryMapView: View {
                         neighborhood: neighborhood,
                         edgeSummaries: selectedEdgeSummaries,
                         loading: loadingNeighborhood,
+                        connectionError: connectionError,
                         onExplore: exploreAction,
                         onSelectConnection: { entityID in selectNode(entityID) },
                         onSeeMemories: seeMemoriesAction
@@ -283,12 +293,17 @@ struct MemoryMapView: View {
         // the fetched `neighborhood` snapshot needs a nudge.
         .onChange(of: state.graphNodes) { _ in
             if let id = selectedNodeID {
-                if !state.graphNodes.contains(where: { $0.id == id }) {
+                if state.graphNodes.contains(where: { $0.id == id }) {
+                    // If an off-map selection just landed on the map, the live map node takes over
+                    // from the focal stand-in.
+                    offMapFocalNode = nil
+                    refreshOpenPanelNeighborhood()
+                } else if offMapFocalNode?.id != id {
                     selectedNodeID = nil
                     neighborhood = nil
-                } else {
-                    refreshOpenPanelNeighborhood()
                 }
+                // An off-map focal selection survives the refresh untouched: its panel data comes
+                // from the entity API, not the map payload, so there's nothing stale to drop.
             }
             hoveredNodeID = nil
         }
@@ -441,7 +456,16 @@ struct MemoryMapView: View {
     }
 
     /// Select a node by id and, for an entity node, fetch its cited neighborhood for the drill panel.
+    /// Connection rows can name entities the map doesn't plot (the neighborhood API ranks by memory
+    /// count, the map caps by recency) — those route through `selectOffMapNode` so the tap navigates
+    /// instead of silently closing the panel.
     private func selectNode(_ id: String) {
+        connectionError = nil
+        guard state.graphNodes.contains(where: { $0.id == id }) else {
+            selectOffMapNode(id)
+            return
+        }
+        offMapFocalNode = nil
         selectedNodeID = id
         neighborhood = nil
         guard let node = state.graphNodes.first(where: { $0.id == id }), node.centrality != nil else { return }
@@ -451,6 +475,42 @@ struct MemoryMapView: View {
             await MainActor.run {
                 if selectedNodeID == id { neighborhood = result }
                 loadingNeighborhood = false
+            }
+        }
+    }
+
+    /// Navigate to a connection whose entity isn't on the map. The CURRENT panel stays up until the
+    /// fetch resolves: on success the selection swaps to a node built from the neighborhood's focal
+    /// entity (the backend resolves any entity id, on-map or not); on failure the panel stays put
+    /// and says so inline — the tap must never just make the panel vanish.
+    private func selectOffMapNode(_ id: String) {
+        let anchorSelection = selectedNodeID
+        loadingNeighborhood = true
+        Task {
+            let result = await state.loadNeighborhood(id)
+            await MainActor.run {
+                loadingNeighborhood = false
+                // The user selected something else while this was in flight; that flow owns the
+                // panel now.
+                guard selectedNodeID == anchorSelection else { return }
+                if let result {
+                    offMapFocalNode = GraphNode(
+                        id: result.focal.entity_id,
+                        type: result.focal.kind ?? "entity",
+                        label: result.focal.label ?? id,
+                        detail: nil,
+                        importance: nil,
+                        centrality: result.focal.centrality,
+                        community: result.focal.community,
+                        is_hub: nil
+                    )
+                    selectedNodeID = result.focal.entity_id
+                    neighborhood = result
+                } else {
+                    let label = neighborhood?.connections.first(where: { $0.entity_id == id })?.label
+                        ?? "that connection"
+                    connectionError = "Couldn't load \(label). Check that the engine is running and try again."
+                }
             }
         }
     }
@@ -473,7 +533,10 @@ struct MemoryMapView: View {
 
     private var selectedNode: GraphNode? {
         guard let id = selectedNodeID else { return nil }
-        return state.graphNodes.first { $0.id == id }
+        if let node = state.graphNodes.first(where: { $0.id == id }) { return node }
+        // Off-map connection target: the panel is driven by the fetched focal entity instead.
+        if let focal = offMapFocalNode, focal.id == id { return focal }
+        return nil
     }
 
     /// The "Explore in Ask" action the detail panel always gets, so the button is never a dead end.
@@ -733,12 +796,16 @@ struct MemoryMapView: View {
                         if selectedNodeID == hit.id {
                             selectedNodeID = nil
                             neighborhood = nil
+                            offMapFocalNode = nil
+                            connectionError = nil
                         } else {
                             selectNode(hit.id)
                         }
                     } else {
                         selectedNodeID = nil
                         neighborhood = nil
+                        offMapFocalNode = nil
+                        connectionError = nil
                     }
                 }
                 .onContinuousHover { phase in
@@ -1469,6 +1536,9 @@ private struct NodeDetailPanel: View {
     var neighborhood: EntityNeighborhood? = nil
     var edgeSummaries: [NodeEdgeSummary] = []
     var loading: Bool = false
+    /// A visible "that tap didn't work" line for a failed connection navigation — a connection row
+    /// must never fail silently.
+    var connectionError: String? = nil
     var onExplore: ((GraphNode) -> Void)? = nil
     /// Tapping a connection re-centers the drill on that entity/node.
     var onSelectConnection: ((String) -> Void)? = nil
@@ -1521,6 +1591,16 @@ private struct NodeDetailPanel: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             connectionsSection
+            if let connectionError, !connectionError.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundColor(CortexDesign.gold)
+                    Text(connectionError)
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             HStack(spacing: CortexDesign.Space.xs) {
                 if let onExplore {
                     CortexButton(
@@ -2708,6 +2788,8 @@ private struct ConstellationShareSheet: View {
     @State private var cardImage: NSImage?
     @State private var cardPNG: Data?
     @State private var copied = false
+    /// Transient "Saved" confirmation, mirroring `copied` — flipped only after the write succeeded.
+    @State private var saved = false
     /// True once a render attempt failed (ImageRenderer produced no bitmap). Drives the retry state
     /// instead of an infinite spinner with the exits stuck disabled.
     @State private var renderFailed = false
@@ -2740,7 +2822,7 @@ private struct ConstellationShareSheet: View {
                     copyPNG()
                 }
                 .disabled(cardPNG == nil)
-                CortexButton(title: "Save PNG", systemImage: "square.and.arrow.down", role: .secondary) {
+                CortexButton(title: saved ? "Saved" : "Save PNG", systemImage: "square.and.arrow.down", role: .secondary) {
                     savePNG()
                 }
                 .disabled(cardPNG == nil)
@@ -2820,6 +2902,9 @@ private struct ConstellationShareSheet: View {
         }
     }
 
+    /// The save panel closes before the write runs, so a swallowed write error would read exactly
+    /// like success. Confirm ("Saved") only after the bytes actually landed; on failure (disk full,
+    /// unwritable volume) say so with an alert instead of pretending the file exists.
     private func savePNG() {
         guard let data = cardPNG else { return }
         let panel = NSSavePanel()
@@ -2827,8 +2912,21 @@ private struct ConstellationShareSheet: View {
         panel.nameFieldStringValue = "my-constellation.png"
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
-        if panel.runModal() == .OK, let url = panel.url {
-            try? data.write(to: url)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url)
+            saved = true
+            Task {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                saved = false
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Couldn't save the PNG"
+            alert.informativeText = "The file wasn't written to \(url.lastPathComponent). \(error.localizedDescription)"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Done")
+            alert.runModal()
         }
     }
 

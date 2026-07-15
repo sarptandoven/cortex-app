@@ -525,45 +525,59 @@ struct TwinScorecardCard: View {
 
     // U-TWIN3: the stat cells route into the Review grading queue (mirrors ModelTab's
     // LedgerColumn press/hover language) so Predictions / Graded / Accuracy are live.
+    // Honesty: the grading queue only renders when there are ungraded predictions, so with
+    // everything graded the cells fall back to static stats — no button promising a
+    // destination that doesn't exist (mirrors the ungradedCount gate on "Grade N predictions").
     private func twinStat(value: String, label: String) -> some View {
-        TwinStatCell(value: value, label: label, action: openGradingQueue)
+        TwinStatCell(value: value, label: label, action: ungradedCount > 0 ? openGradingQueue : nil)
     }
 }
 
-/// A tappable Twin stat cell in the LedgerColumn press/hover language (U-TWIN3).
+/// A Twin stat cell in the LedgerColumn press/hover language (U-TWIN3). Tappable only when an
+/// action is provided (there's a grading queue to open); otherwise it renders as a static stat.
 private struct TwinStatCell: View {
     let value: String
     let label: String
-    let action: () -> Void
+    let action: (() -> Void)?
 
     @State private var hovering = false
 
     var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(value)
-                    .font(CortexDesign.Typography.stat)
-                    .monospacedDigit()
-                    .foregroundColor(CortexDesign.ink)
-                Text(label.uppercased())
-                    .font(CortexDesign.Typography.stamp)
-                    .kerning(0.8)
-                    .foregroundColor(CortexDesign.inkFaint)
+        if let action {
+            Button(action: action) {
+                cellContent
+                    .background(
+                        RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                            .fill(hovering ? CortexDesign.quietBackground : Color.clear)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
             }
-            .padding(.vertical, CortexDesign.Space.xs)
-            .padding(.horizontal, CortexDesign.Space.sm)
-            .background(
-                RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
-                    .fill(hovering ? CortexDesign.quietBackground : Color.clear)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+            .animation(CortexMotion.press, value: hovering)
+            .help("Grade twin predictions in Review")
+            .accessibilityElement(children: .combine)
+            .accessibilityHint("Opens the twin grading queue in Review")
+        } else {
+            cellContent
+                .help("All predictions graded")
+                .accessibilityElement(children: .combine)
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .animation(CortexMotion.press, value: hovering)
-        .help("Grade twin predictions in Review")
-        .accessibilityElement(children: .combine)
-        .accessibilityHint("Opens the twin grading queue in Review")
+    }
+
+    private var cellContent: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(CortexDesign.Typography.stat)
+                .monospacedDigit()
+                .foregroundColor(CortexDesign.ink)
+            Text(label.uppercased())
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.inkFaint)
+        }
+        .padding(.vertical, CortexDesign.Space.xs)
+        .padding(.horizontal, CortexDesign.Space.sm)
     }
 }
 
@@ -581,7 +595,10 @@ struct ConnectionsToolUsageSection: View {
             get: { state.appSettings.proactive_alerts_daily_budget ?? 3 },
             set: { newValue in
                 state.appSettings.proactive_alerts_daily_budget = min(20, max(0, newValue))
-                state.persistSettings()
+                // The budget lives server-side (PUT /v1/settings), not in local defaults —
+                // persistSettings() would only flash "Settings saved" while the backend kept
+                // enforcing the old budget. scheduleSettingsAutosave debounces the real save.
+                state.scheduleSettingsAutosave()
             }
         )
     }

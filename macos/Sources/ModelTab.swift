@@ -840,6 +840,9 @@ private struct ProfileElementRow: View {
     let element: ProfileElement
 
     @State private var hovering = false
+    // Honesty: NSWorkspace.open can fail (file moved/deleted since indexing); surface that
+    // instead of a click that silently does nothing.
+    @State private var openFailed = false
 
     /// "From your calendar · seen 6 times" — degrades gracefully when parts are missing.
     private var sourceCaption: String? {
@@ -862,7 +865,16 @@ private struct ProfileElementRow: View {
             // The whole row is the open-source affordance, on the shared press physics (a quiet
             // wash lift + subtle press scale, one spring) rather than a flat plain button.
             Button {
-                NSWorkspace.shared.open(url)
+                if NSWorkspace.shared.open(url) {
+                    openFailed = false
+                } else {
+                    // Visible failure feedback on the row itself; auto-clears so a later
+                    // retry starts clean (e.g. the app that handles the URL got installed).
+                    openFailed = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                        openFailed = false
+                    }
+                }
             } label: {
                 rowContent(interactive: true)
             }
@@ -893,7 +905,16 @@ private struct ProfileElementRow: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            if openFailed {
+                Text("Couldn't open the source")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeOut(duration: 0.18), value: openFailed)
         .padding(.vertical, CortexDesign.Space.xs)
         .padding(.horizontal, CortexDesign.Space.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -918,6 +939,10 @@ private struct ProfileElementRow: View {
     /// Turns a backend `source_url` into an openable URL. Handles Cortex's custom
     /// `local-file://` scheme (a local path), plus ordinary `file://` and web URLs.
     /// Returns nil for empty or unusable values so the row stays non-interactive.
+    /// Honesty (mirrors CitationDisplay.openableURL): the backend privacy-sanitizes
+    /// `local-file://` locators down to a basename, and even a full path can go stale, so
+    /// any local file that doesn't actually exist on disk is non-openable — presenting it
+    /// as a button would be a dead link that silently does nothing on click.
     static func resolveURL(_ raw: String?) -> URL? {
         guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
             return nil
@@ -933,9 +958,15 @@ private struct ProfileElementRow: View {
             }
             let decoded = path.removingPercentEncoding ?? path
             let trimmed = decoded.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : URL(fileURLWithPath: trimmed)
+            guard !trimmed.isEmpty else { return nil }
+            let url = URL(fileURLWithPath: trimmed)
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
         }
-        return URL(string: value)
+        guard let url = URL(string: value) else { return nil }
+        if url.isFileURL {
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
+        return url
     }
 }
 

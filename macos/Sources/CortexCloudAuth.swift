@@ -775,6 +775,10 @@ struct CortexCloudSection: View {
     @State private var showRestoreField = false
     @State private var restoreCodeInput = ""
     @State private var restoreError = ""
+    /// Set when "Show recovery code" finds no key in the Keychain (the zero-access flag lives in
+    /// UserDefaults and can outlive the key, e.g. after migrating to a new Mac) — the click must
+    /// not be a silent no-op, so this explains the state and routes into the restore entry.
+    @State private var missingKeyError = ""
 
     // A3/A4: "Rebuild this Mac from your account" restore, reachable from the signed-in section (not
     // just onboarding). `restoreRequested` gates the live progress/result copy so an idle section
@@ -1252,9 +1256,19 @@ struct CortexCloudSection: View {
             HStack(spacing: 8) {
                 CortexButton(title: "Show recovery code", systemImage: "eye", role: .secondary) {
                     if let code = state.currentRecoveryCode() {
+                        missingKeyError = ""
                         isForcedFirstReveal = false
                         recoverySavedConfirmed = true   // re-reveal has no forced-save gate
                         revealedRecoveryCode = code
+                    } else {
+                        // The zero-access flag is on but the key is gone from this Mac's Keychain
+                        // (e.g. Migration Assistant carries the flag but not the device-only key).
+                        // A silent no-op here would strand the user; say what happened and open
+                        // the restore entry so the recovery code can bring the key back.
+                        missingKeyError = "No encryption key found on this Mac. Restore it from your recovery code to read your encrypted memory."
+                        showRestoreField = true
+                        restoreError = ""
+                        restoreCodeInput = ""
                     }
                 }
                 .disabled(state.cloudAuthBusy)
@@ -1262,6 +1276,17 @@ struct CortexCloudSection: View {
                     state.disableZeroAccess()
                 }
                 .disabled(state.cloudAuthBusy)
+            }
+            if !missingKeyError.isEmpty {
+                Text(missingKeyError)
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // The restore entry normally lives in the disabled-state controls; render it here too so
+            // the enabled-but-key-missing path has an in-place way back to a working key.
+            if showRestoreField {
+                restoreCodeEntry
             }
         }
     }
@@ -1362,6 +1387,7 @@ struct CortexCloudSection: View {
                         restoreError = ""
                         restoreCodeInput = ""
                         showRestoreField = false
+                        missingKeyError = ""   // the key is back; retire the missing-key notice
                     }
                 }
                 .disabled(restoreCodeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.cloudAuthBusy)
@@ -1369,6 +1395,7 @@ struct CortexCloudSection: View {
                     showRestoreField = false
                     restoreCodeInput = ""
                     restoreError = ""
+                    missingKeyError = ""
                 }
             }
         }
