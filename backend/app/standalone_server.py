@@ -344,6 +344,10 @@ def _remember_managed_oauth_pending(user_id: str, body: dict[str, Any], started:
             "client_id": body.get("client_id"),
             "client_secret": body.get("client_secret"),
             "token_endpoint": body.get("token_endpoint"),
+            # PKCE verifier for the public-client (Microsoft/Outlook) flow. Prefer the value the
+            # store minted in start (server-generated) and fall back to one the app supplied; it
+            # must survive start→complete keyed by state so the code exchange needs no secret.
+            "code_verifier": started.get("code_verifier") or body.get("code_verifier"),
             "source_account_id": body.get("source_account_id"),
             "account_label": body.get("account_label"),
             "account_identifier": body.get("account_identifier"),
@@ -922,6 +926,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         client_id=pending.get("client_id"),
                         client_secret=pending.get("client_secret"),
                         token_endpoint=pending.get("token_endpoint"),
+                        code_verifier=pending.get("code_verifier"),
                         source_account_id=pending.get("source_account_id"),
                         account_label=pending.get("account_label"),
                         account_identifier=pending.get("account_identifier"),
@@ -1298,6 +1303,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         state=str(body.get("state") or "") or None,
                         client_id=str(body.get("client_id") or "") or None,
                         scopes=[str(item) for item in scopes],
+                        code_challenge=str(body.get("code_challenge") or "") or None,
+                        code_challenge_method=str(body.get("code_challenge_method") or "") or None,
+                        code_verifier=str(body.get("code_verifier") or "") or None,
                     )
                     _remember_managed_oauth_pending(user_id, body, started)
                     self._send_json(started)
@@ -1317,6 +1325,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         client_id=str(body.get("client_id") or "") or None,
                         client_secret=str(body.get("client_secret") or "") or None,
                         token_endpoint=str(body.get("token_endpoint") or "") or None,
+                        code_verifier=str(body.get("code_verifier") or "") or None,
                         source_account_id=str(body.get("source_account_id") or "") or None,
                         account_label=str(body.get("account_label") or "") or None,
                         account_identifier=str(body.get("account_identifier") or "") or None,

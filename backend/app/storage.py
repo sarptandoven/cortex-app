@@ -1593,6 +1593,52 @@ def _request_oauth_token(token_endpoint: str, form: dict[str, str]) -> dict[str,
         return json.loads(response.read().decode("utf-8"))
 
 
+def _generate_pkce_verifier_challenge() -> tuple[str, str]:
+    """Return an (code_verifier, code_challenge) S256 PKCE pair for public-client OAuth.
+
+    Follows RFC 7636: a high-entropy URL-safe verifier and its base64url-encoded SHA-256
+    challenge with the trailing padding stripped (as the spec requires). Used so the
+    Microsoft/Outlook public client can complete the code exchange with no client secret."""
+    verifier = secrets.token_urlsafe(64)
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return verifier, challenge
+
+
+def _request_oauth_broker_exchange(
+    broker_exchange_url: str,
+    *,
+    provider: str,
+    code: str,
+    redirect_uri: str,
+    code_verifier: str | None = None,
+) -> dict[str, Any]:
+    """Exchange an OAuth authorization code through the hosted Cortex broker.
+
+    Used for providers (e.g. Notion) that cannot do public-client PKCE and whose client
+    secret must never ship in the desktop app: the broker holds the secret server-side,
+    performs the code→token exchange, and returns the token payload WITHOUT persisting it.
+    Only https broker URLs are permitted; the URL is app-configured, never user supplied."""
+    normalized_url = str(broker_exchange_url or "").strip()
+    if not normalized_url.lower().startswith("https://"):
+        raise ValueError("OAuth broker exchange URL must be https")
+    payload: dict[str, Any] = {
+        "provider": provider,
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }
+    if code_verifier:
+        payload["code_verifier"] = code_verifier
+    request = Request(
+        normalized_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:  # noqa: S310 - app-configured broker endpoint.
+        return json.loads(response.read().decode("utf-8"))
+
+
 def _request_basic_json_oauth_token(
     token_endpoint: str,
     payload: dict[str, Any],
@@ -4822,6 +4868,9 @@ class CortexStore:
         state: str | None = None,
         client_id: str | None = None,
         scopes: list[str] | None = None,
+        code_challenge: str | None = None,
+        code_challenge_method: str | None = None,
+        code_verifier: str | None = None,
     ) -> dict[str, Any]:
         normalized_source = _managed_oauth_source(source)
         defaults = MANAGED_OAUTH_CONNECTOR_DEFAULTS[normalized_source]
@@ -4834,6 +4883,19 @@ class CortexStore:
             raise ValueError(f"{provider.title()} OAuth redirect URI is not configured")
         resolved_state = str(state or "").strip() or secrets.token_urlsafe(24)
         resolved_scopes = _managed_oauth_scopes(normalized_source, scopes)
+        normalized_code_challenge = str(code_challenge or "").strip()
+        normalized_challenge_method = str(code_challenge_method or "").strip() or ("S256" if normalized_code_challenge else "")
+        resolved_code_verifier = str(code_verifier or "").strip()
+        if normalized_code_challenge and normalized_challenge_method not in {"S256", "plain"}:
+            raise ValueError(f"{provider.title()} OAuth code challenge method must be S256 or plain")
+        # Microsoft/Outlook is a public (secretless) client: it completes the code exchange with
+        # PKCE instead of a client secret. If the macOS app did not pass a challenge, mint the
+        # verifier+challenge here and hand the verifier back so the pending record carries it
+        # through to complete. The verifier never leaves the user's Mac. (Notion cannot do public
+        # PKCE, so it stays on the confidential-client / broker path — no challenge is added.)
+        if provider == "microsoft" and not normalized_code_challenge:
+            resolved_code_verifier, normalized_code_challenge = _generate_pkce_verifier_challenge()
+            normalized_challenge_method = "S256"
         query: dict[str, str] = {
             "client_id": resolved_client_id,
             "redirect_uri": resolved_redirect_uri,
@@ -4846,6 +4908,9 @@ class CortexStore:
             query["response_mode"] = "query"
         if resolved_scopes:
             query["scope"] = " ".join(resolved_scopes)
+        if normalized_code_challenge:
+            query["code_challenge"] = normalized_code_challenge
+            query["code_challenge_method"] = normalized_challenge_method
         authorization_endpoint = MANAGED_OAUTH_AUTHORIZATION_ENDPOINTS[normalized_source]
         return {
             "source": normalized_source,
@@ -4857,6 +4922,7 @@ class CortexStore:
             "state": resolved_state,
             "scopes": resolved_scopes,
             "access_type": "offline",
+            "code_verifier": resolved_code_verifier,
         }
 
     def complete_managed_oauth(
@@ -4871,6 +4937,7 @@ class CortexStore:
         client_id: str | None = None,
         client_secret: str | None = None,
         token_endpoint: str | None = None,
+        code_verifier: str | None = None,
         source_account_id: str | None = None,
         account_label: str | None = None,
         account_identifier: str | None = None,
@@ -4895,7 +4962,18 @@ class CortexStore:
         resolved_token_endpoint = str(token_endpoint or "").strip() or _managed_oauth_config_value(normalized_source, "TOKEN_ENDPOINT") or MANAGED_OAUTH_TOKEN_ENDPOINTS[normalized_source]
         if not resolved_client_id:
             raise ValueError(f"{provider.title()} OAuth client ID is not configured")
-        if normalized_source == "notion" and not resolved_client_secret:
+        normalized_code_verifier = str(code_verifier or "").strip()
+        # Notion cannot do public-client PKCE, so its client secret must never ship in the app.
+        # When no local secret is configured but a hosted broker exchange URL is set, the code→token
+        # exchange transits the broker (which holds the secret server-side and does NOT persist the
+        # token); the on-device secret path stays as a fallback when a local secret IS configured.
+        broker_exchange_url = (os.environ.get("CORTEX_OAUTH_BROKER_EXCHANGE_URL") or "").strip()
+        use_notion_broker = (
+            normalized_source == "notion"
+            and not resolved_client_secret
+            and bool(broker_exchange_url)
+        )
+        if normalized_source == "notion" and not resolved_client_secret and not use_notion_broker:
             raise ValueError(f"{provider.title()} OAuth client secret is not configured")
 
         token_request = {
@@ -4908,11 +4986,21 @@ class CortexStore:
             token_request["client_id"] = resolved_client_id
             if resolved_client_secret:
                 token_request["client_secret"] = resolved_client_secret
+            if normalized_code_verifier:
+                # Public-client PKCE: the verifier proves the exchange without a client secret.
+                token_request["code_verifier"] = normalized_code_verifier
             token_request["scope"] = " ".join(MANAGED_OAUTH_CONNECTOR_SCOPES[normalized_source])
         resolved_notion_version = str(notion_version or defaults.get("notion_version") or "2026-03-11").strip()
         token_headers = {"Notion-Version": resolved_notion_version} if normalized_source == "notion" else {}
         try:
-            if normalized_source == "notion":
+            if use_notion_broker:
+                token_payload = _request_oauth_broker_exchange(
+                    broker_exchange_url,
+                    provider="notion",
+                    code=normalized_code,
+                    redirect_uri=resolved_redirect_uri,
+                )
+            elif normalized_source == "notion":
                 requester = request_token or _request_basic_json_oauth_token
                 token_payload = requester(
                     resolved_token_endpoint,
@@ -4928,7 +5016,7 @@ class CortexStore:
             raise ValueError(
                 redact_error_message(
                     exc,
-                    [normalized_code, resolved_client_id, resolved_client_secret],
+                    [normalized_code, resolved_client_id, resolved_client_secret, normalized_code_verifier],
                 )
             ) from exc
         if not isinstance(token_payload, dict):

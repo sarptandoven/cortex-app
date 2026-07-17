@@ -32,11 +32,7 @@
 	<string>https://api.signindoppl.com</string>
 	<key>CortexMicrosoftOAuthClientID</key>
 	<string></string>
-	<key>CortexMicrosoftOAuthClientSecret</key>
-	<string></string>
 	<key>CortexNotionOAuthClientID</key>
-	<string></string>
-	<key>CortexNotionOAuthClientSecret</key>
 	<string></string>
 	<key>CortexReleaseChannel</key>
 	<string>local-beta</string>

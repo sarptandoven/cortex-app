@@ -1323,6 +1323,12 @@ private struct OnboardingAddMemoryStep: View {
                     handleExportDrop(providers)
                 }
 
+            Text("Or just download it — the moment the export lands in Downloads or on your Desktop, \(DistributionMode.appDisplayName) imports it for you.")
+                .font(.caption)
+                .foregroundColor(CortexDesign.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 2)
+
             if let dropFeedback {
                 Label(dropFeedback, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)

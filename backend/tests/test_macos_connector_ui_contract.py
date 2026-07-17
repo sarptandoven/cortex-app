@@ -109,17 +109,32 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         self.assertIn('body["code_challenge_method"] = "S256"', app_source)
         self.assertIn("CortexGoogleOAuthClientID", app_source)
         self.assertIn("CortexMicrosoftOAuthClientID", app_source)
-        self.assertIn("CortexMicrosoftOAuthClientSecret", app_source)
         self.assertIn("CORTEX_MICROSOFT_OAUTH_CLIENT_ID", app_source)
         self.assertIn("CORTEX_OUTLOOK_OAUTH_CLIENT_ID", app_source)
         self.assertIn("CortexNotionOAuthClientID", app_source)
-        self.assertIn("CortexNotionOAuthClientSecret", app_source)
+        # SECRETLESS CONNECTIONS: the app now ships ZERO OAuth client secrets. Google and
+        # Microsoft/Outlook are public PKCE clients (the code_verifier replaces the secret at the
+        # token exchange), and Notion's code->token exchange transits the hosted broker (which holds
+        # Notion's secret server-side and does NOT persist the token). So the embedded
+        # Cortex*OAuthClientSecret plist keys were deliberately removed from the app source AND the
+        # Info.plist, and no CORTEX_*_OAUTH_CLIENT_SECRET is ever injected into the backend env.
+        self.assertNotIn("CortexMicrosoftOAuthClientSecret", app_source)
+        self.assertNotIn("CortexNotionOAuthClientSecret", app_source)
+        self.assertNotIn("CORTEX_MICROSOFT_OAUTH_CLIENT_SECRET", app_source)
+        self.assertNotIn("CORTEX_NOTION_OAUTH_CLIENT_SECRET", app_source)
         plist_source = INFO_PLIST.read_text(encoding="utf-8")
         self.assertIn("CortexMicrosoftOAuthClientID", plist_source)
-        self.assertIn("CortexMicrosoftOAuthClientSecret", plist_source)
+        self.assertIn("CortexNotionOAuthClientID", plist_source)
+        self.assertNotIn("OAuthClientSecret", plist_source)
         self.assertIn("supportsManagedOAuth", app_source)
         self.assertIn('["google", "microsoft", "notion"].contains(provider)', app_source)
-        self.assertIn('["notion", "microsoft"].contains(provider)', app_source)
+        # PKCE (secretless public-client) sign-in is sent for exactly Google and Microsoft; Notion
+        # can't do public PKCE so it skips the challenge and completes through the broker instead,
+        # which is why its one-click stays honest-gated on the broker advertising "notion" rather
+        # than on any local secret.
+        self.assertIn('if provider == "google" || provider == "microsoft" {', app_source)
+        self.assertIn('case "notion":', app_source)
+        self.assertIn("brokerConfiguredProviders.contains(provider)", app_source)
         self.assertIn("hasManagedOAuth", sheet_source)
         self.assertIn("managedOAuthProviderName", sheet_source)
         self.assertIn('case "microsoft": return "Microsoft"', app_source)

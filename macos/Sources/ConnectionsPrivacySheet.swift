@@ -1257,9 +1257,12 @@ private struct AIChatsImportCard: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
                     exportVendorButton("ChatGPT", systemImage: "bubble.left.and.bubble.right", urlString: "https://chatgpt.com/#settings/DataControls")
                     exportVendorButton("Claude", systemImage: "sparkle", urlString: "https://claude.ai/settings/data-privacy-controls")
-                    exportVendorButton("Gemini", systemImage: "diamond", urlString: "https://takeout.google.com/")
+                    // Gemini history lives under Takeout's "My Activity" (the standalone "Gemini"
+                    // product is Gems, not chats), so open My Activity pre-selected; the caption below
+                    // tells the user to narrow it to "Gemini Apps".
+                    exportVendorButton("Gemini", systemImage: "diamond", urlString: "https://takeout.google.com/settings/takeout/custom/my_activity")
                 }
-                Text("The provider emails you a download link, usually within a few minutes. Grab the file, then \(DistributionMode.appDisplayName) takes it from there.")
+                Text("The provider emails you a download link, usually within a few minutes. Grab the file, then \(DistributionMode.appDisplayName) takes it from there. For Gemini, pick \u{201C}My Activity\u{201D} \u{2192} \u{201C}Gemini Apps\u{201D} in Takeout.")
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkFaint)
                     .fixedSize(horizontal: false, vertical: true)

@@ -454,6 +454,15 @@ _EXPORT_JSON_NAMES = {"conversations.json", "conversations.jsonl", "result.json"
 _EXPORT_ZIP_HINTS = ("chatgpt", "claude", "openai", "anthropic", "gemini", "notebooklm",
                      "export", "conversations", "takeout", "slack", "discord", "telegram",
                      "limitless", "lifelog", "rewind")
+# Member basenames that mark a .zip as an AI-chat export even when the archive's
+# filename is a hash with no hint token. Checked via namelist() (central
+# directory only — no extraction), so a real ChatGPT/Claude export downloaded
+# with an opaque name is still surfaced instead of silently skipped.
+_EXPORT_ZIP_CONTENT_MEMBERS = {"conversations.json", "conversations.jsonl", "chats.json"}
+# Cost guards for the content peek: never open an archive larger than this, and
+# inspect at most this many hint-less .zip files per scan.
+_EXPORT_ZIP_PEEK_MAX_BYTES = 600_000_000
+_EXPORT_ZIP_PEEK_MAX_COUNT = 12
 
 
 def scan_export_candidates(directories: Iterable[str], *, max_files: int = 60, max_records: int = 200) -> list[dict[str, Any]]:
@@ -464,6 +473,7 @@ def scan_export_candidates(directories: Iterable[str], *, max_files: int = 60, m
     "found your ChatGPT export (142 conversations) in Downloads" instead of asking you to hunt
     for the file. Non-recursive beyond one nested level; skips unreadable entries."""
     candidates: list[Path] = []
+    zip_peeks = 0
     for directory in directories:
         try:
             base = Path(directory).expanduser()
@@ -481,8 +491,18 @@ def scan_export_candidates(directories: Iterable[str], *, max_files: int = 60, m
             name = entry.name.lower()
             try:
                 if entry.is_file():
-                    if name in _EXPORT_JSON_NAMES or (name.endswith(".zip") and any(h in name for h in _EXPORT_ZIP_HINTS)):
+                    if name in _EXPORT_JSON_NAMES:
                         candidates.append(entry)
+                    elif name.endswith(".zip"):
+                        if any(h in name for h in _EXPORT_ZIP_HINTS):
+                            candidates.append(entry)
+                        elif zip_peeks < _EXPORT_ZIP_PEEK_MAX_COUNT:
+                            # Filename gave no hint — peek inside for a known export
+                            # member so a hash-named ChatGPT/Claude export isn't
+                            # silently skipped. Bounded in count + archive size.
+                            zip_peeks += 1
+                            if _zip_has_export_member(entry):
+                                candidates.append(entry)
                 elif entry.is_dir() and any(h in name for h in _EXPORT_ZIP_HINTS):
                     # an already-unzipped export folder — grab its conversations.json if present
                     for sub in entry.iterdir():
@@ -522,6 +542,27 @@ def scan_export_candidates(directories: Iterable[str], *, max_files: int = 60, m
     return results
 
 
+def _zip_has_export_member(path: Path) -> bool:
+    """Cheap content sniff: does this .zip hold a known AI-chat export member
+    (conversations.json / conversations.jsonl / chats.json)? Reads only the
+    archive's central directory via namelist() — never extracts — so it stays fast
+    even on a large export. Oversized, unreadable, or corrupt archives are skipped
+    silently (return False)."""
+    try:
+        if path.stat().st_size > _EXPORT_ZIP_PEEK_MAX_BYTES:
+            return False
+    except OSError:
+        return False
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for member in archive.namelist():
+                if Path(member).name.lower() in _EXPORT_ZIP_CONTENT_MEMBERS:
+                    return True
+    except (OSError, zipfile.BadZipFile, RuntimeError):
+        return False
+    return False
+
+
 def default_export_scan_dirs() -> list[str]:
     """The folders Cortex looks in for exports by default: the user's Downloads and Desktop, plus
     a dedicated ~/CortexImports drop folder the app can create and point users at."""
@@ -537,6 +578,7 @@ def _parsed_source_records(paths: Iterable[str], source_hint: str = "") -> list[
 
     for parser in (
         _parse_chatgpt,
+        _parse_gemini_takeout,
         _parse_consumer_ai_transcripts,
         _parse_limitless,
         _parse_claude,
@@ -921,6 +963,10 @@ def _chatgpt_time(value: Any) -> str:
 def _parse_consumer_ai_transcripts(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
     records: list[SourceRecord] = []
     for asset in assets:
+        if _looks_like_gemini_takeout(asset, hint):
+            # Google Takeout "Gemini Apps" activity has its own shape — leave it
+            # to _parse_gemini_takeout so we don't double-parse the same file.
+            continue
         source = _consumer_ai_source_for_asset(asset, hint)
         if not source:
             continue
@@ -958,7 +1004,7 @@ def _consumer_ai_source_for_component(component: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", " ", component.lower()).strip()
     compact = normalized.replace(" ", "")
     aliases = {
-        "gemini": {"gemini", "google gemini", "googlegemini"},
+        "gemini": {"gemini", "google gemini", "googlegemini", "gemini apps", "geminiapps"},
         "perplexity": {"perplexity", "perplexity ai", "perplexityai"},
         "copilot": {"copilot", "microsoft copilot", "ms copilot", "microsoftcopilot", "mscopilot"},
         "grok": {"grok"},
@@ -1153,6 +1199,218 @@ def _google_keep_time(value: Any) -> str:
         return ""
     seconds = raw / 1_000_000 if raw > 10_000_000_000 else raw
     return _iso_from_unix(seconds)
+
+
+# A Google Takeout Gemini export lives at
+#   Takeout/My Activity/Gemini Apps/MyActivity.(html|json)
+# Each activity entry is a prompt (and sometimes the linked response) plus a
+# timestamp. These verbs prefix the prompt text on each entry ("Prompted …").
+_GEMINI_ACTIVITY_VERBS = ("prompted", "asked", "searched for", "used gemini apps", "used")
+_GEMINI_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+
+
+def _parse_gemini_takeout(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
+    """Import a Google Takeout Gemini Apps activity export into transcript records.
+
+    Real Takeout layout is ``Takeout/My Activity/Gemini Apps/MyActivity.html`` (or
+    ``MyActivity.json``). Detection keys off the "Gemini Apps" path component, so a
+    user can drop the unzipped Takeout folder (or its ``.zip``) and have it
+    recognized without a hint. Extraction is best-effort — an unexpected shape
+    yields no records for that file, never a crash.
+    """
+    records: list[SourceRecord] = []
+    for asset in assets:
+        if not _looks_like_gemini_takeout(asset, hint):
+            continue
+        if asset.suffix == ".json":
+            records.extend(_parse_gemini_takeout_json(asset))
+        elif asset.suffix in {".html", ".htm"}:
+            records.extend(_parse_gemini_takeout_html(asset))
+    return records
+
+
+def _looks_like_gemini_takeout(asset: SourceAsset, hint: str) -> bool:
+    if asset.suffix not in {".json", ".html", ".htm"}:
+        return False
+    path_words = re.sub(r"[^a-z0-9]+", " ", asset.display_path.lower())
+    if "gemini apps" in path_words:
+        return True
+    # No folder marker: only claim a bare MyActivity file when the user hinted gemini.
+    return hint == "gemini" and Path(asset.name).stem.lower() == "myactivity"
+
+
+def _parse_gemini_takeout_json(asset: SourceAsset) -> list[SourceRecord]:
+    try:
+        payload = json.loads(asset.read_text())
+    except (json.JSONDecodeError, RecursionError):
+        return []
+    if isinstance(payload, list):
+        entries: Any = payload
+    elif isinstance(payload, dict):
+        entries = payload.get("activity") or payload.get("activities") or payload.get("items")
+    else:
+        entries = None
+    if not isinstance(entries, list):
+        return []
+    items: list[tuple[str, str]] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            item = _gemini_json_item(entry)
+            if item:
+                items.append(item)
+    return _gemini_takeout_records(asset, items)
+
+
+def _gemini_json_item(entry: dict[str, Any]) -> tuple[str, str] | None:
+    text = _strip_gemini_verb(str(entry.get("title") or "").strip())
+    if not text:
+        # Some entries carry the prompt in the subtitles/details list instead.
+        subtitles = entry.get("subtitles")
+        if isinstance(subtitles, list):
+            for sub in subtitles:
+                if isinstance(sub, dict):
+                    name = str(sub.get("name") or "").strip()
+                    if name:
+                        text = name
+                        break
+    if not text:
+        return None
+    return (str(entry.get("time") or "").strip(), text)
+
+
+def _parse_gemini_takeout_html(asset: SourceAsset) -> list[SourceRecord]:
+    parser = _GeminiActivityHTMLParser()
+    try:
+        parser.feed(asset.read_text())
+    except Exception:
+        return []
+    items: list[tuple[str, str]] = []
+    for cell in parser.cells:
+        item = _gemini_html_item(cell)
+        if item:
+            items.append(item)
+    return _gemini_takeout_records(asset, items)
+
+
+def _gemini_html_item(lines: list[str]) -> tuple[str, str] | None:
+    time_value = ""
+    body: list[str] = []
+    for line in lines:
+        if not time_value and _looks_like_gemini_time(line):
+            time_value = line
+            continue
+        stripped = _strip_gemini_verb(line)
+        if stripped:
+            body.append(stripped)
+    text = " ".join(body).strip()
+    if not text:
+        return None
+    return (time_value, text)
+
+
+def _strip_gemini_verb(line: str) -> str:
+    text = line.strip()
+    lowered = text.lower()
+    for verb in _GEMINI_ACTIVITY_VERBS:
+        if lowered == verb:
+            return ""
+        if lowered.startswith(verb + " "):
+            return text[len(verb):].strip()
+    return text
+
+
+def _looks_like_gemini_time(line: str) -> bool:
+    lowered = line.lower()
+    if re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", lowered) and re.search(r"\b(am|pm)\b", lowered):
+        return True
+    if any(re.search(rf"\b{month}[a-z]*\s+\d{{1,2}}\b", lowered) for month in _GEMINI_MONTHS):
+        return True
+    return bool(re.search(r"\d{4}-\d{2}-\d{2}", line))
+
+
+def _gemini_takeout_records(asset: SourceAsset, items: list[tuple[str, str]]) -> list[SourceRecord]:
+    if not items:
+        return []
+    title = "Gemini Apps activity"
+    file_name = Path(asset.name).name
+    batch_records: list[SourceRecord] = []
+    for batch in _batched(items, 1500):
+        lines = ["Source: Gemini", f"Activity: {title}", f"File: {file_name}", "", "--- Messages ---"]
+        first_time = ""
+        for time_value, text in batch:
+            if not first_time and time_value:
+                first_time = time_value
+            prefix = f"{time_value} user" if time_value else "user"
+            lines.append(f"{prefix}: {text}")
+        if len(lines) <= 5:
+            continue
+        source_url = _source_locator(
+            asset.display_path, service="gemini", activity=title, file=file_name, first_time=first_time
+        )
+        batch_records.append(
+            SourceRecord(
+                "gemini",
+                title,
+                "\n".join(lines),
+                source_url=source_url,
+                metadata={"asset": asset.display_path, "service": "Gemini"},
+            )
+        )
+    return _label_record_parts(batch_records)
+
+
+class _GeminiActivityHTMLParser(HTMLParser):
+    """Pull activity entries out of a Google Takeout MyActivity.html.
+
+    Each entry lives in a ``content-cell`` div; the meaningful ones hold the
+    prompt text (and sometimes the response) plus a timestamp, with ``<br>``
+    separating the pieces. We capture each content cell's text as a list of lines
+    and let the caller shape prompt/time. The MDL markup varies, so detection is
+    class-substring based and tolerant of extra nesting; the caption/metadata cell
+    (locations, product tags) is skipped.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cells: list[list[str]] = []
+        self._capture = False
+        self._depth = 0
+        self._current: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "div":
+            classes = ""
+            for key, value in attrs:
+                if key == "class":
+                    classes = value or ""
+            if not self._capture:
+                if "content-cell" in classes and "mdl-typography--caption" not in classes:
+                    self._capture = True
+                    self._depth = 0
+                    self._current = []
+            else:
+                self._depth += 1
+        elif tag == "br" and self._capture:
+            self._current.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "div" and self._capture:
+            if self._depth == 0:
+                self._capture = False
+                self._flush()
+            else:
+                self._depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._capture and data.strip():
+            self._current.append(data.strip())
+
+    def _flush(self) -> None:
+        text = " ".join(self._current)
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        if lines:
+            self.cells.append(lines)
+        self._current = []
 
 
 def _parse_limitless(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:

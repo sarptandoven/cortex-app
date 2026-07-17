@@ -47,6 +47,55 @@ class ExportDetectionTests(unittest.TestCase):
             self.assertEqual(found[0]["filename"], "conversations.json")
             self.assertFalse(any(c["filename"] == "random.json" for c in found))
 
+    def test_scan_detects_opaque_named_chatgpt_zip_by_content(self) -> None:
+        """A real export downloaded with a hash-only filename (no hint token) must
+        still be surfaced by peeking inside the .zip for conversations.json."""
+        conversation = json.dumps([
+            {"title": "Prefs", "create_time": 1700000000,
+             "mapping": {"a": {"message": {"author": {"role": "user"},
+                "content": {"content_type": "text", "parts": ["My favorite language is Rust."]},
+                "create_time": 1700000000}}}},
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            downloads = Path(tmp)
+            opaque = downloads / "a1b2c3d4e5f6a7b8.zip"
+            with zipfile.ZipFile(opaque, "w") as archive:
+                archive.writestr("conversations.json", conversation)
+            # A decoy .zip with an opaque name and no export member is ignored.
+            with zipfile.ZipFile(downloads / "deadbeefcafe.zip", "w") as archive:
+                archive.writestr("photo.jpg", b"not an export")
+
+            found = scan_export_candidates([str(downloads)])
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]["filename"], "a1b2c3d4e5f6a7b8.zip")
+            self.assertEqual(found[0]["service"], "chatgpt")
+            self.assertEqual(found[0]["kind"], "zip")
+            self.assertGreaterEqual(found[0]["records_found"], 1)
+            self.assertFalse(any(c["filename"] == "deadbeefcafe.zip" for c in found))
+
+    def test_gemini_takeout_myactivity_html_is_imported(self) -> None:
+        """A Google Takeout Gemini Apps export (My Activity/Gemini Apps/MyActivity.html)
+        parses into gemini transcript records, skipping the caption/metadata cell."""
+        html = (
+            "<html><body>"
+            "<div class=\"outer-cell mdl-shadow--2dp\">"
+            "<div class=\"content-cell mdl-typography--body-1\">Prompted<br>"
+            "How do I write a Rust iterator?<br>Jul 1, 2026, 9:15:00 AM PDT</div>"
+            "<div class=\"content-cell mdl-typography--caption\">Locations: Home</div>"
+            "</div></body></html>"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            gemini_dir = Path(tmp) / "Takeout" / "My Activity" / "Gemini Apps"
+            gemini_dir.mkdir(parents=True)
+            (gemini_dir / "MyActivity.html").write_text(html, encoding="utf-8")
+
+            records = import_source_records([str(Path(tmp))])
+            gemini = [r for r in records if r.source == "gemini"]
+            self.assertEqual(len(gemini), 1)
+            self.assertIn("How do I write a Rust iterator?", gemini[0].content)
+            self.assertIn("Jul 1, 2026, 9:15:00 AM PDT", gemini[0].content)
+            self.assertNotIn("Locations: Home", gemini[0].content)
+
     def test_scan_missing_directory_is_safe(self) -> None:
         self.assertEqual(scan_export_candidates(["/no/such/dir/anywhere-xyz"]), [])
 

@@ -492,7 +492,7 @@ struct ImportDiffView: View {
                 }
                 .disabled(comparing)
             }
-            Text("Each AI emails your export as a file. Download it, then drop it above. We never send the export anywhere except your own \(DistributionMode.appDisplayName).")
+            Text("Each AI emails your export as a file. Download it, then drop it above. We never send the export anywhere except your own \(DistributionMode.appDisplayName). For Gemini, open Takeout, then pick \u{201C}My Activity\u{201D} \u{2192} \u{201C}Gemini Apps\u{201D}.")
                 .font(CortexDesign.Typography.caption)
                 .foregroundColor(CortexDesign.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)
@@ -894,7 +894,10 @@ struct ImportDiffView: View {
         switch choice {
         case .chatgpt: urlString = "https://chatgpt.com/#settings/DataControls"
         case .claude: urlString = "https://claude.ai/settings/data-privacy-controls"
-        case .gemini: urlString = "https://takeout.google.com/"
+        // Gemini chat history lives under Takeout's "My Activity" product (the standalone "Gemini"
+        // product is Gems, not conversations), so deep-link straight to My Activity pre-selected;
+        // the user then narrows it to "Gemini Apps" (see the caption copy).
+        case .gemini: urlString = "https://takeout.google.com/settings/takeout/custom/my_activity"
         case .auto: urlString = "https://takeout.google.com/"
         }
         if let url = URL(string: urlString) {

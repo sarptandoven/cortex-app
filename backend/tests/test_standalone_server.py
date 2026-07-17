@@ -915,6 +915,9 @@ class FakeStore:
         state: str | None = None,
         client_id: str | None = None,
         scopes: list[str] | None = None,
+        code_challenge: str | None = None,
+        code_challenge_method: str | None = None,
+        code_verifier: str | None = None,
     ) -> dict:
         call = {
             "source": source,
@@ -922,6 +925,9 @@ class FakeStore:
             "state": state,
             "client_id": client_id,
             "scopes": scopes or [],
+            "code_challenge": code_challenge,
+            "code_challenge_method": code_challenge_method,
+            "code_verifier": code_verifier,
         }
         self.managed_oauth_start_calls.append(call)
         resolved_state = state or "standalone-managed-oauth-state"
@@ -953,6 +959,7 @@ class FakeStore:
         client_id: str | None = None,
         client_secret: str | None = None,
         token_endpoint: str | None = None,
+        code_verifier: str | None = None,
         source_account_id: str | None = None,
         account_label: str | None = None,
         account_identifier: str | None = None,
@@ -970,6 +977,7 @@ class FakeStore:
             "client_id": client_id,
             "client_secret": client_secret,
             "token_endpoint": token_endpoint,
+            "code_verifier": code_verifier,
             "source_account_id": source_account_id,
             "account_label": account_label,
             "account_identifier": account_identifier,
@@ -3912,6 +3920,11 @@ class StandaloneServerTests(unittest.TestCase):
                     "state": None,
                     "client_id": "notion-client-id",
                     "scopes": [],
+                    # PKCE params flow through the start route now (public-client Microsoft/Outlook
+                    # flow); Notion stays confidential-client so these are None here.
+                    "code_challenge": None,
+                    "code_challenge_method": None,
+                    "code_verifier": None,
                 }
             ],
         )
@@ -3956,6 +3969,7 @@ class StandaloneServerTests(unittest.TestCase):
                 "client_id": "notion-client-id",
                 "client_secret": "notion-client-secret",
                 "token_endpoint": "https://oauth2.invalid/notion-token",
+                "code_verifier": None,
                 "source_account_id": None,
                 "account_label": "Cortex Notion",
                 "account_identifier": "notion-workspace",

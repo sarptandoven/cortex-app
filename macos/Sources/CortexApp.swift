@@ -2855,12 +2855,9 @@ final class BackendSupervisor {
                 environment["CORTEX_NOTION_OAUTH_CLIENT_ID"] = trimmedNotionClientID
             }
         }
-        if let notionClientSecret = Bundle.main.object(forInfoDictionaryKey: "CortexNotionOAuthClientSecret") as? String {
-            let trimmedNotionClientSecret = notionClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedNotionClientSecret.isEmpty {
-                environment["CORTEX_NOTION_OAUTH_CLIENT_SECRET"] = trimmedNotionClientSecret
-            }
-        }
+        // Notion and Microsoft/Outlook ship ZERO client secrets. Microsoft/Outlook is a public
+        // (PKCE) client, and Notion's code→token exchange transits the hosted broker below — so no
+        // CORTEX_*_OAUTH_CLIENT_SECRET is ever injected here. Only the public client IDs are.
         if let microsoftClientID = Bundle.main.object(forInfoDictionaryKey: "CortexMicrosoftOAuthClientID") as? String {
             let trimmedMicrosoftClientID = microsoftClientID.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedMicrosoftClientID.isEmpty {
@@ -2868,12 +2865,22 @@ final class BackendSupervisor {
                 environment["CORTEX_OUTLOOK_OAUTH_CLIENT_ID"] = trimmedMicrosoftClientID
             }
         }
-        if let microsoftClientSecret = Bundle.main.object(forInfoDictionaryKey: "CortexMicrosoftOAuthClientSecret") as? String {
-            let trimmedMicrosoftClientSecret = microsoftClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedMicrosoftClientSecret.isEmpty {
-                environment["CORTEX_MICROSOFT_OAUTH_CLIENT_SECRET"] = trimmedMicrosoftClientSecret
-                environment["CORTEX_OUTLOOK_OAUTH_CLIENT_SECRET"] = trimmedMicrosoftClientSecret
-            }
+        // Point the local backend at the hosted OAuth broker's code→token exchange so secretless
+        // providers (Notion) can complete sign-in without any client secret on device: the broker
+        // holds the secret server-side, performs the exchange, and does NOT persist the token
+        // (local-first invariant). Use the same hosted base the app talks to — a user override
+        // (cortexCloudSyncBase.v1) if set, else the shipped Info.plist default — and only when it is
+        // an https origin (the backend refuses any non-https broker URL).
+        let brokerOverride = (UserDefaults.standard.string(forKey: "cortexCloudSyncBase.v1") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let brokerConfigured = (Bundle.main.object(forInfoDictionaryKey: "CortexHostedAPIURL") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let brokerBaseRaw = brokerOverride.isEmpty
+            ? (brokerConfigured.isEmpty ? "https://api.signindoppl.com" : brokerConfigured)
+            : brokerOverride
+        let brokerBase = brokerBaseRaw.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        if brokerBase.lowercased().hasPrefix("https://") {
+            environment["CORTEX_OAUTH_BROKER_EXCHANGE_URL"] = brokerBase + "/oauth/broker/exchange"
         }
         // GitHub uses the OAuth Device Flow (RFC 8628): the public client ID alone is enough — no
         // secret, no broker — so this is safe to embed and ship directly.
@@ -6399,6 +6406,7 @@ final class AppState: ObservableObject {
         exportWatcherStarted = true
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dirs = [home.appendingPathComponent("Downloads", isDirectory: true),
+                    home.appendingPathComponent("Desktop", isDirectory: true),
                     home.appendingPathComponent("CortexImports", isDirectory: true)]
         for dir in dirs {
             guard FileManager.default.fileExists(atPath: dir.path) else { continue }
@@ -6571,22 +6579,26 @@ final class AppState: ObservableObject {
             return false
         }
         let provider = setup.oauth_provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        // P3 HONESTY GUARD: we deliberately do NOT return true just because `provider` is in
-        // `brokerConfiguredProviders`. The hosted broker can build the authorize URL, but completing
-        // the flow needs the LOCAL backend (standalone_server.complete_managed_oauth) to exchange the
-        // callback code through {hosted}/oauth/broker/exchange — the local backend has no such path
-        // today and would instead try a direct provider exchange it lacks the client secret for. Until
-        // that local-backend glue exists, flipping this on the broker list would produce a tile that
-        // opens consent and then dead-ends. So we keep the honest "Available soon" and gate one-click
-        // strictly on a real Info.plist/env client_id below. `brokerConfiguredProviders` is populated
-        // for future use (and to inform copy) but is not load-bearing here.
-        guard !configuredManagedOAuthClientID(provider: provider).isEmpty else {
-            return false
+        // P3 HONESTY GUARD: only advertise one-click when the WHOLE flow can complete end-to-end, so a
+        // tile never opens consent and then dead-ends. The app ships ZERO client secrets, so what
+        // "complete" means depends on the provider:
+        //   • Google / Microsoft (Outlook) are public PKCE clients — the embedded public client ID
+        //     alone completes sign-in (the code_verifier replaces the secret at exchange). One-click
+        //     as soon as the client ID is present.
+        //   • Notion cannot do public PKCE, so its code→token exchange transits the hosted broker
+        //     (which holds Notion's secret server-side and does NOT persist the token). Its LOCAL
+        //     start still needs the public client ID to build the authorize URL, so both must be
+        //     present: an embedded client ID AND the broker advertising "notion".
+        // Anything else (no client ID, or Notion with no broker) stays the honest "Available soon"
+        // with the token-paste fallback. `brokerConfiguredProviders` is populated by loadBrokerProviders().
+        let hasClientID = !configuredManagedOAuthClientID(provider: provider).isEmpty
+        let brokerAdvertised = brokerConfiguredProviders.contains(provider)
+        switch provider {
+        case "notion":
+            return hasClientID && brokerAdvertised
+        default:
+            return hasClientID
         }
-        if ["notion", "microsoft"].contains(provider) {
-            return !configuredManagedOAuthClientSecret(provider: provider).isEmpty
-        }
-        return true
     }
 
     func managedOAuthConfigurationMessage(_ connector: SourceConnectorCatalogItem) -> String? {
@@ -6614,14 +6626,12 @@ final class AppState: ObservableObject {
             connectorLastMessages[connector.id] = "\(providerName) sign-in is not configured for this \(DistributionMode.appDisplayName) build yet."
             return
         }
-        let clientSecret = configuredManagedOAuthClientSecret(provider: provider)
-        if ["notion", "microsoft"].contains(provider) && clientSecret.isEmpty {
-            status = "\(connector.name) sign-in needs a \(providerName) OAuth client secret in this build"
-            connectorLastMessages[connector.id] = "\(providerName) sign-in is not configured for this \(DistributionMode.appDisplayName) build yet."
-            return
-        }
+        // The app carries ZERO client secrets. Google and Microsoft/Outlook are public PKCE clients,
+        // so they send a code_challenge here and complete the exchange with the code_verifier instead
+        // of a secret. Notion is secretless on the client too: its exchange transits the hosted broker
+        // (no local secret, and no PKCE — Notion does not support public PKCE), so it sends no challenge.
         let pkce: (verifier: String, challenge: String)
-        if provider == "google" {
+        if provider == "google" || provider == "microsoft" {
             do {
                 pkce = try Self.googleOAuthPKCEPair()
             } catch {
@@ -6642,9 +6652,6 @@ final class AppState: ObservableObject {
                 "source": connector.id,
                 "client_id": clientID
             ]
-            if !clientSecret.isEmpty {
-                body["client_secret"] = clientSecret
-            }
             if !pkce.verifier.isEmpty {
                 body["code_verifier"] = pkce.verifier
                 body["code_challenge"] = pkce.challenge
@@ -6694,30 +6701,11 @@ final class AppState: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    private func configuredManagedOAuthClientSecret(provider: String) -> String {
-        let envKey = "CORTEX_\(provider.replacingOccurrences(of: "-", with: "_").uppercased())_OAUTH_CLIENT_SECRET"
-        let envValue = ProcessInfo.processInfo.environment[envKey]?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !envValue.isEmpty {
-            return envValue
-        }
-        return (Bundle.main.object(forInfoDictionaryKey: managedOAuthClientSecretInfoKey(provider: provider)) as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    }
-
     private func managedOAuthClientIDInfoKey(provider: String) -> String {
         switch provider {
         case "microsoft": return "CortexMicrosoftOAuthClientID"
         case "notion": return "CortexNotionOAuthClientID"
         default: return "CortexGoogleOAuthClientID"
-        }
-    }
-
-    private func managedOAuthClientSecretInfoKey(provider: String) -> String {
-        switch provider {
-        case "microsoft": return "CortexMicrosoftOAuthClientSecret"
-        case "notion": return "CortexNotionOAuthClientSecret"
-        default: return "CortexGoogleOAuthClientSecret"
         }
     }
 
