@@ -2,31 +2,31 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-42.dmg",
+      "filename": "Cortex-0.2.0-43.dmg",
       "kind": "dmg",
-      "sha256": "2a8e4fbc44c4058fdf7bee74c331b37ea6bc5f9e1d1bc9fc33fc301ad471f96f",
-      "size_bytes": 88286177,
-      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-42/Cortex-0.2.0-42.dmg"
+      "sha256": "bf1696b2a273e477b065e980151d71e7b439a7aeb921ca03278a27284ddb86aa",
+      "size_bytes": 86216570,
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-43/Cortex-0.2.0-43.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-42.app.zip",
+      "filename": "Cortex-0.2.0-43.app.zip",
       "kind": "zip",
-      "sha256": "9ed7bbc7eaca61f3f144b83ae22859c4f5994e98e0e3acb93c778bb64ccaa254",
-      "size_bytes": 71423940,
-      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-42/Cortex-0.2.0-42.app.zip"
+      "sha256": "f156d7374f74cd7fcfa3b2d346ed694b3b4299fd37597d9890833885af4c9acd",
+      "size_bytes": 71410070,
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-43/Cortex-0.2.0-43.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
       "kind": "obsidian-plugin",
-      "sha256": "469a73acb68b9c906220f45c82d2788d00c60ef3b655c45bd5291c66535e09fb",
+      "sha256": "8eec1d3cab5b49f107ae50df63390f2b658024f72158c2b8e8729d7d38e2f1c1",
       "size_bytes": 3423,
-      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-42/cortex-memory-0.1.0.zip"
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-43/cortex-memory-0.1.0.zip"
     }
   ],
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.2.0-42.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-43.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"

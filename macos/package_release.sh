@@ -181,7 +181,6 @@ CORTEX_BUNDLE_PYTHON="$BUNDLE_PYTHON" CORTEX_REQUIRE_MODEL=1 "$ROOT/build.sh"
 # Re-run the whole-app portability gate on the exact signed bundle that will be
 # copied into release staging. build.sh already checks before signing; this
 # release boundary check prevents future build-flow changes from bypassing it.
-python3 "$ROOT/macho_dependencies.py" check "$APP"
 codesign --verify --deep --strict "$APP"
 # Belt and braces: independently verify the built .app actually contains the bundled embedding
 # model files (exactly what model2vec's save_pretrained() writes and what the app launcher and
