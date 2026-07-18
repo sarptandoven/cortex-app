@@ -1177,6 +1177,9 @@ private struct AIChatsImportCard: View {
     @ObservedObject var state: AppState
     @State private var isTargeted = false
     @State private var dropZoneHovering = false
+    /// DMG-only: the vendor whose direct sign-in import sheet is open (nil = closed). Drives the
+    /// .sheet(item:) that hosts SessionImporter's WKWebView. Never set in the App Store build.
+    @State private var sessionImportVendor: AIChatImportVendor?
     // The export walkthrough starts open until an export shows up — requesting the export is
     // where people stall, not the drop zone. Once one is detected or imported, it tucks away.
     @State private var guideExpanded = true
@@ -1268,6 +1271,22 @@ private struct AIChatsImportCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            // DIRECT SIGN-IN IMPORT (DMG only): skip the email-export round-trip entirely — sign in
+            // to the provider in an embedded browser and harvest history in-app. Gated out of the
+            // App Store build (no compile flag in this codebase; the runtime guard is the idiom).
+            // This is an ADDITIONAL path — the async email-export tiles above stay as they are.
+            if !DistributionMode.isAppStore {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Or sign in and import directly, no export needed.")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
+                        sessionImportButton("Import from ChatGPT", systemImage: "bubble.left.and.bubble.right", vendor: .chatgpt)
+                        sessionImportButton("Import from Claude", systemImage: "sparkle", vendor: .claude)
+                    }
+                }
+            }
+
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
                 .foregroundColor(isTargeted || dropZoneHovering ? CortexDesign.accent : CortexDesign.hairline)
@@ -1343,6 +1362,57 @@ private struct AIChatsImportCard: View {
                 }
             }
         }
+        // DMG-only direct sign-in import sheet. `sessionImportVendor` is never set in the App Store
+        // build (the buttons that set it are gated), so this presents nothing there.
+        .sheet(item: $sessionImportVendor) { vendor in
+            AIChatSessionImportView(
+                vendor: vendor,
+                state: state,
+                onFinished: { success in
+                    // Import RESOLVED — refresh only. Do NOT dismiss here: the sheet must stay open so
+                    // the user sees the "Imported N conversations" confirmation, or the failure message
+                    // + the returning "Import my chats" retry button. On success, mirror
+                    // importDetectedExports' post-success refresh so this card reflects the freshly
+                    // imported chats (importSessionHarvestFile already refreshed stats/history/memory
+                    // via importFromPath; re-detecting keeps the tiles honest).
+                    if success {
+                        Task { await state.detectAvailableExports() }
+                    }
+                },
+                onDismiss: {
+                    // The only path that closes the sheet: the user tapped Done/Close.
+                    sessionImportVendor = nil
+                }
+            )
+        }
+    }
+
+    /// DMG-only: a direct sign-in import tile, styled to match `exportVendorButton`. Tapping it opens
+    /// the embedded-browser harvest sheet for that vendor instead of the email-export round-trip.
+    private func sessionImportButton(_ title: String, systemImage: String, vendor: AIChatImportVendor) -> some View {
+        Button {
+            sessionImportVendor = vendor
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(CortexDesign.ink)
+                Spacer(minLength: 4)
+                Image(systemName: "person.crop.circle.badge.checkmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(CortexDesign.inkSecondary)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous).fill(CortexDesign.cardBackground))
+            .embossedBorder(radius: CortexDesign.Radius.md)
+        }
+        .buttonStyle(.plain)
+        .help("Sign in to \(vendor.rawValue) in a secure window and import your chats directly, no export file needed.")
+        .accessibilityLabel(title)
     }
 
     /// A prominent per-vendor deep-link tile: opens that provider's export page in one tap AND records

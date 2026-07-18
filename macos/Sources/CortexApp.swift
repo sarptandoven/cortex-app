@@ -6195,17 +6195,34 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Outcome of an import. Distinguishes a benign no-op re-import from a real failure so callers
+    /// (notably the session-import sheet) never mis-report "nothing new to add" as an error and prompt
+    /// an endless retry loop.
+    enum ImportOutcome {
+        case imported        // at least one conversation was newly saved/queued
+        case alreadyPresent  // everything deduped — nothing new, but a healthy no-op, not an error
+        case failed          // a real error, or nothing importable was found in the file
+    }
+
     /// Import an export from a local path (POST /v1/imports). Imported content is trusted, so it
     /// becomes usable immediately; on success we mark the first-source-connected flag so onboarding
-    /// can advance, and refresh memory + import history.
+    /// can advance, and refresh memory + import history. Thin Bool wrapper over importFromPathOutcome
+    /// where `true` means "not a failure" — so a dedup-only re-import counts as success, not an error.
     @discardableResult
     func importFromPath(_ path: String, sourceHint: String = "", automatic: Bool = false) async -> Bool {
+        return await importFromPathOutcome(path, sourceHint: sourceHint, automatic: automatic) != .failed
+    }
+
+    /// The tri-state core shared by importFromPath and the session-harvest streaming path. See
+    /// ImportOutcome for why `.alreadyPresent` is kept distinct from `.failed`.
+    func importFromPathOutcome(_ path: String, sourceHint: String = "", automatic: Bool = false) async -> ImportOutcome {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !importInFlight else { return false }
+        guard !trimmed.isEmpty, !importInFlight else { return .failed }
         importInFlight = true
         if !automatic { isBusy = true }
         beginMenuBarWork()
         var importSucceeded = false
+        var outcome: ImportOutcome = .failed
         defer {
             importInFlight = false
             if !automatic { isBusy = false }
@@ -6280,6 +6297,7 @@ final class AppState: ObservableObject {
             detectedExportSummary = nil
             if added > 0 {
                 importSucceeded = true
+                outcome = .imported
                 // Only CELEBRATE what was actually distilled (learnedNow). Async imports queue the
                 // conversations and distill them in the background, so celebrating saved+queued as
                 // "Learned N new memories" would lie — nothing is learned yet. The per-memory "learned"
@@ -6292,11 +6310,19 @@ final class AppState: ObservableObject {
                     status = "Imported \(added) conversation\(added == 1 ? "" : "s"). Building your memory in the background…"
                 }
             } else if skipped > 0 {
+                // A dedup-only re-import is a healthy no-op, NOT a failure: the session-import sheet
+                // deliberately reuses the persistent vendor login so re-runs are expected and the
+                // backend dedups every conversation. Mark it succeeded (outcome .alreadyPresent) so
+                // callers surface "up to date" rather than "Try again."
+                importSucceeded = true
+                outcome = .alreadyPresent
                 status = "Already imported, nothing new to add."
             } else {
+                outcome = .failed
                 status = "No conversations found in that file. Choose the export .zip or its conversations.json."
             }
         } catch {
+            outcome = .failed
             status = CortexRecoveryText.failureStatus("Import", error: error)
         }
         // #5: a successful export import satisfies any "Waiting for your export…" banner. Clear the
@@ -6311,7 +6337,37 @@ final class AppState: ObservableObject {
                 exportRequestState.removeAll()
             }
         }
-        return importSucceeded
+        return outcome
+    }
+
+    /// Direct-signin import path (DMG only): the SessionImporter streams the vendor's conversation
+    /// history straight to a `conversations.json` on disk as each conversation arrives (bounded
+    /// memory — no full-corpus buffer or second in-RAM serialization copy) and hands us the finished
+    /// file. The file is EXACTLY "conversations.json" — the same shape the backend expects from a
+    /// downloaded export — so we route it through the shared `importFromPathOutcome`, which POSTs the
+    /// local path to /v1/imports unchanged. Returning the tri-state lets the sheet tell "already
+    /// imported" apart from a real error. Not in the App Store build: the whole session-harvest UI is
+    /// gated behind `!DistributionMode.isAppStore`, and this guard is defense in depth. The caller
+    /// (SessionImportCoordinator) owns the temp file and cleans it up after this returns.
+    func importSessionHarvestFile(vendor: AIChatImportVendor, fileURL: URL) async -> ImportOutcome {
+        guard !DistributionMode.isAppStore else { return .failed }
+        // F5: importFromPathOutcome guards on `!importInFlight` and returns `.failed` if any other
+        // import is already running — most often the Downloads auto-import watcher firing on the very
+        // export file the user just downloaded. Rejecting THIS harvest there would silently drop the
+        // whole thing we just read out of the live session. Instead, wait (bounded) for the in-flight
+        // import to clear before handing our file over. We are on the main actor, so each `await`
+        // yields and lets the other import's completion flip `importInFlight` back to false.
+        if importInFlight {
+            let deadline = Date().addingTimeInterval(120)
+            while importInFlight, Date() < deadline {
+                try? await Task.sleep(nanoseconds: 250_000_000)  // 0.25s between checks
+            }
+            // Still busy after the bound: fail rather than block forever. The sheet stays open on
+            // `.failed` and offers the retry button (F1), so the harvest isn't lost — the user can
+            // re-run it once the other import finishes.
+            if importInFlight { return .failed }
+        }
+        return await importFromPathOutcome(fileURL.path, sourceHint: vendor.rawValue)
     }
 
     /// App Store (sandboxed) helper: copy a user-picked import file/folder into the app
