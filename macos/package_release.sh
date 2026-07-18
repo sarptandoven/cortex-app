@@ -178,6 +178,10 @@ mkdir -p "$OUT_DIR"
 # silently shipping the keyword-hash embedding fallback. Dev builds (plain ./macos/build.sh)
 # are unaffected; only this packaging path enforces it.
 CORTEX_BUNDLE_PYTHON="$BUNDLE_PYTHON" CORTEX_REQUIRE_MODEL=1 "$ROOT/build.sh"
+# Re-run the whole-app portability gate on the exact signed bundle that will be
+# copied into release staging. build.sh already checks before signing; this
+# release boundary check prevents future build-flow changes from bypassing it.
+python3 "$ROOT/macho_dependencies.py" check "$APP"
 codesign --verify --deep --strict "$APP"
 # Belt and braces: independently verify the built .app actually contains the bundled embedding
 # model files (exactly what model2vec's save_pretrained() writes and what the app launcher and
@@ -191,6 +195,27 @@ for model_file in config.json model.safetensors tokenizer.json; do
 done
 if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON" != "no" ]]; then
   python3 "$PROJECT_ROOT/scripts/check_vector_runtime.py" --app "$APP" --require-model2vec
+fi
+
+# Notarize + STAPLE THE APP ITSELF before packaging. Stapling the DMG alone (below) leaves the app
+# inside it unstapled, so once a user drags Cortex.app out of the DMG, Gatekeeper must verify its
+# notarization ONLINE — and if Apple's notary service is unreachable (offline, firewall, transient
+# outage) the app opens as "Cortex is damaged and can't be opened." Stapling the ticket to the app
+# bundle makes it verify fully offline. The DMG and the update zip are then built FROM this stapled
+# app, and the DMG is separately notarized + stapled below, so both artifacts are self-contained.
+if [[ -n "$NOTARY_PROFILE" ]]; then
+  if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    echo "CORTEX_NOTARY_PROFILE requires CORTEX_CODESIGN_IDENTITY." >&2
+    exit 2
+  fi
+  APP_NOTARIZE_ZIP="$ROOT/build/.cortex-app-notarize.zip"
+  rm -f "$APP_NOTARIZE_ZIP"
+  ditto -c -k --keepParent "$APP" "$APP_NOTARIZE_ZIP"
+  echo "Notarizing the app bundle so the ticket can be stapled to Cortex.app…"
+  xcrun notarytool submit "$APP_NOTARIZE_ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$APP"
+  xcrun stapler validate "$APP"
+  rm -f "$APP_NOTARIZE_ZIP"
 fi
 
 rm -rf "$STAGING"
