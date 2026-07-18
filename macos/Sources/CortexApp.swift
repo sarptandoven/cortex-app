@@ -8929,10 +8929,15 @@ final class AppState: ObservableObject {
     func presentOnboardingIfNeeded() {
         // See presentOnboardingForFirstRunIfNeeded: onboarding must not present over the sign-in wall.
         guard !requiresSignIn else { return }
-        // Self-heal: if a prior run left onboarding "complete" but no source is actually connected
-        // (stale flag, or the user reset their data), setup isn't really done — reopen onboarding,
-        // because Cortex has nothing to work from until a source is connected.
-        if onboardingComplete && !hasAtLeastOneConnectedSource {
+        // Connect-until-truly-connected gate: onboarding stays "unfinished" (and therefore re-appears
+        // every launch) until a source has actually produced usable memory — not merely "an account
+        // exists" or "a folder was picked". `onboardingHasSource` = a memory layer is connected AND it
+        // synced at least one usable/citable memory. Using it here (instead of the weaker
+        // `hasAtLeastOneConnectedSource`) means a user who created an account or half-connected a
+        // source still sees the connect flow on the next launch until real memory lands. Because
+        // `onboardingDismissedForSession` is in-memory only, a Skip quiets it for this launch but it
+        // returns next launch while still not connected.
+        if onboardingComplete && !onboardingHasSource {
             onboardingComplete = false
             UserDefaults.standard.set(false, forKey: "onboardingComplete.v1")
         }

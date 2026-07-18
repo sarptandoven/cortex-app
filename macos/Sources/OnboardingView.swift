@@ -2231,19 +2231,35 @@ struct OnboardingSourceTile: View {
     let connected: Bool
     let action: () -> Void
 
+    // Hover/press state for a tactile, alive feel. macOS 13-safe (plain withAnimation + onHover).
+    @State private var hovering = false
+    @State private var pressing = false
+
     private var subtitle: String {
-        if connected { return "Syncing…" }
+        if connected { return "Connected" }
         if starting { return "Opening sign-in…" }
         return connectable ? "Connect" : "Available soon"
+    }
+
+    private var iconTint: Color {
+        if connected { return CortexDesign.sealMoss }
+        return connectable ? CortexDesign.accent : CortexDesign.inkFaint
     }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: systemImage)
-                    .font(.title3)
-                    .foregroundColor(connectable ? CortexDesign.accent : CortexDesign.inkFaint)
-                    .frame(width: 22)
+                ZStack {
+                    // Soft halo that blooms on hover, so the eye is drawn to the tappable thing.
+                    Circle()
+                        .fill((connected ? CortexDesign.sealMoss : CortexDesign.accent).opacity(hovering && connectable ? 0.14 : 0))
+                        .frame(width: 34, height: 34)
+                    Image(systemName: connected ? "checkmark.seal.fill" : systemImage)
+                        .font(.title3)
+                        .foregroundColor(iconTint)
+                        .scaleEffect(connected ? 1.06 : 1)
+                }
+                .frame(width: 26)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(name)
                         .font(.callout)
@@ -2251,26 +2267,51 @@ struct OnboardingSourceTile: View {
                         .foregroundColor(CortexDesign.ink)
                     Text(subtitle)
                         .font(.caption2)
-                        .foregroundColor(CortexDesign.inkSecondary)
+                        .foregroundColor(connected ? CortexDesign.sealMoss : CortexDesign.inkSecondary)
                 }
                 Spacer(minLength: 4)
                 if starting {
                     ProgressView().controlSize(.small)
+                } else if connected {
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(CortexDesign.sealMoss)
+                        .transition(.scale.combined(with: .opacity))
                 } else if connectable {
                     Image(systemName: "arrow.right.circle.fill")
                         .foregroundColor(CortexDesign.accent)
+                        // Nudge the arrow on hover to say "go".
+                        .offset(x: hovering ? 2 : 0)
                 }
             }
             .padding(11)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(CortexDesign.cardBackground)
+            .background(hovering && connectable ? CortexDesign.panelBackground : CortexDesign.cardBackground)
             .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                    .strokeBorder((connected ? CortexDesign.sealMoss : CortexDesign.accent).opacity(hovering && connectable ? 0.45 : 0), lineWidth: 1)
+            )
             .embossedBorder()
-            .shadow(color: CortexDesign.Elevation.rest.contact.color, radius: CortexDesign.Elevation.rest.contact.radius, y: CortexDesign.Elevation.rest.contact.y)
+            .shadow(
+                color: CortexDesign.Elevation.rest.contact.color,
+                radius: hovering && connectable ? CortexDesign.Elevation.rest.contact.radius + 3 : CortexDesign.Elevation.rest.contact.radius,
+                y: hovering && connectable ? CortexDesign.Elevation.rest.contact.y + 2 : CortexDesign.Elevation.rest.contact.y
+            )
             .opacity(connectable ? 1 : 0.7)
+            .scaleEffect(pressing ? 0.97 : (hovering && connectable ? 1.02 : 1))
+            .offset(y: hovering && connectable ? -2 : 0)
         }
         .buttonStyle(.plain)
         .disabled(!connectable || starting)
+        .onHover { h in withAnimation(CortexMotion.hover) { hovering = h } }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in if !pressing { withAnimation(CortexMotion.press) { pressing = true } } }
+                .onEnded { _ in withAnimation(CortexMotion.press) { pressing = false } }
+        )
+        .animation(CortexMotion.settle, value: connected)
+        .animation(CortexMotion.settle, value: starting)
         .help(connectable ? "Sign in to \(name) and import your data" : "\(name) sign-in is coming soon")
     }
 }
