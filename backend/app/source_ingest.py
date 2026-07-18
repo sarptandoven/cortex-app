@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import email
 import html
+import io
 import json
 import mailbox
 import re
@@ -582,6 +583,7 @@ def _parsed_source_records(paths: Iterable[str], source_hint: str = "") -> list[
         _parse_consumer_ai_transcripts,
         _parse_limitless,
         _parse_claude,
+        _parse_notion,
         _parse_slack,
         _parse_discord,
         _parse_telegram,
@@ -842,33 +844,68 @@ def _asset_from_path(path: Path, name: str | None = None) -> list[SourceAsset]:
     return [SourceAsset(name=name or path.name, display_path=str(path), filesystem_path=path)]
 
 
+# Notion (and some other multi-part exports) wrap the real files in an outer
+# .zip that only contains one or more inner "Export-*.zip" / "Part-*.zip"
+# archives. A .zip member is expanded one additional level so those inner files
+# are imported instead of silently skipped. Bounded in nesting depth, total
+# member count, and inner-archive size so a crafted (zip-bomb) import degrades
+# instead of exhausting memory.
+_MAX_INNER_ZIP_DEPTH = 2
+_MAX_ZIP_MEMBER_COUNT = 20_000
+_MAX_INNER_ZIP_BYTES = MAX_TEXT_BYTES * 8
+
+
 def _assets_from_zip(path: Path) -> list[SourceAsset]:
-    assets: list[SourceAsset] = []
     try:
         with zipfile.ZipFile(path) as archive:
-            for info in archive.infolist():
-                if info.is_dir():
-                    continue
-                name = info.filename
-                if Path(name).name.startswith("."):
-                    continue
-                if Path(name).suffix.lower() == ".zip":
-                    continue
-                truncated = info.file_size > MAX_TEXT_BYTES
-                try:
-                    if truncated:
-                        # Oversized members used to be skipped entirely — silent
-                        # whole-file loss. Stream the first MAX_TEXT_BYTES and
-                        # mark the asset truncated instead.
-                        with archive.open(info) as member:
-                            data = member.read(MAX_TEXT_BYTES)
-                    else:
-                        data = archive.read(info)
-                except (KeyError, RuntimeError, zipfile.BadZipFile):
-                    continue
-                assets.append(SourceAsset(name=name, display_path=f"{path}::{name}", data=data, read_truncated=truncated))
-    except zipfile.BadZipFile:
+            return _assets_from_open_zip(archive, str(path), depth=0, budget=[_MAX_ZIP_MEMBER_COUNT])
+    except (zipfile.BadZipFile, OSError):
         return [SourceAsset(name=path.name, display_path=str(path), filesystem_path=path)]
+
+
+def _assets_from_open_zip(
+    archive: zipfile.ZipFile, display_root: str, *, depth: int, budget: list[int]
+) -> list[SourceAsset]:
+    assets: list[SourceAsset] = []
+    for info in archive.infolist():
+        if budget[0] <= 0:
+            break
+        if info.is_dir():
+            continue
+        name = info.filename
+        if Path(name).name.startswith("."):
+            continue
+        if Path(name).suffix.lower() == ".zip":
+            # Expand a nested export archive one more level (Notion multi-part
+            # exports), guarding against deep nesting and oversized inner zips.
+            if depth >= _MAX_INNER_ZIP_DEPTH or info.file_size > _MAX_INNER_ZIP_BYTES:
+                continue
+            budget[0] -= 1
+            try:
+                inner_bytes = archive.read(info)
+                with zipfile.ZipFile(io.BytesIO(inner_bytes)) as inner:
+                    assets.extend(
+                        _assets_from_open_zip(
+                            inner, f"{display_root}::{name}", depth=depth + 1, budget=budget
+                        )
+                    )
+            except (KeyError, RuntimeError, zipfile.BadZipFile, OSError):
+                continue
+            continue
+        budget[0] -= 1
+        truncated = info.file_size > MAX_TEXT_BYTES
+        try:
+            if truncated:
+                # Oversized members used to be skipped entirely — silent
+                # whole-file loss. Stream the first MAX_TEXT_BYTES and
+                # mark the asset truncated instead.
+                with archive.open(info) as member:
+                    data = member.read(MAX_TEXT_BYTES)
+            else:
+                data = archive.read(info)
+        except (KeyError, RuntimeError, zipfile.BadZipFile):
+            continue
+        assets.append(SourceAsset(name=name, display_path=f"{display_root}::{name}", data=data, read_truncated=truncated))
     return assets
 
 
@@ -1721,6 +1758,67 @@ def _claude_message_text(message: dict[str, Any]) -> str:
                     parts.append(str(part.get("text") or part.get("content") or ""))
             return "\n".join(part.strip() for part in parts if part.strip())
     return ""
+
+
+# Notion appends a space + a 32-hex page id to every exported page filename (and
+# to the parent folder names), e.g.
+#   "My Great Page 0a1b2c3d4e5f60718293a4b5c6d7e8f9.md" -> "My Great Page".
+_NOTION_ID_SUFFIX = re.compile(r"\s+[0-9a-fA-F]{32}$")
+
+
+def _strip_notion_id(value: str) -> str:
+    """Drop the trailing " <32 hex>" Notion export id from a page/folder name."""
+    return _NOTION_ID_SUFFIX.sub("", value).strip()
+
+
+def _parse_notion(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
+    """Import a Notion workspace export (Markdown / HTML / CSV assets).
+
+    Notion exports one file per page, named "<Page title> <32-hex id>.md" (or
+    .html), and database views as .csv. We claim these only when the user hinted
+    "notion" — so a generic markdown drop is unaffected and the assets are not
+    double-parsed by the generic fallback — strip the trailing page id from the
+    title, and hand CSV views to the shared structured-CSV formatter. Best-effort:
+    odd content or an empty page is skipped, never raised.
+    """
+    if hint != "notion":
+        return []
+    records: list[SourceRecord] = []
+    for asset in assets:
+        suffix = asset.suffix
+        if suffix not in {".md", ".markdown", ".html", ".htm", ".csv"}:
+            continue
+        try:
+            text = asset.read_text()
+        except Exception:
+            continue
+        if suffix == ".csv":
+            csv_title = _strip_notion_id(Path(asset.name).stem) or Path(asset.name).name
+            records.extend(
+                _label_record_parts(
+                    [
+                        _generic_record(asset, "notion", part, title=csv_title)
+                        for part in _format_csv_export(asset, text, "notion")
+                    ]
+                )
+            )
+            continue
+        if suffix in {".html", ".htm"}:
+            text = _html_to_text(text)
+        if not text.strip():
+            continue
+        title = _strip_notion_id(Path(asset.name).stem) or Path(asset.name).name
+        source_url = _generic_source_locator(asset, "notion", title)
+        records.append(
+            SourceRecord(
+                "notion",
+                title,
+                text,
+                source_url=source_url,
+                metadata={"asset": asset.display_path, "service": "Notion"},
+            )
+        )
+    return records
 
 
 def _parse_slack(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
@@ -3235,8 +3333,9 @@ def _email_single_part_text(message: Any) -> str:
     return _html_to_text(str(payload)) if content_type == "text/html" else str(payload)
 
 
-def _generic_record(asset: SourceAsset, source: str, text: str) -> SourceRecord:
-    title = Path(asset.name).stem or Path(asset.name).name
+def _generic_record(asset: SourceAsset, source: str, text: str, title: str | None = None) -> SourceRecord:
+    if title is None:
+        title = Path(asset.name).stem or Path(asset.name).name
     cleaned = _clean_generic_text(asset, text)
     source_url = _generic_source_locator(asset, source, title)
     return SourceRecord(source, title, cleaned, source_url=source_url, metadata={"asset": asset.display_path, "service": source})

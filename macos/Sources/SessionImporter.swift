@@ -26,8 +26,36 @@ import WebKit
 enum AIChatImportVendor: String, Identifiable, CaseIterable {
     case chatgpt = "ChatGPT"
     case claude = "Claude"
+    case perplexity = "Perplexity"
+    case notion = "Notion"
 
     var id: String { rawValue }
+
+    /// Notion is a whole-workspace ASYNC EXPORT, not a per-conversation stream: the harvester enqueues
+    /// a server-side export, polls until it produces a pre-signed download URL, and hands that zip to
+    /// the backend. It does NOT use the on-disk spool at all (openSpool/appendToSpool/closeSpool are
+    /// never touched for it). Every other vendor streams conversation details through the spool.
+    var usesAsyncExport: Bool {
+        switch self {
+        case .notion: return true
+        case .chatgpt, .claude, .perplexity: return false
+        }
+    }
+
+    /// One-tap collapse: for the chat vendors, once the private window reports a signed-in session we
+    /// auto-run the harvest exactly once so import is a single tap. Notion is deliberately excluded —
+    /// a whole-workspace export is heavy, so it always waits for an explicit "Export my workspace" tap.
+    var autoStartOnLogin: Bool {
+        switch self {
+        case .chatgpt, .claude, .perplexity: return true
+        case .notion: return false
+        }
+    }
+
+    /// The primary action button's label: chat vendors import conversations, Notion exports a workspace.
+    var primaryActionLabel: String {
+        usesAsyncExport ? "Export my workspace" : "Import my chats"
+    }
 
     /// User-facing product name (same as the raw value today, kept separate so copy never couples
     /// to the `source_hint` contract).
@@ -38,6 +66,8 @@ enum AIChatImportVendor: String, Identifiable, CaseIterable {
         switch self {
         case .chatgpt: return "OpenAI"
         case .claude: return "Anthropic"
+        case .perplexity: return "Perplexity"
+        case .notion: return "Notion"
         }
     }
 
@@ -47,6 +77,8 @@ enum AIChatImportVendor: String, Identifiable, CaseIterable {
         switch self {
         case .chatgpt: return "https://chatgpt.com"
         case .claude: return "https://claude.ai"
+        case .perplexity: return "https://www.perplexity.ai"
+        case .notion: return "https://www.notion.so"
         }
     }
 
@@ -54,6 +86,8 @@ enum AIChatImportVendor: String, Identifiable, CaseIterable {
         switch self {
         case .chatgpt: return "bubble.left.and.text.bubble.right"
         case .claude: return "sparkle"
+        case .perplexity: return "magnifyingglass.circle"
+        case .notion: return "note.text"
         }
     }
 
@@ -61,16 +95,19 @@ enum AIChatImportVendor: String, Identifiable, CaseIterable {
     /// expects a top-level ARRAY of detail objects; Claude expects `{"conversations":[…]}`. These
     /// wrap the comma-separated conversation elements the coordinator appends one at a time, so the
     /// finished file matches exactly what the backend parsers accept from a downloaded export.
+    /// Perplexity streams a top-level ARRAY of `{title, created_at, messages}` objects — the shape the
+    /// backend's consumer-AI transcript parser accepts — so it reuses the ChatGPT `[` / `]` framing.
+    /// Notion never streams to the spool (async export), so its values here are inert placeholders.
     var spoolOpening: String {
         switch self {
-        case .chatgpt: return "["
+        case .chatgpt, .perplexity, .notion: return "["
         case .claude: return "{\"conversations\":["
         }
     }
 
     var spoolClosing: String {
         switch self {
-        case .chatgpt: return "]"
+        case .chatgpt, .perplexity, .notion: return "]"
         case .claude: return "]}"
         }
     }
@@ -99,6 +136,54 @@ enum AIChatImportVendor: String, Identifiable, CaseIterable {
                 const r = await fetch("/api/organizations", { credentials: "include" });
                 const j = r.ok ? await r.json() : null;
                 const ok = !!(j && j.length && j[0] && j[0].uuid);
+                window.webkit.messageHandlers.cortexImport.postMessage({ type: "login", loggedIn: ok });
+              } catch (e) {
+                window.webkit.messageHandlers.cortexImport.postMessage({ type: "login", loggedIn: false });
+              }
+            })();
+            """
+        case .perplexity:
+            return """
+            (async () => {
+              try {
+                const r = await fetch("/rest/thread/list_ask_threads?version=2.18&source=default", {
+                  method: "POST",
+                  credentials: "include",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ limit: 1, offset: 0, search_term: "" })
+                });
+                let ok = false;
+                if (r.ok) {
+                  try { const j = await r.json(); ok = !!j; } catch (e) { ok = false; }
+                }
+                window.webkit.messageHandlers.cortexImport.postMessage({ type: "login", loggedIn: ok });
+              } catch (e) {
+                window.webkit.messageHandlers.cortexImport.postMessage({ type: "login", loggedIn: false });
+              }
+            })();
+            """
+        case .notion:
+            return """
+            (async () => {
+              try {
+                const r = await fetch("/api/v3/getSpaces", {
+                  method: "POST",
+                  credentials: "include",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({})
+                });
+                let ok = false;
+                if (r.ok) {
+                  try {
+                    const j = await r.json();
+                    if (j && typeof j === "object") {
+                      for (const userId in j) {
+                        const sp = j[userId] && j[userId].space;
+                        if (sp && Object.keys(sp).length > 0) { ok = true; break; }
+                      }
+                    }
+                  } catch (e) { ok = false; }
+                }
                 window.webkit.messageHandlers.cortexImport.postMessage({ type: "login", loggedIn: ok });
               } catch (e) {
                 window.webkit.messageHandlers.cortexImport.postMessage({ type: "login", loggedIn: false });
@@ -257,6 +342,193 @@ enum AIChatImportVendor: String, Identifiable, CaseIterable {
               }
             })();
             """
+        case .perplexity:
+            return """
+            (async () => {
+              const post = (m) => window.webkit.messageHandlers.cortexImport.postMessage(m);
+              const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+              const jitter = () => 1500 + Math.floor(Math.random() * 2500);
+              const backoff = (attempt) => Math.min(1000 * Math.pow(2, attempt), 10000);
+              // Cancel-aware sleep: wake every 200ms to check the cancel flag so a long backoff/pacing
+              // wait unwinds promptly instead of blocking for up to 10s after the user taps Cancel.
+              const cancellableSleep = async (ms) => {
+                const step = 200;
+                for (let t = 0; t < ms; t += step) {
+                  if (window.__cortexCancel) return;
+                  await sleep(Math.min(step, ms - t));
+                }
+              };
+              const listThreads = (offset) => fetch("/rest/thread/list_ask_threads?version=2.18&source=default", {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ limit: 20, offset: offset, search_term: "" })
+              });
+              try {
+                window.__cortexCancel = false;
+                const slugs = [];
+                let offset = 0;
+                const CAP = 3000;  // hard safety cap on thread count
+                while (true) {
+                  if (window.__cortexCancel) { post({ type: "canceled" }); return; }
+                  const res = await listThreads(offset);
+                  if (!res.ok) { post({ type: "error", message: "Could not list your Perplexity threads (HTTP " + res.status + ")." }); return; }
+                  const page = await res.json();
+                  const threads = (page && (page.threads || page.entries || page.data || (Array.isArray(page) ? page : []))) || [];
+                  for (const t of threads) { if (t && t.slug) slugs.push(t.slug); }
+                  offset += 20;
+                  // Stop on an empty page, when the API says there's no next page, or at the safety cap.
+                  if (threads.length === 0 || (page && page.has_next_page !== true) || slugs.length >= CAP) break;
+                  await cancellableSleep(700);
+                  if (window.__cortexCancel) { post({ type: "canceled" }); return; }
+                }
+                const count = slugs.length;
+                post({ type: "progress", done: 0, total: count });
+                let done = 0;
+                for (const slug of slugs) {
+                  if (window.__cortexCancel) { post({ type: "canceled" }); return; }
+                  let ok = false;
+                  for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+                    if (window.__cortexCancel) { post({ type: "canceled" }); return; }
+                    try {
+                      const r = await fetch("/rest/thread/" + encodeURIComponent(slug) + "?version=2.18&source=default&limit=50&offset=0&from_first=true", { credentials: "include" });
+                      if (r.status === 429) { await cancellableSleep(backoff(attempt)); if (window.__cortexCancel) { post({ type: "canceled" }); return; } continue; }
+                      if (!r.ok) { await cancellableSleep(backoff(attempt)); if (window.__cortexCancel) { post({ type: "canceled" }); return; } continue; }
+                      const d = await r.json();
+                      const title = d.title || slug;
+                      const turns = d.entries || d.messages || d.steps || [];
+                      const messages = [];
+                      for (const e of turns) {
+                        const userText = (typeof e.query === "string" ? e.query : (e.query && e.query.text)) || e.query_str || "";
+                        const asstText = (e.answer && (e.answer.text || e.answer.answer)) || (typeof e.answer === "string" ? e.answer : "") || e.final_response || "";
+                        if (userText) messages.push({ role: "user", text: userText });
+                        if (asstText) messages.push({ role: "assistant", text: asstText });
+                      }
+                      const created_at = d.created_at || (turns[0] && turns[0].created_at);
+                      post({ type: "conversation", data: { title: title, created_at: created_at, messages: messages } });
+                      ok = true;
+                    } catch (e) {
+                      await cancellableSleep(backoff(attempt));
+                      if (window.__cortexCancel) { post({ type: "canceled" }); return; }
+                    }
+                  }
+                  done += 1;
+                  post({ type: "progress", done: done, total: count });
+                  await cancellableSleep(jitter());
+                  if (window.__cortexCancel) { post({ type: "canceled" }); return; }
+                }
+                post({ type: "done" });
+              } catch (e) {
+                post({ type: "error", message: (e && e.message) ? e.message : "Reading your Perplexity history failed." });
+              }
+            })();
+            """
+        case .notion:
+            return """
+            (async () => {
+              const post = (m) => window.webkit.messageHandlers.cortexImport.postMessage(m);
+              const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+              // Cancel-aware sleep: wake every 200ms to check the cancel flag so a long poll wait
+              // unwinds promptly instead of blocking after the user taps Cancel.
+              const cancellableSleep = async (ms) => {
+                const step = 200;
+                for (let t = 0; t < ms; t += step) {
+                  if (window.__cortexCancel) return;
+                  await sleep(Math.min(step, ms - t));
+                }
+              };
+              const jpost = (path, body) => fetch(path, {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+              });
+              // Export ONE space: enqueue the server-side export, then poll to completion. Returns the
+              // pre-signed download URL, or null on ANY failure (bad enqueue, no task id, timeout, no
+              // link, or cancel). The caller records a null as a failed space and CONTINUES to the rest
+              // — one broken/empty/slow workspace must never abort the whole run. A progress heartbeat
+              // is posted on EVERY poll iteration, INCLUDING transient getTasks failures, so a run of
+              // failed polls can never trip the 60s silence watchdog. total is 0 (pages aren't known
+              // up front).
+              const exportSpace = async (spaceId) => {
+                const enqRes = await jpost("/api/v3/enqueueTask", {
+                  task: {
+                    eventName: "exportSpace",
+                    request: {
+                      spaceId: spaceId,
+                      shouldExportComments: false,
+                      exportOptions: { exportType: "markdown", timeZone: "America/New_York", locale: "en" }
+                    }
+                  }
+                });
+                if (!enqRes.ok) return null;
+                const enqJson = await enqRes.json();
+                const taskId = enqJson && enqJson.taskId;
+                if (!taskId) return null;
+                const deadline = Date.now() + 12 * 60 * 1000;  // generous ~12 min per space
+                while (true) {
+                  if (window.__cortexCancel) return null;
+                  if (Date.now() > deadline) return null;
+                  await cancellableSleep(2500);
+                  if (window.__cortexCancel) return null;
+                  const tasksRes = await jpost("/api/v3/getTasks", { taskIds: [taskId] });
+                  if (!tasksRes.ok) { post({ type: "progress", done: 0, total: 0 }); continue; }
+                  const tasksJson = await tasksRes.json();
+                  const task = tasksJson && tasksJson.results && tasksJson.results[0];
+                  if (!task) { post({ type: "progress", done: 0, total: 0 }); continue; }
+                  const pagesExported = (task.status && task.status.pagesExported) || 0;
+                  post({ type: "progress", done: pagesExported, total: 0 });
+                  const complete = task.state === "success" || (task.status && task.status.type === "complete");
+                  if (complete) return (task.status && task.status.exportURL) || null;
+                }
+              };
+              try {
+                window.__cortexCancel = false;
+                const spacesRes = await jpost("/api/v3/getSpaces", {});
+                if (!spacesRes.ok) { post({ type: "error", message: "Could not read your Notion workspaces (HTTP " + spacesRes.status + ")." }); return; }
+                const spacesJson = await spacesRes.json();
+                const spaceIds = [];
+                for (const userId in spacesJson) {
+                  const sp = spacesJson[userId] && spacesJson[userId].space;
+                  if (sp) { for (const spaceId in sp) { if (spaceIds.indexOf(spaceId) === -1) spaceIds.push(spaceId); } }
+                }
+                if (spaceIds.length === 0) { post({ type: "error", message: "No Notion workspace was found for this account." }); return; }
+                // Export EVERY space FIRST (continuing past any per-space failure), streaming each
+                // download link back as it becomes ready. Swift ACCUMULATES the links but stays in the
+                // cancel-able harvesting state — it only starts downloading/importing on {type:"done"},
+                // so Cancel stays live for the whole (multi-minute) export instead of the sheet locking
+                // out its controls the instant the first space finishes.
+                let failedSpaces = 0;
+                let collected = 0;
+                for (const spaceId of spaceIds) {
+                  if (window.__cortexCancel) { post({ type: "canceled" }); return; }
+                  let exportURL = null;
+                  try {
+                    exportURL = await exportSpace(spaceId);
+                  } catch (e) {
+                    exportURL = null;
+                  }
+                  if (window.__cortexCancel) { post({ type: "canceled" }); return; }
+                  if (exportURL) {
+                    collected += 1;
+                    post({ type: "exportURL", url: exportURL });
+                  } else {
+                    failedSpaces += 1;
+                  }
+                }
+                if (window.__cortexCancel) { post({ type: "canceled" }); return; }
+                // Zero links means every workspace failed — a hard error. Otherwise hand off with an
+                // honest failure count so Swift can report a partial import ("Imported N of M").
+                if (collected === 0) {
+                  post({ type: "error", message: "Could not export any of your Notion workspaces. Try again." });
+                  return;
+                }
+                post({ type: "done", totalSpaces: spaceIds.length, failedSpaces: failedSpaces });
+              } catch (e) {
+                post({ type: "error", message: (e && e.message) ? e.message : "Exporting your Notion workspace failed." });
+              }
+            })();
+            """
         }
     }
 }
@@ -304,6 +576,31 @@ final class SessionImportCoordinator: NSObject, ObservableObject, WKScriptMessag
 
     /// Ensures the sheet reports its outcome to the presenter exactly once (see reportFinished).
     private var didReportFinished = false
+
+    /// One-tap collapse guard: flipped true the first time we auto-start the harvest after a signed-in
+    /// session is detected, so a re-probed `login` message can never re-fire the harvest.
+    private var didAutoStart = false
+
+    /// Notion async-export bookkeeping (unused by the spool vendors). During the multi-space export the
+    /// JS posts one `{type:"exportURL"}` per workspace, which we ACCUMULATE here while staying in the
+    /// cancel-able `.harvesting` phase. Only on `{type:"done"}` do we flip to `.importing` ONCE and
+    /// sequentially download + import each collected zip. `notionCanceled` guards the narrow race where
+    /// a Cancel lands just as the JS posts `done` (so no `canceled` message follows) — it stops the
+    /// download/import from starting.
+    private var notionExportURLs: [URL] = []
+    private var notionCanceled = false
+
+    /// A download session bounded by a resource timeout (a few minutes) and a per-request timeout, so a
+    /// stalled S3 download fails cleanly instead of hanging on `URLSession.shared`'s ~7-day default
+    /// resource timeout and wedging the sheet in `.importing` forever. Created lazily; the vendor uses
+    /// it only for the Notion zip downloads.
+    private lazy var notionDownloadSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 60
+        cfg.timeoutIntervalForResource = 300
+        cfg.waitsForConnectivity = false
+        return URLSession(configuration: cfg)
+    }()
 
     /// Silence watchdog. A mid-harvest page navigation (or any other tear-down of the JS context)
     /// leaves the harvester unable to ever post done/error/canceled, which would wedge the sheet in
@@ -395,6 +692,21 @@ final class SessionImportCoordinator: NSObject, ObservableObject, WKScriptMessag
     func startHarvest() {
         guard isAvailable, let webView else { return }
         guard phase != .harvesting, phase != .importing else { return }
+        // Notion is an async whole-workspace export — it never touches the spool. The ENTIRE export
+        // (every space) runs in the cancel-able `.harvesting` phase; progress posts on every poll keep
+        // the watchdog alive through the multi-minute run, and Cancel stays live the whole time. We only
+        // flip to `.importing` once the JS reports `done` (see beginNotionImports). Reset bookkeeping,
+        // arm the watchdog, and run.
+        if vendor.usesAsyncExport {
+            resetNotionState()
+            harvestedCount = 0
+            totalCount = 0
+            phase = .harvesting
+            statusText = "Exporting your \(vendor.displayName) workspace… this can take a few minutes."
+            armWatchdog()
+            webView.evaluateJavaScript(vendor.harvestJS, completionHandler: nil)
+            return
+        }
         cleanupSpool()  // discard any prior run's spool before opening a fresh one
         guard openSpool() else {
             phase = .failed
@@ -506,6 +818,10 @@ final class SessionImportCoordinator: NSObject, ObservableObject, WKScriptMessag
     func cancelHarvest() {
         guard let webView else { return }
         webView.evaluateJavaScript("window.__cortexCancel = true;", completionHandler: nil)
+        // Also latch a Swift-side flag for the async export: it closes the narrow race where Cancel
+        // lands just as the JS posts `done` (so no `canceled` message follows), stopping the
+        // subsequent download/import from starting. Harmless for the spool vendors.
+        if vendor.usesAsyncExport { notionCanceled = true }
         if phase == .harvesting {
             statusText = "Stopping…"
         }
@@ -515,33 +831,74 @@ final class SessionImportCoordinator: NSObject, ObservableObject, WKScriptMessag
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "cortexImport" else { return }
-        // A message means the harvester is alive — push the silence watchdog's deadline out. Only
-        // while harvesting: a stray late/login message outside the harvest must not resurrect it.
+        // A message means the harvester is alive — push the silence watchdog's deadline out. The whole
+        // harvest/export runs in `.harvesting` (Notion posts a progress heartbeat on every poll across
+        // all spaces), so keeping the watchdog alive only while `.harvesting` is enough; once we leave
+        // for `.importing` the JS is done and no further messages arrive. A stray late/login message
+        // outside a run must not resurrect it.
         if phase == .harvesting { armWatchdog() }
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         switch type {
         case "login":
+            let wasLoggedIn = loggedIn
             loggedIn = (body["loggedIn"] as? Bool) ?? false
+            // One-tap collapse: the first time a signed-in session appears, for the chat vendors, run
+            // the harvest automatically (once) so import is a single tap. Notion opts out (heavy export
+            // ⇒ explicit tap). Guarded so a re-probed login can't re-fire, and only from a clean idle.
+            if loggedIn, !wasLoggedIn, vendor.autoStartOnLogin, phase == .idle, !didAutoStart {
+                didAutoStart = true
+                startHarvest()
+            }
         case "progress":
             if let total = body["total"] as? Int { totalCount = total }
             if let done = body["done"] as? Int { harvestedCount = done }
             if phase == .harvesting {
-                statusText = totalCount > 0
-                    ? "Reading conversation \(harvestedCount) of \(totalCount)…"
-                    : "Reading your \(vendor.displayName) conversations…"
+                if vendor.usesAsyncExport {
+                    let ready = notionExportURLs.count
+                    if ready > 0 {
+                        statusText = "Exporting your \(vendor.displayName) workspace… \(ready) ready so far."
+                    } else if harvestedCount > 0 {
+                        statusText = "Exporting your \(vendor.displayName) workspace… \(harvestedCount) pages so far."
+                    } else {
+                        statusText = "Exporting your \(vendor.displayName) workspace… this can take a few minutes."
+                    }
+                } else {
+                    statusText = totalCount > 0
+                        ? "Reading conversation \(harvestedCount) of \(totalCount)…"
+                        : "Reading your \(vendor.displayName) conversations…"
+                }
             }
         case "conversation":
             if let data = body["data"] { appendToSpool(data) }
+        case "exportURL":
+            // Notion only: a space's pre-signed S3 zip is ready. ACCUMULATE it and stay in the
+            // cancel-able `.harvesting` phase — the JS is still exporting the remaining spaces. We do
+            // NOT download or flip to `.importing` here; that happens once on `done` (Finding 1), so
+            // Cancel stays available for the whole export.
+            if vendor.usesAsyncExport, let urlStr = body["url"] as? String, let url = URL(string: urlStr) {
+                notionExportURLs.append(url)
+                if phase == .harvesting {
+                    let ready = notionExportURLs.count
+                    statusText = "Exporting your \(vendor.displayName) workspace… \(ready) ready so far."
+                }
+            }
         case "done":
-            finishHarvest()
+            if vendor.usesAsyncExport {
+                let total = (body["totalSpaces"] as? Int) ?? notionExportURLs.count
+                beginNotionImports(totalSpaces: total)
+            } else {
+                finishHarvest()
+            }
         case "canceled":
             stopWatchdog()
             cleanupSpool()
+            resetNotionState()
             phase = .idle
             statusText = "Import canceled. Nothing was changed."
         case "error":
             stopWatchdog()
             cleanupSpool()
+            resetNotionState()
             let msg = (body["message"] as? String) ?? "Reading your \(vendor.displayName) history failed."
             phase = .failed
             statusText = msg
@@ -587,6 +944,106 @@ final class SessionImportCoordinator: NSObject, ObservableObject, WKScriptMessag
             }
             reportFinished(outcome != .failed)
         }
+    }
+
+    // MARK: Notion async export (no spool — download each zip, hand it to the backend)
+
+    /// Reset the Notion async-export bookkeeping. Called before a fresh export and whenever a run ends
+    /// without importing (canceled/error). A no-op for the spool vendors (the fields are inert there).
+    private func resetNotionState() {
+        notionExportURLs = []
+        notionCanceled = false
+    }
+
+    /// The JS finished exporting every space and posted `done`. Flip to `.importing` ONCE, then
+    /// sequentially download + import each accumulated zip. `totalSpaces` is the honest denominator M
+    /// (all workspaces, including those that failed to export) for the partial report on finalize.
+    private func beginNotionImports(totalSpaces: Int) {
+        guard vendor.usesAsyncExport else { return }
+        stopWatchdog()  // the export is done; the download phase is a bounded local hand-off
+        // A Cancel that landed right as the JS posted `done` (so no `canceled` message follows) must
+        // still prevent the download/import — reset to idle exactly like the canceled path.
+        if notionCanceled {
+            resetNotionState()
+            phase = .idle
+            statusText = "Import canceled. Nothing was changed."
+            return
+        }
+        let urls = notionExportURLs
+        guard !urls.isEmpty else {
+            // Shouldn't happen (the JS posts `error` when it collected zero links), but stay safe.
+            resetNotionState()
+            phase = .failed
+            statusText = "Could not import your \(vendor.displayName) workspace. Try again."
+            reportFinished(false)
+            return
+        }
+        let total = max(totalSpaces, urls.count)
+        phase = .importing
+        statusText = urls.count == 1
+            ? "Saving your \(vendor.displayName) workspace into your memory…"
+            : "Saving your \(vendor.displayName) workspaces into your memory…"
+        let vendor = self.vendor
+        Task { @MainActor in
+            var imported = 0
+            var index = 0
+            for url in urls {
+                index += 1
+                if urls.count > 1 {
+                    statusText = "Saving your \(vendor.displayName) workspaces into your memory… (\(index) of \(urls.count))"
+                }
+                if await downloadAndImportNotionZip(url) { imported += 1 }
+            }
+            finalizeNotion(imported: imported, total: total)
+        }
+    }
+
+    /// Download one space's pre-signed export zip and import it. The URL is an S3 link that needs NO
+    /// cookies, so a plain download suffices — but we use `notionDownloadSession` (bounded resource +
+    /// request timeouts) so a stalled download fails cleanly instead of hanging for days. Returns true
+    /// only when the backend accepted the zip (imported or already present).
+    private func downloadAndImportNotionZip(_ url: URL) async -> Bool {
+        var tempZip: URL?
+        var ok = false
+        do {
+            let (downloaded, _) = try await notionDownloadSession.download(from: url)
+            let zipURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".zip")
+            try? FileManager.default.removeItem(at: zipURL)
+            try FileManager.default.moveItem(at: downloaded, to: zipURL)
+            tempZip = zipURL
+            let outcome = await state.importSessionHarvestFile(vendor: vendor, fileURL: zipURL)
+            ok = (outcome == .imported || outcome == .alreadyPresent)
+        } catch {
+            ok = false
+        }
+        if let tempZip { try? FileManager.default.removeItem(at: tempZip) }
+        return ok
+    }
+
+    /// Finalize the Notion export with an HONEST outcome. `imported` (N) is the number of workspaces
+    /// that actually landed; `total` (M) is every workspace we tried. Full success reads as `.done`; a
+    /// partial success STILL reports `.done` + `reportFinished(true)` (so the history/stats refresh
+    /// fires) but names the shortfall; only ZERO imported is a recoverable `.failed`.
+    private func finalizeNotion(imported: Int, total: Int) {
+        guard vendor.usesAsyncExport else { return }
+        stopWatchdog()
+        resetNotionState()
+        if imported <= 0 {
+            phase = .failed
+            statusText = "Could not import your \(vendor.displayName) workspace. Try again."
+            reportFinished(false)
+            return
+        }
+        phase = .done
+        if imported >= total {
+            statusText = imported == 1
+                ? "Imported your \(vendor.displayName) workspace. Building your memory in the background…"
+                : "Imported all \(imported) \(vendor.displayName) workspaces. Building your memory in the background…"
+        } else {
+            statusText = "Imported \(imported) of \(total) \(vendor.displayName) workspaces… couldn't bring in the other \(total - imported). Building your memory in the background…"
+        }
+        reportFinished(true)
     }
 }
 
@@ -699,7 +1156,10 @@ struct AIChatSessionImportView: View {
     }
 
     private var consentCopy: String {
-        "This opens your own \(vendor.displayName) account in a private in-app window. When you tap Import, \(DistributionMode.appDisplayName) reads your conversations using the session you sign in with here and saves them into your local memory on this Mac. This is not an official \(vendor.vendorCompany) feature, and \(DistributionMode.appDisplayName) only ever reads your own data. Nothing is sent anywhere else."
+        if vendor.usesAsyncExport {
+            return "This opens your own \(vendor.displayName) account in a private in-app window. When you tap Export my workspace, \(DistributionMode.appDisplayName) asks \(vendor.displayName) to export your workspace using the session you sign in with here, downloads it, and saves it into your local memory on this Mac. This is not an official \(vendor.vendorCompany) feature, and \(DistributionMode.appDisplayName) only ever reads your own data. Nothing is sent anywhere else."
+        }
+        return "This opens your own \(vendor.displayName) account in a private in-app window. When you tap Import, \(DistributionMode.appDisplayName) reads your conversations using the session you sign in with here and saves them into your local memory on this Mac. This is not an official \(vendor.vendorCompany) feature, and \(DistributionMode.appDisplayName) only ever reads your own data. Nothing is sent anywhere else."
     }
 
     // MARK: Login hint overlay (only before sign-in)
@@ -707,7 +1167,7 @@ struct AIChatSessionImportView: View {
     @ViewBuilder
     private var loginHint: some View {
         if !coordinator.loggedIn && !isBusy {
-            Text("Sign in to \(vendor.displayName) in this window, then tap Import my chats below.")
+            Text("Sign in to \(vendor.displayName) in this window, then tap \(vendor.primaryActionLabel) below.")
                 .font(.footnote)
                 .foregroundColor(CortexDesign.inkSecondary)
                 .padding(.horizontal, 12)
@@ -794,7 +1254,7 @@ struct AIChatSessionImportView: View {
                 finish()
             }
         }
-        CortexButton(title: "Import my chats", systemImage: "tray.and.arrow.down", role: .primary) {
+        CortexButton(title: vendor.primaryActionLabel, systemImage: "tray.and.arrow.down", role: .primary) {
             coordinator.startHarvest()
         }
         .disabled(!canImport)

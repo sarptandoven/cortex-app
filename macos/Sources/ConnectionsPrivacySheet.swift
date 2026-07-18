@@ -1281,8 +1281,12 @@ private struct AIChatsImportCard: View {
                         .font(.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
-                        sessionImportButton("Import from ChatGPT", systemImage: "bubble.left.and.bubble.right", vendor: .chatgpt)
-                        sessionImportButton("Import from Claude", systemImage: "sparkle", vendor: .claude)
+                        // Iterate every vendor so newly added ones (Perplexity, Notion, …) surface here
+                        // automatically — no per-vendor wiring. Each tile opens the embedded-browser
+                        // harvest sheet for that vendor via the shared .sheet(item: $sessionImportVendor).
+                        ForEach(AIChatImportVendor.allCases) { vendor in
+                            sessionImportButton("Import from \(vendor.displayName)", systemImage: vendor.symbolName, vendor: vendor)
+                        }
                     }
                 }
             }
