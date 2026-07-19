@@ -1183,6 +1183,15 @@ private struct AIChatsImportCard: View {
     // The export walkthrough starts open until an export shows up — requesting the export is
     // where people stall, not the drop zone. Once one is detected or imported, it tucks away.
     @State private var guideExpanded = true
+    // A card-local, in-sheet result line for a drop/pick that didn't import cleanly. `state.status`
+    // is surfaced only in the main-window chrome (which this modal sheet occludes), so without this
+    // a wrong/empty/already-imported file inside the sheet would be a silent dead-end.
+    @State private var importNotice: String?
+
+    // File types the export drop target accepts: a ChatGPT / Claude export (.zip or its
+    // conversations.json / .jsonl) or a plain .txt transcript. Anything else gets an immediate
+    // in-sheet notice instead of a pointless round-trip that fails silently.
+    private static let acceptedExportExtensions: Set<String> = ["zip", "json", "jsonl", "txt"]
 
     private let steps = [
         "Tap your provider below. It opens the export page in your browser, already on the right screen.",
@@ -1210,6 +1219,41 @@ private struct AIChatsImportCard: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    /// Run an import from a dropped/picked path and surface an honest in-sheet notice for anything
+    /// that isn't a clean import (already-imported or a real failure). `importFromPathOutcome` writes
+    /// a plain-language reason to `state.status` on every non-imported path, so the notice names what
+    /// actually happened instead of the drop silently returning to the idle zone.
+    private func runImport(path: String) {
+        importNotice = nil
+        Task { @MainActor in
+            let outcome = await state.importFromPathOutcome(path)
+            if outcome != .imported {
+                importNotice = state.status
+            }
+        }
+    }
+
+    /// The Connections-sheet variant of `AppState.importAIChatExport`: identical picker, but it
+    /// checks the outcome so a failed or empty pick raises the in-sheet notice instead of only
+    /// writing the occluded `state.status` line.
+    private func chooseExportFile() {
+        importNotice = nil
+        let panel = NSOpenPanel()
+        panel.title = "Choose export file"
+        panel.message = "Select your ChatGPT or Claude export: a .zip, its conversations.json, or the unzipped folder."
+        panel.prompt = "Import"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            .zip,
+            .json,
+            UTType(filenameExtension: "jsonl") ?? .data,
+        ]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        runImport(path: url.standardizedFileURL.path)
     }
 
     var body: some View {
@@ -1302,7 +1346,7 @@ private struct AIChatsImportCard: View {
                             .font(.callout).foregroundColor(CortexDesign.inkSecondary)
                         if !state.importInFlight {
                             CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .secondary, size: .small) {
-                                state.importAIChatExport()
+                                chooseExportFile()
                             }
                         }
                     }
@@ -1312,17 +1356,38 @@ private struct AIChatsImportCard: View {
                 .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
                     guard let provider = providers.first else { return false }
                     provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                        var resolved: String?
+                        var resolvedURL: URL?
                         if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
-                            resolved = url.standardizedFileURL.path
+                            resolvedURL = url.standardizedFileURL
                         } else if let url = item as? URL {
-                            resolved = url.standardizedFileURL.path
+                            resolvedURL = url.standardizedFileURL
                         }
-                        guard let path = resolved else { return }
-                        Task { @MainActor in await state.importFromPath(path) }
+                        Task { @MainActor in
+                            guard let url = resolvedURL else {
+                                importNotice = "Could not read that dropped item. Try Choose export file instead."
+                                return
+                            }
+                            // Immediate feedback for an obviously-wrong file type, avoiding a pointless
+                            // round-trip that would fail silently.
+                            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                            let ext = url.pathExtension.lowercased()
+                            if !isDirectory && !ext.isEmpty
+                                && !AIChatsImportCard.acceptedExportExtensions.contains(ext) {
+                                importNotice = "\(DistributionMode.appDisplayName) can import a ChatGPT or Claude export: a .zip, its conversations.json, a .jsonl, or a .txt transcript. \(ext.uppercased()) files aren't supported here."
+                                return
+                            }
+                            runImport(path: url.path)
+                        }
                     }
                     return true
                 }
+
+            if let notice = importNotice {
+                Label(notice, systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             DisclosureGroup(isExpanded: $guideExpanded) {
                 // Guided walkthrough: the highlight strolls through the steps on a loop while the
@@ -1735,12 +1800,44 @@ private struct AppleNotesImportCard: View {
     @ObservedObject var state: AppState
     @State private var isTargeted = false
     @State private var guideExpanded = false
+    // Card-local in-sheet result line for a drop/pick that didn't import cleanly — `state.status`
+    // is surfaced only in the main-window chrome this modal sheet occludes, so a wrong/empty file
+    // dropped here would otherwise be a silent dead-end.
+    @State private var importNotice: String?
 
     private let steps = [
         "Open the Notes app, select the notes you want, then use the File menu and pick Export as PDF (or use the Shortcuts app to save them as text).",
         "Save the exported file somewhere easy to find, like your Desktop or Downloads.",
         "Drop the file here, or click Choose export file. \(DistributionMode.appDisplayName) distills it into cited memory.",
     ]
+
+    /// Run an import from a dropped/picked path and surface an honest in-sheet notice for anything
+    /// that isn't a clean import. `importFromPathOutcome` writes a plain-language reason to
+    /// `state.status` on every non-imported path, so the notice names what actually happened.
+    private func runImport(path: String) {
+        importNotice = nil
+        Task { @MainActor in
+            let outcome = await state.importFromPathOutcome(path)
+            if outcome != .imported {
+                importNotice = state.status
+            }
+        }
+    }
+
+    /// Notes-card variant of the export picker that checks the outcome so a failed or empty pick
+    /// raises the in-sheet notice instead of only writing the occluded `state.status` line.
+    private func chooseExportFile() {
+        importNotice = nil
+        let panel = NSOpenPanel()
+        panel.title = "Choose export file"
+        panel.message = "Select your exported Apple Notes: a .pdf, .txt, or the folder you exported them into."
+        panel.prompt = "Import"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        runImport(path: url.standardizedFileURL.path)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1771,7 +1868,7 @@ private struct AppleNotesImportCard: View {
                             .font(.callout).foregroundColor(CortexDesign.inkSecondary)
                         if !state.importInFlight {
                             CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .secondary, size: .small) {
-                                state.importAIChatExport()
+                                chooseExportFile()
                             }
                         }
                     }
@@ -1779,17 +1876,29 @@ private struct AppleNotesImportCard: View {
                 .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
                     guard let provider = providers.first else { return false }
                     provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                        var resolved: String?
+                        var resolvedURL: URL?
                         if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
-                            resolved = url.standardizedFileURL.path
+                            resolvedURL = url.standardizedFileURL
                         } else if let url = item as? URL {
-                            resolved = url.standardizedFileURL.path
+                            resolvedURL = url.standardizedFileURL
                         }
-                        guard let path = resolved else { return }
-                        Task { @MainActor in await state.importFromPath(path) }
+                        Task { @MainActor in
+                            guard let url = resolvedURL else {
+                                importNotice = "Could not read that dropped item. Try Choose export file instead."
+                                return
+                            }
+                            runImport(path: url.path)
+                        }
                     }
                     return true
                 }
+
+            if let notice = importNotice {
+                Label(notice, systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             DisclosureGroup(isExpanded: $guideExpanded) {
                 GuidedStepWalkthrough(steps: steps, isActive: guideExpanded, textFont: .caption) { _ in

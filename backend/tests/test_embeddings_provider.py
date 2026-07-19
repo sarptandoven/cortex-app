@@ -12,13 +12,18 @@ class EmbeddingProviderTests(unittest.TestCase):
     (a regression here previously broke ~270 tests)."""
 
     def setUp(self) -> None:
-        # Drop any cached model between tests so provider switches take effect deterministically.
+        # Drop any cached model AND the degrade latch between tests so provider switches and the
+        # actual-embed-outcome reporting take effect deterministically.
         E._MODEL2VEC_MODEL = None
         E._MODEL2VEC_MODEL_KEY = None
+        E._MODEL2VEC_LOAD_FAILED = False
+        E._MODEL2VEC_FAILURE_LOGGED = False
 
     def tearDown(self) -> None:
         E._MODEL2VEC_MODEL = None
         E._MODEL2VEC_MODEL_KEY = None
+        E._MODEL2VEC_LOAD_FAILED = False
+        E._MODEL2VEC_FAILURE_LOGGED = False
 
     def test_embedding_status_is_callable(self) -> None:
         # Guards the _strict_embeddings regression: embedding_status() must not raise.
@@ -58,6 +63,52 @@ class EmbeddingProviderTests(unittest.TestCase):
         ):
             with self.assertRaises(Exception):
                 E.embed_text_result("hello world")
+
+    def test_degraded_model2vec_reports_hash_not_model2vec(self) -> None:
+        # HONESTY: a model2vec-configured store whose live model can't load must NOT keep reporting
+        # provider=model2vec (a lying "semantic search works" state). The actual embed outcome must
+        # drive the reported provider — after the fallback fires, status is truthfully degraded.
+        with mock.patch.dict(
+            "os.environ",
+            {"CORTEX_EMBEDDING_PROVIDER": "model2vec", "CORTEX_MODEL2VEC_PATH": "/nonexistent/model-dir"},
+            clear=False,
+        ):
+            # Before any embed the config is model2vec; a warmup/probe trips the latch on failure.
+            E.warmup_embedding_provider()
+            self.assertTrue(E._MODEL2VEC_LOAD_FAILED)
+            self.assertEqual(E.effective_embedding_provider(), "hash")
+            self.assertTrue(E.embedding_provider_degraded())
+
+            status = E.embedding_status()
+            self.assertEqual(status["provider"], "hash", "must not lie that model2vec is live")
+            self.assertEqual(status["configured_provider"], "model2vec")
+            self.assertTrue(status["degraded"])
+            self.assertEqual(status["degraded_reason"], "embedding_model_load_failed")
+
+    def test_latch_self_heals_when_model_loads_again(self) -> None:
+        # A transient failure must not permanently pin the store to degraded once the model works.
+        with mock.patch.dict("os.environ", {"CORTEX_EMBEDDING_PROVIDER": "model2vec"}, clear=False):
+            E._note_model2vec_failure(RuntimeError("boom"))
+            self.assertEqual(E.effective_embedding_provider(), "hash")
+            with mock.patch.object(
+                E,
+                "_model2vec_embedding",
+                return_value=E.EmbeddingResult(vector=[0.1] * E.MODEL2VEC_DIMENSIONS, model="m", provider="model2vec", dimensions=E.MODEL2VEC_DIMENSIONS),
+            ):
+                result = E.embed_text_result("hello")
+            self.assertEqual(result.provider, "model2vec")
+            self.assertFalse(E._MODEL2VEC_LOAD_FAILED)
+            self.assertEqual(E.effective_embedding_provider(), "model2vec")
+
+    def test_configured_hash_is_not_reported_degraded(self) -> None:
+        # An intentionally hash-configured (no-model) store is a legitimate provider, not degraded —
+        # only a model2vec request that fell back is degraded.
+        with mock.patch.dict("os.environ", {"CORTEX_EMBEDDING_PROVIDER": "hash"}, clear=False):
+            status = E.embedding_status()
+        self.assertEqual(status["provider"], "hash")
+        self.assertEqual(status["configured_provider"], "hash")
+        self.assertFalse(status["degraded"])
+        self.assertIsNone(status["degraded_reason"])
 
     def test_model2vec_real_inference_when_available(self) -> None:
         # If the local model2vec model is present (bundled/cached), it produces a real,

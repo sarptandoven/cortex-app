@@ -1277,8 +1277,13 @@ private struct OnboardingAddMemoryStep: View {
                             name: connector.name,
                             systemImage: sourceIcon(connector.id),
                             connectable: sourceIsConnectable(connector),
-                            starting: state.connectorOAuthStartingIDs.contains(connector.id),
-                            connected: state.connectorSyncingIDs.contains(connector.id)
+                            // Mirror ConnectionsPrivacySheet.SignInSourceTile: "starting" covers the
+                            // whole in-flight window (OAuth opening + post-OAuth sync), and "connected"
+                            // reads the DURABLE persisted source account — so a genuinely-connected tile
+                            // STAYS connected instead of showing a premature/reverting checkmark.
+                            starting: state.connectorOAuthStartingIDs.contains(connector.id)
+                                || state.connectorSyncingIDs.contains(connector.id),
+                            connected: state.sourceAccount(connector) != nil
                         ) {
                             connectOnboardingSource(connector)
                         }

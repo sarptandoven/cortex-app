@@ -562,7 +562,7 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
     escaped_title = html.escape(title)
     escaped_url = html.escape(url)
     escaped_content = html.escape(content)
-    status_class = "ok" if status == "saved" else "err" if status == "error" else ""
+    status_class = "ok" if status == "saved" else "err" if status == "error" else "review" if status == "review" else ""
     return f"""
 <!doctype html>
 <html>
@@ -576,6 +576,7 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
       button {{ margin-top: 16px; padding: 9px 14px; border-radius: 8px; border: 0; background: #0969da; color: white; font-weight: 700; }}
       .status {{ display: inline-block; padding: 4px 8px; border-radius: 999px; background: #ddf4ff; color: #0969da; font-weight: 700; }}
       .ok {{ background: #dafbe1; color: #116329; }}
+      .review {{ background: #fff4d6; color: #9a6700; }}
       .err {{ background: #ffebe9; color: #cf222e; }}
       .hint {{ color: #57606a; }}
     </style>
@@ -600,6 +601,21 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
   </body>
 </html>
 """
+
+
+def _capture_confirmation(saved: dict) -> tuple[str, str]:
+    """Build a truthful (message, status) pair for a saved capture.
+
+    A pending capture is NOT retrievable yet (search/Ask exclude it until it's approved in
+    Review), so we must not render the green "saved" pill over content the app won't surface.
+    Distinguish "saved and searchable now" from "saved, waiting in Review"."""
+    count = len(saved.get("memories", []))
+    if saved.get("review_status") == "pending":
+        return (
+            f"Saved {count} memories. Approve them in Review before they can answer questions in Ask.",
+            "review",
+        )
+    return (f"Saved {count} memories.", "saved")
 
 
 class CortexRequestHandler(BaseHTTPRequestHandler):
@@ -774,7 +790,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     except ValueError as exc:
                         self._send_text(_capture_page(str(exc), "error", token, title, source_url, payload), status=HTTPStatus.BAD_REQUEST, media_type="text/html")
                         return
-                    self._send_text(_capture_page(f"Saved {len(saved.get('memories', []))} memories.", "saved", token, title, source_url), media_type="text/html")
+                    confirmation, confirmation_status = _capture_confirmation(saved)
+                    self._send_text(_capture_page(confirmation, confirmation_status, token, title, source_url), media_type="text/html")
                     return
                 self._send_text(_capture_page(token=token, title=title, url=source_url, content=payload), media_type="text/html")
                 return
@@ -798,7 +815,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     self._send_text(_capture_page(str(exc), "error", token, title, source_url, content), status=HTTPStatus.BAD_REQUEST, media_type="text/html")
                     return
-                self._send_text(_capture_page(f"Saved {len(saved.get('memories', []))} memories.", "saved", token, title, source_url), media_type="text/html")
+                confirmation, confirmation_status = _capture_confirmation(saved)
+                self._send_text(_capture_page(confirmation, confirmation_status, token, title, source_url), media_type="text/html")
                 return
             if method == "GET" and path == "/v1/connectors/google/oauth/callback":
                 error_value = (params.get("error") or [""])[0]

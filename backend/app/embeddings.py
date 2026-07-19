@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -28,6 +29,68 @@ MODEL2VEC_DIMENSIONS = 256
 _MODEL2VEC_MODEL: Any = None
 _MODEL2VEC_MODEL_KEY: str | None = None
 _MODEL2VEC_LOCK = threading.Lock()
+
+# Process-level failure latch: when model2vec is CONFIGURED but a live embed actually
+# fails to load/encode and silently degrades to the deterministic hash fallback, we must
+# NOT keep reporting provider=model2vec as if semantic search still works. The latch is set
+# by the ACTUAL embed outcome (see embed_text_result) and drives effective_embedding_provider()
+# so /ready, search diagnostics, and the vector-write gate all report the truth. It resets the
+# moment a live model2vec embed succeeds again, so a transient failure self-heals.
+_MODEL2VEC_LOAD_FAILED = False
+_MODEL2VEC_FAILURE_LOGGED = False
+
+
+def _note_model2vec_failure(exc: BaseException) -> None:
+    global _MODEL2VEC_LOAD_FAILED, _MODEL2VEC_FAILURE_LOGGED
+    _MODEL2VEC_LOAD_FAILED = True
+    if not _MODEL2VEC_FAILURE_LOGGED:
+        _MODEL2VEC_FAILURE_LOGGED = True
+        logging.error(
+            "embedding_model_load_failed: configured=model2vec but live embed fell back to hash — %s",
+            exc,
+        )
+
+
+def _note_model2vec_success() -> None:
+    global _MODEL2VEC_LOAD_FAILED, _MODEL2VEC_FAILURE_LOGGED
+    if _MODEL2VEC_LOAD_FAILED:
+        logging.info("embedding_model_recovered: model2vec live embed succeeded after a prior fallback")
+    _MODEL2VEC_LOAD_FAILED = False
+    _MODEL2VEC_FAILURE_LOGGED = False
+
+
+def effective_embedding_provider() -> str:
+    """The provider that is ACTUALLY producing vectors right now.
+
+    Returns the configured provider, except that a model2vec-configured store whose live embed
+    has degraded to the hash fallback (latch set) reports 'hash' — so status/diagnostics/gates
+    reflect reality instead of the requested config. This is the single source of truth for
+    'is this real semantics or keyword-hash noise'."""
+    provider = configured_embedding_provider()
+    if provider == "model2vec" and _MODEL2VEC_LOAD_FAILED:
+        return "hash"
+    return provider
+
+
+def embedding_provider_degraded() -> bool:
+    """True when model2vec was requested but the live embed is really emitting hash."""
+    return configured_embedding_provider() == "model2vec" and _MODEL2VEC_LOAD_FAILED
+
+
+def warmup_embedding_provider() -> None:
+    """Front-load the model load so the health surface is correct before the first query.
+
+    Runs one probe embed; for a model2vec store this triggers the model load (and sets the
+    failure latch if it can't load) up front, rather than leaving /ready reporting a healthy
+    model2vec until the first real query trips the fallback. Cheap no-op for hash stores."""
+    if configured_embedding_provider() != "model2vec":
+        return
+    try:
+        embed_text_result("probe")
+    except Exception:
+        # Non-strict: the latch is already set inside embed_text_result on failure; strict mode
+        # will have re-raised, which we swallow here so bootstrap warmup never crashes the store.
+        pass
 
 
 @dataclass(frozen=True)
@@ -75,17 +138,24 @@ def embedding_status(schema_dimensions: int | None = None) -> dict[str, Any]:
     (see CortexStore._ensure_vector_index), so a model2vec store's real index is 256, not
     the 384 build-time constant. When omitted (callers without DB access), fall back to
     VECTOR_DIMENSIONS so behaviour is unchanged."""
-    provider = configured_embedding_provider()
+    configured = configured_embedding_provider()
+    provider = effective_embedding_provider()
+    degraded = provider != configured
     dimensions = configured_embedding_dimensions()
     schema = int(schema_dimensions) if schema_dimensions else VECTOR_DIMENSIONS
     return {
+        # provider is the EFFECTIVE provider (what's actually producing vectors); when model2vec
+        # was requested but the live model can't load, this honestly reports 'hash', not model2vec.
         "provider": provider,
-        "model": configured_embedding_model(),
+        "configured_provider": configured,
+        "model": configured_embedding_model() if not degraded else VECTOR_MODEL,
         "dimensions": dimensions,
         "schema_dimensions": schema,
         "index_compatible": dimensions == schema,
         "network_required": provider == "openai",
         "strict": _strict_embeddings(),
+        "degraded": degraded,
+        "degraded_reason": "embedding_model_load_failed" if degraded else None,
     }
 
 
@@ -106,12 +176,19 @@ def embed_text_result(text: str, dimensions: int = VECTOR_DIMENSIONS) -> Embeddi
                 raise
     elif provider == "model2vec":
         try:
-            return _model2vec_embedding(text, resolved_dimensions)
-        except Exception:
+            result = _model2vec_embedding(text, resolved_dimensions)
+        except Exception as exc:
             # Real local model unavailable (deps/model absent) or failed to encode: fall back to
             # hash so a machine without the bundled model still works. Strict mode surfaces it.
+            # Latch the failure so status/diagnostics/gates stop reporting provider=model2vec —
+            # a silent degrade to hash must not masquerade as working semantic search.
+            _note_model2vec_failure(exc)
             if _strict_embeddings():
                 raise
+        else:
+            # Live embed succeeded: clear any prior degrade latch so a transient failure self-heals.
+            _note_model2vec_success()
+            return result
     return EmbeddingResult(
         vector=hash_embed_text(text, dimensions=resolved_dimensions),
         model=VECTOR_MODEL,

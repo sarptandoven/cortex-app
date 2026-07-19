@@ -2902,6 +2902,23 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertIn("Missing or invalid Cortex capture token", body)
         self.assertNotIn("wrong-token", body)
 
+    def test_capture_confirmation_is_truthful_about_review_state(self) -> None:
+        # HONESTY: a pending capture is NOT retrievable yet (search/Ask exclude it), so the
+        # confirmation must not render the green "saved" pill over content the app won't surface.
+        approved_msg, approved_status = standalone_server._capture_confirmation(
+            {"memories": [{"id": "m1"}, {"id": "m2"}], "review_status": "approved"}
+        )
+        self.assertEqual(approved_status, "saved")
+        self.assertEqual(approved_msg, "Saved 2 memories.")
+
+        pending_msg, pending_status = standalone_server._capture_confirmation(
+            {"memories": [{"id": "m1"}], "review_status": "pending"}
+        )
+        self.assertEqual(pending_status, "review")
+        self.assertNotEqual(pending_status, "saved")
+        self.assertIn("Review", pending_msg)
+        self.assertIn("Saved 1 memories", pending_msg)
+
     def test_search_forwards_layer_and_kind_to_store(self) -> None:
         with self.get("/v1/search?query=voice&kind=style&layer=style&limit=7") as response:
             payload = json.loads(response.read().decode("utf-8"))

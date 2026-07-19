@@ -993,6 +993,10 @@ struct SourceImportResultLite: Codable {
     let records_found: Int?
     let has_more: Bool?
     let next_offset: Int?
+    // Per-record import failures the backend records (e.g. a conversation that parsed to empty
+    // content). Surfaced honestly at the UI seam instead of being swallowed into a blanket success.
+    let failed: Int?
+    let errors: [SourceImportError]?
 }
 
 /// GET /v1/imports/detect — AI-chat / app exports auto-found in Downloads/CortexImports.
@@ -3868,7 +3872,10 @@ final class AppState: ObservableObject {
     }
 
     var onboardingHasSource: Bool {
-        onboardingHasConnectedMemoryLayer && onboardingHasSyncedMemory
+        // Gate on the SAME source predicate onboarding completion uses (hasAtLeastOneConnectedSource),
+        // so imports and sample-notes (which set firstSourceAdded) don't get re-onboarded forever, while
+        // still requiring real, citable memory to have landed (onboardingHasSyncedMemory).
+        onboardingHasSyncedMemory && hasAtLeastOneConnectedSource
     }
 
     var onboardingHealthyMemorySources: [SourceReadinessItem] {
@@ -6257,6 +6264,8 @@ final class AppState: ObservableObject {
             var added = 0
             var learnedNow = 0  // memories actually distilled THIS pass (async imports queue, so ~0)
             var skipped = 0
+            var failedCount = 0  // per-record failures the backend couldn't read (surfaced, not swallowed)
+            var failedErrors: [SourceImportError] = []
             var offset = 0
             var pages = 0
             var moreRemaining = false
@@ -6273,6 +6282,8 @@ final class AppState: ObservableObject {
                 added += result.saved + result.queued
                 learnedNow += result.saved
                 skipped += result.skipped
+                failedCount += result.failed ?? 0
+                failedErrors.append(contentsOf: result.errors ?? [])
                 status = added > 0 ? "Importing your chats… \(added) so far" : "Importing your chats…"
                 guard result.has_more == true, let next = result.next_offset, next > offset else { break }
                 offset = next
@@ -6295,6 +6306,11 @@ final class AppState: ObservableObject {
             await loadStats()
             await loadImportHistory()
             detectedExportSummary = nil
+            // Never swallow per-record failures: if the backend couldn't read some conversations,
+            // say so honestly (mirrors importSummary's "N couldn't be read" for the Obsidian path).
+            let failedClause = failedCount > 0
+                ? " \(failedCount) couldn’t be read. See Import history."
+                : ""
             if added > 0 {
                 importSucceeded = true
                 outcome = .imported
@@ -6305,10 +6321,14 @@ final class AppState: ObservableObject {
                 if learnedNow > 0 { announceLearned(count: learnedNow) }
                 if moreRemaining {
                     // Never drop the rest silently: this export is larger than one import pass.
-                    status = "Imported \(added) conversations. This export is very large. Run Import again to add the rest (already-imported items are skipped)."
+                    status = "Imported \(added) conversations. This export is very large. Run Import again to add the rest (already-imported items are skipped)." + failedClause
                 } else {
-                    status = "Imported \(added) conversation\(added == 1 ? "" : "s"). Building your memory in the background…"
+                    status = "Imported \(added) conversation\(added == 1 ? "" : "s"). Building your memory in the background…" + failedClause
                 }
+            } else if failedCount > 0 {
+                // Nothing imported and records failed: this is a real failure, not a silent success.
+                outcome = .failed
+                status = "Couldn’t read \(failedCount) conversation\(failedCount == 1 ? "" : "s") in that file. See Import history."
             } else if skipped > 0 {
                 // A dedup-only re-import is a healthy no-op, NOT a failure: the session-import sheet
                 // deliberately reuses the persistent vendor login so re-runs are expected and the

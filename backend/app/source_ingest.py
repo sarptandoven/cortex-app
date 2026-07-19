@@ -6,9 +6,13 @@ import html
 import io
 import json
 import mailbox
+import os
 import re
 import tempfile
+import threading
+import time
 import zipfile
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from email import policy
 from email.utils import parseaddr
@@ -652,6 +656,60 @@ def _source_fair_order(records: list[SourceRecord]) -> list[SourceRecord]:
     return ordered
 
 
+# Parsing a large export is expensive (unzip + run every parser + chunk). The
+# import layer paginates by calling `import_source_records_page` once per window,
+# so a naive implementation re-parses the whole export on every page (O(pages^2)).
+# We parse once and serve every window from a small, bounded, process-wide cache
+# keyed on the resolved inputs so a huge export actually finishes.
+_PARSE_CACHE_LOCK = threading.Lock()
+_PARSE_CACHE: "OrderedDict[Any, tuple[float, list[SourceRecord]]]" = OrderedDict()
+_PARSE_CACHE_MAX_ENTRIES = 2
+_PARSE_CACHE_TTL_SECONDS = 300.0
+
+
+def _parse_cache_key(paths: list[str], source_hint: str) -> Any:
+    """Fingerprint the resolved inputs so a re-downloaded/edited export (changed
+    mtime or size) invalidates automatically. Never key on path alone."""
+    fingerprint: list[tuple[str, int | None, int | None]] = []
+    for path in paths:
+        try:
+            st = os.stat(path)
+        except OSError:
+            # Missing/unreadable path: fold in the raw realpath so its later
+            # appearance or disappearance still changes the key.
+            fingerprint.append((os.path.realpath(path), None, None))
+            continue
+        fingerprint.append((os.path.realpath(path), st.st_mtime_ns, st.st_size))
+    return (tuple(sorted(fingerprint)), _normalize_source(source_hint))
+
+
+def _ordered_source_records_cached(paths: Iterable[str], source_hint: str) -> list[SourceRecord]:
+    """Return the source-fair ordered record list, parsing once per import and
+    serving repeated paginated calls from a bounded cache. The ordered list is
+    independent of offset/max_records, so one cached list serves every page."""
+    resolved = list(paths)
+    key = _parse_cache_key(resolved, source_hint)
+    with _PARSE_CACHE_LOCK:
+        entry = _PARSE_CACHE.get(key)
+        if entry is not None and time.monotonic() - entry[0] <= _PARSE_CACHE_TTL_SECONDS:
+            _PARSE_CACHE.move_to_end(key)
+            return entry[1]
+    # Parse outside the lock so concurrent imports of different exports do not
+    # serialize on one slow parse.
+    ordered = _source_fair_order(_parsed_source_records(resolved, source_hint))
+    stored_at = time.monotonic()
+    with _PARSE_CACHE_LOCK:
+        _PARSE_CACHE[key] = (stored_at, ordered)
+        _PARSE_CACHE.move_to_end(key)
+        # Drop entries that outlived the TTL, then bound the count with LRU
+        # eviction so these (potentially very large) lists never accumulate.
+        for stale_key in [k for k, (ts, _) in _PARSE_CACHE.items() if stored_at - ts > _PARSE_CACHE_TTL_SECONDS]:
+            _PARSE_CACHE.pop(stale_key, None)
+        while len(_PARSE_CACHE) > _PARSE_CACHE_MAX_ENTRIES:
+            _PARSE_CACHE.popitem(last=False)
+    return ordered
+
+
 def import_source_records_page(
     paths: Iterable[str],
     source_hint: str = "",
@@ -663,7 +721,7 @@ def import_source_records_page(
     windowed records plus `total`/`offset`/`returned`/`has_more`/`next_offset`."""
     record_limit = max(1, int(max_records or 1000))
     start = max(0, int(offset or 0))
-    ordered = _source_fair_order(_parsed_source_records(paths, source_hint))
+    ordered = _ordered_source_records_cached(paths, source_hint)
     total = len(ordered)
     window = [record.bounded() for record in ordered[start : start + record_limit]]
     consumed = start + len(window)
@@ -709,6 +767,13 @@ def _chunk_source_record(record: SourceRecord) -> list[SourceRecord]:
     lines = record.content.splitlines()
     body_start = _chunk_body_start(lines)
     if body_start is None:
+        # Free-form documents (a book, transcript, Notion page, Apple Note, .md /
+        # .docx / .pdf) carry no chunk marker, so they would otherwise land as one
+        # record and get hard-truncated at MAX_RECORD_CHARS by `.bounded()`. Split
+        # a genuinely large one into `(part i/n)` records so the whole body is
+        # indexed instead of dropped. Small docs stay byte-identical.
+        if len(record.content) > MAX_RECORD_CHUNK_CHARS:
+            return _chunk_plain_document(record)
         return [record]
     header = lines[:body_start]
     body = [line for line in lines[body_start:] if line.strip()]
@@ -745,6 +810,63 @@ def _chunk_source_record(record: SourceRecord) -> list[SourceRecord]:
             )
         )
     return chunks
+
+
+def _chunk_plain_document(record: SourceRecord) -> list[SourceRecord]:
+    """Split a long marker-less document into `(part i/n)` records, each bounded to
+    MAX_RECORD_CHUNK_CHARS so `.bounded()` never truncates a part. Output shape
+    matches the marker-based chunk path so retrieval/citation behaves identically."""
+    units = _split_document_units(record.content)
+    parts: list[str] = []
+    current: list[str] = []
+    current_chars = 0
+    for unit in units:
+        unit_chars = len(unit) + 2  # account for the "\n\n" join separator
+        if current and current_chars + unit_chars > MAX_RECORD_CHUNK_CHARS:
+            parts.append("\n\n".join(current))
+            current = []
+            current_chars = 0
+        current.append(unit)
+        current_chars += unit_chars
+    if current:
+        parts.append("\n\n".join(current))
+    if len(parts) <= 1:
+        return [record]
+    chunk_count = len(parts)
+    chunks: list[SourceRecord] = []
+    for index, part_content in enumerate(parts, start=1):
+        chunks.append(
+            SourceRecord(
+                source=record.source,
+                title=f"{record.title} (part {index}/{chunk_count})",
+                content=part_content,
+                source_url=_source_url_with_chunk(record.source_url, index),
+                metadata={**record.metadata, "chunk_index": index, "chunk_count": chunk_count},
+            )
+        )
+    return chunks
+
+
+def _split_document_units(content: str) -> list[str]:
+    """Break a document into units no larger than MAX_RECORD_CHUNK_CHARS, splitting
+    on paragraph boundaries first, then line boundaries, then fixed-size windows as
+    a last resort so even a single pathological long line is never dropped."""
+    units: list[str] = []
+    for paragraph in re.split(r"\n[ \t]*\n", content):
+        if not paragraph.strip():
+            continue
+        if len(paragraph) <= MAX_RECORD_CHUNK_CHARS:
+            units.append(paragraph)
+            continue
+        for line in paragraph.splitlines():
+            if not line.strip():
+                continue
+            if len(line) <= MAX_RECORD_CHUNK_CHARS:
+                units.append(line)
+                continue
+            for start in range(0, len(line), MAX_RECORD_CHUNK_CHARS):
+                units.append(line[start : start + MAX_RECORD_CHUNK_CHARS])
+    return units
 
 
 def _chunk_body_start(lines: list[str]) -> int | None:
@@ -2327,7 +2449,7 @@ def _twitter_dm_record(asset: SourceAsset, payload: list[Any]) -> SourceRecord |
         if not first_conversation and conversation_id:
             first_conversation = conversation_id
         messages = conversation.get("messages") or []
-        for message in messages[:500]:
+        for message in messages:
             create = message.get("messageCreate") if isinstance(message, dict) else None
             if not isinstance(create, dict):
                 continue
@@ -2659,7 +2781,6 @@ def _browser_history_rows(asset: SourceAsset) -> list[tuple[str, str, int]]:
                 FROM urls
                 WHERE url IS NOT NULL AND url != ''
                 ORDER BY last_visit_time DESC
-                LIMIT 5000
                 """
             ).fetchall()
             if chrome_rows:
@@ -2673,7 +2794,6 @@ def _browser_history_rows(asset: SourceAsset) -> list[tuple[str, str, int]]:
                 FROM moz_places
                 WHERE url IS NOT NULL AND url != ''
                 ORDER BY last_visit_date DESC
-                LIMIT 5000
                 """
             ).fetchall()
             return [(str(row[0] or ""), str(row[1] or ""), int(row[2] or 0)) for row in firefox_rows]
@@ -2773,8 +2893,6 @@ def _jsonl_export_rows(text: str, source: str) -> list[Any]:
         except (json.JSONDecodeError, RecursionError):
             continue
         rows.extend(_json_rows_from_payload(payload, source))
-        if len(rows) >= 5000:
-            break
     return rows
 
 
@@ -3056,8 +3174,6 @@ def _parse_mbox(asset: SourceAsset, hint: str) -> list[SourceRecord]:
         except (OSError, mailbox.Error):
             box = []
         for index, message in enumerate(box):
-            if index >= 5000:
-                break
             record = _email_record(message, f"{asset.display_path}#{index}", hint)
             if record:
                 records.append(record)
@@ -3066,8 +3182,6 @@ def _parse_mbox(asset: SourceAsset, hint: str) -> list[SourceRecord]:
     text = asset.read_text()
     chunks = re.split(r"(?m)^From .*$", text)
     for index, chunk in enumerate(chunks):
-        if index >= 5000:
-            break
         if not chunk.strip() or "\nSubject:" not in chunk[:2000]:
             continue
         try:
@@ -3111,8 +3225,7 @@ def _parse_imessage_db(asset: SourceAsset, hint: str) -> list[SourceRecord]:
             LEFT JOIN chat_message_join cmj ON cmj.message_id = message.ROWID
             LEFT JOIN chat ON chat.ROWID = cmj.chat_id
             WHERE message.text IS NOT NULL AND length(message.text) > 0
-            ORDER BY message.date DESC
-            LIMIT 5000
+            ORDER BY message.date ASC
             """
         ).fetchall()
     except sqlite3.Error:
@@ -3122,6 +3235,8 @@ def _parse_imessage_db(asset: SourceAsset, hint: str) -> list[SourceRecord]:
             conn.close()
         except Exception:
             pass
+    # Rows arrive chronologically (ASC), so each chat's line list is already in
+    # order; no reversal needed.
     grouped: dict[str, list[str]] = {}
     for row in rows:
         chat = row["chat_name"] or row["handle_id"] or "Messages"
@@ -3129,12 +3244,16 @@ def _parse_imessage_db(asset: SourceAsset, hint: str) -> list[SourceRecord]:
         date = _apple_message_time(row["date"])
         grouped.setdefault(chat, []).append(f"{date} {sender}: {row['text']}".strip())
     for chat, lines in grouped.items():
-        ordered = list(reversed(lines))
-        content = f"Source: Messages\nChat: {chat}\nFile: {asset.display_path}\n\n--- Messages ---\n" + "\n".join(ordered)
-        first_message_at = ordered[0].split(" ", 1)[0] if ordered else ""
-        source_url = _source_locator(asset.display_path, service="messages", chat=chat, file=Path(asset.name).name, first_message_at=first_message_at)
-        records.append(SourceRecord("messages", f"Messages {chat}", content, source_url=source_url, metadata={"asset": asset.display_path, "service": "Messages", "chat": chat}))
-    return records[:1000]
+        # A single large conversation becomes multiple `(part i/n)` records instead
+        # of being dropped; small chats stay a single unlabeled record.
+        chat_records: list[SourceRecord] = []
+        for batch in _batched(lines, 1500):
+            content = f"Source: Messages\nChat: {chat}\nFile: {asset.display_path}\n\n--- Messages ---\n" + "\n".join(batch)
+            first_message_at = batch[0].split(" ", 1)[0] if batch else ""
+            source_url = _source_locator(asset.display_path, service="messages", chat=chat, file=Path(asset.name).name, first_message_at=first_message_at)
+            chat_records.append(SourceRecord("messages", f"Messages {chat}", content, source_url=source_url, metadata={"asset": asset.display_path, "service": "Messages", "chat": chat}))
+        records.extend(_label_record_parts(chat_records))
+    return records
 
 
 def _email_record(message: email.message.EmailMessage, display_path: str, hint: str) -> SourceRecord | None:

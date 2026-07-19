@@ -22,7 +22,7 @@ from urllib.request import Request, urlopen
 from .config import APP_BRAND
 from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
-from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
+from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status, warmup_embedding_provider
 from .query_plan import (
     build_query_plan,
     context_hop_deadline_ms,
@@ -2977,6 +2977,11 @@ class CortexStore:
         # Reconcile the vector index to the active model's dimension once, up front, on a dedicated
         # connection (safe: not nested in any caller transaction).
         self._ensure_vector_index()
+        # Front-load the embedding model so the health surface is truthful before the first query:
+        # if a model2vec store's model can't load, this trips the failure latch now (so /ready and
+        # search diagnostics report degraded and the vector-write gate drops to FTS-only) instead of
+        # leaving a lying "model2vec" state until the first real query silently falls back to hash.
+        warmup_embedding_provider()
         # Store-owned lightweight migration (same duplicate-column-tolerant pattern as
         # database.MIGRATIONS): the memories dedup/occurrence semantics live here, so the
         # occurrences column is ensured here too. Legacy databases upgrade in place; every
@@ -10585,6 +10590,11 @@ class CortexStore:
 
         return {
             "capture_id": capture_id,
+            # Surface the real review state at the top level so callers can tell "saved and
+            # searchable now" from "saved, waiting in Review" — a pending capture is excluded from
+            # search/Ask (see _memory_filters), so a confirmation must not claim it's usable yet.
+            "review_status": review_status,
+            "usable_count": len(memories) if review_status == "approved" else 0,
             "summary": summary,
             "memories": memories,
             "tasks": tasks,
@@ -11389,7 +11399,13 @@ class CortexStore:
         elif active_memories and vector_available and vector_indexed_memories == 0:
             degraded_reasons.append("no_vector_embeddings_indexed")
         if active_memories and embedding.get("provider") == "hash":
-            degraded_reasons.append("hash_embedding_provider")
+            # A model2vec-configured store whose live model failed to load is really emitting hash
+            # noise; surface that distinctly from an intentionally hash-configured (no-model) store
+            # so /ready and search diagnostics honestly show a degraded model, not a config choice.
+            if embedding.get("configured_provider") == "model2vec":
+                degraded_reasons.append("embedding_model_load_failed")
+            else:
+                degraded_reasons.append("hash_embedding_provider")
         fallback_modes = [
             mode
             for mode in ("fallback_like", "lexical_fallback", "recent")
@@ -28380,6 +28396,9 @@ class CortexStore:
         # vector ranking pollutes results (and the tuned retrieval eval) with keyword-hash noise.
         # Semantic vector search is therefore enabled only for a REAL embedding model; hash-provider
         # users (the no-model default) get FTS ranking, which is what the eval is tuned against.
+        # embedding_status() reports the EFFECTIVE provider, so a model2vec store whose model failed
+        # to load (live embed degraded to hash) also returns 'hash' here — it cleanly drops to
+        # FTS-only instead of writing 256-dim hash noise into the model2vec index.
         if embedding_status().get("provider") == "hash":
             return False
         status = sqlite_vec_status(conn)
