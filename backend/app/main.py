@@ -644,7 +644,23 @@ def download_page() -> Response:
     (GitHub Releases on the PUBLIC artifacts-only repo doppl-tech/releases; the source repo is
     private, so its release URLs 404 publicly). Checksums + the update feed are served from
     /downloads/ on this host (Caddy file_server over the deployed release)."""
-    dmg_url = "https://github.com/doppl-tech/releases/releases/download/v0.2.0-43/Cortex-0.2.0-43.dmg"
+    # Read the DMG url + checksums filename from the deployed update feed (latest.json), the single
+    # source of truth, so this page tracks the current release automatically and never goes stale;
+    # the hardcoded current-release values are a fallback if the feed can't be read.
+    dmg_url = "https://github.com/doppl-tech/releases/releases/download/v0.2.0-47/Cortex-0.2.0-47.dmg"
+    checksums_name = "Cortex-0.2.0-47.checksums.txt"
+    try:
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        feed = json.loads(open(os.path.join(repo_root, "site", "downloads", "latest.json"), encoding="utf-8").read())
+        for artifact in feed.get("artifacts", []):
+            if artifact.get("kind") == "dmg" and artifact.get("url"):
+                dmg_url = str(artifact["url"])
+                break
+        version, build = str(feed.get("version") or ""), str(feed.get("build") or "")
+        if version and build:
+            checksums_name = f"Cortex-{version}-{build}.checksums.txt"
+    except Exception:
+        pass
     body = (
         "    <h1>Download Doppl for Mac</h1>\n"
         '    <p class="lede">Doppl runs as a native macOS app with a local vault. Download it, open '
@@ -654,7 +670,7 @@ def download_page() -> Response:
         'style="width:auto;padding:12px 22px">Download Doppl for Mac (.dmg)</a>\n'
         "    </div>\n"
         '    <p>Signed and notarized by Apple, so it opens with a normal double-click. '
-        '<a href="/downloads/Cortex-0.2.0-43.checksums.txt">Verify the checksums</a>.</p>\n'
+        f'<a href="/downloads/{checksums_name}">Verify the checksums</a>.</p>\n'
         "    <h2>Install</h2>\n"
         "    <ul>\n"
         "      <li>Open the downloaded <code>.dmg</code> and drag Doppl to Applications.</li>\n"
