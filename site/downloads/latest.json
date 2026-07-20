@@ -2,31 +2,31 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-43.dmg",
+      "filename": "Cortex-0.2.0-47.dmg",
       "kind": "dmg",
-      "sha256": "bf1696b2a273e477b065e980151d71e7b439a7aeb921ca03278a27284ddb86aa",
-      "size_bytes": 86216570,
-      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-43/Cortex-0.2.0-43.dmg"
+      "sha256": "47db0492295120cf2b243f1822c8ed192f469154ec21a7295c987847008a0363",
+      "size_bytes": 88384577,
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-47/Cortex-0.2.0-47.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-43.app.zip",
+      "filename": "Cortex-0.2.0-47.app.zip",
       "kind": "zip",
-      "sha256": "f156d7374f74cd7fcfa3b2d346ed694b3b4299fd37597d9890833885af4c9acd",
-      "size_bytes": 71410070,
-      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-43/Cortex-0.2.0-43.app.zip"
+      "sha256": "4d0238485e7eb4f61fe2646e748b210cbea0d6449486aa3a4904f94e192066c3",
+      "size_bytes": 70538040,
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-47/Cortex-0.2.0-47.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
       "kind": "obsidian-plugin",
-      "sha256": "8eec1d3cab5b49f107ae50df63390f2b658024f72158c2b8e8729d7d38e2f1c1",
+      "sha256": "e2d997af6f6e57ab37545d3d46817732cebaee5b10a15775bb5bbaf9f5fff9f1",
       "size_bytes": 3423,
-      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-43/cortex-memory-0.1.0.zip"
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-47/cortex-memory-0.1.0.zip"
     }
   ],
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.2.0-43.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-47.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
@@ -70,20 +70,22 @@
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
-  "build": "38",
+  "build": "47",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "Fix first-run sign-in layout, Apple fallback messaging, and clearer Connections setup for Claude Desktop, ChatGPT, and other AI tools.",
-    "Pin hosted GitHub OAuth callback docs/tests so redirect_uri mismatches are caught."
+    "One-click-first connect: direct sign-in is the hero, with a quick first sync and a simpler getting-started flow.",
+    "Memory is organized deterministically on ingest: reconciled layers, retroactive entity merge, real dates from relative phrases, and chunk-boundary stitching so nothing is dropped.",
+    "Contextual Memory Protocol: a self-describing, cited memory envelope any AI (Claude, GPT, Cursor, MCP tools) parses zero-shot, model-aware packing that fits each model's budget, and a per-session working-set delta so each fact costs tokens once.",
+    "Steadier and lighter: fixed a background path that could spike CPU and stall rapid multi-turn context requests; idle stays quiet."
   ],
-  "released_at": "2026-07-11T00:09:26Z",
+  "released_at": "2026-07-20T10:23:42Z",
   "source_provenance": {
-    "built_at": "2026-07-11T00:09:26Z",
-    "git_branch": "mass-scale-app-redesign",
-    "git_commit": "9ec01bd8a17560482fc8752a05939248bf783db1",
+    "built_at": "2026-07-20T10:23:42Z",
+    "git_branch": "feat/connect-gate-redesign",
+    "git_commit": "ec20669eb33e671ea2cf3b2d06a28dbc0c57db10",
     "git_dirty": false
   },
   "version": "0.2.0"
