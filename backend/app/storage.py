@@ -3498,6 +3498,25 @@ class CortexStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_status ON agent_sessions(user_id, status, updated_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_context_packs_user_created ON context_packs(user_id, created_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_context_packs_session ON context_packs(user_id, session_id, created_at DESC)")
+            # Build-plan #13: the session working-set. One row per (user, session_id) tracks the
+            # served-id known-set, a bounded query trajectory + its lexical centroid, and a
+            # monotonic delta cursor. Fed from the ids Cortex already logs (_served_memory_ids); it
+            # is what lets a response carry a working_memory DELTA instead of re-sending the pack.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_working_set (
+                  user_id TEXT NOT NULL,
+                  session_id TEXT NOT NULL,
+                  known_json TEXT NOT NULL DEFAULT '{}',
+                  trajectory_json TEXT NOT NULL DEFAULT '[]',
+                  centroid_json TEXT NOT NULL DEFAULT 'null',
+                  delta_cursor INTEGER NOT NULL DEFAULT 0,
+                  turn INTEGER NOT NULL DEFAULT 0,
+                  updated_at TEXT NOT NULL,
+                  PRIMARY KEY(user_id, session_id)
+                )
+                """
+            )
             # Phase 6 anticipatory context: proactive alerts need mutable status (pending ->
             # delivered -> dismissed/accepted) so they get a table, not just events. Every
             # status transition is ALSO an event (dismissals are training labels).
@@ -17360,6 +17379,395 @@ class CortexStore:
             "hot_cache": self.hot_context_cache_status(user_id, limit=limit),
         }
 
+    # ------------------------------------------------------------------
+    # Build-plan #13: session working-set (delta over what a session already knows)
+    # ------------------------------------------------------------------
+    # Last-N queries kept for the trajectory + centroid (prefetch signal + eviction context).
+    SESSION_TRAJECTORY_WINDOW = 8
+    # A known id unseen for this many turns is trajectory-cold -> safe to evict (soundness floor).
+    SESSION_EVICTION_TTL_TURNS = 4
+    # Upper bound on the persisted known-set so a long session's row stays cheap.
+    SESSION_KNOWN_CAP = 512
+    # HARD wall-clock deadline for speculative prefetch. The warm loop checks a monotonic clock
+    # between candidates and bails the instant it is exceeded — prefetch never blocks the response.
+    SESSION_PREFETCH_DEADLINE_MS = 25.0
+    # How many next-step candidates the prefetch may warm per response (bounded fan-out).
+    SESSION_PREFETCH_FANOUT = 3
+
+    @staticmethod
+    def _session_query_tokens(task: str) -> list[str]:
+        return sorted({tok for tok in re.findall(r"[a-z0-9]+", str(task or "").lower()) if len(tok) > 2})
+
+    def _load_session_working_set(self, user_id: str, session_id: str) -> dict[str, Any]:
+        """Load the (user, session) working-set row, or a fresh empty state. `known` maps a served
+        memory id -> the turn index it was last served (drives eviction); `trajectory` is the last-N
+        {turn, tokens, ids}; `centroid` is the recency-weighted lexical centroid of the trajectory."""
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM session_working_set WHERE user_id = ? AND session_id = ?",
+                (user_id, str(session_id or "").strip()),
+            ).fetchone()
+        if row is None:
+            return {"known": {}, "trajectory": [], "centroid": {}, "delta_cursor": 0, "turn": 0}
+        known_raw = self._json_or_empty(row["known_json"])
+        known = {str(k): int(v) for k, v in known_raw.items()} if isinstance(known_raw, dict) else {}
+        trajectory = self._json_or_empty(row["trajectory_json"])
+        if not isinstance(trajectory, list):
+            trajectory = []
+        centroid = self._json_or_empty(row["centroid_json"])
+        if not isinstance(centroid, dict):
+            centroid = {}
+        return {
+            "known": known,
+            "trajectory": trajectory,
+            "centroid": centroid,
+            "delta_cursor": int(row["delta_cursor"] or 0),
+            "turn": int(row["turn"] or 0),
+        }
+
+    def _save_session_working_set(self, user_id: str, session_id: str, state: dict[str, Any]) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO session_working_set
+                (user_id, session_id, known_json, trajectory_json, centroid_json, delta_cursor, turn, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, session_id) DO UPDATE SET
+                  known_json = excluded.known_json,
+                  trajectory_json = excluded.trajectory_json,
+                  centroid_json = excluded.centroid_json,
+                  delta_cursor = excluded.delta_cursor,
+                  turn = excluded.turn,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    str(session_id or "").strip(),
+                    json.dumps(state.get("known") or {}, sort_keys=True, separators=(",", ":")),
+                    json.dumps(state.get("trajectory") or [], separators=(",", ":")),
+                    json.dumps(state.get("centroid") or {}, sort_keys=True, separators=(",", ":")),
+                    int(state.get("delta_cursor") or 0),
+                    int(state.get("turn") or 0),
+                    now_iso(),
+                ),
+            )
+
+    def _resolve_active_head(self, conn: Any, user_id: str, memory_id: str, *, _depth: int = 0) -> str:
+        """Walk superseded_by forward to the current active head (cycle- and depth-guarded).
+        Returns '' when the chain dead-ends at a missing/inactive row."""
+        cursor = str(memory_id or "").strip()
+        seen: set[str] = set()
+        while cursor and cursor not in seen and len(seen) < 16:
+            seen.add(cursor)
+            row = conn.execute(
+                "SELECT id, superseded_by, status FROM memories WHERE user_id = ? AND id = ?",
+                (user_id, cursor),
+            ).fetchone()
+            if row is None:
+                return ""
+            nxt = str(row["superseded_by"] or "").strip()
+            if not nxt:
+                return cursor if str(row["status"] or "") == "active" else ""
+            cursor = nxt
+        return ""
+
+    def _session_supersessions(self, user_id: str, ids: set[str]) -> dict[str, str]:
+        """For the given (previously-served or currently-cited) ids, map each id that is now
+        superseded -> its current active replacement head. IDs only; no content is read."""
+        clean = [str(i) for i in ids if str(i or "").strip()]
+        if not clean:
+            return {}
+        out: dict[str, str] = {}
+        with connect(self.db_path) as conn:
+            placeholders = ",".join("?" for _ in clean)
+            rows = conn.execute(
+                f"SELECT id, superseded_by FROM memories WHERE user_id = ? AND id IN ({placeholders}) "
+                f"AND COALESCE(superseded_by, '') != ''",
+                [user_id, *clean],
+            ).fetchall()
+            for row in rows:
+                head = self._resolve_active_head(conn, user_id, str(row["superseded_by"] or ""))
+                out[str(row["id"])] = head
+        return out
+
+    def _compute_working_memory_delta(
+        self,
+        user_id: str,
+        session_id: str,
+        task: str,
+        cited: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Compute the working_memory delta for this response versus what the session already knows.
+
+        `cited` is the ordered list of THIS pack's cited items ({ref, relevance}) — the only ids
+        allowed to surface, so the delta can never leak a non-cited/redacted id. The delta is:
+          * new        — cited ids the session has not seen (each with its pack relevance), never
+                         re-sending an id already in the known-set (delta_no_resend).
+          * superseded — known ids whose memory is now superseded, mapped to the current head
+                         (replacement suppressed to null unless the head is itself served/known).
+          * evicted    — known ids gone trajectory-cold (unseen for SESSION_EVICTION_TTL_TURNS
+                         turns and absent from this pack): genuinely cold, so eviction is sound.
+          * cursor     — monotonic per-session delta counter.
+        Returns (delta, next_state); the caller persists next_state so the known-set advances."""
+        state = self._load_session_working_set(user_id, session_id)
+        known: dict[str, int] = dict(state["known"])
+        turn = int(state["turn"]) + 1
+        cursor = int(state["delta_cursor"]) + 1
+
+        cited_pairs: list[tuple[str, Any]] = []
+        seen_ref: set[str] = set()
+        for entry in cited:
+            ref = str(entry.get("ref") or "").strip()
+            if not ref or ref in seen_ref:
+                continue
+            seen_ref.add(ref)
+            cited_pairs.append((ref, entry.get("relevance")))
+        cited_ids = [ref for ref, _ in cited_pairs]
+        cited_set = set(cited_ids)
+
+        supers = self._session_supersessions(user_id, set(known) | cited_set)
+        stale_ids = set(supers)
+
+        new: list[dict[str, Any]] = []
+        for ref, rel in cited_pairs:
+            if ref in stale_ids or ref in known:
+                continue  # stale -> reported under superseded; known+unchanged -> never re-send
+            new.append(
+                {
+                    "ref": ref,
+                    "delta_relevance": round(float(rel), 6) if isinstance(rel, (int, float)) else None,
+                }
+            )
+
+        superseded: list[dict[str, Any]] = []
+        for sid, head in supers.items():
+            if sid not in known:
+                continue  # only tell the session about supersession of ids it actually holds
+            replacement = head if (head and (head in cited_set or head in known)) else None
+            superseded.append({"ref": sid, "replacement": replacement})
+
+        evicted: list[str] = []
+        for kid, last_turn in known.items():
+            if kid in cited_set or kid in stale_ids:
+                continue
+            if (turn - int(last_turn)) >= self.SESSION_EVICTION_TTL_TURNS:
+                evicted.append(kid)
+
+        drop = set(evicted) | {s["ref"] for s in superseded}
+        next_known = {k: v for k, v in known.items() if k not in drop}
+        for ref in cited_ids:
+            next_known[ref] = turn
+        for s in superseded:
+            rep = s["replacement"]
+            if rep and rep in cited_set:
+                next_known[rep] = turn
+        if len(next_known) > self.SESSION_KNOWN_CAP:
+            next_known = dict(
+                sorted(next_known.items(), key=lambda kv: (-kv[1], kv[0]))[: self.SESSION_KNOWN_CAP]
+            )
+
+        tokens = self._session_query_tokens(task)
+        trajectory = [e for e in state["trajectory"] if isinstance(e, dict)]
+        trajectory.append({"turn": turn, "tokens": tokens, "ids": cited_ids[: self.SERVED_MEMORY_IDS_CAP]})
+        trajectory = trajectory[-self.SESSION_TRAJECTORY_WINDOW :]
+        centroid: dict[str, float] = {}
+        for weight, entry in enumerate(trajectory, start=1):
+            for tok in entry.get("tokens") or []:
+                centroid[tok] = centroid.get(tok, 0.0) + float(weight)
+
+        delta = {
+            "new": new,
+            "evicted": sorted(evicted),
+            "superseded": superseded,
+            "cursor": str(cursor),
+        }
+        next_state = {
+            "known": next_known,
+            "trajectory": trajectory,
+            "centroid": centroid,
+            "delta_cursor": cursor,
+            "turn": turn,
+        }
+        return delta, next_state
+
+    # ------------------------------------------------------------------
+    # Build-plan #10: claim folding + compression ladder (density operators)
+    # ------------------------------------------------------------------
+    def _fold_claims(
+        self,
+        user_id: str,
+        prepared: dict[str, list[dict[str, Any]]],
+        redact_sensitive: bool,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Fold same-polarity near-duplicate claims in the facts layer into ONE line before packing.
+
+        Grouping key is the lexical `_memory_duplicate_key` (identical under the deterministic hash
+        embedder; model2vec cosine would refine it when a live embedder is active). The kept
+        representative absorbs the folded siblings' source_urls (merged) and occurrences (summed),
+        and records their ids in `folded_refs` — so a cited fact is COMPRESSED into the survivor,
+        never dropped silently. A group is folded only when NO member is flagged by the conflict
+        scan (never fold across a contradiction). Pure over `prepared`; other layers pass through."""
+        facts = prepared.get("facts") or []
+        if len(facts) < 2:
+            return prepared
+        conflict_ids: set[str] = set()
+        for conflict in self.detect_conflicts(user_id, limit=100):
+            for side in ("current", "stale"):
+                mid = str((conflict.get(side) or {}).get("memory_id") or "").strip()
+                if mid:
+                    conflict_ids.add(mid)
+        groups: dict[str, list[int]] = {}
+        order: list[str] = []
+        for index, item in enumerate(facts):
+            key = _memory_duplicate_key(str(item.get("content") or ""))
+            if not key:
+                key = f"__solo_{index}"  # unfoldable (too short) -> its own group
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(index)
+        folded_facts: list[dict[str, Any]] = []
+        changed = False
+        for key in order:
+            members = groups[key]
+            if len(members) < 2 or any(
+                str(facts[i].get("memory_id") or "") in conflict_ids for i in members
+            ):
+                folded_facts.extend(facts[i] for i in members)
+                continue
+            changed = True
+            rep = dict(facts[members[0]])
+            merged_urls: list[str] = []
+            folded_refs: list[str] = []
+            occurrences = 0
+            for i in members:
+                sibling = facts[i]
+                url = sibling.get("source_url")
+                if url and url not in merged_urls:
+                    merged_urls.append(url)
+                try:
+                    occurrences += int(sibling.get("occurrences") or 1)
+                except (TypeError, ValueError):
+                    occurrences += 1
+                if i != members[0]:
+                    ref = str(sibling.get("memory_id") or "")
+                    if ref:
+                        folded_refs.append(ref)
+            rep["folded_refs"] = folded_refs
+            rep["folded_source_urls"] = merged_urls
+            rep["occurrences"] = occurrences
+            rep["folded"] = True
+            folded_facts.append(rep)
+        if not changed:
+            return prepared
+        out = dict(prepared)
+        out["facts"] = folded_facts
+        return out
+
+    @staticmethod
+    def _compression_ladder_pick(
+        item: dict[str, Any],
+        summary: str,
+        est: Any,
+        item_overhead: int,
+        room: int,
+    ) -> tuple[dict[str, Any], int] | None:
+        """Step a would-be-dropped item down the density ladder (full -> stored summary -> head
+        sentence) and return the FIRST rung whose token cost fits `room`, or None if even the head
+        sentence will not fit. A cited fact is compressed, never silently deleted."""
+        content = str(item.get("content") or "").strip()
+        if not content or room <= 0:
+            return None
+        full_cost = est(content) + item_overhead
+        if full_cost <= room:
+            return dict(item), full_cost
+        summary = str(summary or "").strip()
+        if summary and len(summary) < len(content):
+            cost = est(summary) + item_overhead
+            if cost <= room:
+                return {**item, "content": summary, "compressed": "summary", "truncated": True}, cost
+        head = re.split(r"(?<=[.!?])\s+", content, maxsplit=1)[0].strip()
+        if head and len(head) < len(content):
+            cost = est(head) + item_overhead
+            if cost <= room:
+                return {**item, "content": head, "compressed": "head", "truncated": True}, cost
+        return None
+
+    def _spawn_session_prefetch(
+        self,
+        user_id: str,
+        *,
+        task: str,
+        sector: str | None,
+        project: str | None,
+        centroid: dict[str, Any],
+        entity_connections: list[dict[str, Any]],
+    ) -> None:
+        """Fire-and-forget speculative prefetch: warm the generic hot-cache for the likely next
+        request (the trajectory's own task and its 1-hop entity-graph neighbors) on a daemon thread
+        under a HARD wall-clock deadline. Never blocks, never raises into the response path."""
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def _add(text: str) -> None:
+            key = str(text or "").strip()
+            if key and key.lower() not in seen and len(candidates) < self.SESSION_PREFETCH_FANOUT:
+                seen.add(key.lower())
+                candidates.append(key[:500])
+
+        _add(task)
+        for connection in entity_connections or []:
+            _add(str(connection.get("label") or ""))
+        if not candidates:
+            return
+
+        def _worker() -> None:
+            deadline = time.monotonic() + (self.SESSION_PREFETCH_DEADLINE_MS / 1000.0)
+            for candidate in candidates:
+                if time.monotonic() >= deadline:
+                    return
+                try:
+                    self._warm_context_candidate(user_id, candidate, sector, project)
+                except Exception:
+                    return
+
+        try:
+            import threading
+
+            threading.Thread(target=_worker, name="cortex-session-prefetch", daemon=True).start()
+        except Exception:
+            pass
+
+    def _warm_context_candidate(self, user_id: str, task: str, sector: str | None, project: str | None) -> None:
+        """Warm one generic hot-cache entry for a speculative task. Skips work when the entry is
+        already warm; stores only cited packs (mirrors the normal warm path)."""
+        intent = _derive_context_intent(task, None)
+        request = self._hot_context_request(
+            task=task,
+            surface="agent",
+            token_budget=CONTEXT_MAX_TOKEN_BUDGET,
+            sector=sector,
+            project=project,
+            intent=intent,
+            include_identity=True,
+        )
+        if self._load_hot_context_pack(user_id, request, record_hit=False) is not None:
+            return
+        pack = self.assemble_context(
+            user_id,
+            task,
+            token_budget=CONTEXT_MAX_TOKEN_BUDGET,
+            sector=sector,
+            project=project,
+            use_hot_cache=False,
+            record_reuse=False,
+        )
+        if isinstance(pack, dict) and pack.get("citations"):
+            try:
+                self._store_hot_context_pack(user_id, request, pack)
+            except Exception:
+                pass
+
     @staticmethod
     def _pack_context_legacy(
         prepared: dict[str, list[dict[str, Any]]],
@@ -17453,6 +17861,7 @@ class CortexStore:
         item_overhead: int,
         identity_omitted: bool,
         entity_connections: list[dict[str, Any]],
+        summaries: dict[str, str] | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
         """Global marginal-utility knapsack with MMR diversity (build-plan #8).
 
@@ -17566,6 +17975,30 @@ class CortexStore:
             selected.append(top)
             used_pack += top["cost"]
             selected_ids.add(id(top["item"]))
+
+        # Compression ladder (build-plan #10): every candidate that lost its slot to the budget gets
+        # one more chance in COMPRESSED form (full -> stored summary -> head sentence) before it is
+        # dropped, so a cited fact is densified into the pack rather than silently deleted. Ordered
+        # by utility so the most valuable evictees are recovered first; strictly additive (never
+        # removes a selection) and bounded by the same packable_budget (adherence holds).
+        summaries = summaries or {}
+        layer_rank = {layer: index for index, layer in enumerate(CONTEXT_LAYER_ORDER)}
+        ladder_remaining = sorted(
+            (c for c in candidates if id(c["item"]) not in selected_ids),
+            key=lambda c: (-c["utility"], layer_rank.get(c["layer"], 99), c["order"]),
+        )
+        for cand in ladder_remaining:
+            room = packable_budget - used_pack
+            if room <= item_overhead:
+                break
+            summary = summaries.get(str(cand["item"].get("memory_id") or ""), "")
+            picked = self._compression_ladder_pick(cand["item"], summary, est, item_overhead, room)
+            if picked is None:
+                continue
+            new_item, new_cost = picked
+            selected.append({**cand, "item": new_item, "cost": new_cost, "tokens": new_cost - item_overhead})
+            used_pack += new_cost
+            selected_ids.add(id(new_item))
 
         # Reconstruct per-layer payload in canonical order, preserving within-layer input order
         # for stable, replayable output.
@@ -17788,6 +18221,10 @@ class CortexStore:
         deduped = 0
         seen_ids: set[str] = set()
         prepared: dict[str, list[dict[str, Any]]] = {}
+        # Stored summaries keyed by memory id, kept out of the packed item shape (which stays
+        # byte-identical) so the #10 compression ladder can reach for the "summary" rung without
+        # perturbing the generic pack.
+        summaries: dict[str, str] = {}
         for layer in CONTEXT_LAYER_ORDER:
             if layer == "open_loops":
                 continue
@@ -17803,6 +18240,9 @@ class CortexStore:
                     deduped += 1
                     continue
                 seen_ids.add(memory_id)
+                summary_text = str(item.get("summary") or "").strip()
+                if summary_text:
+                    summaries[memory_id] = summary_text
                 items.append(_pack_item(item))
             prepared[layer] = items
         loop_items: list[dict[str, Any]] = []
@@ -17834,6 +18274,12 @@ class CortexStore:
         instructions_cost = sum(_estimate_context_tokens(line) for line in instructions)
         packable_budget = max(token_budget - instructions_cost, 120)
         item_overhead = 12  # estimated metadata cost per item
+        # Claim folding (build-plan #10): fold same-polarity near-duplicate facts into one line
+        # (merged source_urls + summed occurrences) before packing so the budget buys distinct
+        # facts, not restatements. Gated to model profiles so the generic default stays
+        # byte-identical; never folds across a conflict-flagged pair (see _fold_claims).
+        if not profile.is_generic:
+            prepared = self._fold_claims(user_id, prepared, redact_sensitive)
         # Packing strategy is profile-driven. The generic profile (model=None) runs the legacy
         # per-intent split + per-layer greedy fill BYTE-IDENTICALLY; a real model profile runs a
         # global marginal-utility knapsack/MMR (build-plan #8) mixed by the profile's weights.
@@ -17858,6 +18304,7 @@ class CortexStore:
                 item_overhead=item_overhead,
                 identity_omitted=identity_omitted,
                 entity_connections=entity_connections,
+                summaries=summaries,
             )
 
         included_ids = {str(citation.get("memory_id") or "") for citation in citations}
@@ -17914,6 +18361,21 @@ class CortexStore:
             budget_block["estimator"] = f"chars/{profile.chars_per_token:g}"
             budget_block["model"] = profile.name
             budget_block["strategy"] = "knapsack-mmr"
+            # Density signal (build-plan #10): distinct fact-layer claims the pack delivers per 1k
+            # spent tokens — the payoff of folding + compression. Non-generic only (keeps the
+            # generic budget block byte-identical).
+            distinct_facts = len(
+                {
+                    str(item.get("memory_id") or "")
+                    for entry in layers_payload
+                    if entry.get("layer") == "facts"
+                    for item in entry.get("items") or []
+                    if str(item.get("memory_id") or "")
+                }
+            )
+            budget_block["distinct_facts_per_1k_tokens"] = round(
+                distinct_facts / max(used_total / 1000.0, 1e-6), 4
+            )
         result: dict[str, Any] = {
             "version": CONTEXT_ENGINE_VERSION,
             "task": task,
@@ -17936,10 +18398,44 @@ class CortexStore:
             "citations": citations,
             "receipt": {"tool": "get_context", "audited": True, "event_kind": "context_pack"},
         }
+        # Session working-set delta (build-plan #13): when the call carries a session_id, compute
+        # the delta of THIS pack's cited ids versus what the session already knows and advance the
+        # working-set. The delta rides the SMP envelope's `working_memory` field (or the warnings[]
+        # channel for non-SMP callers). It is session state, NOT pack content, so it is computed
+        # after `result` is built and never enters the content-addressed pack bytes.
+        working_memory_delta: dict[str, Any] | None = None
+        prefetch_centroid: dict[str, Any] = {}
+        linked_session = str(session_id or "").strip()
+        if linked_session:
+            cited_seq = [
+                {"ref": str(item.get("memory_id") or ""), "relevance": item.get("relevance")}
+                for entry in layers_payload
+                for item in entry.get("items") or []
+                if str(item.get("memory_id") or "")
+            ]
+            try:
+                working_memory_delta, next_state = self._compute_working_memory_delta(
+                    user_id, linked_session, task, cited_seq
+                )
+                self._save_session_working_set(user_id, linked_session, next_state)
+                prefetch_centroid = next_state.get("centroid") or {}
+            except Exception:
+                working_memory_delta = None
         if pin:
             # Pin the underlying pack first so the SMP/markdown response references a real,
             # content-addressed artifact (the pin block is envelope metadata, excluded from the sha).
             result["pin"] = self.pin_context_pack(user_id, result, session_id=session_id)
+        # Speculative trajectory + 1-hop-graph prefetch (build-plan #13): warm the hot-cache for the
+        # likely next request on a background thread under a HARD deadline. Never blocks the reply.
+        if linked_session and record_reuse:
+            self._spawn_session_prefetch(
+                user_id,
+                task=task,
+                sector=sector,
+                project=project,
+                centroid=prefetch_centroid,
+                entity_connections=entity_connections,
+            )
         if response_format == "smp":
             # Pure projection of the already-packed rows into the self-describing SMP envelope
             # (build-plan #4). Invents no data; every upstream invariant carries through.
@@ -17954,11 +18450,26 @@ class CortexStore:
                 coverage=result["coverage"],
                 cursor=None,
                 follow_ups=[],
+                working_memory=working_memory_delta,
                 receipt=None,
             )
             if pin:
                 envelope["pin"] = result["pin"]
             return envelope
+        # Non-SMP callers get the same delta on the existing warnings[] channel (added only when a
+        # session is in play, so the no-session pack stays byte-identical to Wave-2).
+        if working_memory_delta is not None:
+            warning = {
+                "kind": "working_memory",
+                "detail": (
+                    f"session delta: {len(working_memory_delta['new'])} new, "
+                    f"{len(working_memory_delta['evicted'])} evicted, "
+                    f"{len(working_memory_delta['superseded'])} superseded"
+                ),
+                "working_memory": working_memory_delta,
+            }
+            existing = result.get("warnings")
+            result["warnings"] = [*existing, warning] if isinstance(existing, list) else [warning]
         if output_format == "markdown":
             return self._render_context_markdown(result)
         return result
@@ -21536,11 +22047,12 @@ class CortexStore:
     # test_phase4_eval_harness.py asserts these sets agree with mcp_tools.READ_TOOLS /
     # WRITE_TOOLS so drift is caught at test time, not in production.
     SCORECARD_READ_TOOL_PREFIXES = ("get_", "list_", "search_", "ask_", "resume_", "prepare_", "build_", "expand_", "use_", "would_", "draft_", "verify_")
-    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_", "record_", "import_")
+    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "propose_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_", "record_", "import_")
     # Exact read-tool names that don't carry a read prefix. The ChatGPT connector aliases `search`
-    # and `fetch` are pure reads (mcp_tools.READ_TOOLS) but have no underscore prefix — name them
-    # here so the scorecard classifier stays in parity with READ_TOOLS (drift guard: test_phase4).
-    SCORECARD_READ_TOOL_NAMES = ("search", "fetch")
+    # and `fetch`, plus the MQL tools `query_memory` and `expand`, are pure reads
+    # (mcp_tools.READ_TOOLS) but have no underscore prefix — name them here so the scorecard
+    # classifier stays in parity with READ_TOOLS (drift guard: test_phase4).
+    SCORECARD_READ_TOOL_NAMES = ("search", "fetch", "query_memory", "expand")
 
     def _scorecard_tool_kind(self, tool_name: str) -> str:
         name = str(tool_name or "")
@@ -24193,7 +24705,56 @@ class CortexStore:
                 parent_chain.append({"id": parent["id"], "goal": parent["goal"], "status": parent["status"], "last_checkpoint_at": parent["last_checkpoint_at"]})
                 cursor = parent["parent_session_id"]
             self._event(conn, user_id, session_id, "agent_session", "resumed", {"checkpoints": len(checkpoints)})
-        return {"session": session, "checkpoints": checkpoints, "parent_chain": parent_chain}
+        # Rehydrate the exact known-set from the session's pinned context_packs (build-plan #13):
+        # replay each pinned pack's cited ids in creation order, so a fresh conversation resumes
+        # with precisely the ids its predecessor was served — byte-comparable to the running
+        # working-set, and re-seeded so subsequent deltas continue coherently.
+        working_set = self._rehydrate_session_known_set(user_id, session_id)
+        return {
+            "session": session,
+            "checkpoints": checkpoints,
+            "parent_chain": parent_chain,
+            "working_set": working_set,
+        }
+
+    def _rehydrate_session_known_set(self, user_id: str, session_id: str) -> dict[str, Any]:
+        """Reconstruct (and persist) the session known-set from its pinned context_packs. Reads
+        each pack body (source of truth), unions the cited memory ids in creation order, and
+        re-seeds session_working_set so the reconstruction is byte-comparable to a live run."""
+        packs = self.list_context_packs(user_id, session_id=session_id, limit=100)
+        # Oldest-first so the rebuilt turn order matches the original serve order.
+        packs = sorted(packs, key=lambda p: (str(p.get("created_at") or ""), str(p.get("pack_sha") or "")))
+        known: dict[str, int] = {}
+        turn = 0
+        pack_shas: list[str] = []
+        for pack_meta in packs:
+            sha = str(pack_meta.get("pack_sha") or "")
+            if not sha:
+                continue
+            try:
+                stored = self.get_context_pack(user_id, sha)
+            except (ValueError, OSError, json.JSONDecodeError):
+                continue
+            body = stored.get("pack") if isinstance(stored.get("pack"), dict) else None
+            if not isinstance(body, dict):
+                continue
+            turn += 1
+            pack_shas.append(sha)
+            memory_ids, _tasks = self._cached_pack_object_ids(body)
+            for memory_id in sorted(memory_ids):
+                known[memory_id] = turn
+        state = self._load_session_working_set(user_id, session_id)
+        # Only re-seed when the session has no live delta cursor yet (a genuine cold resume), so a
+        # resume never clobbers an in-flight working-set that has already advanced past the packs.
+        if int(state.get("delta_cursor") or 0) == 0 and known:
+            state["known"] = known
+            state["turn"] = turn
+            self._save_session_working_set(user_id, session_id, state)
+        return {
+            "known_ids": sorted(known),
+            "pack_count": len(pack_shas),
+            "cursor": str(state.get("delta_cursor") or 0),
+        }
 
     def close_agent_session(self, user_id: str, session_id: str, *, outcome: str = "") -> dict[str, Any]:
         session = self._require_agent_session(user_id, session_id)

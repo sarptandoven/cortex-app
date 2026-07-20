@@ -5438,7 +5438,7 @@ class StandaloneServerTests(unittest.TestCase):
         tool_names = {tool["name"] for tool in payload["result"]["tools"]}
         self.assertEqual(
             tool_names,
-            {"use_cortex", "get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities"},
+            {"use_cortex", "get_context", "ask_memory", "query_memory", "expand", "search_memory", "get_entity_context", "get_person_map", "list_capabilities"},
         )
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)

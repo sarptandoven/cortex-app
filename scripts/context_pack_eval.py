@@ -5,6 +5,7 @@ import json
 import math
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,148 @@ CONTEXT_PACK_THRESHOLDS: dict[str, Any] = {
 }
 # budget_regret is a CEILING (lower is better), so it lives apart from the floor thresholds above.
 CONTEXT_PACK_REGRET_CEILING = 0.30
+
+
+# --------------------------------------------------------------------------------------------
+# Session-replay (build-plan #14): a multi-turn agent working the SAME session_id issues a
+# sequence of related queries; each response rides a working_memory DELTA (new / evicted /
+# superseded / cursor) instead of re-sending the whole pack. This suite proves the delta is
+# SOUND and CHEAP across turns, and that it is inert on the no-session default path.
+#
+# HARD invariants (pinned at ==1.0 — a single violation on any turn fails the gate):
+#   * delta_no_leak            — no id in the delta (new / evicted / superseded / replacement)
+#                                belongs to a sector outside the session's scope.
+#   * delta_no_resend          — a `new` list never re-sends an id the session already holds
+#                                (new ∩ known_before == ∅) and carries no duplicate ref.
+#   * eviction_soundness       — every evicted id WAS held and is genuinely absent from this
+#                                pack; every superseded id WAS held and maps to a real active
+#                                head; and the delta, replayed by the caller, reconstructs the
+#                                backend's persisted known-set exactly (held_after ==
+#                                (held_before − evicted − superseded) ∪ served).
+#   * resume_rehydration_exact — a FRESH store instance on the same db reproduces the exact
+#                                known-set byte-for-byte, and a resumed turn re-sends nothing
+#                                already held (state lives in the durable row, not in RAM).
+#   * no_session_clean         — the byte-identical no-session default path carries NO
+#                                working_memory delta (JSON warnings channel empty of it AND
+#                                the SMP envelope's working_memory is null).
+#
+# Efficiency / quality floors + the suite's first latency SLO:
+#   * token_savings_ratio      — cumulative delta tokens / cumulative naive full-resend tokens,
+#                                summed over every turn. CEILING 0.60: the delta must cost less
+#                                than 60% of blindly re-sending each pack (measured ~0.28).
+#   * recall@3                  — the top-3 graded-relevant ids each turn stay inside the agent's
+#                                working-set (known_before ∪ served): saving tokens must not
+#                                drop what matters. FLOOR 0.97.
+#   * prefetch_hit_rate        — for turns ≥ 2, the fraction of a pack already warm in the
+#                                working-set (served ∩ known_before / served): the working-set
+#                                acts as the prefetch cache. FLOOR 0.60 (min-over-turns ~0.75).
+#   * latency_slo_ok           — turn-2 assembly is not pathologically slower than turn-1 given
+#                                the warmed working-set: t2 ≤ max(t1 · 2.0, t1 + 40 ms). A
+#                                sanity SLO with an additive floor so sub-100ms jitter is inert.
+SESSION_REPLAY_THRESHOLDS: dict[str, Any] = {
+    "min_turn_count": 9,
+    "delta_no_leak": 1.0,
+    "delta_no_resend": 1.0,
+    "eviction_soundness": 1.0,
+    "resume_rehydration_exact": 1.0,
+    "no_session_clean": 1.0,
+    "smp_channel_parity": 1.0,
+    "recall@3": 0.97,
+    "prefetch_hit_rate": 0.60,
+    "latency_slo_ok": 1.0,
+}
+# token_savings_ratio is a CEILING (lower is better): the delta must transmit < 60% of a naive
+# full-resend while recall@3 holds — the whole economic argument for a working-set delta.
+SESSION_TOKEN_SAVINGS_CEILING = 0.60
+# Turn-2 assembly may be at most this multiple of turn-1 (warmed working-set); the additive floor
+# absorbs sub-100ms wall-clock jitter so the SLO sanity check is not flaky.
+SESSION_LATENCY_SLO_TOLERANCE = 2.0
+SESSION_LATENCY_SLO_FLOOR_MS = 40.0
+# A bare id line (evicted / superseded) the caller must be told about — far cheaper than re-sending
+# the item's content, but not free; counted honestly against the delta's token budget.
+SESSION_REF_LINE_TOKEN_COST = 4
+
+
+@dataclass(frozen=True)
+class ReplayTurn:
+    task: str
+    intent: str | None
+    # Up to three graded-relevant ids the working-set must still hold this turn (recall@3).
+    relevant_top: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ReplaySession:
+    name: str
+    sector: str
+    token_budget: int
+    turns: tuple[ReplayTurn, ...]
+
+
+# Related-query trajectories over the seeded corpus. Each stays in ONE sector (so delta_no_leak
+# and eviction have a well-defined scope) and drifts intent turn-to-turn so the working-set both
+# accretes (savings) and goes cold (a real eviction fires on Granite turn 5, TTL=4).
+SESSION_REPLAYS: tuple[ReplaySession, ...] = (
+    ReplaySession(
+        "granite_migration",
+        "Project Granite",
+        2500,
+        (
+            ReplayTurn(
+                "Plan the next steps for the Project Granite migration",
+                "plan",
+                ("rq_x_granite_neg_dashboards", "rq_x_granite_neg_backfill", "rq_x_granite_dec_dualwrite"),
+            ),
+            ReplayTurn(
+                "Run the Project Granite warehouse cutover and migrate the shards",
+                "act",
+                ("rq_x_granite_neg_backfill", "rq_x_granite_neg_dashboards", "rq_x_granite_proc_cutover"),
+            ),
+            ReplayTurn(
+                "Draft a reply about the Granite cutover window",
+                "draft",
+                ("rq_x_granite_neg_backfill", "rq_x_validity_granite_cutover_current", "rq_x_granite_style_runbook"),
+            ),
+            ReplayTurn(
+                "What is the current Granite cutover window and retention policy?",
+                "answer",
+                ("rq_x_validity_granite_retention_current", "rq_x_validity_granite_cutover_current", "rq_x_granite_neg_dashboards"),
+            ),
+            ReplayTurn(
+                "Schedule the Granite dry-run rehearsal and freeze window",
+                "act",
+                ("rq_x_granite_neg_backfill", "rq_x_granite_neg_dashboards", "rq_x_granite_proc_cutover"),
+            ),
+        ),
+    ),
+    ReplaySession(
+        "health_training",
+        "Personal Health",
+        2500,
+        (
+            ReplayTurn(
+                "What is my resting heart rate and hydration target?",
+                "answer",
+                ("rq_x_health_neg_hiit", "rq_x_health_resting_hr", "rq_x_health_sleep"),
+            ),
+            ReplayTurn(
+                "Build the weekend long run plan and configure the recovery block",
+                "act",
+                ("rq_x_health_neg_hiit", "rq_x_validity_health_hydration_current", "rq_x_health_proc_longrun"),
+            ),
+            ReplayTurn(
+                "Plan my training week around sleep and recovery",
+                "plan",
+                ("rq_x_health_neg_hiit", "rq_x_validity_health_hydration_current", "rq_x_health_resting_hr"),
+            ),
+            ReplayTurn(
+                "Draft a note about my hydration and resting heart rate baseline",
+                "draft",
+                ("rq_x_health_neg_hiit", "rq_x_health_resting_hr", "rq_x_health_pref_metric"),
+            ),
+        ),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -751,6 +894,363 @@ def _run_profile(store: CortexStore, user_id: str, id_sector: dict[str, str], pr
     }
 
 
+# --------------------------------------------------------------------------------------------
+# Session-replay helpers (build-plan #14): read the working_memory delta off a response and
+# drive the multi-turn soundness / savings / latency battery.
+# --------------------------------------------------------------------------------------------
+
+def _working_memory_from_pack(pack: dict[str, Any]) -> dict[str, Any] | None:
+    """The session delta rides a NON-SMP pack on the existing warnings[] channel
+    (kind=='working_memory'); returns None when the call carried no session (default path)."""
+    for warning in pack.get("warnings") or []:
+        if isinstance(warning, dict) and warning.get("kind") == "working_memory":
+            wm = warning.get("working_memory")
+            if isinstance(wm, dict):
+                return wm
+    return None
+
+
+def _new_refs(delta: dict[str, Any]) -> list[str]:
+    """Ordered ids in the delta's `new` list, tolerant of both the {ref,delta_relevance} object
+    shape and a bare-string shape."""
+    out: list[str] = []
+    for entry in delta.get("new") or []:
+        if isinstance(entry, dict) and entry.get("ref"):
+            out.append(str(entry["ref"]))
+        elif isinstance(entry, str) and entry:
+            out.append(entry)
+    return out
+
+
+def _superseded_pairs(delta: dict[str, Any]) -> list[tuple[str, str | None]]:
+    pairs: list[tuple[str, str | None]] = []
+    for entry in delta.get("superseded") or []:
+        if isinstance(entry, dict) and entry.get("ref"):
+            rep = entry.get("replacement")
+            pairs.append((str(entry["ref"]), str(rep) if rep else None))
+    return pairs
+
+
+def _delta_all_refs(delta: dict[str, Any]) -> set[str]:
+    """Every id the delta references — the leak surface."""
+    refs = set(_new_refs(delta))
+    refs.update(str(r) for r in (delta.get("evicted") or []))
+    for ref, rep in _superseded_pairs(delta):
+        refs.add(ref)
+        if rep:
+            refs.add(rep)
+    return {r for r in refs if r}
+
+
+def _item_token_cost(content: str, cpt: float, overhead: int = 12) -> int:
+    """Mirror _evaluate_budget's per-item estimate so savings are measured in the packer's units."""
+    return max(1, math.ceil(len(str(content or "")) / max(cpt, 1e-6))) + overhead
+
+
+def _evaluate_one_replay(
+    store: CortexStore,
+    db_path: Path,
+    vault_path: Path | None,
+    user_id: str,
+    id_sector: dict[str, str],
+    session: ReplaySession,
+) -> dict[str, Any]:
+    forbidden = _others(session.sector) if session.sector in ALL_SECTORS else frozenset()
+    session_id = f"cxr_{session.name}"
+    profile = resolve_profile(None, "agent")
+    cpt = profile.chars_per_token
+
+    turn_checks: list[dict[str, Any]] = []
+    held_recon: set[str] = set()
+    naive_tokens = 0
+    delta_tokens = 0
+    recall_vals: list[float] = []
+    prefetch_vals: list[float] = []
+    latencies_ms: list[float] = []
+
+    for turn_index, turn in enumerate(session.turns, start=1):
+        known_before = set(store._load_session_working_set(user_id, session_id)["known"])
+        # held_recon (the caller's own replay of prior deltas) must track the backend's state.
+        recon_before_ok = held_recon == known_before
+
+        started = time.perf_counter()
+        pack = store.assemble_context(
+            user_id,
+            turn.task,
+            token_budget=session.token_budget,
+            sector=session.sector,
+            intent=turn.intent,
+            session_id=session_id,
+            record_reuse=False,  # deterministic: skip the best-effort background prefetch warm loop
+        )
+        latencies_ms.append((time.perf_counter() - started) * 1000.0)
+        assert isinstance(pack, dict)
+
+        delta = _working_memory_from_pack(pack)
+        delta_present = isinstance(delta, dict)
+        delta = delta or {}
+
+        items = _iter_pack_items(pack)
+        served_order: list[str] = []
+        content_by_ref: dict[str, str] = {}
+        for _layer, item in items:
+            ref = str(item.get("memory_id") or item.get("task_id") or "")
+            if ref:
+                served_order.append(ref)
+                content_by_ref[ref] = str(item.get("content") or "")
+        served_set = set(served_order)
+
+        new_refs = _new_refs(delta)
+        evicted = [str(r) for r in (delta.get("evicted") or [])]
+        superseded = _superseded_pairs(delta)
+        superseded_refs = [ref for ref, _rep in superseded]
+
+        # ---- HARD: delta_no_resend (never re-send a held id; no duplicate refs) ----
+        resent = sorted(set(new_refs) & known_before)
+        no_resend_ok = delta_present and not resent and len(new_refs) == len(set(new_refs))
+
+        # ---- HARD: eviction_soundness (evicted/superseded were held & cold; caller's replay
+        #            of the delta reconstructs the backend's persisted known-set exactly) ----
+        evict_bad = [e for e in evicted if e not in known_before or e in served_set]
+        sup_bad: list[str] = []
+        for ref, rep in superseded:
+            if ref not in known_before:
+                sup_bad.append(ref)  # never told about supersession of an id we do not hold
+            if rep is not None and rep == ref:
+                sup_bad.append(ref)  # a replacement must be a DIFFERENT id than the stale ref
+        after = set(store._load_session_working_set(user_id, session_id)["known"])
+        expected_after = (known_before - set(evicted) - set(superseded_refs)) | served_set
+        recon_after_ok = expected_after == after
+        eviction_ok = delta_present and not evict_bad and not sup_bad and recon_before_ok and recon_after_ok
+        held_recon = after  # advance to the ground truth for the next turn
+
+        # ---- HARD: delta_no_leak (no out-of-sector id in the delta) ----
+        leaked = sorted(r for r in _delta_all_refs(delta) if (id_sector.get(r) or "") in forbidden)
+        no_leak_ok = delta_present and not leaked
+
+        # ---- token savings (content is only paid for `new` items; drops are id-only lines) ----
+        turn_naive = sum(_item_token_cost(content_by_ref[r], cpt) for r in served_order)
+        turn_delta = sum(_item_token_cost(content_by_ref.get(r, ""), cpt) for r in new_refs) + (
+            SESSION_REF_LINE_TOKEN_COST * (len(evicted) + len(superseded))
+        )
+        naive_tokens += turn_naive
+        delta_tokens += turn_delta
+
+        # ---- recall@3 over the agent's working-set (what it holds, not just this pack) ----
+        working_set = known_before | served_set
+        rel = list(turn.relevant_top)[:3]
+        recall = (sum(1 for r in rel if r in working_set) / len(rel)) if rel else 1.0
+        recall_vals.append(recall)
+
+        # ---- prefetch/warm hit-rate: fraction of this pack already warm in the working-set ----
+        if turn_index >= 2 and served_set:
+            prefetch_vals.append(len(served_set & known_before) / len(served_set))
+
+        turn_checks.append(
+            {
+                "turn": turn_index,
+                "task": turn.task,
+                "delta_present": delta_present,
+                "served_count": len(served_order),
+                "new_count": len(new_refs),
+                "evicted": evicted,
+                "superseded": [{"ref": r, "replacement": rep} for r, rep in superseded],
+                "cursor": delta.get("cursor"),
+                "resent": resent,
+                "no_resend_ok": no_resend_ok,
+                "evict_bad": evict_bad,
+                "sup_bad": sup_bad,
+                "recon_before_ok": recon_before_ok,
+                "recon_after_ok": recon_after_ok,
+                "eviction_ok": eviction_ok,
+                "leaked": leaked,
+                "no_leak_ok": no_leak_ok,
+                "recall@3": round(recall, 6),
+                "ok": no_resend_ok and eviction_ok and no_leak_ok,
+            }
+        )
+
+    # ---- resume-rehydration: a FRESH store reproduces the exact known-set and re-sends nothing ----
+    known_a = store._load_session_working_set(user_id, session_id)
+    store_resume = CortexStore(db_path, vault_path)
+    known_b = store_resume._load_session_working_set(user_id, session_id)
+    byte_ok = json.dumps(known_a, sort_keys=True) == json.dumps(known_b, sort_keys=True)
+    recon_match = set(known_a["known"]) == held_recon
+    last = session.turns[-1]
+    resume_pack = store_resume.assemble_context(
+        user_id,
+        last.task,
+        token_budget=session.token_budget,
+        sector=session.sector,
+        intent=last.intent,
+        session_id=session_id,
+        record_reuse=False,
+    )
+    assert isinstance(resume_pack, dict)
+    resume_delta = _working_memory_from_pack(resume_pack) or {}
+    resume_new = set(_new_refs(resume_delta))
+    resume_no_resend = bool(resume_delta) and not (resume_new & set(known_b["known"]))
+    resume_ok = byte_ok and recon_match and resume_no_resend
+
+    # ---- latency SLO sanity: turn-2 vs turn-1 (warmed working-set) ----
+    t1 = latencies_ms[0] if latencies_ms else 0.0
+    t2 = latencies_ms[1] if len(latencies_ms) > 1 else t1
+    latency_ok = t2 <= max(t1 * SESSION_LATENCY_SLO_TOLERANCE, t1 + SESSION_LATENCY_SLO_FLOOR_MS)
+
+    evictions = sum(len(c["evicted"]) for c in turn_checks)
+    return {
+        "session": session.name,
+        "sector": session.sector,
+        "turn_count": len(turn_checks),
+        "evictions_observed": evictions,
+        "turns": turn_checks,
+        "resume": {
+            "byte_comparable": byte_ok,
+            "reconstruction_match": recon_match,
+            "resume_no_resend": resume_no_resend,
+            "ok": resume_ok,
+        },
+        "latency": {"turn1_ms": round(t1, 3), "turn2_ms": round(t2, 3), "ok": latency_ok},
+        "naive_tokens": naive_tokens,
+        "delta_tokens": delta_tokens,
+        "recall_vals": recall_vals,
+        "prefetch_vals": prefetch_vals,
+    }
+
+
+def _no_session_control(store: CortexStore, user_id: str) -> dict[str, Any]:
+    """Negative control: the default (no session_id) path must NOT carry a working_memory delta —
+    neither on the JSON warnings channel nor as a non-null SMP envelope field. This is what pins
+    'byte-identical to Wave-2 when no session_id' as a checkable invariant."""
+    case = SESSION_REPLAYS[0].turns[0]
+    sector = SESSION_REPLAYS[0].sector
+    json_pack = store.assemble_context(
+        user_id, case.task, token_budget=2500, sector=sector, intent=case.intent
+    )
+    assert isinstance(json_pack, dict)
+    smp_env = store.assemble_context(
+        user_id, case.task, token_budget=2500, sector=sector, intent=case.intent, response_format="smp"
+    )
+    assert isinstance(smp_env, dict)
+    json_clean = _working_memory_from_pack(json_pack) is None
+    smp_clean = smp_env.get("working_memory") is None
+    return {"json_clean": json_clean, "smp_clean": smp_clean, "ok": json_clean and smp_clean}
+
+
+def _smp_channel_parity(store: CortexStore, user_id: str) -> dict[str, Any]:
+    """Positive control: under a session, the delta ALSO rides the SMP envelope's `working_memory`
+    field (the contract's primary channel), with the same shape and ids. On a fresh session every
+    served id is `new`, so the SMP delta's new-set must equal the projected item ref-set."""
+    case = SESSION_REPLAYS[0].turns[0]
+    sector = SESSION_REPLAYS[0].sector
+    env = store.assemble_context(
+        user_id,
+        case.task,
+        token_budget=2500,
+        sector=sector,
+        intent=case.intent,
+        session_id="cxr_smp_probe",
+        response_format="smp",
+    )
+    assert isinstance(env, dict)
+    wm = env.get("working_memory")
+    present = isinstance(wm, dict) and {"new", "evicted", "superseded", "cursor"} <= set(wm.keys())
+    item_refs = {str(it.get("ref") or "") for it in (env.get("items") or []) if str(it.get("ref") or "")}
+    new_refs = set(_new_refs(wm)) if isinstance(wm, dict) else set()
+    fresh_all_new = present and new_refs == item_refs and not (wm.get("evicted") or [])
+    return {"present": bool(present), "fresh_all_new": bool(fresh_all_new), "ok": bool(fresh_all_new)}
+
+
+def run_session_replay(
+    store: CortexStore,
+    db_path: Path,
+    vault_path: Path | None,
+    user_id: str,
+    id_sector: dict[str, str],
+) -> dict[str, Any]:
+    """Drive every ReplaySession and roll the per-turn checks up into the build-plan #14 metrics."""
+    sessions = [
+        _evaluate_one_replay(store, db_path, vault_path, user_id, id_sector, session)
+        for session in SESSION_REPLAYS
+    ]
+    control = _no_session_control(store, user_id)
+    smp_channel = _smp_channel_parity(store, user_id)
+
+    all_turns = [t for s in sessions for t in s["turns"]]
+    turn_count = len(all_turns)
+
+    def _turn_rate(key: str) -> float:
+        if not all_turns:
+            return 1.0
+        return round(sum(1.0 for t in all_turns if t.get(key)) / len(all_turns), 6)
+
+    naive_tokens = sum(s["naive_tokens"] for s in sessions)
+    delta_tokens = sum(s["delta_tokens"] for s in sessions)
+    token_savings_ratio = round(delta_tokens / naive_tokens, 6) if naive_tokens > 0 else 0.0
+    recall_vals = [v for s in sessions for v in s["recall_vals"]]
+    prefetch_vals = [v for s in sessions for v in s["prefetch_vals"]]
+    recall_at_3 = round(sum(recall_vals) / len(recall_vals), 6) if recall_vals else 1.0
+    prefetch_hit_rate = round(min(prefetch_vals), 6) if prefetch_vals else 1.0
+    resume_ok = all(s["resume"]["ok"] for s in sessions)
+    latency_ok = all(s["latency"]["ok"] for s in sessions)
+
+    metrics = {
+        "turn_count": turn_count,
+        "session_count": len(sessions),
+        "delta_no_leak": _turn_rate("no_leak_ok"),
+        "delta_no_resend": _turn_rate("no_resend_ok"),
+        "eviction_soundness": _turn_rate("eviction_ok"),
+        "resume_rehydration_exact": 1.0 if resume_ok else 0.0,
+        "no_session_clean": 1.0 if control["ok"] else 0.0,
+        "smp_channel_parity": 1.0 if smp_channel["ok"] else 0.0,
+        "recall@3": recall_at_3,
+        "prefetch_hit_rate": prefetch_hit_rate,
+        "latency_slo_ok": 1.0 if latency_ok else 0.0,
+        "token_savings_ratio": token_savings_ratio,
+        "evictions_observed": sum(s["evictions_observed"] for s in sessions),
+    }
+    failures = [t for t in all_turns if not t.get("ok")]
+    return {
+        "metrics": metrics,
+        "control": control,
+        "smp_channel": smp_channel,
+        "sessions": sessions,
+        "failures": failures,
+    }
+
+
+def check_session_replay_thresholds(session_replay: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    metrics = session_replay.get("metrics") if isinstance(session_replay.get("metrics"), dict) else {}
+    if not metrics:
+        return ["[session_replay] missing metrics block"]
+
+    turn_count = int(metrics.get("turn_count") or 0)
+    if turn_count < SESSION_REPLAY_THRESHOLDS["min_turn_count"]:
+        failures.append(
+            f"[session_replay] turn_count={turn_count} < {SESSION_REPLAY_THRESHOLDS['min_turn_count']}"
+        )
+    for key in (
+        "delta_no_leak",
+        "delta_no_resend",
+        "eviction_soundness",
+        "resume_rehydration_exact",
+        "no_session_clean",
+        "smp_channel_parity",
+        "recall@3",
+        "prefetch_hit_rate",
+        "latency_slo_ok",
+    ):
+        floor = float(SESSION_REPLAY_THRESHOLDS[key])
+        value = float(metrics.get(key) or 0.0)
+        if value < floor:
+            failures.append(f"[session_replay] {key}={value} < {floor}")
+    savings = float(metrics.get("token_savings_ratio") or 1.0)
+    if savings > SESSION_TOKEN_SAVINGS_CEILING:
+        failures.append(f"[session_replay] token_savings_ratio={savings} > {SESSION_TOKEN_SAVINGS_CEILING}")
+    return failures
+
+
 def run_context_pack_eval(db_path: Path, vault_path: Path | None = None, user_id: str = USER_ID) -> dict[str, Any]:
     init_db(db_path)
     store = CortexStore(db_path, vault_path)
@@ -772,6 +1272,12 @@ def run_context_pack_eval(db_path: Path, vault_path: Path | None = None, user_id
     # labeled case, so the intent-derivation gate covers the whole router surface.
     exercised_intents = sorted({str(c.get("expected_intent")) for c in generic["checks"] if c.get("expected_intent")})
 
+    # Build-plan #14: the multi-turn session-replay battery runs AFTER the profile matrix (so the
+    # assembler's hot code paths are warm before the latency SLO is measured) and is entirely
+    # additive — the session-less profile battery above is untouched.
+    session_replay = run_session_replay(store, db_path, vault_path, user_id, id_sector)
+    all_failures = all_failures + list(session_replay.get("failures") or [])
+
     return {
         "harness": "context_pack_eval",
         "seeded_memories": len(seeded),
@@ -779,6 +1285,7 @@ def run_context_pack_eval(db_path: Path, vault_path: Path | None = None, user_id
         "metrics": generic["metrics"],
         "profiles": {name: {"metrics": prof["metrics"], "failures": prof["failures"]} for name, prof in profiles.items()},
         "exercised_intents": exercised_intents,
+        "session_replay": session_replay,
         "counts": {
             "total_checks": sum(len(prof["checks"]) for prof in profiles.values()),
             "failures": len(all_failures),
@@ -822,6 +1329,11 @@ def check_context_pack_thresholds(result: dict[str, Any]) -> list[str]:
     case_count = int(metrics.get("case_count") or 0)
     if case_count < CONTEXT_PACK_THRESHOLDS["min_case_count"]:
         failures.append(f"corpus shrank: case_count={case_count} < {CONTEXT_PACK_THRESHOLDS['min_case_count']}")
+
+    # Build-plan #14 session-replay gate (present-and-checked whenever the harness produced it).
+    session_replay = result.get("session_replay")
+    if isinstance(session_replay, dict):
+        failures.extend(check_session_replay_thresholds(session_replay))
 
     profiles = result.get("profiles") if isinstance(result.get("profiles"), dict) else {}
     if not profiles:

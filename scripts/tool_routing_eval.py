@@ -44,10 +44,12 @@ SURFACES = ("core", "full")
 # rather than an accidental surface drift.
 EXPECTED_CORE_READ_TOOLS: tuple[str, ...] = (
     "ask_memory",
+    "expand",
     "get_context",
     "get_entity_context",
     "get_person_map",
     "list_capabilities",
+    "query_memory",
     "search_memory",
     "use_cortex",
 )
@@ -224,7 +226,13 @@ def _check_annotations() -> tuple[bool, list[dict[str, Any]]]:
         is_destructive = name in mcp_tools.DESTRUCTIVE_TOOLS
         is_review = name in mcp_tools.REVIEW_TOOLS
 
-        expected_read_only = (is_read or is_export) and not (is_write or is_maintenance or is_destructive or is_review)
+        # Export-scoped tools that WRITE files OUTSIDE Cortex custody (vault write-back) are not
+        # readOnly even though they are memory egress — mirror _tool_annotations so a filesystem
+        # mutation is never auto-approved as a read.
+        writes_external_files = name in mcp_tools._EXTERNAL_FILE_WRITE_TOOLS
+        expected_read_only = (is_read or is_export) and not (
+            is_write or is_maintenance or is_destructive or is_review or writes_external_files
+        )
         expected_destructive = is_destructive
         expected_open_world = name in mcp_tools._OPEN_WORLD_TOOLS
 

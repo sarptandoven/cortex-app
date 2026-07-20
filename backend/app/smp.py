@@ -44,6 +44,14 @@ SMP_LEGEND: dict[str, Any] = {
         "items": "The ordered list of MemoryObjects (most useful first).",
         "cursor": "Opaque continuation token for the next page, or null when the pack is complete.",
         "follow_ups": "Suggested next retrievals/questions the caller may issue, or empty.",
+        "working_memory": (
+            "Session working-set delta vs what this session was already served, or null when the "
+            "call carried no session_id. Shape {new:[{ref,delta_relevance}], evicted:[ref], "
+            "superseded:[{ref,replacement}], cursor}: send only the delta, not the whole pack "
+            "again. `new` are unseen cited ids; `evicted` are trajectory-cold ids you may forget; "
+            "`superseded` maps a stale ref to its current replacement; `cursor` orders deltas. "
+            "Every id here is a cited/owned memory id — never content, never a redacted id."
+        ),
         "receipt": "Audit stub describing the assembly event, or null.",
         "graph": (
             "Entity-graph neighborhood behind the pack: list of "
@@ -114,6 +122,67 @@ def project_memory_object(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# The write-back receipt shape (build-plan #15). remember_this / propose_memory return this so a
+# calling agent learns what the write actually did without a follow-up read: the stored id, the
+# layer the memory landed in, and the dedup verdict off the write path. The verdict/dedup_basis/
+# occurrences/supersede_handle fields are produced by the storage write path; when a field is
+# absent (older store, or a plain new write) it degrades to the honest baseline ("new"/null/1)
+# rather than inventing a merge that did not happen.
+RECEIPT_VERDICTS = ("new", "merged", "echo_strengthened", "superseded")
+
+
+def _coerce_occurrences(value: Any, default: int = 1) -> int:
+    try:
+        occurrences = int(value)
+    except (TypeError, ValueError):
+        return default
+    return occurrences if occurrences >= 1 else default
+
+
+def build_receipt(result: Any, *, tool: str = "remember_this") -> dict[str, Any]:
+    """Project a save_capture-style write result into the typed write-back receipt.
+
+    Pure and defensive: reads only fields the write path already produced. The dedup verdict and
+    its basis ride on the result when the storage layer computed them (verdict in RECEIPT_VERDICTS,
+    dedup_basis, occurrences, supersede_handle); anything missing degrades to the honest baseline
+    so the receipt never claims a merge/supersession that did not occur."""
+    data = result if isinstance(result, dict) else {}
+    memories = data.get("memories") if isinstance(data.get("memories"), list) else []
+    first = memories[0] if memories and isinstance(memories[0], dict) else {}
+
+    stored_id = str(
+        data.get("stored_id")
+        or first.get("id")
+        or first.get("memory_id")
+        or data.get("capture_id")
+        or ""
+    )
+    assigned_layer = str(data.get("assigned_layer") or first.get("layer") or "")
+
+    verdict = data.get("verdict")
+    if verdict not in RECEIPT_VERDICTS:
+        verdict = "new"
+
+    dedup_basis = data.get("dedup_basis") or None
+
+    occurrences = data.get("occurrences")
+    if occurrences is None:
+        occurrences = first.get("occurrences")
+    occurrences = _coerce_occurrences(occurrences, default=1)
+
+    supersede_handle = data.get("supersede_handle") or None
+
+    return {
+        "tool": str(tool or "remember_this"),
+        "stored_id": stored_id,
+        "assigned_layer": assigned_layer,
+        "verdict": verdict,
+        "dedup_basis": dedup_basis,
+        "occurrences": occurrences,
+        "supersede_handle": supersede_handle,
+    }
+
+
 def build_smp_envelope(
     items: list[dict[str, Any]],
     *,
@@ -122,6 +191,7 @@ def build_smp_envelope(
     coverage: dict[str, Any] | None,
     cursor: str | None = None,
     follow_ups: list[Any] | None = None,
+    working_memory: dict[str, Any] | None = None,
     receipt: Any | None = None,
 ) -> dict[str, Any]:
     """Assemble the SMP envelope around already-packed rows.
@@ -152,6 +222,10 @@ def build_smp_envelope(
         "items": projected,
         "cursor": cursor,
         "follow_ups": list(follow_ups or []),
+        # Session working-set delta (build-plan #13). Declared in SMP_LEGEND so the envelope stays
+        # self-describing; null when the call carried no session_id (byte-identical to no-session
+        # Wave-2 behavior aside from this present-but-null key that legend<->payload parity requires).
+        "working_memory": working_memory if isinstance(working_memory, dict) else None,
         "receipt": receipt,
         # Declared in SMP_LEGEND so the envelope is self-describing; populated by later CMP waves
         # (graph = entity-neighborhood slice, pin = content-addressed handle). Present-but-null now

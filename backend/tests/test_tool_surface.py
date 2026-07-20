@@ -25,7 +25,7 @@ class CuratedToolSurfaceTests(unittest.TestCase):
         catalog = _names(TOOLS)
         self.assertEqual(
             set(CORE_TOOL_NAMES),
-            {"use_cortex", "get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "remember_this", "list_capabilities"},
+            {"use_cortex", "get_context", "ask_memory", "query_memory", "expand", "search_memory", "get_entity_context", "get_person_map", "remember_this", "list_capabilities"},
         )
         for name in CORE_TOOL_NAMES:
             self.assertIn(name, catalog)
@@ -38,7 +38,7 @@ class CuratedToolSurfaceTests(unittest.TestCase):
         names = _names(tools_for_scopes(["read"]))
         self.assertEqual(
             names,
-            {"use_cortex", "get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities"},
+            {"use_cortex", "get_context", "ask_memory", "query_memory", "expand", "search_memory", "get_entity_context", "get_person_map", "list_capabilities"},
         )
 
     def test_person_map_is_read_and_write_adds_remember(self) -> None:
