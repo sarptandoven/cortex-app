@@ -3945,6 +3945,90 @@ final class AppState: ObservableObject {
         firstSourceAdded || hasConnectedSourceAccount || hasConnectedObsidianVault
     }
 
+    // MARK: - App-Store-lead + discovery-nudge glue (#32, #33)
+
+    /// True in the App Store (sandboxed) build, where the filesystem watcher, session-import, and
+    /// outbound-OAuth connectors are all stripped by entitlements. Onboarding and Connections must
+    /// therefore LEAD with the local-first import paths (a notes folder, an Apple Notes export) as
+    /// the primary source, rather than surfacing dead "Available soon" tiles for connectors that can
+    /// never sync in this distribution. The single flag those surfaces read to make that decision.
+    var leadsWithLocalFirstImport: Bool { DistributionMode.isAppStore }
+
+    /// A connector that reads only from this machine (a chosen file/export or a loopback desktop
+    /// API) and never opens an outbound connection. In the App Store (local-first) build these are
+    /// the only inbound sources that can work, so this is the shared predicate onboarding +
+    /// Connections use to decide what to surface as primary (previously duplicated privately in
+    /// three views as `connectionSetup?.mode == "native-local-connector"`).
+    func isLocalFirstInboundConnector(_ connector: SourceConnectorCatalogItem) -> Bool {
+        connector.connectionSetup?.mode == "native-local-connector"
+    }
+
+    /// The catalog of inbound connectors that actually work in the current build, filtered so the
+    /// App Store build never leads with a source it can't sync. Callers keep their own ordering; this
+    /// only removes the connectors that would degrade to a dead tile under the sandbox.
+    func inboundConnectorsForCurrentDistribution(_ connectors: [SourceConnectorCatalogItem]) -> [SourceConnectorCatalogItem] {
+        guard leadsWithLocalFirstImport else { return connectors }
+        return connectors.filter { isLocalFirstInboundConnector($0) }
+    }
+
+    /// Open the right "bring your memory in" surface for the current build. The App Store build has
+    /// no direct sign-in import, so it lands on the local-first import lane; the direct build points
+    /// at the one-tap sign-in import. Both route through the existing Connections sheet so there is
+    /// one presentation path.
+    func openDirectImport() {
+        let message = leadsWithLocalFirstImport
+            ? "Bring your notes in"
+            : "Sign in once and bring your memory in"
+        openConnectionsPrivacy(statusMessage: message)
+    }
+
+    // #33: the direct-import discovery nudge. A user who finished onboarding on the bundled sample
+    // notes (or a bare local preview) has no real memory of their own yet; a calm, dismissible
+    // menu-bar hint points them at the one-tap direct sign-in import. Persisted so a dismiss sticks
+    // and the hint never re-nags.
+    static let directImportNudgeDismissedDefaultsKey = "directImportNudgeDismissed.v1"
+    @Published var directImportNudgeDismissed: Bool =
+        UserDefaults.standard.bool(forKey: AppState.directImportNudgeDismissedDefaultsKey) {
+        didSet {
+            UserDefaults.standard.set(directImportNudgeDismissed, forKey: AppState.directImportNudgeDismissedDefaultsKey)
+        }
+    }
+
+    /// True when the app is past onboarding but still has no *real* source of the user's own — only
+    /// the bundled sample notes, or an import-less local preview. `firstSourceAdded` (and therefore
+    /// `onboardingHasSource`) is set by the sample-notes loader too, so neither can tell "real" from
+    /// "sample"; require a genuine non-sample source: a connected account, a real notes folder, or a
+    /// memory-bearing source that isn't the sample-notes source.
+    var hasRealInboundSource: Bool {
+        if hasConnectedSourceAccount || hasConnectedObsidianVault { return true }
+        if let sources = sourceReadinessReport?.sources {
+            let hasRealMemory = sources.contains { source in
+                source.source != AppState.sampleNotesSource
+                    && (source.captures > 0 || source.approved > 0 || source.active_memories > 0 || source.pending > 0)
+            }
+            if hasRealMemory { return true }
+        }
+        // No readiness detail yet: fall back to the flags. Samples set `firstSourceAdded`, so only
+        // treat it as a real source when the sample preview wasn't the thing that set it.
+        return firstSourceAdded && !previewSampleNotesLoaded
+    }
+
+    /// Whether to surface the direct-import discovery nudge. Gated so it is helpful, not naggy:
+    /// only in the direct build (the App Store build has no sign-in import), only past onboarding,
+    /// only when the user has no real source of their own, only when they aren't behind the sign-in
+    /// wall (that moment owns its own call to action), and only until dismissed once.
+    var shouldShowDirectImportNudge: Bool {
+        guard !DistributionMode.isAppStore else { return false }
+        guard onboardingComplete else { return false }
+        guard !requiresSignIn else { return false }
+        guard !directImportNudgeDismissed else { return false }
+        return !hasRealInboundSource
+    }
+
+    func dismissDirectImportNudge() {
+        directImportNudgeDismissed = true
+    }
+
     // "Active" = registered and not disconnected (includes unconfigured placeholders); used to
     // locate the account row for a connector card. "Connected" = actually authenticated.
     var activeSourceAccounts: [SourceAccountItem] {
@@ -6596,9 +6680,73 @@ final class AppState: ObservableObject {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = false
+        // Two-tap connect: open the picker already pointed at where this Mac's notes most likely live
+        // (a known Obsidian vault, iCloud Drive, or ~/Documents/Notes), so connecting is usually just
+        // "confirm this folder" instead of hunting the file system. Nil leaves the system default.
+        if let detected = detectedNotesFolderURL() {
+            panel.directoryURL = detected
+            panel.message = "\(DistributionMode.appDisplayName) found this notes location. Confirm it, or pick another folder to keep synced into Review."
+        }
         if panel.runModal() == .OK, let url = panel.url {
             Task { await syncLocalNotesFolder(connector, folderURL: url, rememberPath: true) }
         }
+    }
+
+    /// Best guess at where a first-time user's notes already live, so the folder picker opens there and
+    /// connecting notes is usually a two-tap confirm. Order: a vault the app already remembers, then a
+    /// vault Obsidian itself knows about, then iCloud Drive, then a conventional ~/Documents/Notes.
+    /// Returns nil when none exist on disk, leaving the picker at its system default location.
+    private func detectedNotesFolderURL() -> URL? {
+        let fm = FileManager.default
+        func existingDir(_ url: URL?) -> URL? {
+            guard let url else { return nil }
+            var isDir: ObjCBool = false
+            return (fm.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue) ? url : nil
+        }
+        // A folder we already remembered (the re-choose flow lands the user right back on it).
+        if let stored = existingDir(storedObsidianVaultURL()) { return stored }
+        // A vault Obsidian itself has open or last touched (parsed from its own registry).
+        if let vault = firstKnownObsidianVaultURL() { return vault }
+        let home = fm.homeDirectoryForCurrentUser
+        // iCloud Drive — where most Mac notes sync today.
+        if let icloud = existingDir(home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs")) {
+            return icloud
+        }
+        // A conventional ~/Documents/Notes folder.
+        if let notes = existingDir(home.appendingPathComponent("Documents/Notes")) { return notes }
+        return nil
+    }
+
+    /// Reads Obsidian's own registry (~/Library/Application Support/obsidian/obsidian.json) and returns
+    /// the path of a remembered vault that still exists on disk, preferring the one Obsidian has open,
+    /// then the most recently touched. Returns nil if Obsidian isn't installed or no vault survives.
+    private func firstKnownObsidianVaultURL() -> URL? {
+        let fm = FileManager.default
+        let registry = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/obsidian/obsidian.json")
+        guard let data = try? Data(contentsOf: registry),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let vaults = json["vaults"] as? [String: Any] else { return nil }
+        var candidates: [(path: String, open: Bool, ts: Double)] = []
+        for (_, value) in vaults {
+            guard let entry = value as? [String: Any], let path = entry["path"] as? String else { continue }
+            candidates.append((
+                path: path,
+                open: (entry["open"] as? Bool) ?? false,
+                ts: (entry["ts"] as? Double) ?? 0
+            ))
+        }
+        let ordered = candidates.sorted { lhs, rhs in
+            if lhs.open != rhs.open { return lhs.open }
+            return lhs.ts > rhs.ts
+        }
+        for candidate in ordered {
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: candidate.path, isDirectory: &isDir), isDir.boolValue {
+                return URL(fileURLWithPath: candidate.path)
+            }
+        }
+        return nil
     }
 
     /// Disconnects the primary notes folder. This is non-destructive: already

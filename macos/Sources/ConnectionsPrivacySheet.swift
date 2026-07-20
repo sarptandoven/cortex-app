@@ -1187,6 +1187,10 @@ private struct AIChatsImportCard: View {
     // is surfaced only in the main-window chrome (which this modal sheet occludes), so without this
     // a wrong/empty/already-imported file inside the sheet would be a silent dead-end.
     @State private var importNotice: String?
+    // The email-export path is now the FALLBACK below the one-tap direct sign-in tiles, so it lives
+    // in a quiet disclosure. It opens by default only in the App Store build, where the embedded
+    // sign-in harvest is stripped and an export is the only way in.
+    @State private var exportFallbackExpanded = DistributionMode.isAppStore
 
     // File types the export drop target accepts: a ChatGPT / Claude export (.zip or its
     // conversations.json / .jsonl) or a plain .txt transcript. Anything else gets an immediate
@@ -1294,121 +1298,18 @@ private struct AIChatsImportCard: View {
                 waitingBanner
             }
 
-            // ONE TAP PER VENDOR: deep-link straight to each provider's export page. This is the step
-            // people abandon, so it's the most prominent thing when no export has been detected yet.
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Get your export in one tap")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
-                    exportVendorButton("ChatGPT", systemImage: "bubble.left.and.bubble.right", urlString: "https://chatgpt.com/#settings/DataControls")
-                    exportVendorButton("Claude", systemImage: "sparkle", urlString: "https://claude.ai/settings/data-privacy-controls")
-                    // Gemini history lives under Takeout's "My Activity" (the standalone "Gemini"
-                    // product is Gems, not chats), so open My Activity pre-selected; the caption below
-                    // tells the user to narrow it to "Gemini Apps".
-                    exportVendorButton("Gemini", systemImage: "diamond", urlString: "https://takeout.google.com/settings/takeout/custom/my_activity")
-                }
-                Text("The provider emails you a download link, usually within a few minutes. Grab the file, then \(DistributionMode.appDisplayName) takes it from there. For Gemini, pick \u{201C}My Activity\u{201D} \u{2192} \u{201C}Gemini Apps\u{201D} in Takeout.")
-                    .font(.caption)
-                    .foregroundColor(CortexDesign.inkFaint)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            // DIRECT SIGN-IN IMPORT (DMG only): skip the email-export round-trip entirely — sign in
-            // to the provider in an embedded browser and harvest history in-app. Gated out of the
-            // App Store build (no compile flag in this codebase; the runtime guard is the idiom).
-            // This is an ADDITIONAL path — the async email-export tiles above stay as they are.
+            // PRIMARY PATH: sign in once and import directly, no export round-trip. For a ChatGPT /
+            // Claude / Perplexity / Notion refugee this is the obvious way in, so it leads. DMG only —
+            // the App Store build strips the embedded-browser harvest and falls back to the export
+            // disclosure below (which opens by default there).
             if !DistributionMode.isAppStore {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Or sign in and import directly, no export needed.")
-                        .font(.caption)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
-                        // Iterate every vendor so newly added ones (Perplexity, Notion, …) surface here
-                        // automatically — no per-vendor wiring. Each tile opens the embedded-browser
-                        // harvest sheet for that vendor via the shared .sheet(item: $sessionImportVendor).
-                        ForEach(AIChatImportVendor.allCases) { vendor in
-                            sessionImportButton("Import from \(vendor.displayName)", systemImage: vendor.symbolName, vendor: vendor)
-                        }
-                    }
-                }
+                directSignInBlock
             }
 
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
-                .foregroundColor(isTargeted || dropZoneHovering ? CortexDesign.accent : CortexDesign.hairline)
-                .frame(height: 66)
-                .overlay(
-                    HStack(spacing: 8) {
-                        if state.importInFlight { ProgressView().scaleEffect(0.7) }
-                        Text(state.importInFlight ? "Importing…" : "Already have the file? Drop it here, or")
-                            .font(.callout).foregroundColor(CortexDesign.inkSecondary)
-                        if !state.importInFlight {
-                            CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .secondary, size: .small) {
-                                chooseExportFile()
-                            }
-                        }
-                    }
-                )
-                .onHover { dropZoneHovering = $0 }
-                .animation(.easeOut(duration: 0.12), value: dropZoneHovering)
-                .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
-                    guard let provider = providers.first else { return false }
-                    provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                        var resolvedURL: URL?
-                        if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
-                            resolvedURL = url.standardizedFileURL
-                        } else if let url = item as? URL {
-                            resolvedURL = url.standardizedFileURL
-                        }
-                        Task { @MainActor in
-                            guard let url = resolvedURL else {
-                                importNotice = "Could not read that dropped item. Try Choose export file instead."
-                                return
-                            }
-                            // Immediate feedback for an obviously-wrong file type, avoiding a pointless
-                            // round-trip that would fail silently.
-                            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-                            let ext = url.pathExtension.lowercased()
-                            if !isDirectory && !ext.isEmpty
-                                && !AIChatsImportCard.acceptedExportExtensions.contains(ext) {
-                                importNotice = "\(DistributionMode.appDisplayName) can import a ChatGPT or Claude export: a .zip, its conversations.json, a .jsonl, or a .txt transcript. \(ext.uppercased()) files aren't supported here."
-                                return
-                            }
-                            runImport(path: url.path)
-                        }
-                    }
-                    return true
-                }
-
-            if let notice = importNotice {
-                Label(notice, systemImage: "exclamationmark.circle")
-                    .font(.caption)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            DisclosureGroup(isExpanded: $guideExpanded) {
-                // Guided walkthrough: the highlight strolls through the steps on a loop while the
-                // disclosure is open, and clicking a step jumps it there. U-CONN9: the per-vendor
-                // deep-links live once, in the prominent grid above — step 1 just points back up to
-                // them instead of repeating the same three links (which read as a second, competing
-                // export affordance).
-                GuidedStepWalkthrough(steps: steps, isActive: guideExpanded, textFont: .caption) { index in
-                    if index == 0 {
-                        Text("Use the provider buttons above ↑")
-                            .font(CortexDesign.Typography.stamp)
-                            .kerning(0.5)
-                            .foregroundColor(CortexDesign.inkFaint)
-                    }
-                }
-                .padding(.top, 6)
-            } label: {
-                Text("Walk me through it")
-            }
-            .font(.caption)
-            .foregroundColor(CortexDesign.inkSecondary)
+            // FALLBACK PATH: the async email export. Quiet and collapsed beneath the one-tap tiles so
+            // it never competes with them; opened by default in the App Store build, where it is the
+            // only way in. Holds the per-vendor export deep-links, the drop zone, and the walkthrough.
+            exportFallbackSection
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1456,32 +1357,187 @@ private struct AIChatsImportCard: View {
         }
     }
 
-    /// DMG-only: a direct sign-in import tile, styled to match `exportVendorButton`. Tapping it opens
-    /// the embedded-browser harvest sheet for that vendor instead of the email-export round-trip.
-    private func sessionImportButton(_ title: String, systemImage: String, vendor: AIChatImportVendor) -> some View {
+    /// PRIMARY block: one tile per vendor that opens the in-app sign-in + harvest sheet. This is the
+    /// obvious, one-tap way in, so it leads the card. Chat vendors (ChatGPT / Claude / Perplexity)
+    /// auto-start the import the moment you sign in; Notion exports the whole workspace, so its tile
+    /// says so up front and shows per-workspace progress once running (#31).
+    private var directSignInBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Import directly, no export file needed")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(CortexDesign.inkSecondary)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
+                // Iterate every vendor so newly added ones (Perplexity, Notion, …) surface here
+                // automatically, no per-vendor wiring. Each tile opens the embedded-browser harvest
+                // sheet for that vendor via the shared .sheet(item: $sessionImportVendor).
+                ForEach(AIChatImportVendor.allCases) { vendor in
+                    sessionImportButton(vendor: vendor)
+                }
+            }
+            Text("Sign in once in a private in-app window and \(DistributionMode.appDisplayName) imports your history right here. Nothing leaves this Mac.")
+                .font(.caption)
+                .foregroundColor(CortexDesign.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The label for the export fallback disclosure. In the App Store build there's no direct sign-in,
+    /// so it reads as the (only) import path instead of a "fallback".
+    private var exportFallbackLabel: String {
+        DistributionMode.isAppStore ? "Import an AI chat export" : "No direct sign-in? Import an export"
+    }
+
+    /// FALLBACK block: the async email-export path, tucked into a quiet disclosure so it never competes
+    /// with the one-tap direct sign-in tiles above. Holds the per-vendor export deep-links, the "already
+    /// have the file" drop zone, and the guided walkthrough. Opens by default only in the App Store
+    /// build (via `exportFallbackExpanded`), where direct sign-in isn't available.
+    private var exportFallbackSection: some View {
+        DisclosureGroup(isExpanded: $exportFallbackExpanded) {
+            VStack(alignment: .leading, spacing: 12) {
+                // ONE TAP PER VENDOR: deep-link straight to each provider's export page. This is the
+                // step people abandon, so it leads the fallback path.
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Get your export in one tap")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
+                        exportVendorButton("ChatGPT", systemImage: "bubble.left.and.bubble.right", urlString: "https://chatgpt.com/#settings/DataControls")
+                        exportVendorButton("Claude", systemImage: "sparkle", urlString: "https://claude.ai/settings/data-privacy-controls")
+                        // Gemini history lives under Takeout's "My Activity" (the standalone "Gemini"
+                        // product is Gems, not chats), so open My Activity pre-selected; the caption
+                        // below tells the user to narrow it to "Gemini Apps".
+                        exportVendorButton("Gemini", systemImage: "diamond", urlString: "https://takeout.google.com/settings/takeout/custom/my_activity")
+                    }
+                    Text("The provider emails you a download link, usually within a few minutes. Grab the file, then \(DistributionMode.appDisplayName) takes it from there. For Gemini, pick \u{201C}My Activity\u{201D} \u{2192} \u{201C}Gemini Apps\u{201D} in Takeout.")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
+                    .foregroundColor(isTargeted || dropZoneHovering ? CortexDesign.accent : CortexDesign.hairline)
+                    .frame(height: 66)
+                    .overlay(
+                        HStack(spacing: 8) {
+                            if state.importInFlight { ProgressView().scaleEffect(0.7) }
+                            Text(state.importInFlight ? "Importing…" : "Already have the file? Drop it here, or")
+                                .font(.callout).foregroundColor(CortexDesign.inkSecondary)
+                            if !state.importInFlight {
+                                CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .secondary, size: .small) {
+                                    chooseExportFile()
+                                }
+                            }
+                        }
+                    )
+                    .onHover { dropZoneHovering = $0 }
+                    .animation(.easeOut(duration: 0.12), value: dropZoneHovering)
+                    .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
+                        guard let provider = providers.first else { return false }
+                        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                            var resolvedURL: URL?
+                            if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                                resolvedURL = url.standardizedFileURL
+                            } else if let url = item as? URL {
+                                resolvedURL = url.standardizedFileURL
+                            }
+                            Task { @MainActor in
+                                guard let url = resolvedURL else {
+                                    importNotice = "Could not read that dropped item. Try Choose export file instead."
+                                    return
+                                }
+                                // Immediate feedback for an obviously-wrong file type, avoiding a
+                                // pointless round-trip that would fail silently.
+                                let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                                let ext = url.pathExtension.lowercased()
+                                if !isDirectory && !ext.isEmpty
+                                    && !AIChatsImportCard.acceptedExportExtensions.contains(ext) {
+                                    importNotice = "\(DistributionMode.appDisplayName) can import a ChatGPT or Claude export: a .zip, its conversations.json, a .jsonl, or a .txt transcript. \(ext.uppercased()) files aren't supported here."
+                                    return
+                                }
+                                runImport(path: url.path)
+                            }
+                        }
+                        return true
+                    }
+
+                if let notice = importNotice {
+                    Label(notice, systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                DisclosureGroup(isExpanded: $guideExpanded) {
+                    // Guided walkthrough: the highlight strolls through the steps on a loop while the
+                    // disclosure is open, and clicking a step jumps it there. The per-vendor deep-links
+                    // live once, in the grid above — step 1 just points back up to them.
+                    GuidedStepWalkthrough(steps: steps, isActive: guideExpanded, textFont: .caption) { index in
+                        if index == 0 {
+                            Text("Use the provider buttons above ↑")
+                                .font(CortexDesign.Typography.stamp)
+                                .kerning(0.5)
+                                .foregroundColor(CortexDesign.inkFaint)
+                        }
+                    }
+                    .padding(.top, 6)
+                } label: {
+                    Text("Walk me through it")
+                }
+                .font(.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
+            }
+            .padding(.top, 8)
+        } label: {
+            Text(exportFallbackLabel)
+                .font(.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
+        }
+    }
+
+    /// DMG-only: a direct sign-in import tile. Tapping it opens the embedded-browser harvest sheet for
+    /// that vendor instead of the email-export round-trip. Two lines: the vendor name plus an honest
+    /// subtitle — "one tap after you sign in" for the streaming chat vendors, or "exports your whole
+    /// workspace, may take a minute" for Notion's async workspace export (#31).
+    private func sessionImportButton(vendor: AIChatImportVendor) -> some View {
         Button {
             sessionImportVendor = vendor
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage)
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: vendor.symbolName)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(CortexDesign.accent)
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(CortexDesign.ink)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Import from \(vendor.displayName)")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(CortexDesign.ink)
+                    Text(vendor.usesAsyncExport
+                         ? "Exports your whole workspace, may take a minute"
+                         : "One tap after you sign in")
+                        .font(.caption2)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                }
                 Spacer(minLength: 4)
                 Image(systemName: "person.crop.circle.badge.checkmark")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(CortexDesign.inkSecondary)
             }
             .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous).fill(CortexDesign.cardBackground))
             .embossedBorder(radius: CortexDesign.Radius.md)
         }
         .buttonStyle(.plain)
-        .help("Sign in to \(vendor.rawValue) in a secure window and import your chats directly, no export file needed.")
-        .accessibilityLabel(title)
+        .help(vendor.usesAsyncExport
+              ? "Sign in to \(vendor.rawValue) in a secure window and export your whole workspace directly. This can take a minute; progress shows per workspace as it runs."
+              : "Sign in to \(vendor.rawValue) in a secure window and import your chats directly, no export file needed.")
+        .accessibilityLabel("Import from \(vendor.displayName)")
     }
 
     /// A prominent per-vendor deep-link tile: opens that provider's export page in one tap AND records

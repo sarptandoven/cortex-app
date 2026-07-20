@@ -1080,6 +1080,35 @@ private struct OnboardingAddMemoryStep: View {
     /// did nothing at all. Cleared on the next successful drop / file-picker use.
     @State private var dropFeedback: String?
 
+    /// #26/#28 — the single hero action: direct session sign-in for the chosen chat vendor. ChatGPT is
+    /// preselected (the largest first-run cohort); Claude / Perplexity are one quiet tap away on the
+    /// selector. This is the ONE obvious thing a first-timer sees; every other lane is a quiet fallback.
+    @State private var sessionVendor: AIChatImportVendor = .chatgpt
+    /// Non-nil presents the embedded-browser harvest sheet (DMG-only; never set in the App Store build).
+    @State private var presentedSessionVendor: AIChatImportVendor?
+    /// #27 QUICK FIRST SYNC — the memory count captured the moment the first batch of imported chats
+    /// becomes citable, so onboarding flips to a "N memories in — you can start now" beat WITHOUT
+    /// waiting for the whole history to finish streaming.
+    @State private var quickSyncMemories: Int?
+    /// The quiet, collapsed "other ways to add memory" fallbacks (export file, sign-in apps, samples).
+    @State private var otherWaysExpanded = false
+
+    /// The chat vendors offered by the one-tap hero. Notion is deliberately absent: it's an async
+    /// whole-workspace EXPORT, not a chat session, so it lives in the quiet "other ways" fallback.
+    private static let heroChatVendors: [AIChatImportVendor] = [.chatgpt, .claude, .perplexity]
+
+    /// Direct sign-in session import is DMG-only: the App Store build strips outbound HTTPS and can't
+    /// run the embedded harvester, so the hero degrades honestly to the notes-folder primary there.
+    private var sessionImportAvailable: Bool { !DistributionMode.isAppStore }
+
+    /// The count to show in the quick-first-sync success beat: whatever the first import landed, or the
+    /// live memory total once a source is genuinely citable. Nil until the first batch is in.
+    private var quickSyncMemoriesToShow: Int? {
+        if let quickSyncMemories { return quickSyncMemories }
+        if state.onboardingHasSource { return state.stats?.memories ?? state.graphNodes.count }
+        return nil
+    }
+
     private var obsidianConnector: SourceConnectorCatalogItem? {
         state.sourceConnectorCatalog.first { $0.id == "obsidian" }
     }
@@ -1116,7 +1145,7 @@ private struct OnboardingAddMemoryStep: View {
                         .font(CortexDesign.Typography.display(26))
                         .foregroundColor(CortexDesign.ink)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Pick the path that fits you. \(DistributionMode.appDisplayName) distills whatever you bring into cited memory. You can add more any time.")
+                    Text(headerSubtitle)
                         .font(CortexDesign.Typography.prose(15))
                         .lineSpacing(3)
                         .foregroundColor(CortexDesign.inkSecondary)
@@ -1127,65 +1156,260 @@ private struct OnboardingAddMemoryStep: View {
                     .padding(.top, 2)
             }
 
-            // Lead with the fastest path for the biggest first-run cohort: people arriving from
-            // ChatGPT / Claude / Gemini. One tap opens their export page; the file drops in here.
-            OnboardingLaneLabel(
-                systemImage: "bubble.left.and.text.bubble.right",
-                title: "Coming from ChatGPT, Claude, or Gemini?",
-                detail: "Bring that whole history in. It's the quickest way to get real memory in fast."
-            )
-            aiExportOption
-
-            // Then the local notes folder (the primary source path) and the one-tap sign-in apps.
-            OnboardingLaneLabel(
-                systemImage: "folder.badge.plus",
-                title: "Or point \(DistributionMode.appDisplayName) at your notes",
-                detail: "Choose a local notes folder and \(DistributionMode.appDisplayName) keeps it synced on this Mac."
-            )
-            // The card carries the step's `.primary` while no source is live; once one is, the
-            // card relaxes to `.secondary` ("Change source") and the footer Continue takes over.
-            OnboardingConnectionCard(
-                title: connectTitle,
-                detail: connectDetail,
-                systemImage: connectIcon,
-                isPrimary: !state.onboardingHasSource,
-                status: connectStatus,
-                buttonTitle: connectButtonTitle,
-                buttonSystemImage: connectButtonIcon,
-                // In flight while a folder connect / sync this card kicked off is running
-                // (state.isBusy) or any connector sync is active — so the primary can't be
-                // double-fired mid-connect. Also held while the source catalog is still resolving
-                // (U-ONB6) so we never act on a not-yet-known catalog or bounce out of onboarding.
-                isBusy: state.isBusy || !state.connectorSyncingIDs.isEmpty || notesCatalogResolving
-            ) {
-                runConnectAction()
+            // #26/#28 THE hero: one obvious thing to do. Direct session sign-in turns your AI chats into
+            // cited memory in a single tap. Everything below is a quiet fallback.
+            if sessionImportAvailable {
+                aiChatsHero
             }
 
-            // Inline outcome for the connect-notes card: syncLocalNotesFolder writes its guidance
-            // (empty folder, moved folder, …) to `connectorLastMessages`, which otherwise lands on
-            // a Connections surface the user can't see mid-onboarding. Echo it here so a connect
-            // that found no usable notes never resolves silently. Hidden while a connect is in
-            // flight and once a source is live (success is the card's own "Source connected" state).
-            if !state.onboardingHasSource,
-               !state.isBusy,
-               state.connectorSyncingIDs.isEmpty,
-               let connectMessage = state.connectorLastMessages[resolvedNotesConnector.id] {
-                OnboardingNoticeBanner(
-                    notice: OnboardingNotice(severity: .warning, title: nil, message: connectMessage)
-                )
-                .transition(.opacity)
-            }
+            // #27 The quick-first-sync payoff: the instant the first batch of chats becomes citable, we
+            // say so ("N memories in — you can start now") instead of making the user wait for the rest.
+            quickSyncSuccessCard
 
-            appConnectGrid
+            // Quiet fallback 1 — the notes folder. Secondary when the chat hero is present; it only
+            // takes the step's single `.primary` in the App Store build, where session import can't run.
+            notesFallback
 
-            sampleNotesOption
+            // Quiet fallback 2 — everything else, collapsed so a first-timer sees one clear path.
+            otherWaysDisclosure
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: quickSyncMemoriesToShow)
         .task {
             if state.sourceConnectorCatalog.isEmpty {
                 await state.loadSourceConnectivity()
             }
         }
+        // #27 React to first results immediately: the moment memory becomes citable (whether from the
+        // session import finishing its first batch or a background sync landing), capture the count so
+        // the success beat surfaces without waiting for the full history to stream in.
+        .onChange(of: state.onboardingHasSyncedMemory) { synced in
+            if synced, quickSyncMemories == nil {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                    quickSyncMemories = state.stats?.memories ?? state.graphNodes.count
+                }
+            }
+        }
+        // DMG-only direct sign-in harvest sheet. `presentedSessionVendor` is never set in the App Store
+        // build (the hero that sets it is gated on `sessionImportAvailable`), so this presents nothing there.
+        .sheet(item: $presentedSessionVendor) { vendor in
+            AIChatSessionImportView(
+                vendor: vendor,
+                state: state,
+                onFinished: { success in
+                    // Import RESOLVED. Refresh the live memory picture and, if anything landed, flip on
+                    // the quick-first-sync success beat right away — the rest keeps streaming behind it.
+                    guard success else { return }
+                    Task { @MainActor in
+                        await state.loadStats()
+                        await state.loadGraph()
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                            quickSyncMemories = state.stats?.memories ?? state.graphNodes.count
+                        }
+                    }
+                },
+                onDismiss: { presentedSessionVendor = nil }
+            )
+        }
+    }
+
+    /// The header line adapts to the build: lead with the one-tap chat hero on DMG, and stay honest in
+    /// the App Store build (no embedded session import there) by leading with the notes / export paths.
+    private var headerSubtitle: String {
+        sessionImportAvailable
+            ? "The fastest way in: sign in to your AI chats and \(DistributionMode.appDisplayName) turns your history into cited memory. Everything stays on this Mac."
+            : "Point \(DistributionMode.appDisplayName) at your notes, or drop in a ChatGPT or Claude export. Whatever you bring is distilled into cited memory, all on this Mac."
+    }
+
+    // MARK: Hero — connect your AI chats (#26/#28)
+
+    /// The single, unmissable action of this step. A wax primary that opens the embedded sign-in
+    /// importer for the selected chat vendor; a quiet three-way selector picks which. Once real memory
+    /// has landed the primary relaxes to a secondary "Connect more chats" and the footer Continue takes
+    /// over as the step's single `.primary`, so exactly one wax action is ever on screen.
+    private var aiChatsHero: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "bubble.left.and.text.bubble.right")
+                    .font(.title2)
+                    .foregroundColor(CortexDesign.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Connect your AI chats")
+                        .font(.headline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Sign in once and \(DistributionMode.appDisplayName) turns your history into cited memory. It reads only your own chats, and nothing leaves this Mac.")
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                ForEach(OnboardingAddMemoryStep.heroChatVendors) { vendor in
+                    heroVendorChip(vendor)
+                }
+            }
+
+            CortexButton(
+                title: state.onboardingHasSource ? "Connect more chats" : "Connect your \(sessionVendor.displayName) chats",
+                systemImage: "person.crop.circle.badge.checkmark",
+                role: state.onboardingHasSource ? .secondary : .primary,
+                size: .large,
+                fullWidth: true
+            ) {
+                presentedSessionVendor = sessionVendor
+            }
+            .disabled(state.importInFlight)
+            .accessibilityLabel("Connect your \(sessionVendor.displayName) chats")
+
+            if state.importInFlight {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Importing your \(sessionVendor.displayName) chats…")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                }
+                .transition(.opacity)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(CortexDesign.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(CortexDesign.accent.opacity(state.onboardingHasSource ? 0 : 0.32), lineWidth: 1)
+        )
+        .embossedBorder()
+        .shadow(color: CortexDesign.Elevation.rest.ambient.color, radius: CortexDesign.Elevation.rest.ambient.radius, y: CortexDesign.Elevation.rest.ambient.y)
+        .shadow(color: CortexDesign.Elevation.rest.contact.color, radius: CortexDesign.Elevation.rest.contact.radius, y: CortexDesign.Elevation.rest.contact.y)
+    }
+
+    /// A quiet, selectable vendor pill for the hero selector. Selection tints the pill and rings it in
+    /// wax; the primary button below acts on whatever is selected. Not a `.primary` itself, so the
+    /// step keeps exactly one wax action.
+    private func heroVendorChip(_ vendor: AIChatImportVendor) -> some View {
+        let selected = sessionVendor == vendor
+        return Button {
+            withAnimation(CortexMotion.settle) { sessionVendor = vendor }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: vendor.symbolName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(selected ? CortexDesign.accent : CortexDesign.inkSecondary)
+                Text(vendor.displayName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(selected ? CortexDesign.ink : CortexDesign.inkSecondary)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity)
+            .background(selected ? CortexDesign.accentSoft : CortexDesign.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                    .stroke(CortexDesign.accent.opacity(selected ? 0.5 : 0), lineWidth: 1)
+            )
+            .embossedBorder()
+        }
+        .buttonStyle(.plain)
+        .help("Import from \(vendor.displayName)")
+        .accessibilityLabel("Import from \(vendor.displayName)")
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    /// #27 The quick-first-sync success beat. As soon as the first batch of imported chats is citable
+    /// it says "N memories in — you can start now" so the user can move on immediately; the rest of the
+    /// history keeps streaming in the background.
+    @ViewBuilder
+    private var quickSyncSuccessCard: some View {
+        if let count = quickSyncMemoriesToShow {
+            OnboardingCheckRow(
+                title: count > 0
+                    ? "\(count) memories in. You can start now"
+                    : "Your first chats are in. You can start now",
+                detail: "The rest of your history keeps importing in the background. Continue whenever you're ready.",
+                systemImage: "checkmark.seal.fill",
+                color: CortexDesign.sealMoss
+            )
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CortexDesign.panelBackground)
+            .onboardingPanel(radius: 10)
+            .transition(.asymmetric(
+                insertion: .move(edge: .top).combined(with: .opacity),
+                removal: .opacity
+            ))
+        }
+    }
+
+    // MARK: Fallback — notes folder
+
+    /// The quiet notes-folder path. Secondary whenever the chat hero is present; it only becomes the
+    /// step's single `.primary` in the App Store build, where the embedded session import can't run and
+    /// the notes folder is the fastest local path in.
+    @ViewBuilder
+    private var notesFallback: some View {
+        let notesIsPrimary = !sessionImportAvailable && !state.onboardingHasSource
+        OnboardingLaneLabel(
+            systemImage: "folder.badge.plus",
+            title: notesIsPrimary ? "Point \(DistributionMode.appDisplayName) at your notes" : "Or point \(DistributionMode.appDisplayName) at your notes",
+            detail: "Choose a local notes folder and \(DistributionMode.appDisplayName) keeps it synced on this Mac."
+        )
+        OnboardingConnectionCard(
+            title: connectTitle,
+            detail: connectDetail,
+            systemImage: connectIcon,
+            isPrimary: notesIsPrimary,
+            status: connectStatus,
+            buttonTitle: connectButtonTitle,
+            buttonSystemImage: connectButtonIcon,
+            // In flight while a folder connect / sync this card kicked off is running (state.isBusy) or
+            // any connector sync is active — so it can't be double-fired mid-connect. Also held while
+            // the source catalog is still resolving (U-ONB6) so we never act on a not-yet-known catalog.
+            isBusy: state.isBusy || !state.connectorSyncingIDs.isEmpty || notesCatalogResolving
+        ) {
+            runConnectAction()
+        }
+
+        // Inline outcome for the connect-notes card: syncLocalNotesFolder writes its guidance (empty
+        // folder, moved folder, …) to `connectorLastMessages`, which otherwise lands on a Connections
+        // surface the user can't see mid-onboarding. Echo it here so a connect that found no usable
+        // notes never resolves silently. Hidden while a connect is in flight and once a source is live.
+        if !state.onboardingHasSource,
+           !state.isBusy,
+           state.connectorSyncingIDs.isEmpty,
+           let connectMessage = state.connectorLastMessages[resolvedNotesConnector.id] {
+            OnboardingNoticeBanner(
+                notice: OnboardingNotice(severity: .warning, title: nil, message: connectMessage)
+            )
+            .transition(.opacity)
+        }
+    }
+
+    // MARK: Fallback — other ways, collapsed
+
+    /// Every remaining path, tucked into a quiet disclosure so a first-timer isn't asked to choose
+    /// among competing lanes: drop in an export file, sign in to a source app, or explore sample notes.
+    private var otherWaysDisclosure: some View {
+        OnboardingDisclosure(title: "Other ways to add memory", isExpanded: $otherWaysExpanded) {
+            VStack(alignment: .leading, spacing: 16) {
+                OnboardingLaneLabel(
+                    systemImage: "square.and.arrow.down",
+                    title: "Already have an export file?",
+                    detail: "Drag in a ChatGPT, Claude, or Gemini export and \(DistributionMode.appDisplayName) imports it."
+                )
+                aiExportOption
+
+                appConnectGrid
+
+                sampleNotesOption
+            }
+            .padding(.top, 12)
+        }
+        .padding(.top, 2)
     }
 
     /// The lighter, ghost-role path: bundled sample notes so a brand-new user (or a reviewer with
@@ -1451,7 +1675,7 @@ private struct OnboardingAddMemoryStep: View {
         if state.hasConnectedObsidianVault {
             return "\(DistributionMode.appDisplayName) checks connected notes on launch and every 30 minutes, then distills new memory with citations."
         }
-        return "Choose a local notes folder, or drag in a ChatGPT / Claude export. Everything stays on your Mac."
+        return "Choose a local notes folder and \(DistributionMode.appDisplayName) keeps it synced. Everything stays on your Mac."
     }
 
     private var connectIcon: String {
