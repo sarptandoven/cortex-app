@@ -138,13 +138,30 @@ def _start_standalone_worker() -> threading.Thread | None:
     interval_seconds = _env_int("CORTEX_STANDALONE_WORKER_INTERVAL_SECONDS", 15, 2, 3600)
     limit = _env_int("CORTEX_STANDALONE_WORKER_LIMIT", 25, 1, 100)
 
+    # Idle backoff cap: after a run of empty ticks the sleep grows geometrically from
+    # interval_seconds toward this ceiling so an idle app settles to a rare poll instead
+    # of a fixed write cycle. The instant any tick sees work (processed or pending) we snap
+    # back to interval_seconds, so new jobs are never left waiting longer than one base tick.
+    idle_cap_seconds = float(_env_int("CORTEX_STANDALONE_WORKER_IDLE_CAP_SECONDS", 300, interval_seconds, 3600))
+
     def worker_loop() -> None:
+        idle_count = 0
         while True:
             try:
-                _run_standalone_worker_tick(limit=limit)
+                result = _run_standalone_worker_tick(limit=limit)
+                if result.get("processed") or result.get("pending"):
+                    # Work happened or is queued — stay responsive at the base cadence.
+                    idle_count = 0
+                elif interval_seconds * (2 ** idle_count) < idle_cap_seconds:
+                    # Only keep growing the exponent while it still matters; once the sleep
+                    # has reached the cap, stop counting so 2**idle_count can't balloon.
+                    idle_count += 1
             except Exception as exc:  # pragma: no cover - defensive server loop
                 print(f"{APP_BRAND} standalone worker error: {exc}", flush=True)
-            time.sleep(interval_seconds)
+                # A failing tick is not "idle" — keep probing at the base cadence.
+                idle_count = 0
+            sleep_seconds = min(interval_seconds * (2 ** idle_count), idle_cap_seconds)
+            time.sleep(sleep_seconds)
 
     thread = threading.Thread(target=worker_loop, name="cortex-standalone-worker", daemon=True)
     thread.start()

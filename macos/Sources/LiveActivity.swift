@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 // MARK: - Snapshot
 
@@ -108,6 +109,20 @@ final class LiveActivityCenter {
     private let ripple = MemoryFormedRipple()
 
     private var loopTask: Task<Void, Never>?
+    private var cancellables = Set<AnyCancellable>()
+
+    /// Fires whenever the underlying AppState changes (bridged from `objectWillChange` at
+    /// construction). The snapshot is derived ENTIRELY from AppState, so this is a complete wake
+    /// source: any change that could make us busy (working/learnedAt/capturedAt/pendingCount/enabled)
+    /// bumps it. When wired we fully suspend at idle and let this restart the loop; when nil we fall
+    /// back to a gentle idle poll so the loop can never get permanently stuck.
+    private let changeSignal: AnyPublisher<Void, Never>?
+
+    /// start() was called and stop() has not — gates whether wakes are allowed to (re)arm the loop.
+    private var started = false
+    /// The app is frontmost. We pause entirely in the background (didResignActive) and resume on
+    /// didBecomeActive, so nothing samples while the user is looking at another app.
+    private var appActive = true
 
     // Deduped event stamps so a burst is neither missed nor replayed.
     private var lastSeenLearned: Date?
@@ -117,26 +132,100 @@ final class LiveActivityCenter {
     private let activeInterval: TimeInterval = 0.2
     private let idleInterval: TimeInterval = 0.5
 
-    init(snapshotProvider: @escaping @MainActor () -> LiveActivitySnapshot) {
+    /// The result of a single tick: either there is live motion to keep sampling at `activeInterval`,
+    /// or there is nothing to do and the loop should go quiescent (suspend, or slow-poll if unwired).
+    private enum TickOutcome {
+        case busy(TimeInterval)
+        case idle
+    }
+
+    init(snapshotProvider: @escaping @MainActor () -> LiveActivitySnapshot,
+         changeSignal: AnyPublisher<Void, Never>? = nil) {
         self.snapshotProvider = snapshotProvider
+        self.changeSignal = changeSignal
     }
 
     func start() {
+        started = true
+        appActive = NSApplication.shared.isActive
+        observeAppActivation()
+        observeStateChanges()
+        resume()   // reflect current state once, then self-arm only while busy
+    }
+
+    func stop() {
+        started = false
+        loopTask?.cancel()
+        loopTask = nil
+        cancellables.removeAll()
+    }
+
+    /// Restart the sampling loop if it isn't already running. Cheap and idempotent: called from every
+    /// state-change signal and from didBecomeActive, so a suspended loop reliably wakes the instant
+    /// there is something to do. No-op while stopped, in the background, or already looping.
+    func wake() {
+        resume()
+    }
+
+    private func resume() {
+        guard started, appActive, loopTask == nil else { return }
         loopTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let interval = self.tick()
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                switch self.tick() {
+                case .busy(let interval):
+                    // Live motion (working / HUD / ripple) → keep the fast cadence smooth.
+                    try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                case .idle:
+                    if self.changeSignal == nil {
+                        // No event bridge wired → fall back to a gentle idle poll rather than
+                        // suspending, so we can never get stuck (still stops in the background,
+                        // since the loop is cancelled on didResignActive).
+                        try? await Task.sleep(nanoseconds: UInt64(self.idleInterval * 1_000_000_000))
+                    } else {
+                        // Nothing to do → SUSPEND. A state change (changeSignal) or re-activation
+                        // (didBecomeActive) calls wake()/resume() to restart us. Drop the task handle
+                        // (no await between here and return, so no wake can be lost in the gap).
+                        self.loopTask = nil
+                        return
+                    }
+                }
             }
         }
     }
 
-    func stop() {
-        loopTask?.cancel()
-        loopTask = nil
+    /// Pause in the background, resume in the foreground — the sampling loop must not run while the
+    /// user is looking at another app.
+    private func observeAppActivation() {
+        let nc = NotificationCenter.default
+        nc.publisher(for: NSApplication.didResignActiveNotification)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.appActive = false
+                self.loopTask?.cancel()
+                self.loopTask = nil
+            }
+            .store(in: &cancellables)
+        nc.publisher(for: NSApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.appActive = true
+                self.resume()
+            }
+            .store(in: &cancellables)
     }
 
-    private func tick() -> TimeInterval {
+    /// Bridge AppState changes to wake(). Delivered async on the main queue so the tick reads the
+    /// COMMITTED value (objectWillChange fires in willSet, before the property updates).
+    private func observeStateChanges() {
+        guard let changeSignal else { return }
+        changeSignal
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.wake() }
+            .store(in: &cancellables)
+    }
+
+    private func tick() -> TickOutcome {
         let snap = snapshotProvider()
 
         // Master switch: user turned live activity off → hide everything and do no work. Old event
@@ -145,7 +234,7 @@ final class LiveActivityCenter {
             hud.forceHide()
             glow.setActive(false)
             pill?.hidePill()
-            return idleInterval
+            return .idle
         }
 
         // --- Event-driven punctuation (each fires at most once per new stamp) ---
@@ -184,7 +273,7 @@ final class LiveActivityCenter {
         }
 
         let busy = snap.working || hud.isPresenting || ripple.isAnimating
-        return busy ? activeInterval : idleInterval
+        return busy ? .busy(activeInterval) : .idle
     }
 }
 
@@ -777,6 +866,13 @@ struct LiveActivityTicker: View {
         latest != nil && (state.activityBusy || withinLinger)
     }
 
+    /// Drives `.task(id:)` for the linger heartbeat: it re-arms when a card appears/disappears
+    /// (`isShowing`) or a new event lands (`seq`), and — crucially — the task cancels when it goes
+    /// false, so at idle the heartbeat exits and stops re-rendering entirely.
+    private var heartbeatKey: String {
+        "\(isShowing)#\(latest?.seq ?? -1)"
+    }
+
     var body: some View {
         ZStack {
             if isShowing, let latest {
@@ -806,8 +902,12 @@ struct LiveActivityTicker: View {
             if latest != nil { lastEventAt = Date() }
         }
         // A slow local heartbeat so the linger window can expire and fade the card without any further
-        // upstream change. Cheap: it only nudges a Date; the body is trivial when idle.
-        .task {
+        // upstream change. Gated on `heartbeatKey` (isShowing + latest seq): it only runs WHILE a card
+        // is on screen/lingering. When nothing is showing the guard returns immediately, so idle costs
+        // zero ticks and zero re-renders; the moment the linger window lapses, `isShowing` flips false,
+        // the key changes, this task is cancelled, and the app goes fully quiescent.
+        .task(id: heartbeatKey) {
+            guard isShowing else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 now = Date()

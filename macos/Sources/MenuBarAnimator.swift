@@ -115,13 +115,38 @@ final class MenuBarAnimator {
 
     func start() {
         render(.idle)
+        armLoop()
+    }
+
+    /// (Re)arm the sampling loop. The loop advances one animation step per wake and sleeps for the
+    /// interval `tick()` returns — EXCEPT when `tick()` returns `nil`, meaning the icon has settled to
+    /// a dead-idle, static state with nothing in motion and nothing pending. In that case the loop
+    /// suspends itself (`loopTask = nil`) instead of re-arming a pointless ~0.45s heartbeat over a
+    /// glyph that never changes. `nudge()` brings it back the instant the state actually changes, so
+    /// idle costs ZERO background wakes while motion stays perfectly smooth.
+    private func armLoop() {
+        loopTask?.cancel()
         loopTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let interval = self.tick()
+                guard let interval = self.tick() else {
+                    // Dead idle — suspend. A snapshot change re-arms the loop via nudge(); there is no
+                    // permanent-sleep risk because every input that could change the icon calls nudge().
+                    self.loopTask = nil
+                    return
+                }
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
         }
+    }
+
+    /// Wake the loop after a dead-idle suspend. Cheap no-op while it is already running, so the app's
+    /// signal producers (AppState flipping syncing / pendingCount / learnedAt / capturedAt /
+    /// completion) can call this freely on every change — the loop re-arms only when it was asleep,
+    /// then re-evaluates against the current snapshot and resumes the right cadence.
+    func nudge() {
+        guard loopTask == nil else { return }
+        armLoop()
     }
 
     func stop() {
@@ -129,9 +154,12 @@ final class MenuBarAnimator {
         loopTask = nil
     }
 
-    /// Advance one animation step and return how long to sleep before the next one.
-    private func tick() -> TimeInterval {
+    /// Advance one animation step and return how long to sleep before the next one — or `nil` when the
+    /// icon has settled to a dead-idle static state, signalling the loop to SUSPEND (see `armLoop()`).
+    private func tick() -> TimeInterval? {
         // Frozen while the popover is open so the anchored popover stays stable (no button mutation).
+        // Keep a calm heartbeat here (not a suspend): the popover is a brief, foreground interaction,
+        // and holding this cheap poll means we resume the moment it closes without extra wiring.
         if paused { return idleInterval }
         let snap = snapshotProvider()
 
@@ -220,8 +248,13 @@ final class MenuBarAnimator {
         switch visual {
         case .syncing, .success, .learned, .captured: return frameInterval
         // A static attention badge only needs to wake at the calm idle heartbeat to notice a
-        // pendingCount change — not the old ~12fps pulse cadence.
-        case .idle, .attention: return idleInterval
+        // pendingCount change — not the old ~12fps pulse cadence. It stays a poll (not a suspend)
+        // so the count never goes stale, and it only runs while items are actually pending.
+        case .attention: return idleInterval
+        // Dead idle: nothing syncing, no pending review, no queued flourish/checkmark. The glyph is
+        // completely static, so re-arming a 0.45s heartbeat would wake the main actor ~2.2×/sec
+        // forever for no visible change. Return nil → the loop suspends until nudge() fires.
+        case .idle: return nil
         }
     }
 

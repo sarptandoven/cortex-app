@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CryptoKit
 import Foundation
 import SwiftUI
@@ -5044,11 +5045,27 @@ final class AppState: ObservableObject {
         guard syncProgressPollTask == nil else { return }
         syncProgressPollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                await self?.loadJobProgress()
-                // Poll fast (~1.2s) while a sync is active so the bottom Learning HUD's bar advances
-                // live; fall back to a calm 4s cadence when idle to keep energy near zero.
+                // WHEN THE USER IS LOOKING (app frontmost) OR a sync is actually running, keep the
+                // job-health poll live so the bottom Learning HUD's bar advances. AT REST — idle AND
+                // not frontmost — skip the request entirely and settle to a long, near-silent sleep
+                // so nothing wakes while nobody's watching. Resumes seamlessly the moment the app
+                // becomes active or a sync begins (both flip the branch on the next tick).
                 let active = self?.syncProgress?.active == true
-                try? await Task.sleep(nanoseconds: active ? 1_200_000_000 : 4_000_000_000)
+                let frontmost = NSApplication.shared.isActive
+                if active || frontmost {
+                    await self?.loadJobProgress()
+                }
+                // Poll fast (~1.2s) while a sync is active so the HUD bar advances live; a calm 4s
+                // cadence while frontmost-but-idle; a long 24s cadence when at rest (idle + hidden).
+                let interval: UInt64
+                if active {
+                    interval = 1_200_000_000
+                } else if frontmost {
+                    interval = 4_000_000_000
+                } else {
+                    interval = 24_000_000_000
+                }
+                try? await Task.sleep(nanoseconds: interval)
             }
         }
     }
@@ -5067,6 +5084,19 @@ final class AppState: ObservableObject {
         activityStreamTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
+                // WHEN THE USER IS LOOKING (window on-screen) run the live wait=5 long-poll so the
+                // ticker/ripple react instantly. AT REST — the window isn't visible (fully occluded,
+                // hidden, or miniaturized) — nobody can see the ticker, so PAUSE the held connection:
+                // skip the request and await a longer sleep. No events are dropped: `activityCursor`
+                // is preserved, so the first long-poll after the window reappears fetches everything
+                // that landed while we were paused. Resumes the normal 5s cadence seamlessly.
+                let visible = NSApp.occlusionState.contains(.visible)
+                if !visible {
+                    // Let the ticker fade on its own while we're paused (mirror the error-path decay).
+                    if Date().timeIntervalSince(self.lastActivityEventStamp) >= 4 { self.activityBusy = false }
+                    try? await Task.sleep(nanoseconds: 20_000_000_000)
+                    continue
+                }
                 do {
                     let since = self.activityCursor
                     let data = try await self.request(
@@ -12831,6 +12861,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private let state = AppState()
     private var statusItem: NSStatusItem!
     private var menuBarAnimator: MenuBarAnimator?
+    /// Wakes the (self-suspending) menu-bar loop the instant any AppState input changes, so the static
+    /// idle icon costs zero background wakes yet still reacts instantly. See setupStatusItem().
+    private var menuBarNudgeObserver: AnyCancellable?
     /// Owns the bottom-of-screen live-activity surfaces (Learning HUD, edge glow, ripple, pill).
     private var liveActivity: LiveActivityCenter?
     /// The interactive bottom "N to review" pill (P5), injected into the coordinator.
@@ -12979,6 +13012,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         menuBarAnimator = animator
         animator.start()
+        // The menu-bar loop suspends itself at dead idle (static glyph → zero background wakes). Any
+        // AppState mutation republishes objectWillChange — that includes every input the icon reflects
+        // (menuBarWorkCount/syncing, syncProgress, isBusy, review/inbox pending, and the learned/
+        // captured/completion stamps) — so re-arming the loop here on objectWillChange guarantees a
+        // state change always wakes it (no permanent-sleep bug) while true idle stays perfectly quiet.
+        // The sink is non-Sendable and formed in this @MainActor context, so it inherits @MainActor
+        // isolation and can call the @MainActor nudge() directly.
+        menuBarNudgeObserver = state.objectWillChange.sink { [weak animator] _ in
+            animator?.nudge()
+        }
 
         // Bottom-of-screen live activity: a Learning HUD + ambient glow + "memory formed" ripple
         // while Cortex works, and an idle "N to review" pill. One coordinator owns the bottom region
@@ -12991,12 +13034,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             },
             openApp: { [weak self] in self?.showMainWindow() }
         ))
-        let center = LiveActivityCenter { [weak self] in
+        // The snapshot is derived entirely from AppState, so its `objectWillChange` is a complete
+        // wake source: the coordinator suspends its sampling loop at idle and this restarts it only
+        // when state actually changes (no perpetual 2x/sec heartbeat while idle or live-activity off).
+        let center = LiveActivityCenter(snapshotProvider: { [weak self] in
             self?.currentLiveActivitySnapshot() ?? LiveActivitySnapshot(
                 enabled: false, working: false, done: 0, total: 0, detail: nil, pendingCount: 0,
                 learnedAt: nil, capturedAt: nil, learnedCount: 0, syncCompletedAt: nil
             )
-        }
+        }, changeSignal: state.objectWillChange.eraseToAnyPublisher())
         center.pill = pill
         liveActivityPill = pill
         liveActivity = center
