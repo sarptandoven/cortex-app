@@ -32,7 +32,7 @@ from .authn import (
 from .config import APP_BRAND, load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import CORE_TOOL_NAMES, MCP_TOOL_SURFACES, TOOLS, call_tool, export_tool_schema, tool_call_result, tools_for_scopes
+from .mcp_tools import CORE_TOOL_NAMES, MCP_TOOL_SURFACES, TOOLS, _assemble_context_ext_kwargs, call_tool, export_tool_schema, tool_call_result, tools_for_scopes
 from .observability import metrics, route_label
 from .models import AgentSessionsSyncRequest, AgentSessionsSyncResponse, APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
@@ -2198,9 +2198,14 @@ def get_context(
     sector: str | None = Query(default=None, max_length=120),
     project: str | None = Query(default=None, max_length=160),
     as_of: str | None = Query(default=None, max_length=40),
-    format: str = Query(default="json", pattern="^(json|markdown)$"),
+    format: str = Query(default="json", pattern="^(json|markdown|smp)$"),
+    model: str | None = Query(default=None, max_length=80),
     user_id: str = Depends(auth),
 ) -> Any:
+    # 'smp' selects the self-describing SMP envelope (response_format), not a text renderer, so the
+    # internal render format falls back to json in that path. model=None + text = byte-identical.
+    response_format = "smp" if format == "smp" else "text"
+    internal_format = "json" if format == "smp" else format
     pack = store.assemble_context(
         user_id,
         task,
@@ -2213,16 +2218,20 @@ def get_context(
         # Reaching this endpoint already required the read scope, and the identity layer is a read
         # of distilled context — so it is always included here.
         include_identity=True,
-        format=format,
+        format=internal_format,
+        **_assemble_context_ext_kwargs(response_format, model),
     )
-    return _context_response(pack, format)
+    return _context_response(pack, internal_format)
 
 
 @app.post("/v1/context", response_model=None)
 def post_context(body: dict[str, Any], request: Request, user_id: str = Depends(auth)) -> Any:
     format = str(body.get("format") or "json").strip().lower()
-    if format not in {"json", "markdown"}:
-        raise HTTPException(status_code=422, detail="format must be json or markdown")
+    if format not in {"json", "markdown", "smp"}:
+        raise HTTPException(status_code=422, detail="format must be json, markdown, or smp")
+    response_format = "smp" if format == "smp" else "text"
+    internal_format = "json" if format == "smp" else format
+    model = str(body.get("model") or "") or None
     try:
         token_budget = int(body.get("token_budget") or 2000)
     except (TypeError, ValueError):
@@ -2237,11 +2246,12 @@ def post_context(body: dict[str, Any], request: Request, user_id: str = Depends(
         as_of=str(body.get("as_of") or "") or None,
         intent=str(body.get("intent") or "") or None,
         include_identity=_bearer_has_export_scope(request),
-        format=format,
+        format=internal_format,
         pin=bool(body.get("pin")),
         session_id=str(body.get("session_id") or "") or None,
+        **_assemble_context_ext_kwargs(response_format, model),
     )
-    return _context_response(pack, format)
+    return _context_response(pack, internal_format)
 
 
 @app.get("/v1/context/packs", response_model=None)

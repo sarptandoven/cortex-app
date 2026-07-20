@@ -22,7 +22,9 @@ DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 # potion-base-8M emits 256-dim vectors natively (NOT 384) — so it is not
 # drop-in compatible with the existing 384-dim sqlite-vec index. We surface
 # that honestly via embedding_status().index_compatible rather than padding or
-# truncating into the index. See NOTE at bottom of file re: making this default.
+# truncating into the index. As of the model2vec-by-default change, configured_embedding_provider()
+# prefers model2vec WHENEVER the bundled model exists on disk (model2vec_available), degrading to
+# hash when it does not — so no new asset is bundled and hash-only machines/CI stay byte-identical.
 DEFAULT_MODEL2VEC_MODEL = "minishlab/potion-base-8M"
 MODEL2VEC_DIMENSIONS = 256
 
@@ -101,9 +103,63 @@ class EmbeddingResult:
     dimensions: int
 
 
+_BUNDLED_MODEL2VEC_PROBE: tuple[bool, str] | None = None
+
+
+def _looks_like_model2vec_dir(path: Path) -> bool:
+    """A directory is a usable local model2vec model when it holds the sentinel config.json that
+    save_pretrained() writes (mirrors the launcher's bundled-model check). Cheap, no import."""
+    try:
+        return path.is_dir() and (path / "config.json").is_file()
+    except OSError:
+        return False
+
+
+def _bundled_model2vec_dir() -> str:
+    """Path of the model2vec model bundled alongside the backend package, if present.
+
+    In the shipped app the model sits at Resources/model2vec, next to the backend package — relative
+    to this module that is <package-parent>/model2vec. The probe is process-cached (the bundle layout
+    is fixed for an install); returns "" when no bundled model exists so we degrade to hash rather
+    than trigger a network download. An explicit CORTEX_MODEL2VEC_PATH is handled separately/live."""
+    global _BUNDLED_MODEL2VEC_PROBE
+    if _BUNDLED_MODEL2VEC_PROBE is None:
+        candidate = Path(__file__).resolve().parent.parent.parent / "model2vec"
+        _BUNDLED_MODEL2VEC_PROBE = (_looks_like_model2vec_dir(candidate), str(candidate))
+    exists, path = _BUNDLED_MODEL2VEC_PROBE
+    return path if exists else ""
+
+
+def resolve_model2vec_path() -> str:
+    """The local model2vec directory to load from. An explicit CORTEX_MODEL2VEC_PATH wins (checked
+    live, honoured even if it turns out stale so _load_model2vec_model's fallback path is unchanged);
+    otherwise the bundled model next to the backend package (if present). "" means no local dir — the
+    loader then falls back to the configured model id (network) only if model2vec was requested."""
+    explicit = os.environ.get("CORTEX_MODEL2VEC_PATH", "").strip()
+    if explicit:
+        return explicit
+    return _bundled_model2vec_dir()
+
+
+def model2vec_available() -> bool:
+    """True when a bundled/configured model2vec model actually exists on disk (config.json present).
+
+    Drives the DEFAULT provider selection (see configured_embedding_provider): semantic retrieval is
+    preferred WHENEVER the model is present, but a machine without it degrades to the deterministic
+    hash embedder with no network fetch. Bundle-size neutral — probes an already-bundled asset."""
+    path = resolve_model2vec_path()
+    return bool(path) and _looks_like_model2vec_dir(Path(path).expanduser())
+
+
 def configured_embedding_provider() -> str:
-    provider = os.environ.get("CORTEX_EMBEDDING_PROVIDER", "hash").strip().lower()
-    return provider if provider in {"hash", "openai", "model2vec"} else "hash"
+    raw = os.environ.get("CORTEX_EMBEDDING_PROVIDER", "").strip().lower()
+    if raw in {"hash", "openai", "model2vec"}:
+        return raw
+    # No explicit override: prefer on-device semantic retrieval WHEN the bundled model2vec model is
+    # actually present on disk; otherwise degrade to the deterministic hash embedder. CI (no bundled
+    # model) stays on hash and byte-identical, while the shipped app (model bundled) defaults to real
+    # semantics with no env var. CORTEX_EMBEDDING_PROVIDER remains an explicit escape hatch.
+    return "model2vec" if model2vec_available() else "hash"
 
 
 def configured_embedding_model() -> str:
@@ -278,8 +334,10 @@ def _load_model2vec_model() -> Any:
     needs no API key, and (with a local path or a cached model) touches no network.
     """
     global _MODEL2VEC_MODEL, _MODEL2VEC_MODEL_KEY
-    # Prefer an explicit bundled/local model directory; otherwise use the configured model id.
-    local_path = os.environ.get("CORTEX_MODEL2VEC_PATH", "").strip()
+    # Prefer an explicit/bundled local model directory (resolve_model2vec_path also finds the model
+    # bundled next to the package, so the default provider selection loads offline); otherwise use
+    # the configured model id.
+    local_path = resolve_model2vec_path()
     key = local_path or configured_embedding_model()
     cached = _MODEL2VEC_MODEL
     if cached is not None and _MODEL2VEC_MODEL_KEY == key:

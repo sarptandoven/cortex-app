@@ -1,0 +1,154 @@
+{
+  "note": "Per-model token counts are SIMULATED (chosen near each profile's calibrated chars/token but offset from a pure constant divisor). They are placeholders so the calibration gate is runnable offline; replace `tokens` with true vendor-tokenizer counts when founder-provided.",
+  "estimators": {
+    "flat_baseline_chars_per_token": 4.0,
+    "profiles_under_test": [
+      "generic",
+      "claude",
+      "cursor",
+      "gpt"
+    ],
+    "strict_improvement_expected_for": [
+      "claude",
+      "cursor"
+    ],
+    "tie_expected_for": [
+      "generic",
+      "gpt"
+    ]
+  },
+  "samples": [
+    {
+      "id": "prose_short",
+      "chars": 61,
+      "text": "The migration cutover is scheduled for Saturday at 02:00 UTC.",
+      "tokens": {
+        "generic": 15,
+        "claude": 16,
+        "cursor": 17,
+        "gpt": 15
+      }
+    },
+    {
+      "id": "prose_long",
+      "chars": 246,
+      "text": "We decided to keep dual-write enabled through the entire Granite migration so that the legacy warehouse and the new shard cluster stay consistent while we backfill historical dashboards, and only cut reads over once the differ reports zero drift.",
+      "tokens": {
+        "generic": 61,
+        "claude": 66,
+        "cursor": 70,
+        "gpt": 60
+      }
+    },
+    {
+      "id": "list",
+      "chars": 106,
+      "text": "- resting heart rate: 54 bpm\n- hydration target: 3.2 L/day\n- long run: Sunday 18km\n- recovery: Monday easy",
+      "tokens": {
+        "generic": 26,
+        "claude": 28,
+        "cursor": 30,
+        "gpt": 26
+      }
+    },
+    {
+      "id": "code",
+      "chars": 140,
+      "text": "def resolve_profile(model, surface='agent'):\n    needle = f'{model} {surface}'.lower()\n    return MODEL_PROFILES.get(match(needle), GENERIC)",
+      "tokens": {
+        "generic": 35,
+        "claude": 38,
+        "cursor": 40,
+        "gpt": 34
+      }
+    },
+    {
+      "id": "identifiers",
+      "chars": 86,
+      "text": "rq_x_granite_neg_backfill rq_x_foundry_dec_ats source_url=cortex://vault/abc123-def456",
+      "tokens": {
+        "generic": 21,
+        "claude": 23,
+        "cursor": 25,
+        "gpt": 21
+      }
+    },
+    {
+      "id": "question",
+      "chars": 76,
+      "text": "What is my resting heart rate and hydration target for the weekend long run?",
+      "tokens": {
+        "generic": 19,
+        "claude": 20,
+        "cursor": 22,
+        "gpt": 19
+      }
+    },
+    {
+      "id": "mixed",
+      "chars": 139,
+      "text": "Constraint: never ship the offline tile cache without the regression suite (see PR #4821). Owner: kestrel-team. Decision logged 2026-03-14.",
+      "tokens": {
+        "generic": 34,
+        "claude": 37,
+        "cursor": 40,
+        "gpt": 34
+      }
+    },
+    {
+      "id": "frag",
+      "chars": 33,
+      "text": "Prefer concise changelog entries.",
+      "tokens": {
+        "generic": 8,
+        "claude": 9,
+        "cursor": 9,
+        "gpt": 8
+      }
+    },
+    {
+      "id": "url_heavy",
+      "chars": 102,
+      "text": "https://api.signindoppl.com/v1/context?format=smp&model=claude cited at github.com/doppl-tech/releases",
+      "tokens": {
+        "generic": 25,
+        "claude": 27,
+        "cursor": 29,
+        "gpt": 25
+      }
+    },
+    {
+      "id": "numeric",
+      "chars": 94,
+      "text": "Q3 targets: 200 users, 12000 token budget, 3.8 chars/token, 0.83 ndcg, 0.95 mrr, 1.0 citation.",
+      "tokens": {
+        "generic": 23,
+        "claude": 25,
+        "cursor": 27,
+        "gpt": 23
+      }
+    },
+    {
+      "id": "prose_med",
+      "chars": 160,
+      "text": "The panel debrief should capture each interviewer's signal within an hour while it is fresh, then reconcile scores against the take-home rubric before the sync.",
+      "tokens": {
+        "generic": 40,
+        "claude": 43,
+        "cursor": 46,
+        "gpt": 39
+      }
+    },
+    {
+      "id": "style",
+      "chars": 95,
+      "text": "Write in a warm, plain voice. Short sentences. No jargon. Lead with the decision, then the why.",
+      "tokens": {
+        "generic": 23,
+        "claude": 26,
+        "cursor": 27,
+        "gpt": 23
+      }
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from typing import Any
@@ -949,7 +950,8 @@ TOOLS = [
                 "sector": {"type": "string"},
                 "project": {"type": "string", "description": "Entity/project name to center the pack on."},
                 "as_of": {"type": "string"},
-                "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+                "format": {"type": "string", "enum": ["json", "markdown", "smp"], "default": "json", "description": "Output shape. 'smp' returns a self-describing Standard Memory Protocol envelope (read cortex://smp/schema) that any LLM parses zero-shot."},
+                "model": {"type": "string", "description": "Optional target model/profile name (e.g. 'gpt-4o', 'claude-3-5-sonnet') so the pack is budgeted to that model's context window. Unknown/omitted => default profile."},
                 "pin": {"type": "boolean", "default": False, "description": "Persist this pack as an immutable, sha256-addressed audit artifact you can replay later via get_context_pack."},
                 "session_id": {"type": "string", "description": "Agent continuity session (asess_...) to link a pinned pack to."},
             },
@@ -1031,6 +1033,9 @@ TOOLS = [
                 "task": {"type": "string", "description": "What you need from the user's memory, in natural language."},
                 "intent": {"type": "string", "enum": ["answer", "act", "draft", "plan", "recall"], "description": "Optional hint about what you're doing."},
                 "token_budget": {"type": "integer", "default": 2000, "minimum": 300, "maximum": 6000},
+                "surface": {"type": "string", "description": "Which tool you are (cursor, claude, chatgpt, ...); forwarded when the task routes to a context pack."},
+                "model": {"type": "string", "description": "Optional target model/profile name so a routed context pack is budgeted to that model's context window."},
+                "format": {"type": "string", "enum": ["json", "markdown", "smp"], "description": "Output shape for a routed context pack. 'smp' returns a self-describing Standard Memory Protocol envelope (read cortex://smp/schema)."},
             },
             "required": ["task"],
         },
@@ -1909,6 +1914,7 @@ CORTEX_RESOURCES: list[dict[str, Any]] = [
     {"uri": "cortex://profile/personal", "name": "Personal profile", "description": "Distilled, cited profile grouped by memory layer.", "mimeType": "application/json"},
     {"uri": "cortex://profile/adaptation", "name": "Agent adaptation guide", "description": "Cited operating instructions for an AI assistant acting for the user.", "mimeType": "application/json"},
     {"uri": "cortex://schema/capabilities", "name": f"{APP_BRAND} capabilities", "description": "Memory counts + the tool catalog.", "mimeType": "application/json"},
+    {"uri": "cortex://smp/schema", "name": "Standard Memory Protocol schema", "description": "Self-describing legend for the SMP envelope + MemoryObject fields, so any LLM parses a format=smp context pack zero-shot.", "mimeType": "application/json"},
     {"uri": "cortex://review/daily", "name": "Daily review", "description": "Today's pending captures, open loops, decisions, and topics.", "mimeType": "application/json"},
 ]
 CORTEX_RESOURCE_TEMPLATES: list[dict[str, Any]] = [
@@ -1918,6 +1924,7 @@ CORTEX_PROMPTS: list[dict[str, Any]] = [
     {"name": "summarize_recent_decisions", "description": "Summarize the user's recent decisions from cited memory.", "arguments": [{"name": "since", "description": "Optional ISO date to summarize from.", "required": False}]},
     {"name": "extract_action_items", "description": "Extract open action items / commitments from the user's memory.", "arguments": [{"name": "topic", "description": "Optional topic to focus on.", "required": False}]},
     {"name": "brief_me_on", "description": "Produce a cited briefing on a person, project, or topic.", "arguments": [{"name": "subject", "description": "Person/project/topic to brief on.", "required": True}]},
+    {"name": "smp_usage", "description": "How to request and parse the Standard Memory Protocol (SMP) envelope — the self-describing context-pack format any agent can consume zero-shot.", "arguments": []},
 ]
 
 
@@ -1939,6 +1946,12 @@ def list_resource_templates() -> list[dict[str, Any]]:
 def read_resource(store: CortexStore, user_id: str, uri: str, token_scopes: list[str] | None = None) -> dict[str, Any]:
     _read_gate(store, user_id, token_scopes)
     target = str(uri or "").strip()
+    if target == "cortex://smp/schema":
+        # Static protocol legend (no user data): imported from smp, never duplicated, and returned
+        # without agent_payload so the shared SMP_LEGEND dict is never mutated (e.g. warnings[]).
+        from .smp import SMP_LEGEND
+
+        return {"contents": [{"uri": target, "mimeType": "application/json", "text": json.dumps(SMP_LEGEND, ensure_ascii=False)}]}
     if target == "cortex://profile/person-map":
         payload: Any = store.person_map(user_id)
     elif target == "cortex://profile/personal":
@@ -1984,6 +1997,24 @@ def get_prompt(store: CortexStore, user_id: str, name: str, args: dict[str, Any]
     def _cited(payload: Any) -> str:
         return json.dumps(store.agent_payload(user_id, payload), ensure_ascii=False, indent=2)
 
+    if name == "smp_usage":
+        # Generated from the same legend the envelope carries (import, never duplicate) so the
+        # guidance can never drift from the wire format.
+        from .smp import SMP_LEGEND
+
+        return _message(
+            "Standard Memory Protocol (SMP) — how to request and read a "
+            f"{APP_BRAND} context pack that any model parses zero-shot.\n\n"
+            "REQUEST: call get_context (or use_cortex) with format=\"smp\"; optionally pass "
+            "model=\"<your model>\" so the pack is budgeted to your context window. Over HTTP: "
+            "GET /v1/context?format=smp&model=<model>.\n\n"
+            "READ: the response is a single JSON envelope. Every field is described by the legend "
+            "below (also served as the cortex://smp/schema resource). Trust only what is present: "
+            "each item is cited (ref/source_url) and carries its own relevance basis and 'why'; "
+            "superseded facts are never served and dropped items are reflected in coverage — never "
+            "invent memory that is not in items[].\n\n"
+            "SMP LEGEND:\n" + json.dumps(SMP_LEGEND, ensure_ascii=False, indent=2)
+        )
     if name == "summarize_recent_decisions":
         history = store.decision_history(user_id, "", limit=12, include_superseded=False)
         return _message(
@@ -2014,6 +2045,19 @@ def get_prompt(store: CortexStore, user_id: str, name: str, args: dict[str, Any]
             "coverage is thin, say so.\n\n" + _cited(payload)
         )
     raise ValueError(f"Unknown {APP_BRAND} prompt: {name}")
+
+
+def _assemble_context_ext_kwargs(response_format: str, model: str | None) -> dict[str, Any]:
+    """Forward the SMP/model-profile knobs to assemble_context only when it accepts them, so an
+    unknown/missing arg is a silent no-op (current behavior) rather than a TypeError. model=None +
+    response_format='text' is the byte-identical default and is passed through unchanged."""
+    params = inspect.signature(CortexStore.assemble_context).parameters
+    kw: dict[str, Any] = {}
+    if "response_format" in params:
+        kw["response_format"] = response_format
+    if "model" in params:
+        kw["model"] = model
+    return kw
 
 
 def _bool_arg(args: dict[str, Any], key: str, default: bool = False) -> bool:
@@ -2056,6 +2100,19 @@ def _connector_title(memory: dict[str, Any], *, max_chars: int = 120) -> str:
     if len(candidate) > max_chars:
         candidate = candidate[: max_chars - 1].rstrip() + "…"
     return candidate
+
+
+def _connector_excerpt(memory: dict[str, Any], *, max_chars: int = 320) -> str:
+    """A short inline snippet for a memory in the ChatGPT-connector `search` shape: the memory's
+    content (else summary) collapsed to a single trimmed excerpt. Lets the connector rank/quote a
+    hit without a per-result `fetch` round-trip; `fetch` still returns the full document."""
+    text = str(memory.get("content") or memory.get("summary") or "").strip()
+    if not text:
+        return ""
+    text = " ".join(text.split())
+    if len(text) > max_chars:
+        text = text[: max_chars - 1].rstrip() + "…"
+    return text
 
 
 def _text_list_arg(
@@ -2564,6 +2621,17 @@ def _route_use_cortex(task: str, intent: str | None, args: dict[str, Any]) -> tu
     context_args: dict[str, Any] = {"task": text, "token_budget": budget}
     if intent:
         context_args["intent"] = intent
+    # Read-only passthroughs for a routed context pack: which surface asked, which model to budget
+    # to, and the envelope shape (json/markdown/smp). Only forwarded to get_context, which knows them.
+    surface = _text_arg(args, "surface", max_chars=40) or None
+    if surface:
+        context_args["surface"] = surface
+    model = _text_arg(args, "model", max_chars=80) or None
+    if model:
+        context_args["model"] = model
+    fmt = _text_arg(args, "format", max_chars=12) or None
+    if fmt:
+        context_args["format"] = fmt
     return "get_context", context_args, others("get_context")
 
 
@@ -2680,6 +2748,11 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         # rest of the picture. Any read-scoped agent gets it; a token with neither read nor export
         # (write/maintenance-only) still sees a visible omission record instead of a hard error.
         include_identity = token_scopes is None or bool({"read", "export"} & set(token_scopes))
+        requested_format = _text_arg(args, "format", "json", max_chars=12) or "json"
+        response_format = "smp" if requested_format == "smp" else "text"
+        # 'smp' is a response-shape (SMP envelope) built by the packer, not a text renderer, so the
+        # internal render format falls back to json in that path.
+        internal_format = "json" if requested_format == "smp" else requested_format
         return store.agent_payload(
             user_id,
             store.assemble_context(
@@ -2692,9 +2765,10 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
                 as_of=_text_arg(args, "as_of", max_chars=40) or None,
                 intent=_text_arg(args, "intent", max_chars=16) or None,
                 include_identity=include_identity,
-                format=_text_arg(args, "format", "json", max_chars=12) or "json",
+                format=internal_format,
                 pin=bool(args.get("pin")),
                 session_id=_text_arg(args, "session_id", max_chars=80) or None,
+                **_assemble_context_ext_kwargs(response_format, _text_arg(args, "model", max_chars=80) or None),
             ),
         )
     if name == "get_context_pack":
@@ -2761,7 +2835,10 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         }
     if name == "search":
         # ChatGPT connector `search`: thin adapter over the SAME retrieval search_memory uses.
-        # Projects each memory to the {id, title, url} shape ChatGPT expects; nothing else leaks.
+        # Projects each memory to the {id, title, url, text} shape ChatGPT expects; nothing else
+        # leaks. `text` is an inline excerpt so the connector can rank/quote without a per-hit
+        # `fetch` round-trip (fetch still serves the full document for drill-down). `relevance`
+        # is a numeric score carried through when the retrieval payload provides one.
         query = _text_arg(args, "query")
         payload = store.public_search_payload(user_id, query, 10)
         results = []
@@ -2772,11 +2849,16 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             if not memory_id:
                 continue
             source_url = str(item.get("source_url") or "").strip()
-            results.append({
+            hit = {
                 "id": memory_id,
                 "title": _connector_title(item),
                 "url": source_url or f"cortex://memory/{memory_id}",
-            })
+                "text": _connector_excerpt(item),
+            }
+            relevance = item.get("relevance")
+            if isinstance(relevance, (int, float)) and not isinstance(relevance, bool):
+                hit["relevance"] = float(relevance)
+            results.append(hit)
         return {"results": results}
     if name == "fetch":
         # ChatGPT connector `fetch`: full document for one id from `search`. Unknown/foreign id

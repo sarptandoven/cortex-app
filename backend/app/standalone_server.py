@@ -29,6 +29,7 @@ from .hosted_readiness import hosted_readiness_contract
 from .mcp_tools import (
     CORE_TOOL_NAMES,
     TOOLS,
+    _assemble_context_ext_kwargs,
     call_tool,
     export_tool_schema,
     get_prompt,
@@ -2596,6 +2597,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     project = str(body.get("project") or "") or None
                     as_of = str(body.get("as_of") or "") or None
                     output_format = str(body.get("format") or "json").strip().lower()
+                    model = str(body.get("model") or "") or None
                     pin = bool(body.get("pin"))
                     pin_session_id = str(body.get("session_id") or "") or None
                     try:
@@ -2611,12 +2613,18 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     project = (params.get("project") or [None])[0]
                     as_of = (params.get("as_of") or [None])[0]
                     output_format = ((params.get("format") or ["json"])[0] or "json").strip().lower()
+                    model = (params.get("model") or [None])[0] or None
                     token_budget = _int_param(params, "token_budget", 2000, 1, 100000)
                     pin = ((params.get("pin") or [""])[0] or "").strip().lower() in {"1", "true", "yes"}
                     pin_session_id = (params.get("session_id") or [None])[0] or None
-                if output_format not in {"json", "markdown"}:
-                    self._send_json({"detail": "format must be json or markdown"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                if output_format not in {"json", "markdown", "smp"}:
+                    self._send_json({"detail": "format must be json, markdown, or smp"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                     return
+                # 'smp' selects the self-describing SMP envelope (response_format), not a text
+                # renderer; internal render format falls back to json. model=None + text is
+                # byte-identical to the prior behavior.
+                response_format = "smp" if output_format == "smp" else "text"
+                internal_format = "json" if output_format == "smp" else output_format
                 pack = store.assemble_context(
                     user_id,
                     task,
@@ -2629,11 +2637,12 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     # Reaching /v1/context already required read scope; the identity layer is a read
                     # of distilled context, so it is always included.
                     include_identity=True,
-                    format=output_format,
+                    format=internal_format,
                     pin=pin,
                     session_id=pin_session_id,
+                    **_assemble_context_ext_kwargs(response_format, model),
                 )
-                if output_format == "markdown":
+                if internal_format == "markdown":
                     self._send_text(pack, media_type="text/markdown")
                 else:
                     self._send_json(pack)

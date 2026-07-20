@@ -83,7 +83,7 @@ class PromptTests(unittest.TestCase):
 
     def test_list_prompts(self):
         names = {p["name"] for p in mcp_tools.list_prompts()}
-        self.assertEqual(names, {"summarize_recent_decisions", "extract_action_items", "brief_me_on"})
+        self.assertEqual(names, {"summarize_recent_decisions", "extract_action_items", "brief_me_on", "smp_usage"})
         brief = next(p for p in mcp_tools.list_prompts() if p["name"] == "brief_me_on")
         self.assertTrue(any(a["name"] == "subject" and a.get("required") for a in brief["arguments"]))
 

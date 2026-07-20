@@ -15,12 +15,42 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.app.database import init_db
-from backend.app.storage import CortexStore
+from backend.app.storage import (
+    CONTEXT_INTENT_WEIGHTS,
+    CortexStore,
+    _CONTEXT_INSTRUCTIONS,
+    resolve_profile,
+)
+from backend.app.smp import SMP_LEGEND
 from scripts.retrieval_eval import seed_representative_memories
 
 
 USER_ID = "context-pack-quality"
 METRIC_K = 5
+
+# Model-profile matrix (build-plan #7/#9). The SAME quality gate is proven across three
+# consuming-model profiles so the profile plumbing can never silently regress pack quality:
+#   * generic (model=None) — the byte-identical legacy per-intent greedy packer.
+#   * claude  ("large")    — wide window, global marginal-utility knapsack/MMR packer.
+#   * cursor  ("small")    — tight window, knapsack packer that leans hardest on relevance.
+# Every ranking/coverage floor must hold (or rise) for EACH profile.
+PROFILES: tuple[tuple[str, str | None], ...] = (
+    ("generic", None),
+    ("claude", "claude"),
+    ("cursor", "cursor"),
+)
+
+# Budget-efficiency probe budget. The primary metrics run at each case's own (roomy) budget so
+# ranking/coverage is measured without starvation; utilization + regret are measured at a
+# deliberately BINDING budget where the packer must actually choose what to keep — that is the
+# only regime where "did you spend the budget well?" is a meaningful question. At this budget
+# every profile's evidence exceeds the budget for at least some cases, so the floor bites.
+BUDGET_PROBE_TOKENS = 1200
+
+# Universe budget for the offline-optimal knapsack baseline: large enough that the packer emits
+# every cited candidate it would ever consider (the seeded corpus is far smaller than any
+# profile's pack_token_budget cap), so the eval sees the full candidate pool to optimize over.
+UNIVERSE_BUDGET_TOKENS = 200_000
 
 # Context Assembly Engine (assemble_context / get_context) quality gate. No existing gate
 # exercises the pack builder end-to-end: this seeds the retrieval_eval multi-source,
@@ -44,6 +74,26 @@ METRIC_K = 5
 # citation_coverage=1.0, no_leak=1.0, budget_adherence=1.0, intent_derivation=1.0. Floors sit
 # ~0.05 below the first measured value; citation_coverage / no_leak / budget_adherence /
 # intent_derivation are hard invariants pinned at 1.0.
+#
+# Budget-efficiency gates (build-plan #5/#9), measured at the BINDING BUDGET_PROBE_TOKENS:
+#   * budget_utilization  — fraction of the *achievable* budget the pack actually spends
+#                           (used_content / min(packable_budget, total_candidate_tokens)).
+#                           Floor 0.8 whenever evidence exists: a packer that leaves budget on
+#                           the table while dropping cited items is wasting the window.
+#   * budget_regret       — 1 - captured_value/optimal_value vs an offline-optimal 0/1 knapsack
+#                           the eval computes over the full candidate pool (value = the intent's
+#                           per-layer weight; cost = the profile's own token estimate). Ceiling
+#                           0.30: the online packer must stay within 30% of the offline optimum.
+#                           (The knapsack profiles measure ~0.0; the legacy per-layer allocator
+#                           is the binding case at ~0.21.)
+#
+# SMP-contract gates (build-plan #4/#9): every response_format="smp" envelope validates against
+# its own inline legend (all declared fields present, NO undeclared keys), and its projected
+# items are byte-parity with the underlying text-format pack items:
+#   * smp_valid           — envelope + every item carry EXACTLY their legend-declared fields.
+#   * smp_citation_coverage / smp_no_leak — stay 1.0 (invariants carry through the projection).
+#   * smp_byte_parity     — each SMP item's facts equal the text pack's item (same ref → same
+#                           content/source_url/layer/relevance): a pure projection, no drift.
 CONTEXT_PACK_THRESHOLDS: dict[str, Any] = {
     "min_case_count": 10,
     "layer_population": 0.95,
@@ -53,7 +103,14 @@ CONTEXT_PACK_THRESHOLDS: dict[str, Any] = {
     "no_leak": 1.0,
     "budget_adherence": 1.0,
     "intent_derivation": 1.0,
+    "budget_utilization": 0.8,
+    "smp_valid": 1.0,
+    "smp_citation_coverage": 1.0,
+    "smp_no_leak": 1.0,
+    "smp_byte_parity": 1.0,
 }
+# budget_regret is a CEILING (lower is better), so it lives apart from the floor thresholds above.
+CONTEXT_PACK_REGRET_CEILING = 0.30
 
 
 @dataclass(frozen=True)
@@ -290,7 +347,203 @@ def _mrr(ranked_ids: list[str], relevance: dict[str, int]) -> float:
     return 0.0
 
 
-def _evaluate_case(store: CortexStore, user_id: str, case: ContextCase, id_sector: dict[str, str]) -> dict[str, Any]:
+# --------------------------------------------------------------------------------------------
+# SMP-contract helpers (build-plan #4/#9): validate a response_format="smp" envelope against
+# its own inline legend and prove it is a byte-parity projection of the text-format pack.
+# --------------------------------------------------------------------------------------------
+
+def _smp_declared_envelope_fields() -> set[str]:
+    return set(SMP_LEGEND.get("envelope") or {})
+
+
+def _smp_declared_item_fields() -> set[str]:
+    return set(SMP_LEGEND.get("item") or {})
+
+
+def _validate_smp_envelope(envelope: dict[str, Any]) -> list[str]:
+    """Every declared field present, NO undeclared keys — for the envelope and every item.
+    Returns a list of human-readable violations (empty == valid)."""
+    problems: list[str] = []
+    declared_env = _smp_declared_envelope_fields()
+    keys = set(envelope.keys())
+    for missing in sorted(declared_env - keys):
+        problems.append(f"envelope missing declared field '{missing}'")
+    for extra in sorted(keys - declared_env):
+        problems.append(f"envelope has undeclared key '{extra}'")
+    # The embedded legend must itself be the contract we validated against.
+    if envelope.get("legend") is not SMP_LEGEND and envelope.get("legend") != SMP_LEGEND:
+        problems.append("envelope legend does not match SMP_LEGEND")
+    if str(envelope.get("smp") or "") != "1":
+        problems.append(f"envelope smp version != '1' (got {envelope.get('smp')!r})")
+    declared_item = _smp_declared_item_fields()
+    for index, item in enumerate(envelope.get("items") or []):
+        if not isinstance(item, dict):
+            problems.append(f"item[{index}] is not an object")
+            continue
+        item_keys = set(item.keys())
+        for missing in sorted(declared_item - item_keys):
+            problems.append(f"item[{index}] missing declared field '{missing}'")
+        for extra in sorted(item_keys - declared_item):
+            problems.append(f"item[{index}] has undeclared key '{extra}'")
+    return problems
+
+
+def _relevance_value(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _smp_byte_parity(envelope: dict[str, Any], text_pack: dict[str, Any]) -> list[str]:
+    """Each SMP item projects an underlying text-pack item without inventing or dropping facts:
+    the ref sets match, and for every shared ref the content/source_url/layer/relevance are equal.
+    Returns a list of parity violations (empty == byte-parity)."""
+    problems: list[str] = []
+    text_by_ref: dict[str, dict[str, Any]] = {}
+    for _layer, item in _iter_pack_items(text_pack):
+        ref = str(item.get("memory_id") or item.get("task_id") or "")
+        if ref:
+            text_by_ref[ref] = item
+    smp_refs = [str(item.get("ref") or "") for item in envelope.get("items") or []]
+    if set(smp_refs) != set(text_by_ref):
+        problems.append(
+            f"ref-set drift: smp_only={sorted(set(smp_refs) - set(text_by_ref))} "
+            f"text_only={sorted(set(text_by_ref) - set(smp_refs))}"
+        )
+    for item in envelope.get("items") or []:
+        ref = str(item.get("ref") or "")
+        source = text_by_ref.get(ref)
+        if source is None:
+            continue
+        if str(item.get("content") or "") != str(source.get("content") or ""):
+            problems.append(f"content drift for ref={ref}")
+        if item.get("source_url") != (source.get("source_url") or None):
+            problems.append(f"source_url drift for ref={ref}")
+        if str(item.get("layer") or "") != str(source.get("layer") or ""):
+            problems.append(f"layer drift for ref={ref}")
+        if item.get("relevance") != _relevance_value(source.get("relevance")):
+            problems.append(f"relevance drift for ref={ref}")
+    return problems
+
+
+# --------------------------------------------------------------------------------------------
+# Budget-efficiency helpers (build-plan #5/#9): utilization + regret vs an offline-optimal
+# knapsack the eval computes itself over the packer's full candidate pool.
+# --------------------------------------------------------------------------------------------
+
+def _instructions_cost(chars_per_token: float) -> int:
+    """The header-token reservation the packer subtracts before packing, using the profile's
+    own char→token divisor (mirrors _pack_context_*'s instructions_cost exactly)."""
+    return sum(max(1, math.ceil(len(line) / max(chars_per_token, 1e-6))) for line in _CONTEXT_INSTRUCTIONS)
+
+
+def _knapsack_optimal(value_cost: list[tuple[int, int]], capacity: int) -> int:
+    """Offline-optimal 0/1 knapsack value. Deterministic DP over integer token capacity."""
+    if capacity <= 0:
+        return 0
+    dp = [0] * (capacity + 1)
+    for value, cost in value_cost:
+        if cost <= 0 or cost > capacity or value <= 0:
+            continue
+        for cap in range(capacity, cost - 1, -1):
+            candidate = dp[cap - cost] + value
+            if candidate > dp[cap]:
+                dp[cap] = candidate
+    return max(dp)
+
+
+def _evaluate_budget(
+    store: CortexStore,
+    user_id: str,
+    case: ContextCase,
+    *,
+    model: str | None,
+) -> dict[str, Any]:
+    """Utilization + regret for one case under one profile, at the binding probe budget.
+
+    utilization = used_content / min(packable_budget, total_candidate_tokens).
+    regret      = 1 - captured_value / optimal_value, where value(item) = the intent's per-layer
+                  weight and the optimum is a 0/1 knapsack over the full candidate pool (obtained
+                  by re-packing at a huge budget, so nothing is dropped) under packable_budget.
+    Both use the PROFILE's own token estimate, so the baseline is apples-to-apples with the packer.
+    """
+    profile = resolve_profile(model, "agent")
+    cpt = profile.chars_per_token
+    item_overhead = 12  # mirrors assemble_context's per-item metadata cost
+    instructions_cost = _instructions_cost(cpt)
+
+    packed = store.assemble_context(
+        user_id,
+        case.task,
+        token_budget=BUDGET_PROBE_TOKENS,
+        sector=case.sector,
+        project=case.project,
+        intent=case.intent,
+        model=model,
+    )
+    universe = store.assemble_context(
+        user_id,
+        case.task,
+        token_budget=UNIVERSE_BUDGET_TOKENS,
+        sector=case.sector,
+        project=case.project,
+        intent=case.intent,
+        model=model,
+    )
+    assert isinstance(packed, dict) and isinstance(universe, dict)
+
+    intent = str(packed.get("intent") or "")
+    weights = CONTEXT_INTENT_WEIGHTS.get(intent, {})
+
+    def _cost(item: dict[str, Any]) -> int:
+        return max(1, math.ceil(len(str(item.get("content") or "")) / max(cpt, 1e-6))) + item_overhead
+
+    packable_budget = max(int(packed.get("budget", {}).get("token_budget") or BUDGET_PROBE_TOKENS) - instructions_cost, 120)
+
+    universe_items = _iter_pack_items(universe)
+    total_candidate_tokens = sum(_cost(item) for _layer, item in universe_items)
+    value_cost = [(int(weights.get(layer, 0)), _cost(item)) for layer, item in universe_items]
+    optimal_value = _knapsack_optimal(value_cost, packable_budget)
+
+    packed_items = _iter_pack_items(packed)
+    has_evidence = bool(packed_items)
+    used_total = int(packed.get("budget", {}).get("used_tokens") or 0)
+    used_content = max(used_total - instructions_cost, 0)
+    achievable = min(packable_budget, total_candidate_tokens)
+    utilization = round(used_content / achievable, 6) if achievable > 0 else 1.0
+    # A pack that already spends more than the achievable floor (protected constraint force-include)
+    # is fully utilized, not >100% — clamp so the floor reads cleanly.
+    utilization = min(utilization, 1.0)
+
+    captured_value = sum(int(weights.get(layer, 0)) for layer, _item in packed_items)
+    regret = round(max(0.0, (optimal_value - captured_value) / optimal_value), 6) if optimal_value > 0 else 0.0
+
+    return {
+        "case": case.name,
+        "model": model,
+        "profile": profile.name,
+        "has_evidence": has_evidence,
+        "packable_budget": packable_budget,
+        "total_candidate_tokens": total_candidate_tokens,
+        "used_content_tokens": used_content,
+        "budget_utilization": utilization,
+        "optimal_value": optimal_value,
+        "captured_value": captured_value,
+        "budget_regret": regret,
+    }
+
+
+def _evaluate_case(
+    store: CortexStore,
+    user_id: str,
+    case: ContextCase,
+    id_sector: dict[str, str],
+    *,
+    model: str | None = None,
+) -> dict[str, Any]:
     pack = store.assemble_context(
         user_id,
         case.task,
@@ -298,6 +551,7 @@ def _evaluate_case(store: CortexStore, user_id: str, case: ContextCase, id_secto
         sector=case.sector,
         project=case.project,
         intent=case.intent,
+        model=model,
     )
     assert isinstance(pack, dict)  # json format returns a dict
 
@@ -345,10 +599,60 @@ def _evaluate_case(store: CortexStore, user_id: str, case: ContextCase, id_secto
     else:
         intent_ok = resolved_intent == case.expected_intent
 
-    ok = layer_population_ok and no_leak_ok and citation_coverage == 1.0 and budget_ok and intent_ok
+    # SMP contract: the response_format="smp" envelope is a self-describing, byte-parity
+    # projection of THIS pack (same inputs), validated against its own inline legend.
+    smp_envelope = store.assemble_context(
+        user_id,
+        case.task,
+        token_budget=case.token_budget,
+        sector=case.sector,
+        project=case.project,
+        intent=case.intent,
+        model=model,
+        response_format="smp",
+    )
+    assert isinstance(smp_envelope, dict)
+    smp_validation = _validate_smp_envelope(smp_envelope)
+    smp_valid_ok = not smp_validation
+    smp_items = smp_envelope.get("items") or []
+    smp_uncited = [str(it.get("ref") or "") for it in smp_items if not str(it.get("source_url") or "").strip()]
+    smp_citation_coverage = round((len(smp_items) - len(smp_uncited)) / len(smp_items), 6) if smp_items else 1.0
+    smp_leaked = [
+        str(it.get("ref") or "")
+        for it in smp_items
+        if str(id_sector.get(str(it.get("ref") or "")) or "") in case.forbidden_sectors
+    ]
+    # SMP items carry no sector field; cross-check ref→sector against the seed map AND the
+    # text pack's own reported sector so a leak cannot hide behind the projection.
+    text_sector_by_ref = {
+        str(item.get("memory_id") or item.get("task_id") or ""): str(item.get("sector") or "")
+        for _layer, item in items
+    }
+    for it in smp_items:
+        ref = str(it.get("ref") or "")
+        sector = text_sector_by_ref.get(ref) or id_sector.get(ref) or ""
+        if sector and sector in case.forbidden_sectors and ref not in smp_leaked:
+            smp_leaked.append(ref)
+    smp_no_leak_ok = not smp_leaked
+    smp_parity_problems = _smp_byte_parity(smp_envelope, pack)
+    smp_byte_parity_ok = not smp_parity_problems
+
+    ok = (
+        layer_population_ok
+        and no_leak_ok
+        and citation_coverage == 1.0
+        and budget_ok
+        and intent_ok
+        and smp_valid_ok
+        and smp_citation_coverage == 1.0
+        and smp_no_leak_ok
+        and smp_byte_parity_ok
+    )
     return {
         "check": "context_pack",
         "case": case.name,
+        "model": model,
+        "profile": resolve_profile(model, "agent").name,
         "task": case.task,
         "sector": case.sector,
         "resolved_intent": resolved_intent,
@@ -369,6 +673,14 @@ def _evaluate_case(store: CortexStore, user_id: str, case: ContextCase, id_secto
         "budget_ok": budget_ok,
         "intent_ok": intent_ok,
         "ranked_ids": ranked_ids,
+        "smp_item_count": len(smp_items),
+        "smp_valid_ok": smp_valid_ok,
+        "smp_validation": smp_validation,
+        "smp_citation_coverage": smp_citation_coverage,
+        "smp_no_leak_ok": smp_no_leak_ok,
+        "smp_leaked": smp_leaked,
+        "smp_byte_parity_ok": smp_byte_parity_ok,
+        "smp_parity_problems": smp_parity_problems,
         "ok": ok,
     }
 
@@ -399,6 +711,43 @@ def _summarize(checks: list[dict[str, Any]]) -> dict[str, Any]:
         "budget_adherence": mean("budget_ok", boolean=True),
         "intent_derivation": intent_rate,
         "labeled_intent_cases": len(intent_checks),
+        "smp_valid": mean("smp_valid_ok", boolean=True),
+        "smp_citation_coverage": mean("smp_citation_coverage"),
+        "smp_no_leak": mean("smp_no_leak_ok", boolean=True),
+        "smp_byte_parity": mean("smp_byte_parity_ok", boolean=True),
+    }
+
+
+def _summarize_budget(budget_checks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Budget-efficiency rollup. Utilization is floored only over evidence-bearing cases (the
+    "when evidence exists" qualifier); regret is a ceiling, so the worst case is what bites."""
+    evidence = [c for c in budget_checks if c.get("has_evidence")]
+    utils = [float(c.get("budget_utilization") or 0.0) for c in evidence]
+    regrets = [float(c.get("budget_regret") or 0.0) for c in budget_checks]
+    return {
+        "probe_budget_tokens": BUDGET_PROBE_TOKENS,
+        "evidence_case_count": len(evidence),
+        "budget_utilization": round(min(utils), 6) if utils else 1.0,
+        "budget_utilization_mean": round(sum(utils) / len(utils), 6) if utils else 1.0,
+        "budget_regret": round(max(regrets), 6) if regrets else 0.0,
+        "budget_regret_mean": round(sum(regrets) / len(regrets), 6) if regrets else 0.0,
+    }
+
+
+def _run_profile(store: CortexStore, user_id: str, id_sector: dict[str, str], profile_name: str, model: str | None) -> dict[str, Any]:
+    """Evaluate the full case battery under one model profile: primary quality metrics at each
+    case's own budget, plus the binding-budget utilization/regret probe."""
+    checks = [_evaluate_case(store, user_id, case, id_sector, model=model) for case in CONTEXT_CASES]
+    budget_checks = [_evaluate_budget(store, user_id, case, model=model) for case in CONTEXT_CASES]
+    metrics = {**_summarize(checks), **_summarize_budget(budget_checks)}
+    failures = [c for c in checks if not c.get("ok")]
+    return {
+        "profile": profile_name,
+        "model": model,
+        "metrics": metrics,
+        "checks": checks,
+        "budget_checks": budget_checks,
+        "failures": failures,
     }
 
 
@@ -412,26 +761,58 @@ def run_context_pack_eval(db_path: Path, vault_path: Path | None = None, user_id
     seeded = seed_representative_memories(store, user_id)
     id_sector = {str(memory["id"]): str(memory.get("sector") or "") for memory in seeded}
 
-    checks = [_evaluate_case(store, user_id, case, id_sector) for case in CONTEXT_CASES]
-    failures = [c for c in checks if not c.get("ok")]
-    metrics = _summarize(checks)
+    profiles = {name: _run_profile(store, user_id, id_sector, name, model) for name, model in PROFILES}
+
+    # Back-compat: top-level `checks`/`metrics` mirror the generic (byte-identical) profile so
+    # existing callers/dashboards keep working; the per-profile matrix lives under `profiles`.
+    generic = profiles["generic"]
+    all_failures = [f for prof in profiles.values() for f in prof["failures"]]
 
     # Sanity: every intent shape in CONTEXT_INTENT_WEIGHTS is exercised by at least one
     # labeled case, so the intent-derivation gate covers the whole router surface.
-    exercised_intents = sorted({str(c.get("expected_intent")) for c in checks if c.get("expected_intent")})
+    exercised_intents = sorted({str(c.get("expected_intent")) for c in generic["checks"] if c.get("expected_intent")})
 
     return {
         "harness": "context_pack_eval",
         "seeded_memories": len(seeded),
-        "metrics": metrics,
+        "profile_names": [name for name, _ in PROFILES],
+        "metrics": generic["metrics"],
+        "profiles": {name: {"metrics": prof["metrics"], "failures": prof["failures"]} for name, prof in profiles.items()},
         "exercised_intents": exercised_intents,
         "counts": {
-            "total_checks": len(checks),
-            "failures": len(failures),
+            "total_checks": sum(len(prof["checks"]) for prof in profiles.values()),
+            "failures": len(all_failures),
         },
-        "checks": checks,
-        "failures": failures,
+        "checks": generic["checks"],
+        "budget_checks": generic["budget_checks"],
+        "failures": all_failures,
     }
+
+
+def _check_profile_metrics(profile_name: str, metrics: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    for key in (
+        "layer_population",
+        "ndcg@k",
+        "mrr",
+        "citation_coverage",
+        "no_leak",
+        "budget_adherence",
+        "intent_derivation",
+        "budget_utilization",
+        "smp_valid",
+        "smp_citation_coverage",
+        "smp_no_leak",
+        "smp_byte_parity",
+    ):
+        floor = float(CONTEXT_PACK_THRESHOLDS[key])
+        value = float(metrics.get(key) or 0.0)
+        if value < floor:
+            failures.append(f"[{profile_name}] {key}={value} < {floor}")
+    regret = float(metrics.get("budget_regret") or 0.0)
+    if regret > CONTEXT_PACK_REGRET_CEILING:
+        failures.append(f"[{profile_name}] budget_regret={regret} > {CONTEXT_PACK_REGRET_CEILING}")
+    return failures
 
 
 def check_context_pack_thresholds(result: dict[str, Any]) -> list[str]:
@@ -442,11 +823,14 @@ def check_context_pack_thresholds(result: dict[str, Any]) -> list[str]:
     if case_count < CONTEXT_PACK_THRESHOLDS["min_case_count"]:
         failures.append(f"corpus shrank: case_count={case_count} < {CONTEXT_PACK_THRESHOLDS['min_case_count']}")
 
-    for key in ("layer_population", "ndcg@k", "mrr", "citation_coverage", "no_leak", "budget_adherence", "intent_derivation"):
-        floor = float(CONTEXT_PACK_THRESHOLDS[key])
-        value = float(metrics.get(key) or 0.0)
-        if value < floor:
-            failures.append(f"{key}={value} < {floor}")
+    profiles = result.get("profiles") if isinstance(result.get("profiles"), dict) else {}
+    if not profiles:
+        # Legacy single-profile shape: check the top-level metrics directly.
+        failures.extend(_check_profile_metrics("generic", metrics))
+        return failures
+    for name, prof in profiles.items():
+        prof_metrics = prof.get("metrics") if isinstance(prof.get("metrics"), dict) else {}
+        failures.extend(_check_profile_metrics(str(name), prof_metrics))
     return failures
 
 

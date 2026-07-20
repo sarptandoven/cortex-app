@@ -15,7 +15,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
@@ -37,6 +37,7 @@ from .profile import build_profile_sections
 from .condense import condense_section
 from .graph_analysis import analyze_entity_graph, personalized_page_rank
 from .extractor import content_is_machine_artifact, extract_context, now_iso, stable_id
+from .smp import build_smp_envelope
 from .provenance import (
     base_trust_score,
     canonical_shared_write,
@@ -155,6 +156,107 @@ _CONTEXT_INSTRUCTIONS = (
     "If a needed fact is not present, say so instead of inventing it.",
     "Items marked author_class=agent are machine-reported; prefer user- and connector-authored items on conflict.",
 )
+
+
+# ------------------------------------------------------------------------------------------
+# Model profiles (build-plan #7): calibrate the pack to the CONSUMING model, not a flat budget.
+# ------------------------------------------------------------------------------------------
+# A profile carries (a) how big a context pack the model can usefully take (`pack_token_budget`,
+# which CAPS/REPLACES the flat CONTEXT_MAX_TOKEN_BUDGET), (b) how to convert chars→tokens for
+# THAT tokenizer family (`chars_per_token`), and (c) the (w_rel, w_rec, w_auth) mixer weights the
+# marginal-utility knapsack uses to score candidates. The `generic` profile is special: it
+# reproduces today's flat budget and the legacy per-intent greedy fill EXACTLY, so `model=None`
+# stays byte-identical and every existing eval/CI gate is untouched.
+class ModelProfile(NamedTuple):
+    name: str
+    context_window: int
+    pack_token_budget: int
+    chars_per_token: float
+    weights: tuple[float, float, float]  # (w_rel, w_rec, w_auth)
+    knapsack: bool  # False => legacy per-intent greedy fill (generic default)
+
+    @property
+    def is_generic(self) -> bool:
+        return not self.knapsack
+
+    def estimate_tokens(self, text: str) -> int:
+        # Calibrated char→token estimate. For chars_per_token == 4.0 this is byte-identical to
+        # the legacy _estimate_context_tokens: max(1, ceil(len/4)) == max(1, (len+3)//4).
+        return max(1, math.ceil(len(str(text)) / max(self.chars_per_token, 1e-6)))
+
+
+# Registry. Budgets stay within a single pack's useful size (not the full model window — a pack
+# is retrieved evidence, not the whole prompt). Weights: relevance dominates everywhere; tight
+# surfaces (Cursor) lean harder on relevance because every token is precious; large-window
+# models can afford a touch more recency/authority breadth.
+_GENERIC_PROFILE = ModelProfile(
+    name="generic",
+    context_window=8192,
+    pack_token_budget=CONTEXT_MAX_TOKEN_BUDGET,
+    chars_per_token=4.0,
+    weights=(0.6, 0.25, 0.15),
+    knapsack=False,
+)
+MODEL_PROFILES: dict[str, ModelProfile] = {
+    "generic": _GENERIC_PROFILE,
+    "claude": ModelProfile(
+        name="claude",
+        context_window=200000,
+        pack_token_budget=12000,
+        chars_per_token=3.8,
+        weights=(0.58, 0.27, 0.15),
+        knapsack=True,
+    ),
+    "gpt": ModelProfile(
+        name="gpt",
+        context_window=128000,
+        pack_token_budget=8000,
+        chars_per_token=4.0,
+        weights=(0.55, 0.25, 0.20),
+        knapsack=True,
+    ),
+    "cursor": ModelProfile(
+        name="cursor",
+        context_window=32000,
+        pack_token_budget=3000,
+        chars_per_token=3.6,
+        weights=(0.72, 0.14, 0.14),
+        knapsack=True,
+    ),
+}
+# Free-text aliases → profile key. Matched on WORD/TOKEN boundaries against "<model> <surface>"
+# (not raw substring), so "claude-3-5-sonnet", "anthropic", "gpt-4o", "chatgpt", "cursor-agent",
+# "copilot" all resolve — while short tokens never leak into unrelated words. Raw `contains` was a
+# trap: "cline" ⊂ "decline", "zed" ⊂ "customized", "o1"/"o3" ⊂ arbitrary ids, so a large-context
+# caller (e.g. surface="mcp-client", model="command-r-plus") would be silently downshifted to the
+# tiny 3000-token `cursor` pack. Every alias is a single alphanumeric token, so membership against
+# the needle's token set is both correct and boundary-safe.
+_MODEL_PROFILE_ALIASES: tuple[tuple[str, str], ...] = (
+    ("claude", "claude"), ("anthropic", "claude"), ("opus", "claude"), ("sonnet", "claude"), ("haiku", "claude"),
+    ("chatgpt", "gpt"), ("gpt", "gpt"), ("openai", "gpt"), ("o1", "gpt"), ("o3", "gpt"), ("4o", "gpt"),
+    ("cursor", "cursor"), ("copilot", "cursor"), ("codex", "cursor"), ("windsurf", "cursor"),
+    ("cline", "cursor"), ("zed", "cursor"), ("continue", "cursor"),
+)
+_PROFILE_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+
+
+def resolve_profile(model: str | None, surface: str = "agent") -> ModelProfile:
+    """Map a free-text model/surface string to a ModelProfile by WORD-BOUNDARY token match.
+    `model=None` (or any unrecognized string) resolves to the `generic` profile, which reproduces
+    today's flat budget + legacy greedy fill exactly — so the default path is byte-identical.
+
+    Matching is on tokens, not raw substrings: a needle like "mcp-client" or "command-r-plus" is
+    split on non-alphanumerics and each alias must appear as a WHOLE token, so short aliases
+    ("o1", "zed", "cline", …) can no longer masquerade inside unrelated words and mis-map a
+    large-context caller to the tiny `cursor` profile."""
+    needle = f"{str(model or '').strip().lower()} {str(surface or '').strip().lower()}"
+    if not needle.strip():
+        return _GENERIC_PROFILE
+    tokens = {tok for tok in _PROFILE_TOKEN_SPLIT_RE.split(needle) if tok}
+    for token, key in _MODEL_PROFILE_ALIASES:
+        if token in tokens:
+            return MODEL_PROFILES[key]
+    return _GENERIC_PROFILE
 
 
 _SOURCE_DISPLAY_LABELS: dict[str, str] = {
@@ -11052,6 +11154,9 @@ class CortexStore:
         vector_available = False
         vector_count = 0
         active_memory_count = 0
+        # Threaded query↔candidate cosines the reranker computes (id -> {cosine, base}); reused to
+        # surface true `relevance` on results without re-embedding. Empty under hash / rerank-off.
+        rerank_scores: dict[str, dict[str, Any]] = {}
 
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
@@ -11144,7 +11249,7 @@ class CortexStore:
             )
             # Optional reranking (flag-gated, no-op by default) reorders the fused candidates
             # before provenance diversification narrows to `limit`.
-            rows = self._rerank_rows(query, rows, len(rows), user_settings=user_settings)
+            rows = self._rerank_rows(query, rows, len(rows), user_settings=user_settings, scores_out=rerank_scores)
             scoped_to_memory = bool(source or source_account_id or _normalize_retrieval_metadata_filters(metadata_filters))
             if rows:
                 rows = self._diversify_memory_rows(rows, limit, scoped_to_source=scoped_to_memory)
@@ -11161,7 +11266,7 @@ class CortexStore:
                 ).fetchall()
                 mode_counts["fallback_like"] = len(fallback_rows)
                 rows = self._rank_rows_with_layer_boosts(query, fallback_rows, ranked_limit, user_settings=user_settings)
-                rows = self._rerank_rows(query, rows, len(rows), user_settings=user_settings)
+                rows = self._rerank_rows(query, rows, len(rows), user_settings=user_settings, scores_out=rerank_scores)
                 rows = self._diversify_memory_rows(rows, limit, scoped_to_source=scoped_to_memory)
             if not rows:
                 existing_ids = {row["id"] for row in rows}
@@ -11193,6 +11298,18 @@ class CortexStore:
                 mode_counts["task"] = len(task_rows)
 
         memory_results = [self._memory_from_row(row) for row in rows]
+        # Additive relevance/why annotations (never reorders, never changes which rows return): true
+        # cosine under a live embedder (reusing the reranker's threaded score), rank-derived under hash.
+        self._annotate_search_relevance(
+            query,
+            rows,
+            memory_results,
+            fts_rows=fts_rows,
+            vector_rows=vector_rows,
+            temporal_rows=temporal_rows,
+            intent_rows=intent_rows,
+            rerank_scores=rerank_scores,
+        )
         if include_related and memory_results and limit > 1:
             related_slot_count = min(2, max(1, limit // 4), limit - 1)
             anchor_results = memory_results[: max(1, limit - related_slot_count)]
@@ -11275,6 +11392,10 @@ class CortexStore:
             final_results = task_results[:limit]
         else:
             final_results = memory_results
+        # Ensure every returned result (incl. related/task rows merged off the retriever path) carries
+        # relevance/basis/why; primary rows keep their retriever/cosine annotation, others get a
+        # rank-derived fallback. Additive only — ordering and membership are already fixed above.
+        final_results = self._finalize_result_relevance(query, final_results)
         if _diagnostics is not None:
             _diagnostics.update(
                 self._search_diagnostics_payload(
@@ -12097,6 +12218,11 @@ class CortexStore:
                     "excerpt": self._answer_excerpt(excerpt),
                     "topics": item.get("topics") or [],
                     "relationship": item.get("relationship"),
+                    # Additive relevance surfacing (item #1): carry the retrieval relevance/why from
+                    # the cited candidate so a caller can see how strongly (and why) it matched.
+                    "relevance": item.get("relevance"),
+                    "relevance_basis": item.get("relevance_basis"),
+                    "why": item.get("why"),
                 }
             )
         conflicts = self._answer_conflicts(query, cited_results, citations)
@@ -17234,6 +17360,254 @@ class CortexStore:
             "hot_cache": self.hot_context_cache_status(user_id, limit=limit),
         }
 
+    @staticmethod
+    def _pack_context_legacy(
+        prepared: dict[str, list[dict[str, Any]]],
+        weights: dict[str, int],
+        *,
+        packable_budget: int,
+        instructions_cost: int,
+        item_overhead: int,
+        identity_omitted: bool,
+        entity_connections: list[dict[str, Any]],
+        task: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+        """The original per-intent budget allocator: split the packable budget by intent weights,
+        pack each layer greedily in CONTEXT_LAYER_ORDER with carry-forward, protect the first
+        constraint, truncate the top fact to fit. Extracted verbatim so the generic-profile
+        default (model=None) stays byte-identical."""
+        total_weight = sum(weights.values()) or 1
+        allocations = {
+            layer: (packable_budget * weights.get(layer, 0)) // total_weight for layer in CONTEXT_LAYER_ORDER
+        }
+        layers_payload: list[dict[str, Any]] = []
+        citations: list[dict[str, Any]] = []
+        carry = 0
+        used_total = instructions_cost
+        for layer in CONTEXT_LAYER_ORDER:
+            if layer == "identity" and identity_omitted:
+                layers_payload.append(
+                    {"layer": "identity", "omitted": {"reason": "requires read scope", "required_scopes": ["read"]}}
+                )
+                continue
+            available = allocations.get(layer, 0) + carry
+            items = prepared.get(layer) or []
+            included: list[dict[str, Any]] = []
+            used = 0
+            truncated_last = False
+            for item in items:
+                cost = _estimate_context_tokens(item.get("content") or "") + item_overhead
+                if used + cost <= available:
+                    included.append(item)
+                    used += cost
+                    continue
+                if layer == "constraints" and not included:
+                    # Protected layer: a constraint the agent must not violate is never
+                    # sacrificed to the budget.
+                    included.append(item)
+                    used += cost
+                    continue
+                if layer == "facts" and not included and task:
+                    room_tokens = max(available - used - item_overhead, 60)
+                    truncated_content = str(item.get("content") or "")[: room_tokens * 4].rstrip()
+                    if truncated_content:
+                        included.append({**item, "content": truncated_content, "truncated": True})
+                        used += _estimate_context_tokens(truncated_content) + item_overhead
+                        truncated_last = True
+                break
+            dropped = len(items) - len(included)
+            carry = max(available - used, 0)
+            used_total += used
+            entry: dict[str, Any] = {
+                "layer": layer,
+                "budget_tokens": allocations.get(layer, 0),
+                "used_tokens": used,
+                "dropped": dropped,
+                "status": "cited" if included else ("budget_exhausted" if items else "no_evidence"),
+                "items": included,
+            }
+            if truncated_last:
+                entry["truncated_last_item"] = True
+            if layer == "entity" and entity_connections:
+                entry["connections"] = entity_connections
+            layers_payload.append(entry)
+            for item in included:
+                citations.append(
+                    {
+                        "index": len(citations) + 1,
+                        "memory_id": item.get("memory_id") or item.get("task_id"),
+                        "source": item.get("source"),
+                        "source_url": item.get("source_url"),
+                    }
+                )
+        return layers_payload, citations, used_total
+
+    def _pack_context_knapsack(
+        self,
+        prepared: dict[str, list[dict[str, Any]]],
+        weights: dict[str, int],
+        profile: "ModelProfile",
+        *,
+        token_budget: int,
+        instructions: list[str],
+        item_overhead: int,
+        identity_omitted: bool,
+        entity_connections: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+        """Global marginal-utility knapsack with MMR diversity (build-plan #8).
+
+        Instead of a fixed per-intent split + per-layer greedy fill, ALL cited candidates compete
+        in one pool. Each item's utility mixes the Wave-1 relevance (cosine/rrf/rank), a recency
+        decay, and the author trust signal, weighted by the model profile's (w_rel, w_rec, w_auth)
+        and scaled by a per-layer prior derived from the intent weights (so intent still shapes
+        which layers dominate, but a genuinely stronger cross-layer item can win a slot):
+
+            utility(item) = layer_prior[layer] * (w_rel*relevance + w_rec*recency + w_auth*trust)
+
+        Packing is greedy by *density* = adjusted_utility / (tokens + overhead) under the total
+        budget, where adjusted_utility applies an MMR redundancy penalty against already-selected
+        items (Jaccard over content tokens). This maximizes marginal utility per token while
+        avoiding near-duplicate picks. Invariants are preserved: candidates arrive already
+        cited-only, superseded-free, and globally deduped; the top constraint is force-included
+        (protected floor); packed tokens never exceed the budget (upper bound), and the loop fills
+        until nothing more fits (utilization floor when evidence exists)."""
+        w_rel, w_rec, w_auth = profile.weights
+        cpt = profile.chars_per_token
+
+        def est(text: Any) -> int:
+            return max(1, math.ceil(len(str(text or "")) / max(cpt, 1e-6)))
+
+        instructions_cost = sum(est(line) for line in instructions)
+        packable_budget = max(token_budget - instructions_cost, 120)
+        total_weight = sum(weights.values()) or 1
+        layer_prior = {layer: weights.get(layer, 0) / total_weight for layer in CONTEXT_LAYER_ORDER}
+        now = datetime.now(timezone.utc)
+        half_life_days = 30.0
+
+        def recency_decay(item: dict[str, Any]) -> float:
+            age = _age_seconds(str(item.get("captured_at") or ""), now=now)
+            if age is None:
+                return 0.0
+            age_days = max(0.0, age / 86400.0)
+            return math.exp(-age_days * math.log(2) / half_life_days)
+
+        # Build the unified candidate pool. Each candidate remembers its source layer and the
+        # order it arrived in (deterministic tie-break), its token cost, utility, and a content
+        # token-set for the MMR redundancy penalty.
+        candidates: list[dict[str, Any]] = []
+        for layer in CONTEXT_LAYER_ORDER:
+            prior = layer_prior.get(layer, 0.0)
+            for order, item in enumerate(prepared.get(layer) or []):
+                content = str(item.get("content") or "")
+                relevance = float(item.get("relevance") or 0.0)
+                trust = item.get("trust_score")
+                trust_val = float(trust) if trust is not None else 0.5
+                base = w_rel * relevance + w_rec * recency_decay(item) + w_auth * trust_val
+                utility = prior * base
+                tokens = est(content)
+                tokset = frozenset(re.findall(r"[a-z0-9]+", content.lower()))
+                candidates.append(
+                    {
+                        "layer": layer,
+                        "order": order,
+                        "item": item,
+                        "tokens": tokens,
+                        "cost": tokens + item_overhead,
+                        "utility": utility,
+                        "tokset": tokset,
+                    }
+                )
+
+        MMR_LAMBDA = 0.35
+
+        def max_sim(tokset: frozenset[str], chosen: list[dict[str, Any]]) -> float:
+            best = 0.0
+            for other in chosen:
+                other_set = other["tokset"]
+                if not tokset or not other_set:
+                    continue
+                inter = len(tokset & other_set)
+                if not inter:
+                    continue
+                union = len(tokset | other_set)
+                if union:
+                    best = max(best, inter / union)
+            return best
+
+        selected: list[dict[str, Any]] = []
+        used_pack = 0
+        remaining = list(candidates)
+        # Greedy marginal-utility fill: each round pick the highest-density candidate that still
+        # fits, re-scoring density with the MMR penalty against the current selection.
+        while remaining and used_pack < packable_budget:
+            best_cand = None
+            best_density = float("-inf")
+            for cand in remaining:
+                if used_pack + cand["cost"] > packable_budget:
+                    continue
+                adjusted = cand["utility"] * (1.0 - MMR_LAMBDA * max_sim(cand["tokset"], selected))
+                density = adjusted / max(cand["cost"], 1)
+                # Deterministic tie-break: higher density, then lower (layer_index, order).
+                if density > best_density + 1e-12:
+                    best_density = density
+                    best_cand = cand
+            if best_cand is None:
+                break
+            selected.append(best_cand)
+            used_pack += best_cand["cost"]
+            remaining.remove(best_cand)
+
+        # Protected floor: the top constraint is never sacrificed to the budget, mirroring the
+        # legacy allocator. Force-include the highest-utility constraint if none was selected.
+        selected_ids = {id(c["item"]) for c in selected}
+        constraint_pool = [c for c in candidates if c["layer"] == "constraints"]
+        if constraint_pool and not any(c["layer"] == "constraints" for c in selected):
+            top = max(constraint_pool, key=lambda c: (c["utility"], -c["order"]))
+            selected.append(top)
+            used_pack += top["cost"]
+            selected_ids.add(id(top["item"]))
+
+        # Reconstruct per-layer payload in canonical order, preserving within-layer input order
+        # for stable, replayable output.
+        by_layer: dict[str, list[dict[str, Any]]] = {layer: [] for layer in CONTEXT_LAYER_ORDER}
+        for cand in selected:
+            by_layer[cand["layer"]].append(cand)
+        layers_payload: list[dict[str, Any]] = []
+        citations: list[dict[str, Any]] = []
+        used_total = instructions_cost
+        for layer in CONTEXT_LAYER_ORDER:
+            if layer == "identity" and identity_omitted:
+                layers_payload.append(
+                    {"layer": "identity", "omitted": {"reason": "requires read scope", "required_scopes": ["read"]}}
+                )
+                continue
+            chosen = sorted(by_layer.get(layer) or [], key=lambda c: c["order"])
+            included = [c["item"] for c in chosen]
+            used = sum(c["cost"] for c in chosen)
+            used_total += used
+            all_items = prepared.get(layer) or []
+            entry: dict[str, Any] = {
+                "layer": layer,
+                "budget_tokens": 0,  # global knapsack: no fixed per-layer allocation
+                "used_tokens": used,
+                "dropped": len(all_items) - len(included),
+                "status": "cited" if included else ("budget_exhausted" if all_items else "no_evidence"),
+                "items": included,
+            }
+            if layer == "entity" and entity_connections:
+                entry["connections"] = entity_connections
+            layers_payload.append(entry)
+            for item in included:
+                citations.append(
+                    {
+                        "index": len(citations) + 1,
+                        "memory_id": item.get("memory_id") or item.get("task_id"),
+                        "source": item.get("source"),
+                        "source_url": item.get("source_url"),
+                    }
+                )
+        return layers_payload, citations, used_total
+
     def assemble_context(
         self,
         user_id: str,
@@ -17251,6 +17625,8 @@ class CortexStore:
         session_id: str | None = None,
         record_reuse: bool = True,
         use_hot_cache: bool = True,
+        model: str | None = None,
+        response_format: str = "text",
     ) -> dict[str, Any] | str:
         """The context assembly engine: given a task (+ surface + budget), build a
         token-budgeted, permissioned, cited context pack for an external agent.
@@ -17276,7 +17652,13 @@ class CortexStore:
             token_budget = int(token_budget)
         except (TypeError, ValueError):
             token_budget = 2000
-        token_budget = min(max(token_budget, CONTEXT_MIN_TOKEN_BUDGET), CONTEXT_MAX_TOKEN_BUDGET)
+        # Model profile (build-plan #7) calibrates the budget cap + estimator + knapsack weights to
+        # the consuming model. model=None (or unknown) => generic profile whose pack_token_budget is
+        # CONTEXT_MAX_TOKEN_BUDGET and whose packer is the legacy per-intent fill, so the default
+        # path stays byte-identical.
+        profile = resolve_profile(model, surface)
+        token_budget = min(max(token_budget, CONTEXT_MIN_TOKEN_BUDGET), profile.pack_token_budget)
+        response_format = str(response_format or "text").strip().lower()
         sector = _normalize_sector_filter(sector) or None
         # Query planning (Phase 4, flag-gated) upgrades intent from keyword rules to a semantic
         # classifier (model2vec nearest-prototype) when a real embedder is active; falls back to
@@ -17295,7 +17677,9 @@ class CortexStore:
             intent=resolved_intent,
             include_identity=include_identity,
         )
-        if use_hot_cache and not pin and not session_id and not as_of:
+        # The hot cache is keyed without model/response_format, so it may only serve the generic
+        # text pack; a model-calibrated or SMP request bypasses it (and never poisons it).
+        if use_hot_cache and profile.is_generic and response_format == "text" and not pin and not session_id and not as_of:
             cached = self._load_hot_context_pack(user_id, hot_request)
             if cached is not None:
                 if record_reuse:
@@ -17338,6 +17722,12 @@ class CortexStore:
                 # derived trust signal, so consuming agents can weigh conflicting claims.
                 "author_class": normalize_author_class(item.get("author_class")),
                 "trust_score": normalize_trust_score(item.get("trust_score"), item.get("author_class")),
+                # Additive relevance surfacing (item #1): how strongly (and why) this item matched the
+                # task. Search-sourced items carry a real signal; recency/decision-history items (no
+                # retrieval score) surface null relevance rather than a fabricated number.
+                "relevance": item.get("relevance"),
+                "relevance_basis": item.get("relevance_basis"),
+                "why": item.get("why"),
                 "treat_as_data": True,
                 "truncated": False,
             }
@@ -17443,71 +17833,32 @@ class CortexStore:
         instructions = list(_CONTEXT_INSTRUCTIONS)
         instructions_cost = sum(_estimate_context_tokens(line) for line in instructions)
         packable_budget = max(token_budget - instructions_cost, 120)
-        total_weight = sum(weights.values()) or 1
-        allocations = {
-            layer: (packable_budget * weights.get(layer, 0)) // total_weight for layer in CONTEXT_LAYER_ORDER
-        }
         item_overhead = 12  # estimated metadata cost per item
-        layers_payload: list[dict[str, Any]] = []
-        citations: list[dict[str, Any]] = []
-        carry = 0
-        used_total = instructions_cost
-        for layer in CONTEXT_LAYER_ORDER:
-            if layer == "identity" and identity_omitted:
-                layers_payload.append(
-                    {"layer": "identity", "omitted": {"reason": "requires read scope", "required_scopes": ["read"]}}
-                )
-                continue
-            available = allocations.get(layer, 0) + carry
-            items = prepared.get(layer) or []
-            included: list[dict[str, Any]] = []
-            used = 0
-            truncated_last = False
-            for item in items:
-                cost = _estimate_context_tokens(item.get("content") or "") + item_overhead
-                if used + cost <= available:
-                    included.append(item)
-                    used += cost
-                    continue
-                if layer == "constraints" and not included:
-                    # Protected layer: a constraint the agent must not violate is never
-                    # sacrificed to the budget.
-                    included.append(item)
-                    used += cost
-                    continue
-                if layer == "facts" and not included and task:
-                    room_tokens = max(available - used - item_overhead, 60)
-                    truncated_content = str(item.get("content") or "")[: room_tokens * 4].rstrip()
-                    if truncated_content:
-                        included.append({**item, "content": truncated_content, "truncated": True})
-                        used += _estimate_context_tokens(truncated_content) + item_overhead
-                        truncated_last = True
-                break
-            dropped = len(items) - len(included)
-            carry = max(available - used, 0)
-            used_total += used
-            entry: dict[str, Any] = {
-                "layer": layer,
-                "budget_tokens": allocations.get(layer, 0),
-                "used_tokens": used,
-                "dropped": dropped,
-                "status": "cited" if included else ("budget_exhausted" if items else "no_evidence"),
-                "items": included,
-            }
-            if truncated_last:
-                entry["truncated_last_item"] = True
-            if layer == "entity" and entity_connections:
-                entry["connections"] = entity_connections
-            layers_payload.append(entry)
-            for item in included:
-                citations.append(
-                    {
-                        "index": len(citations) + 1,
-                        "memory_id": item.get("memory_id") or item.get("task_id"),
-                        "source": item.get("source"),
-                        "source_url": item.get("source_url"),
-                    }
-                )
+        # Packing strategy is profile-driven. The generic profile (model=None) runs the legacy
+        # per-intent split + per-layer greedy fill BYTE-IDENTICALLY; a real model profile runs a
+        # global marginal-utility knapsack/MMR (build-plan #8) mixed by the profile's weights.
+        if profile.is_generic:
+            layers_payload, citations, used_total = self._pack_context_legacy(
+                prepared,
+                weights,
+                packable_budget=packable_budget,
+                instructions_cost=instructions_cost,
+                item_overhead=item_overhead,
+                identity_omitted=identity_omitted,
+                entity_connections=entity_connections,
+                task=task,
+            )
+        else:
+            layers_payload, citations, used_total = self._pack_context_knapsack(
+                prepared,
+                weights,
+                profile,
+                token_budget=token_budget,
+                instructions=instructions,
+                item_overhead=item_overhead,
+                identity_omitted=identity_omitted,
+                entity_connections=entity_connections,
+            )
 
         included_ids = {str(citation.get("memory_id") or "") for citation in citations}
         conflicts_payload: list[dict[str, Any]] = []
@@ -17556,13 +17907,20 @@ class CortexStore:
             except Exception:
                 pass
 
+        # Budget block: generic profile keeps the exact legacy shape (byte-identical); a model
+        # profile annotates which model/estimator/strategy shaped the pack.
+        budget_block: dict[str, Any] = {"token_budget": token_budget, "used_tokens": used_total, "estimator": "chars/4"}
+        if not profile.is_generic:
+            budget_block["estimator"] = f"chars/{profile.chars_per_token:g}"
+            budget_block["model"] = profile.name
+            budget_block["strategy"] = "knapsack-mmr"
         result: dict[str, Any] = {
             "version": CONTEXT_ENGINE_VERSION,
             "task": task,
             "intent": resolved_intent,
             "surface": surface,
             "generated_at": now_iso(),
-            "budget": {"token_budget": token_budget, "used_tokens": used_total, "estimator": "chars/4"},
+            "budget": budget_block,
             "filters": {"sector": sector, "project": project or None, "as_of": as_of},
             "coverage": {
                 "status": coverage_status,
@@ -17578,13 +17936,31 @@ class CortexStore:
             "citations": citations,
             "receipt": {"tool": "get_context", "audited": True, "event_kind": "context_pack"},
         }
-        if output_format == "markdown":
-            if pin:
-                pinned = self.pin_context_pack(user_id, result, session_id=session_id)
-                result["pin"] = pinned
-            return self._render_context_markdown(result)
         if pin:
+            # Pin the underlying pack first so the SMP/markdown response references a real,
+            # content-addressed artifact (the pin block is envelope metadata, excluded from the sha).
             result["pin"] = self.pin_context_pack(user_id, result, session_id=session_id)
+        if response_format == "smp":
+            # Pure projection of the already-packed rows into the self-describing SMP envelope
+            # (build-plan #4). Invents no data; every upstream invariant carries through.
+            smp_items: list[dict[str, Any]] = []
+            for entry in layers_payload:
+                for item in entry.get("items") or []:
+                    smp_items.append(item)
+            envelope = build_smp_envelope(
+                smp_items,
+                budget=budget_block,
+                model=profile.name,
+                coverage=result["coverage"],
+                cursor=None,
+                follow_ups=[],
+                receipt=None,
+            )
+            if pin:
+                envelope["pin"] = result["pin"]
+            return envelope
+        if output_format == "markdown":
+            return self._render_context_markdown(result)
         return result
 
     # ------------------------------------------------------------------
@@ -28869,6 +29245,7 @@ class CortexStore:
         limit: int,
         *,
         user_settings: dict[str, Any] | None = None,
+        scores_out: dict[str, dict[str, Any]] | None = None,
     ) -> list[Any]:
         """Optional reranking stage between fusion and diversification (Phase 2/3 of the outbound
         retrieval plan). Reorders the fused candidate set with a stronger signal than RRF+boosts:
@@ -28876,12 +29253,21 @@ class CortexStore:
         and — in mmr mode — Maximal Marginal Relevance to suppress near-duplicate neighbours before
         provenance diversification. Stdlib/CPU only (reuses the bundled embedder).
 
-        No-ops (returns rows unchanged) when reranking is disabled (CORTEX_RERANK unset/"off"), the
+        No-ops (returns rows unchanged) when reranking is disabled (CORTEX_RERANK "off"), the
         embedder is the hash fallback (no real semantics), the query is empty, there are <2 rows, or
         the query fails to embed. Only reorders — never changes which rows are eligible — so the
-        citation/review gates downstream are untouched. Modes: off | linear | mmr | linear+mmr."""
-        mode = os.environ.get("CORTEX_RERANK", "off").strip().lower()
-        if mode in {"", "off", "0", "false", "none"} or not rows or len(rows) <= 1:
+        citation/review gates downstream are untouched. Modes: off | linear | mmr | linear+mmr.
+
+        `scores_out` (when provided) is populated with the discarded query↔candidate signal keyed by
+        memory id — {id: {"cosine": float|None, "base": float}} — so callers can surface true
+        semantic relevance without re-embedding. Default selection: when CORTEX_RERANK is unset the
+        reranker engages (linear+mmr) under a live model2vec embedder and stays off under hash."""
+        mode = os.environ.get("CORTEX_RERANK", "").strip().lower()
+        if not mode:
+            # No explicit setting: engage the reranker only when a real semantic embedder is live, so
+            # it activates with the bundled model2vec default and is a byte-identical no-op under hash.
+            mode = "linear+mmr" if embedding_status().get("provider") == "model2vec" else "off"
+        if mode in {"off", "0", "false", "none"} or not rows or len(rows) <= 1:
             return rows
         if embedding_status().get("provider") == "hash":
             return rows
@@ -28933,6 +29319,12 @@ class CortexStore:
             rank_prior = 1.0 / (1.0 + index)  # rows arrive best-first from fusion
             base = w_sem * max(0.0, cosine) + w_rank * rank_prior + w_ent * entity_overlap
             features.append({"row": row, "index": index, "vector": vector, "vec_norm": vec_norm, "base": base})
+            if scores_out is not None:
+                mid = str(self._row_value(row, "id") or "")
+                if mid:
+                    # Thread the query↔candidate cosine (real semantics) that would otherwise be
+                    # discarded; None when the candidate had no embeddable text so callers fall back.
+                    scores_out[mid] = {"cosine": cosine if vector is not None else None, "base": base}
 
         cap = limit if limit and limit > 0 else len(features)
         if "mmr" not in mode:
@@ -29582,6 +29974,144 @@ class CortexStore:
                 clean = clean[:-1]
             row_terms.add(clean)
         return {term for term in terms if any(candidate.startswith(term) for candidate in row_terms)}
+
+    def _relevance_terms(self, obj: Any, terms: list[str]) -> list[str]:
+        """Which of `terms` (query tokens) appear in a result — dict OR sqlite-row safe (unlike
+        _lexical_matched_terms which hard-indexes row columns). Used for the `why.matched_terms`
+        explainer, so it must work on the memory dicts produced by _memory_from_row too."""
+        if not terms:
+            return []
+        topics = self._row_value(obj, "topics")
+        topics_text = (
+            " ".join(str(topic or "") for topic in topics)
+            if isinstance(topics, list)
+            else str(self._row_value(obj, "topics_json") or "")
+        )
+        text = " ".join(
+            str(self._row_value(obj, field) or "") for field in ("content", "summary", "source")
+        ) + " " + topics_text
+        row_terms: set[str] = set()
+        for token in re.findall(r"[a-z0-9_]+", text.lower().replace("'", "")):
+            clean = token.strip("_")
+            if not clean:
+                continue
+            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
+                clean = clean[:-1]
+            row_terms.add(clean)
+        return sorted(term for term in terms if any(candidate.startswith(term) for candidate in row_terms))
+
+    def _annotate_search_relevance(
+        self,
+        query: str,
+        rows: list[Any],
+        results: list[dict[str, Any]],
+        *,
+        fts_rows: list[Any],
+        vector_rows: list[Any],
+        temporal_rows: list[Any],
+        intent_rows: list[Any],
+        rerank_scores: dict[str, dict[str, Any]] | None,
+    ) -> None:
+        """Attach a normalized `relevance` (0..1), `relevance_basis`, and a compact `why` block onto
+        each primary search result — purely additive diagnostics that never change ordering or which
+        rows are returned. `results` is parallel to `rows` (both best-first from the pipeline).
+
+        Basis is honest about the signal: "cosine" when a real embedder is live and a true
+        query↔candidate cosine is available (reused from the reranker's discarded score, or computed
+        on demand); otherwise rank-derived — "rrf" when the row came through multi-retriever fusion,
+        "rank" for the fallback paths. Under the hash embedder there is never a cosine, so relevance
+        is rank-derived and tagged basis="rank"/"rrf" (byte-identical retrieval, additive payload)."""
+        if not results:
+            return
+        provider = str(embedding_status().get("provider") or "hash")
+        real_embedder = provider not in ("", "hash")
+        query = (query or "").strip()
+        query_terms = self._lexical_fallback_terms(query, limit=12)
+
+        def _ids(rowlist: list[Any]) -> set[str]:
+            out: set[str] = set()
+            for candidate in rowlist or []:
+                mid = str(self._row_value(candidate, "id") or "")
+                if mid:
+                    out.add(mid)
+            return out
+
+        retriever_ids = {
+            "fts": _ids(fts_rows),
+            "vector": _ids(vector_rows),
+            "temporal": _ids(temporal_rows),
+            "intent": _ids(intent_rows),
+        }
+
+        query_cache: dict[str, tuple[list[float] | None, float]] = {}
+
+        def _query_vector() -> tuple[list[float] | None, float]:
+            if "v" not in query_cache:
+                try:
+                    vec = embed_text(query)
+                    query_cache["v"] = (vec, math.sqrt(sum(value * value for value in vec)))
+                except Exception:
+                    query_cache["v"] = (None, 0.0)
+            return query_cache["v"]
+
+        def _cosine_for(mid: str, row: Any) -> float | None:
+            if not real_embedder or not query:
+                return None
+            if rerank_scores and mid in rerank_scores:
+                cached = rerank_scores[mid].get("cosine")
+                if cached is not None:
+                    return float(cached)
+            query_vector, query_norm = _query_vector()
+            if not query_norm:
+                return None
+            text = self._contextualized_text(row)
+            if not text:
+                return None
+            try:
+                vec = embed_text(text)
+                vec_norm = math.sqrt(sum(value * value for value in vec))
+                if not vec_norm:
+                    return None
+                return sum(a * b for a, b in zip(query_vector, vec)) / (query_norm * vec_norm)
+            except Exception:
+                return None
+
+        for index, (row, item) in enumerate(zip(rows, results)):
+            if not isinstance(item, dict):
+                continue
+            mid = str(self._row_value(row, "id") or item.get("id") or "")
+            fired = sorted(name for name, ids in retriever_ids.items() if mid and mid in ids)
+            cosine = _cosine_for(mid, row)
+            if cosine is not None:
+                relevance = round(max(0.0, min(1.0, cosine)), 4)
+                basis = "cosine"
+            else:
+                relevance = round(1.0 / (1.0 + index), 4)
+                basis = "rrf" if fired else "rank"
+            item["relevance"] = relevance
+            item["relevance_basis"] = basis
+            item["why"] = {
+                "retrievers": fired,
+                "matched_terms": self._relevance_terms(row, query_terms),
+                "fused_rank": index + 1,
+            }
+
+    def _finalize_result_relevance(self, query: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Guarantee every returned result carries relevance/basis/why. Primary rows are annotated in
+        _annotate_search_relevance with the retriever/cosine signal; related & task results (merged in
+        later, off the retriever path) get a rank-derived fallback here so the payload is consistent."""
+        query_terms = self._lexical_fallback_terms((query or "").strip(), limit=12)
+        for index, item in enumerate(results):
+            if not isinstance(item, dict) or "relevance" in item:
+                continue
+            item["relevance"] = round(1.0 / (1.0 + index), 4)
+            item["relevance_basis"] = "rank"
+            item["why"] = {
+                "retrievers": [],
+                "matched_terms": self._relevance_terms(item, query_terms),
+                "fused_rank": index + 1,
+            }
+        return results
 
     def _query_has_task_intent(self, query: str) -> bool:
         lowered = re.sub(r"\s+", " ", str(query or "").strip().lower())

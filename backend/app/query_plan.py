@@ -168,10 +168,17 @@ def build_query_plan(query: str, intent_hint: str | None = None) -> QueryPlan:
 
 
 def query_plan_enabled() -> bool:
-    """Whether query planning is active (CORTEX_QUERY_PLAN truthy). Default off — parity with today."""
+    """Whether query planning is active. CORTEX_QUERY_PLAN is authoritative (truthy on / falsy off);
+    when unset it defaults ON under a live model2vec embedder (semantic retrieval is the default when
+    the model is present) and OFF under the hash embedder — parity with today's CI behavior."""
     import os
 
-    return os.environ.get("CORTEX_QUERY_PLAN", "").strip().lower() in {"1", "true", "on", "yes"}
+    raw = os.environ.get("CORTEX_QUERY_PLAN", "").strip().lower()
+    if raw in {"1", "true", "on", "yes"}:
+        return True
+    if raw in {"0", "false", "off", "no"}:
+        return False
+    return embedding_status().get("provider") == "model2vec"
 
 
 def context_hop_enabled() -> bool:

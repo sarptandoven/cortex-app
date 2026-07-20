@@ -65,6 +65,9 @@ jobs:
       - name: Run context-pack quality gate
         run: python scripts/context_pack_eval.py
 
+      - name: Run per-model token-calibration gate
+        run: python scripts/token_calibration_eval.py
+
       - name: Run agent-task end-to-end gate
         run: python scripts/agent_task_eval.py --deterministic
 
