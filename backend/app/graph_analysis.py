@@ -600,6 +600,86 @@ def _find_bridges(
     return bridges
 
 
+# --- Typed relationships (#24: works_at / reports_to / part_of / blocks) ----
+
+# The typed relations Cortex extracts. `blocks` is asymmetric and everything here is DIRECTED
+# (source -> target has meaning), unlike the undirected co-occurrence edges the analysis above
+# consumes. Kept as a tuple so the summary's relation ordering is stable and content-derived.
+TYPED_RELATIONS: tuple[str, ...] = ("works_at", "reports_to", "part_of", "blocks")
+
+
+def summarize_typed_relationships(edges: list[dict]) -> dict:
+    """Group directed, typed relationship edges into a deterministic per-relation summary.
+
+    Pure and deterministic, matching the discipline of the rest of this module. Each edge is read
+    for ``source``, ``target``, ``relation`` (must be one of :data:`TYPED_RELATIONS`), and optional
+    ``evidence`` (a memory id string) and ``weight``. Malformed edges, self-loops, and edges whose
+    relation is not a typed relation are ignored. Because these relations are directed, ``(a, b)``
+    and ``(b, a)`` are distinct; duplicate directed pairs are merged (weights summed, evidence
+    unioned in first-seen order).
+
+    Returns::
+
+        {
+          relation: [
+            {"source": str, "target": str, "weight": float, "evidence": [memory_id, ...]},
+            ...
+          ],
+          ...
+        }
+
+    Relations are keyed in :data:`TYPED_RELATIONS` order (only non-empty ones are present); each
+    relation's edge list is sorted by ``(-weight, source, target)`` so the strongest, most stable
+    links come first. Identical input always yields identical output.
+    """
+    # {relation: {(source, target): {"weight": float, "evidence": [ids]}}}
+    grouped: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
+    if not isinstance(edges, list):
+        edges = []
+    valid_relations = set(TYPED_RELATIONS)
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        relation = _norm_id(edge.get("relation"))
+        if relation not in valid_relations:
+            continue
+        source = _norm_id(edge.get("source"))
+        target = _norm_id(edge.get("target"))
+        if not source or not target or source == target:
+            continue
+        weight = _as_float(edge.get("weight"), default=1.0)
+        if weight <= 0.0:
+            weight = 1.0
+        bucket = grouped.setdefault(relation, {})
+        pair = (source, target)
+        entry = bucket.get(pair)
+        if entry is None:
+            entry = {"weight": 0.0, "evidence": []}
+            bucket[pair] = entry
+        entry["weight"] += weight
+        evidence_id = _norm_id(edge.get("evidence"))
+        if evidence_id and evidence_id not in entry["evidence"]:
+            entry["evidence"].append(evidence_id)
+
+    summary: dict[str, list[dict]] = {}
+    for relation in TYPED_RELATIONS:
+        bucket = grouped.get(relation)
+        if not bucket:
+            continue
+        rows = [
+            {
+                "source": source,
+                "target": target,
+                "weight": entry["weight"],
+                "evidence": list(entry["evidence"]),
+            }
+            for (source, target), entry in bucket.items()
+        ]
+        rows.sort(key=lambda row: (-round(row["weight"], 12), row["source"], row["target"]))
+        summary[relation] = rows
+    return summary
+
+
 # --- Small deterministic helpers --------------------------------------------
 
 

@@ -14,6 +14,7 @@ import time
 import zipfile
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from email import policy
 from email.utils import parseaddr
 from html.parser import HTMLParser
@@ -29,6 +30,17 @@ MAX_TEXT_BYTES = 12_000_000
 MAX_RECORD_CHARS = 185_000
 MAX_RECORD_CHUNK_CHARS = 45_000
 MAX_RECORD_CHUNK_LINES = 18
+# When a record is split into adjacent chunks (item #22), prepend a bounded tail
+# of the previous chunk to the next one. A statement that spans a chunk boundary
+# — its opening lands at the end of chunk i and its continuation at the start of
+# chunk i+1 — is otherwise split mid-fact and neither chunk carries it whole.
+# The overlap re-attaches the trailing complete sentence(s)/line(s) of chunk i to
+# the head of chunk i+1 so that at least one chunk contains the boundary fact in
+# full. It is small relative to MAX_RECORD_CHUNK_CHARS, so the stitched chunk
+# stays far under MAX_RECORD_CHARS and `.bounded()` never truncates — no data is
+# dropped; the tail is only duplicated (downstream near-duplicate memory reuse
+# collapses the twin extractions).
+MAX_RECORD_CHUNK_OVERLAP_CHARS = 600
 # Cap on how deep we descend into nested JSON / bookmark trees. Real exports are
 # only a handful of levels deep, so 200 never trips on genuine data but stops a
 # crafted, deeply-nested import file from stack-overflowing the parser. When the
@@ -627,7 +639,9 @@ def _parsed_source_records(paths: Iterable[str], source_hint: str = "") -> list[
     for record in records:
         if not record.content.strip():
             continue
-        expanded.extend(_chunk_source_record(record))
+        for chunk in _chunk_source_record(record):
+            _annotate_occurred_at(chunk)
+            expanded.append(chunk)
     return expanded
 
 
@@ -798,15 +812,19 @@ def _chunk_source_record(record: SourceRecord) -> list[SourceRecord]:
         return [record]
 
     chunk_count = len(raw_chunks)
+    bodies = _stitch_chunk_overlap(["\n".join(chunk_lines) for chunk_lines in raw_chunks])
     chunks: list[SourceRecord] = []
-    for index, chunk_lines in enumerate(raw_chunks, start=1):
+    for index, body in enumerate(bodies, start=1):
+        metadata = {**record.metadata, "chunk_index": index, "chunk_count": chunk_count}
+        if index > 1:
+            metadata["chunk_overlap"] = True
         chunks.append(
             SourceRecord(
                 source=record.source,
                 title=f"{record.title} (part {index}/{chunk_count})",
-                content="\n".join([*header, *chunk_lines]),
+                content="\n".join([*header, body]) if header else body,
                 source_url=_source_url_with_chunk(record.source_url, index),
-                metadata={**record.metadata, "chunk_index": index, "chunk_count": chunk_count},
+                metadata=metadata,
             )
         )
     return chunks
@@ -833,15 +851,19 @@ def _chunk_plain_document(record: SourceRecord) -> list[SourceRecord]:
     if len(parts) <= 1:
         return [record]
     chunk_count = len(parts)
+    parts = _stitch_chunk_overlap(parts)
     chunks: list[SourceRecord] = []
     for index, part_content in enumerate(parts, start=1):
+        metadata = {**record.metadata, "chunk_index": index, "chunk_count": chunk_count}
+        if index > 1:
+            metadata["chunk_overlap"] = True
         chunks.append(
             SourceRecord(
                 source=record.source,
                 title=f"{record.title} (part {index}/{chunk_count})",
                 content=part_content,
                 source_url=_source_url_with_chunk(record.source_url, index),
-                metadata={**record.metadata, "chunk_index": index, "chunk_count": chunk_count},
+                metadata=metadata,
             )
         )
     return chunks
@@ -867,6 +889,266 @@ def _split_document_units(content: str) -> list[str]:
             for start in range(0, len(line), MAX_RECORD_CHUNK_CHARS):
                 units.append(line[start : start + MAX_RECORD_CHUNK_CHARS])
     return units
+
+
+def _stitch_chunk_overlap(bodies: list[str]) -> list[str]:
+    """Prepend a bounded tail of each chunk to the next (item #22).
+
+    Given the ordered *body* strings of adjacent chunks, return new bodies where
+    every chunk after the first is prefixed with the trailing complete
+    sentence(s)/line(s) of its predecessor. A fact spanning the boundary — begun
+    at the end of chunk i, continued at the start of chunk i+1 — then appears
+    whole inside chunk i+1 instead of being split mid-fact. Single-chunk inputs
+    are returned untouched so small documents stay byte-identical. Never drops
+    text: the tail is duplicated, not moved."""
+    if len(bodies) <= 1:
+        return bodies
+    stitched = [bodies[0]]
+    for index in range(1, len(bodies)):
+        tail = _overlap_tail(bodies[index - 1], MAX_RECORD_CHUNK_OVERLAP_CHARS)
+        current = bodies[index]
+        # Guard against re-duplicating a tail the next chunk already opens with
+        # (e.g. a repeated boundary line), and never overlap an empty body.
+        if tail and current.strip() and not current.startswith(tail):
+            stitched.append(f"{tail}\n{current}")
+        else:
+            stitched.append(current)
+    return stitched
+
+
+def _overlap_tail(text: str, limit: int) -> str:
+    """Return the trailing <=`limit` chars of `text`, cut back to a clean
+    sentence/line boundary so the overlap carries whole trailing statements
+    rather than a dangling fragment. Returns "" for blank input."""
+    text = text.rstrip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    window = text[-limit:]
+    # Prefer to start the window right after the earliest sentence terminator or
+    # line break inside it, dropping the leading partial fragment so we keep only
+    # complete trailing sentences/lines.
+    boundary = re.search(r"[.!?](?=\s)|\n", window)
+    if boundary:
+        candidate = window[boundary.end():].lstrip()
+        if candidate:
+            return candidate
+    # No interior boundary: fall back to a word boundary so we never split a word.
+    space = window.find(" ")
+    if 0 <= space < len(window) - 1:
+        return window[space + 1:].lstrip()
+    return window
+
+
+# --- Item #19: relative / anchored date resolution ------------------------------
+# Episodic records routinely say "yesterday", "last Tuesday", "three weeks ago"
+# instead of a calendar date. Resolved against the record's own anchor timestamp
+# (its capture / creation time), these become a concrete `occurred_at` so the
+# memory lands at a real timeline position instead of only its ingest time. The
+# resolver is deliberately conservative: it fires only on unambiguous phrases and
+# returns None otherwise (never a wild guess). It is pure and deterministic —
+# same text + same anchor always yields the same ISO date — so it does not
+# perturb the hash-embedder path. captured_at itself is never modified here; we
+# only derive an additional occurred_at.
+
+_NUMBER_WORDS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12,
+}
+_WEEKDAYS = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4,
+    "saturday": 5, "sunday": 6,
+}
+_WEEKDAY_PATTERN = "|".join(_WEEKDAYS)
+_NUMBER_PATTERN = r"\d+|" + "|".join(sorted(_NUMBER_WORDS, key=len, reverse=True))
+_UNIT_PATTERN = r"day|days|week|weeks|month|months|year|years|hour|hours|minute|minutes"
+# Anchor timestamps live under a handful of well-known metadata keys emitted by
+# the parsers above; the first that parses wins.
+_ANCHOR_METADATA_KEYS = (
+    "lifelog_start", "captured_at", "occurred_at", "created_at", "createdAt",
+    "created", "timestamp", "date", "time",
+)
+
+
+def _days_in_month(year: int, month: int) -> int:
+    first_next = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
+    return (first_next - timedelta(days=1)).day
+
+
+def _shift_months(anchor: datetime, months: int) -> datetime:
+    total = anchor.month - 1 + months
+    year = anchor.year + total // 12
+    month = total % 12 + 1
+    day = min(anchor.day, _days_in_month(year, month))
+    return anchor.replace(year=year, month=month, day=day)
+
+
+def _relative_number(token: str) -> int | None:
+    token = token.strip().lower()
+    if token.isdigit():
+        value = int(token)
+        return value if value > 0 else None
+    return _NUMBER_WORDS.get(token)
+
+
+def _coerce_anchor(anchor: Any) -> datetime | None:
+    if isinstance(anchor, datetime):
+        return anchor
+    text = str(anchor or "").strip()
+    if not text:
+        return None
+    candidate = text.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(candidate)
+    except ValueError:
+        pass
+    # Fall back to the leading YYYY-MM-DD (handles "2026-07-01 09:12:00 UTC" etc.).
+    match = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if match:
+        try:
+            return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            return None
+    return None
+
+
+def resolve_occurred_at(text: str, anchor: Any) -> str | None:
+    """Resolve the first unambiguous relative/anchored date phrase in `text`
+    against `anchor` (an ISO string or datetime — the record's captured/anchor
+    time) into a concrete ``YYYY-MM-DD`` occurred_at. Returns None when nothing
+    parses confidently; never guesses. Pure and deterministic."""
+    base = _coerce_anchor(anchor)
+    if not base or not text:
+        return None
+    lowered = text.lower()
+
+    # (regex, handler) — every match is scored by its start position; the
+    # earliest temporal reference in the text wins, so a leading "yesterday"
+    # beats a later "last month". Longer phrases are searched too; because they
+    # start earlier in the string than the shorter word nested inside them
+    # ("the day before yesterday" vs "yesterday"), earliest-start naturally
+    # prefers the more specific reading.
+    def _delta_days(match: "re.Match[str]", sign: int) -> datetime | None:
+        number = _relative_number(match.group("num"))
+        if number is None:
+            return None
+        unit = match.group("unit").rstrip("s")
+        if unit in ("day", "week", "hour", "minute"):
+            if not (1 <= number <= 3650):
+                return None
+            kwargs = {
+                "day": {"days": number},
+                "week": {"weeks": number},
+                "hour": {"hours": number},
+                "minute": {"minutes": number},
+            }[unit]
+            return base + sign * timedelta(**kwargs)
+        if unit == "month":
+            if not (1 <= number <= 120):
+                return None
+            return _shift_months(base, sign * number)
+        if unit == "year":
+            if not (1 <= number <= 100):
+                return None
+            return _shift_months(base, sign * number * 12)
+        return None
+
+    handlers: list[tuple[str, Any]] = [
+        (r"\bthe day before yesterday\b", lambda m: base - timedelta(days=2)),
+        (r"\bthe day after tomorrow\b", lambda m: base + timedelta(days=2)),
+        (r"\byesterday\b", lambda m: base - timedelta(days=1)),
+        (r"\btomorrow\b", lambda m: base + timedelta(days=1)),
+        (r"\b(?:today|this morning|this afternoon|this evening|tonight)\b", lambda m: base),
+        (
+            rf"\b(?P<num>{_NUMBER_PATTERN})\s+(?P<unit>{_UNIT_PATTERN})\s+ago\b",
+            lambda m: _delta_days(m, -1),
+        ),
+        (
+            rf"\b(?:in|after)\s+(?P<num>{_NUMBER_PATTERN})\s+(?P<unit>{_UNIT_PATTERN})\b",
+            lambda m: _delta_days(m, 1),
+        ),
+        (
+            rf"\b(?P<num>{_NUMBER_PATTERN})\s+(?P<unit>{_UNIT_PATTERN})\s+(?:from now|from today|later)\b",
+            lambda m: _delta_days(m, 1),
+        ),
+        (r"\blast\s+week\b", lambda m: base - timedelta(weeks=1)),
+        (r"\blast\s+month\b", lambda m: _shift_months(base, -1)),
+        (r"\blast\s+year\b", lambda m: _shift_months(base, -12)),
+        (r"\bnext\s+week\b", lambda m: base + timedelta(weeks=1)),
+        (r"\bnext\s+month\b", lambda m: _shift_months(base, 1)),
+        (r"\bnext\s+year\b", lambda m: _shift_months(base, 12)),
+        (
+            rf"\blast\s+(?P<wd>{_WEEKDAY_PATTERN})\b",
+            lambda m: _relative_weekday(base, m.group("wd"), direction=-1),
+        ),
+        (
+            rf"\bnext\s+(?P<wd>{_WEEKDAY_PATTERN})\b",
+            lambda m: _relative_weekday(base, m.group("wd"), direction=1),
+        ),
+    ]
+
+    best_start: int | None = None
+    best_dt: datetime | None = None
+    for pattern, handler in handlers:
+        match = re.search(pattern, lowered)
+        if not match:
+            continue
+        resolved = handler(match)
+        if resolved is None:
+            continue
+        if best_start is None or match.start() < best_start:
+            best_start = match.start()
+            best_dt = resolved
+    if best_dt is None:
+        return None
+    return best_dt.date().isoformat()
+
+
+def _relative_weekday(anchor: datetime, weekday: str, direction: int) -> datetime | None:
+    target = _WEEKDAYS.get(weekday.lower())
+    if target is None:
+        return None
+    if direction < 0:
+        delta = (anchor.weekday() - target) % 7 or 7
+        return anchor - timedelta(days=delta)
+    delta = (target - anchor.weekday()) % 7 or 7
+    return anchor + timedelta(days=delta)
+
+
+def _record_anchor_datetime(record: SourceRecord) -> datetime | None:
+    """Best-effort anchor for resolving a record's relative dates: a concrete
+    timestamp the record already carries (metadata first, then the first absolute
+    date in its content). Returns None when nothing datable is present, so
+    occurred_at is only ever set when there is a real anchor to resolve against."""
+    for key in _ANCHOR_METADATA_KEYS:
+        value = record.metadata.get(key)
+        anchor = _coerce_anchor(value) if value else None
+        if anchor:
+            return anchor
+    match = re.search(r"\b((?:19|20)\d{2})-(\d{1,2})-(\d{1,2})\b", record.content)
+    if match:
+        try:
+            return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            return None
+    return None
+
+
+def _annotate_occurred_at(record: SourceRecord) -> None:
+    """When a record has a relative/anchored date phrase and a concrete anchor,
+    record the resolved occurred_at in metadata. Non-destructive: content and
+    captured_at are untouched, and an occurred_at already supplied by a parser is
+    left in place."""
+    if record.metadata.get("occurred_at"):
+        return
+    anchor = _record_anchor_datetime(record)
+    if not anchor:
+        return
+    resolved = resolve_occurred_at(record.content, anchor)
+    if resolved:
+        record.metadata = {**record.metadata, "occurred_at": resolved}
 
 
 def _chunk_body_start(lines: list[str]) -> int | None:

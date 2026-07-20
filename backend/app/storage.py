@@ -36,7 +36,7 @@ from .mirror import compute_mirror_insight
 from .profile import build_profile_sections
 from .condense import condense_section
 from .graph_analysis import analyze_entity_graph, personalized_page_rank
-from .extractor import content_is_machine_artifact, extract_context, now_iso, stable_id
+from .extractor import _normalize_layer as _extractor_normalize_layer, content_is_machine_artifact, extract_context, now_iso, stable_id
 from .smp import build_smp_envelope
 from .provenance import (
     base_trust_score,
@@ -2567,7 +2567,9 @@ def _memory_edit_signature(record: dict[str, Any]) -> str:
             "content": str(record.get("content") or "").strip(),
             "summary": str(record.get("summary") or "").strip(),
             "kind": str(kind or "").strip(),
-            "layer": memory_layer(kind, record.get("layer")),
+            # Must match the DB insert's layer derivation exactly (see reconcile_memory_layer / #17)
+            # so a hand-edited note's signature converges with the indexed row instead of diverging.
+            "layer": reconcile_memory_layer(kind, record.get("layer"), record.get("content")),
             "confidence": str(record.get("confidence") or "").strip(),
             "importance": importance_value,
             "sector": str(record.get("sector") or "").strip(),
@@ -2598,6 +2600,98 @@ def memory_layer(kind: str | None, value: str | None = None) -> str:
     if explicit in MEMORY_LAYERS:
         return explicit
     return MEMORY_LAYER_BY_KIND.get((kind or "").strip().lower(), "semantic")
+
+
+# Extractor version (#20). Bump this whenever the extraction heuristics/prompt change in a way
+# that should re-derive memories from stored raw text. It rides on capture_processing_state so a
+# store constructed after a bump can detect stale-extractor captures and reprocess them (mirrors
+# how a change in the embedding model reindexes memory_vec). The value is embedded here (not the
+# extractor module) so storage owns the reprocess trigger even if the extractor is edited in place.
+EXTRACTOR_VERSION = "extract_v2"
+
+
+def reconcile_memory_layer(kind: str | None, value: str | None = None, content: str | None = None) -> str:
+    """Canonical, deterministic layer for a memory (#17).
+
+    A strict superset of :func:`memory_layer`: a valid explicit layer is honored, and a
+    kind-mapped layer is honored, but when neither yields a layer the CONTENT heuristic
+    (:func:`extractor._normalize_layer` — the same rule the local extractor applies) classifies
+    the memory instead of blindly defaulting to ``semantic``. This guarantees every memory lands
+    in a correct layer even when the LLM extractor never ran (no ANTHROPIC_API_KEY) or a record
+    reached storage without a layer (checkpoints, remember_this, direct saves). Never overrides a
+    layer that is already valid, so re-running it is idempotent and existing rows never flip.
+    """
+    explicit = (value or "").strip().lower()
+    if explicit in MEMORY_LAYERS:
+        return explicit
+    return _extractor_normalize_layer(value, kind or "", content or "")
+
+
+# Typed entity relationships (#24). Deterministic, high-precision surface patterns over memory
+# content that assert a *typed* edge between two named entities. Each returns the relation kind and
+# the ordered (subject, object) roles; the caller resolves the surface names to entity ids and
+# persists a directed graph edge with the memory as evidence (provenance). Patterns are kept
+# conservative — a wrong typed edge is worse than a missing one — and only fire on Capitalized
+# multi-token or single-token proper-noun spans so ordinary prose does not manufacture edges.
+_TYPED_REL_NAME = r"([A-Z][A-Za-z0-9.\-]+(?:\s+[A-Z][A-Za-z0-9.\-]+){0,3})"
+_TYPED_RELATIONSHIP_PATTERNS: tuple[tuple[str, "re.Pattern[str]", bool], ...] = (
+    # subject works_at object  ("Sarah Chen works at Acme", "... is employed by Acme")
+    ("works_at", re.compile(_TYPED_REL_NAME + r"\s+(?:works?\s+at|is\s+employed\s+by|joined)\s+" + _TYPED_REL_NAME), True),
+    # subject reports_to object ("Marcus reports to Sarah Chen")
+    ("reports_to", re.compile(_TYPED_REL_NAME + r"\s+reports?\s+to\s+" + _TYPED_REL_NAME), True),
+    # subject part_of object    ("Project Meridian is part of Platform", "... belongs to ...")
+    ("part_of", re.compile(_TYPED_REL_NAME + r"\s+(?:is\s+part\s+of|belongs\s+to|is\s+a\s+part\s+of)\s+" + _TYPED_REL_NAME), True),
+    # subject blocks object     ("Project Meridian blocks Platform")
+    ("blocks", re.compile(_TYPED_REL_NAME + r"\s+(?:blocks?|is\s+blocking)\s+" + _TYPED_REL_NAME), True),
+    # reversed surface ("Platform is blocked by Project Meridian") — persisted as object blocks subject
+    ("blocks_reversed", re.compile(_TYPED_REL_NAME + r"\s+is\s+blocked\s+by\s+" + _TYPED_REL_NAME), True),
+)
+
+# Semantic near-duplicate collapse (#21). Cosine at/above this on a REAL embedder means "the same
+# claim, paraphrased" — high enough that ordinary same-topic memories are never merged. Only ever
+# applied under a live model2vec embedder (the deterministic hash never collapses).
+SEMANTIC_NEAR_DUP_THRESHOLD = 0.94
+
+# Polarity/negation markers used to VETO a semantic collapse: two texts with different negation
+# polarity ("X is approved" vs "X is not approved") can sit above the cosine threshold yet assert
+# opposite claims, so we never fold across them.
+_NEGATION_RE = re.compile(
+    r"\b(?:not|no|never|without|cannot|can't|won't|isn't|aren't|ain't|don't|doesn't|didn't|"
+    r"shouldn't|wouldn't|couldn't|haven't|hasn't|hadn't|n't|refuses?|refused|declines?|declined|"
+    r"rejects?|rejected|denies?|denied|avoids?|avoided|stopped|deprecated)\b",
+    re.IGNORECASE,
+)
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity of two equal-length vectors; 0.0 on empty/degenerate input."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        norm_a += x * x
+        norm_b += y * y
+    if norm_a <= 0.0 or norm_b <= 0.0:
+        return 0.0
+    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+
+
+def _claims_conflict(left: str, right: str) -> bool:
+    """Conservative contradiction guard for #21: True when two texts must NOT be treated as the
+    same claim. Trips on (a) differing negation polarity, or (b) differing numeric-value sets — the
+    two ways a high-cosine paraphrase can still assert something contradictory. Being over-cautious
+    here only costs a missed collapse (a harmless near-duplicate), never a wrong merge."""
+    if bool(_NEGATION_RE.search(left or "")) != bool(_NEGATION_RE.search(right or "")):
+        return True
+    left_numbers = set(_NUMBER_RE.findall(left or ""))
+    right_numbers = set(_NUMBER_RE.findall(right or ""))
+    if left_numbers and right_numbers and left_numbers != right_numbers:
+        return True
+    return False
 
 
 def _memory_raw_excerpt(record: dict[str, Any], raw_text: str) -> str:
@@ -3091,11 +3185,17 @@ class CortexStore:
         # below can rely on the column existing.
         self._ensure_memory_occurrences_column()
         self._ensure_encrypted_capture_columns()
+        self._ensure_extractor_version_column()
         self._ensure_sync_tombstones_table()
         self._ensure_provenance_substrate()
         self._ensure_event_fingerprints()
         self._ensure_belief_snapshot_search_index()
+        self._ensure_fts_tokenizer()
         self._prewarm_belief_integrity_cache()
+        # #20: once the schema is ready, reprocess any capture whose stored extractor_version is
+        # behind the current one — re-deriving its memories from stored raw text (mirrors how an
+        # embedding-model change re-embeds via _ensure_vector_index/_enqueue_reembed_all).
+        self._reprocess_captures_on_extractor_change()
 
     def _ensure_memory_occurrences_column(self) -> None:
         with connect(self.db_path) as conn:
@@ -3107,6 +3207,208 @@ class CortexStore:
                 # open will converge, and nothing can touch memories before then.
                 if "duplicate column name" not in message and "no such table" not in message:
                     raise
+
+    def _ensure_extractor_version_column(self) -> None:
+        """#20: additive `extractor_version` on `capture_processing_state`, migrated in place.
+
+        Records which extractor derived a capture's memories. NULL for legacy rows (treated as
+        stale, so they reprocess once). Same duplicate-column-tolerant ALTER-ADD-COLUMN mechanism
+        as _ensure_memory_occurrences_column — idempotent and safe to re-run on a live DB."""
+        with connect(self.db_path) as conn:
+            try:
+                conn.execute("ALTER TABLE capture_processing_state ADD COLUMN extractor_version TEXT")
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "duplicate column name" not in message and "no such table" not in message:
+                    raise
+
+    def _stamp_extractor_version(self, conn, user_id: str, capture_id: str, version: str | None = None) -> None:
+        """Record the extractor version that produced this capture's current memories (#20)."""
+        try:
+            conn.execute(
+                "UPDATE capture_processing_state SET extractor_version = ? WHERE user_id = ? AND capture_id = ?",
+                (version or EXTRACTOR_VERSION, user_id, capture_id),
+            )
+        except sqlite3.OperationalError:
+            # Column not migrated yet (brand-new DB before _ensure_extractor_version_column). The
+            # reprocess sweep on the next store open will re-derive; never fail the write path.
+            pass
+
+    def _reprocess_captures_on_extractor_change(self) -> int:
+        """#20: re-enqueue extraction for captures whose stored extractor_version is behind the
+        current EXTRACTOR_VERSION, so improving the extractor re-derives memories from stored raw
+        text. Mirrors _enqueue_reembed_all: bounded, idempotent, and inert when nothing is stale.
+
+        Only reprocesses captures with real plaintext raw_text (never blind-relay / encrypted rows,
+        which derive no server-side memories) and never touches user-archived captures. The
+        version-tagged unique_key means a re-enqueue is never deduped against the prior extraction
+        job, and a second store open after the same version bump is a no-op (unique_key already
+        queued). Best-effort — a failure here must not block store construction."""
+        try:
+            with connect(self.db_path) as conn:
+                try:
+                    rows = conn.execute(
+                        """
+                        SELECT c.id AS capture_id, c.user_id AS user_id, c.raw_hash AS raw_hash
+                        FROM captures c
+                        JOIN capture_processing_state cps
+                          ON cps.capture_id = c.id AND cps.user_id = c.user_id
+                        WHERE cps.extraction_status = 'succeeded'
+                          AND COALESCE(cps.extractor_version, '') != ?
+                          AND COALESCE(c.review_status, '') != 'archived'
+                          AND c.encrypted_payload IS NULL
+                          AND COALESCE(c.raw_text, '') != ''
+                        ORDER BY c.captured_at ASC
+                        LIMIT 5000
+                        """,
+                        (EXTRACTOR_VERSION,),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    return 0  # schema not ready yet; the next store open retries
+                queued = 0
+                now = now_iso()
+                for row in rows:
+                    unique_key = f"reextract_capture:{row['capture_id']}:{EXTRACTOR_VERSION}:{row['raw_hash'] or ''}"
+                    job = self._enqueue_job(
+                        conn,
+                        user_id=row["user_id"],
+                        job_type="extract_capture",
+                        object_type="capture",
+                        object_id=row["capture_id"],
+                        unique_key=unique_key,
+                        payload={
+                            "capture_id": row["capture_id"],
+                            "reprocess": True,
+                            "reason": "extractor_version_change",
+                            "extractor_version": EXTRACTOR_VERSION,
+                        },
+                        priority=120,
+                    )
+                    if job:
+                        queued += 1
+                return queued
+        except sqlite3.Error:
+            return 0
+
+    def sweep_orphan_memories(self, user_id: str, *, limit: int = 1000) -> dict[str, Any]:
+        """#23 orphan sweep: route active memories with NO entity links AND no source citation to
+        re-extraction/review instead of leaving them unlinked and unreachable. Re-extracting from
+        the capture's stored raw text re-derives entities + citations (the real fix); memories
+        without a re-derivable capture (missing/archived/blind-relay) are flagged for review via a
+        durable event. Idempotent — the version-tagged unique_key dedupes repeated sweeps, and a
+        flag event is a no-op re-record. Returns a summary of what was routed."""
+        swept_at = now_iso()
+        reprocessed_captures: set[str] = set()
+        flagged = 0
+        with connect(self.db_path) as conn:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT m.id AS memory_id, m.capture_id AS capture_id,
+                           c.raw_hash AS raw_hash, c.encrypted_payload AS encrypted_payload,
+                           c.raw_text AS raw_text, c.review_status AS review_status
+                    FROM memories m
+                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+                    WHERE m.user_id = ?
+                      AND m.status = 'active'
+                      AND COALESCE(m.source_url, '') = ''
+                      AND COALESCE(m.entity_ids_json, '[]') IN ('', '[]')
+                    ORDER BY m.captured_at DESC
+                    LIMIT ?
+                    """,
+                    (user_id, max(1, int(limit))),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {"orphan_memories": 0, "reprocessed_captures": 0, "flagged_for_review": 0, "swept_at": swept_at}
+            for row in rows:
+                capture_id = row["capture_id"]
+                reextractable = bool(
+                    capture_id
+                    and row["encrypted_payload"] is None
+                    and str(row["raw_text"] or "").strip()
+                    and str(row["review_status"] or "") != "archived"
+                )
+                if reextractable:
+                    if capture_id not in reprocessed_captures:
+                        unique_key = f"orphan_reextract_capture:{capture_id}:{EXTRACTOR_VERSION}:{row['raw_hash'] or ''}"
+                        self._enqueue_job(
+                            conn,
+                            user_id=user_id,
+                            job_type="extract_capture",
+                            object_type="capture",
+                            object_id=capture_id,
+                            unique_key=unique_key,
+                            payload={"capture_id": capture_id, "reprocess": True, "reason": "orphan_sweep"},
+                            priority=130,
+                        )
+                        reprocessed_captures.add(capture_id)
+                else:
+                    self._event(
+                        conn,
+                        user_id,
+                        row["memory_id"],
+                        "memory",
+                        "orphan_flagged_for_review",
+                        {"reason": "no_entities_no_source", "capture_id": capture_id},
+                    )
+                    flagged += 1
+        return {
+            "orphan_memories": len(rows),
+            "reprocessed_captures": len(reprocessed_captures),
+            "flagged_for_review": flagged,
+            "swept_at": swept_at,
+        }
+
+    def _ensure_fts_tokenizer(self) -> None:
+        """#25: reconcile memory_fts to the porter stemming tokenizer for better recall on word
+        variants (run/running/ran, ship/shipped/shipping), rebuilding the index on a
+        tokenizer/schema change. Runs once at store construction on a DEDICATED connection —
+        CREATE/DROP VIRTUAL TABLE auto-commits in SQLite, so this must never nest inside a caller's
+        transaction (mirrors _ensure_vector_index). memory_fts is a rebuildable cache (the memories
+        table is the source of truth), so a tokenizer change drops + recreates it and reindexes
+        every ACTIVE memory. A marker in fts_index_meta makes this a no-op once the tokenizer
+        matches. Best-effort — any error leaves the existing tokenizer in place."""
+        desired = "porter"
+        try:
+            with connect(self.db_path) as conn:
+                table_sql_row = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE name = 'memory_fts'"
+                ).fetchone()
+                if table_sql_row is None:
+                    return  # brand-new DB before init_db; the next store open reconciles
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS fts_index_meta (id INTEGER PRIMARY KEY CHECK (id = 1), "
+                    "tokenizer TEXT NOT NULL, updated_at TEXT NOT NULL)"
+                )
+                meta = conn.execute("SELECT tokenizer FROM fts_index_meta WHERE id = 1").fetchone()
+                table_sql = (table_sql_row[0] or "").lower()
+                if meta and meta[0] == desired and desired in table_sql:
+                    return  # already reconciled
+                conn.execute("DROP TABLE IF EXISTS memory_fts")
+                conn.execute(
+                    "CREATE VIRTUAL TABLE memory_fts USING fts5("
+                    f"memory_id UNINDEXED, content, summary, source, topics, tokenize = '{desired}')"
+                )
+                rows = conn.execute(
+                    "SELECT id, content, summary, source, topics_json FROM memories WHERE status = 'active'"
+                ).fetchall()
+                for row in rows:
+                    try:
+                        topics = " ".join(json.loads(row["topics_json"] or "[]"))
+                    except (TypeError, ValueError):
+                        topics = ""
+                    conn.execute(
+                        "INSERT INTO memory_fts(memory_id, content, summary, source, topics) VALUES (?, ?, ?, ?, ?)",
+                        (row["id"], row["content"] or "", row["summary"] or "", row["source"] or "", topics),
+                    )
+                conn.execute(
+                    "INSERT INTO fts_index_meta(id, tokenizer, updated_at) VALUES (1, ?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET tokenizer = excluded.tokenizer, updated_at = excluded.updated_at",
+                    (desired, now_iso()),
+                )
+                conn.commit()
+        except sqlite3.Error:
+            return
 
     def _ensure_encrypted_capture_columns(self) -> None:
         """Additive zero-access (E2EE) sync columns on `captures`, migrated in place.
@@ -10551,6 +10853,32 @@ class CortexStore:
                 for src, saved in zip(extracted.get("entities", []), entities)
                 if src.get("id") and saved["id"] != str(src["id"])
             }
+            # #18: fold in any retroactive back-merge (old single-token node -> the fuller entity just
+            # saved) so this capture's in-memory entity_ids/edges follow the reclaimed node too. The
+            # DB references were already repointed inside _merge_entity_into; this keeps the in-memory
+            # `entities`/`memories`/`tasks` structures (and the edges built below) consistent.
+            for saved in entities:
+                for old_id, new_id in (saved.pop("_backmerge_remap", None) or {}).items():
+                    entity_remap[str(old_id)] = str(new_id)
+            # Collapse the in-memory entities list onto canonical ids (a same-capture "Sarah" +
+            # "Sarah Chen" would otherwise leave a stale, now-deleted single-token entry that feeds a
+            # dangling co_occurs edge below).
+            if entity_remap:
+                deduped_entities: list[dict[str, Any]] = []
+                seen_entity_ids: set[str] = set()
+                for saved in entities:
+                    canonical_id = entity_remap.get(str(saved["id"]), str(saved["id"]))
+                    if canonical_id in seen_entity_ids:
+                        continue
+                    seen_entity_ids.add(canonical_id)
+                    if canonical_id != str(saved["id"]):
+                        canonical_row = conn.execute(
+                            "SELECT * FROM entities WHERE user_id = ? AND id = ?", (user_id, canonical_id)
+                        ).fetchone()
+                        if canonical_row is not None:
+                            saved = self._entity_from_row(canonical_row)
+                    deduped_entities.append(saved)
+                entities = deduped_entities
             if entity_remap:
                 def _remap_ids(ids: list[str]) -> list[str]:
                     out: list[str] = []
@@ -10583,6 +10911,11 @@ class CortexStore:
             for index, left in enumerate(entity_ids):
                 for right in entity_ids[index + 1:]:
                     edges.append(self._edge(conn, user_id, left, right, "co_occurs", capture_id, captured_at, weight=0.5))
+
+            # #24: typed, directed entity relationships (works_at/reports_to/part_of/blocks) with the
+            # source memory as edge provenance, incrementally maintained alongside the co-occurrence
+            # edges above.
+            edges.extend(self._save_typed_entity_relationships(conn, user_id, memories, entities, captured_at))
 
             # Live ticker: surface the ORGANIZING work, not just the raw memories. When a capture
             # links two or more people/projects/topics, show that connection forming in the
@@ -10637,6 +10970,9 @@ class CortexStore:
                     captured_at,
                 ),
             )
+            # #20: stamp the extractor version that derived these memories so a later version bump can
+            # detect this capture as stale and reprocess it from stored raw text.
+            self._stamp_extractor_version(conn, user_id, capture_id)
 
             self.vault.write_settings(user_id, user_settings_snapshot)
 
@@ -16130,6 +16466,20 @@ class CortexStore:
                     """,
                     (user_id,),
                 ).fetchone()[0],
+                # #23 orphan sweep: an active memory with NO entity links AND no citation is
+                # unreachable by both the graph and source-scoped retrieval — an organization-
+                # completeness gap that should be re-extracted/reviewed, not left dangling.
+                "orphan_memories": conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM memories
+                    WHERE user_id = ?
+                      AND status = 'active'
+                      AND COALESCE(source_url, '') = ''
+                      AND COALESCE(entity_ids_json, '[]') IN ('', '[]')
+                    """,
+                    (user_id,),
+                ).fetchone()[0],
             }
             vector_ready = self._vector_ready(conn)
             active_vector_memories = (
@@ -16305,6 +16655,9 @@ class CortexStore:
         if totals["orphaned_memory_relations"] > 0:
             warnings.append("Some memory relationship rows no longer point at active memories.")
             recommendations.append("Run storage repair before relying on related-memory expansion.")
+        if totals.get("orphan_memories", 0) > 0:
+            warnings.append("Some memories have no entity links and no source citation.")
+            recommendations.append("Re-extract or review unlinked memories so they are reachable by graph and source-scoped retrieval.")
         if totals["active_memories"] > 0 and vector_ready and vector_coverage < 0.8:
             warnings.append("Vector retrieval coverage is still catching up.")
             recommendations.append("Run the local worker so queued embedding jobs can finish.")
@@ -27630,6 +27983,9 @@ class CortexStore:
                     completed_at,
                 ),
             )
+            # #20: stamp the extractor version for reprocess-on-change detection (this INSERT OR
+            # REPLACE runs after save_capture already stamped it, so re-stamp to keep it set).
+            self._stamp_extractor_version(conn, user_id, capture_id)
             self._event(
                 conn,
                 user_id,
@@ -28026,7 +28382,10 @@ class CortexStore:
         if self._is_tombstoned_in_conn(conn, user_id, "memory", memory_id):
             return None
         kind = record.get("kind", "observation")
-        layer = memory_layer(kind, record.get("layer"))
+        # #17 deterministic layer: honor a valid explicit/kind layer, else classify by content via
+        # the canonical heuristic so no memory lands unlayered/misc when a deterministic rule applies
+        # (covers the no-ANTHROPIC_API_KEY path and any record that reached storage without a layer).
+        layer = reconcile_memory_layer(kind, record.get("layer"), record.get("content"))
         topics = record.get("topics", [])
         entity_ids = record.get("entity_ids", [])
         raw_excerpt = _memory_raw_excerpt(record, raw_text)
@@ -28137,6 +28496,24 @@ class CortexStore:
                 )
             return self._bump_duplicate_memory_occurrences(
                 conn, duplicate, user_id=user_id, capture_id=capture_id, captured_at=captured_at
+            )
+        # #21 semantic near-duplicate collapse: the lexical key above only catches word-for-word
+        # repeats. When a REAL embedder is live (model2vec — never the deterministic hash, which
+        # would collapse on keyword noise), also fold a genuine paraphrase of an existing same-kind
+        # memory into it (merge provenance + sum occurrences) rather than storing a near-twin. Never
+        # collapses across a polarity/value contradiction. Inert under the hash embedder, so the
+        # tuned retrieval/context evals (hash provider) are unaffected.
+        semantic_twin = self._find_semantic_near_duplicate(
+            conn, user_id, capture_id, memory_id, kind, layer, record.get("content", "")
+        )
+        if semantic_twin is not None:
+            return self._collapse_semantic_near_duplicate(
+                conn,
+                semantic_twin,
+                user_id=user_id,
+                capture_id=capture_id,
+                captured_at=captured_at,
+                source_url=memory_source_url,
             )
         # Repetition support: memory ids are content-derived, so saving the exact same
         # statement again lands on an EXISTING id. A genuinely new save (different capture)
@@ -28467,6 +28844,96 @@ class CortexStore:
         memory["trust_score"] = trust_score
         memory["captured_at"] = captured_at
         memory["updated_at"] = captured_at
+        return memory
+
+    def _find_semantic_near_duplicate(
+        self, conn, user_id: str, capture_id: str, memory_id: str, kind: str, layer: str, content: str
+    ):
+        """#21: find an active, same-kind+same-layer memory whose embedding is a true near-duplicate
+        of `content` (cosine >= threshold) so a paraphrase collapses into it. Returns the row, or
+        None. ONLY runs under a real embedder (never the deterministic hash, whose vectors are
+        keyword plumbing) and NEVER treats a polarity/value-contradicting claim as a duplicate."""
+        text = str(content or "").strip()
+        if len(text) < 16:
+            return None
+        # Hash-provider stores rank on FTS, not vectors; collapsing on hash noise would be wrong.
+        if embedding_status().get("provider") == "hash":
+            return None
+        try:
+            pending_vec = embed_text(text)
+        except Exception:
+            return None
+        if not pending_vec:
+            return None
+        rows = conn.execute(
+            """
+            SELECT m.*
+            FROM memories m
+            LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+            WHERE m.user_id = ?
+              AND m.status = 'active'
+              AND m.kind = ?
+              AND m.layer = ?
+              AND m.id != ?
+              AND (m.capture_id = ? OR m.capture_id IS NULL OR c.review_status = 'approved')
+            ORDER BY m.captured_at DESC
+            LIMIT 40
+            """,
+            (user_id, kind, layer, memory_id, capture_id),
+        ).fetchall()
+        best_row = None
+        best_score = 0.0
+        for row in rows:
+            candidate_text = str(row["content"] or "").strip()
+            if not candidate_text or _claims_conflict(text, candidate_text):
+                continue
+            try:
+                candidate_vec = embed_text(candidate_text)
+            except Exception:
+                continue
+            score = _cosine_similarity(pending_vec, candidate_vec)
+            if score > best_score:
+                best_score = score
+                best_row = row
+        if best_row is not None and best_score >= SEMANTIC_NEAR_DUP_THRESHOLD:
+            return best_row
+        return None
+
+    def _collapse_semantic_near_duplicate(
+        self, conn, twin, *, user_id: str, capture_id: str, captured_at: str, source_url: str | None
+    ) -> dict[str, Any]:
+        """#21: fold a paraphrase into its semantic twin — sum occurrences (via the shared bump path)
+        and merge the incoming citation into the survivor's provenance as corroboration, so a cited
+        paraphrase is COMPRESSED into the survivor, never dropped silently (no provenance loss)."""
+        memory = self._bump_duplicate_memory_occurrences(
+            conn, twin, user_id=user_id, capture_id=capture_id, captured_at=captured_at
+        )
+        incoming_url = str(source_url or "").strip()
+        if incoming_url:
+            provenance = memory.get("provenance") if isinstance(memory.get("provenance"), dict) else None
+            if provenance is None:
+                try:
+                    provenance = json.loads(twin["provenance_json"] or "{}")
+                except (TypeError, ValueError, IndexError):
+                    provenance = {}
+            corroborating = list(provenance.get("corroborating_source_urls") or [])
+            survivor_url = str(provenance.get("source_url") or memory.get("source_url") or "").strip()
+            if incoming_url != survivor_url and incoming_url not in corroborating:
+                corroborating.append(incoming_url)
+                provenance["corroborating_source_urls"] = corroborating
+                conn.execute(
+                    "UPDATE memories SET provenance_json = ? WHERE user_id = ? AND id = ?",
+                    (json.dumps(provenance), user_id, memory["id"]),
+                )
+                memory["provenance"] = provenance
+        self._event(
+            conn,
+            user_id,
+            memory["id"],
+            "memory",
+            "semantic_near_duplicate_collapsed",
+            {"source_url": incoming_url, "occurrences": memory.get("occurrences")},
+        )
         return memory
 
     def _refresh_duplicate_source_memory(
@@ -31606,6 +32073,15 @@ class CortexStore:
                     (entity_id, user_id, entity.get("kind", "person"), entity.get("name", entity_id), json.dumps(entity.get("aliases", [])), entity.get("context", ""), captured_at, captured_at),
                 )
         row = conn.execute("SELECT * FROM entities WHERE user_id = ? AND id = ?", (user_id, entity_id)).fetchone()
+        # #18 retroactive entity resolution: a fuller multi-word name ("Sarah Chen") arriving now can
+        # reclaim an existing UNAMBIGUOUS single-token node ("Sarah") that predates it — the reverse
+        # of the forward first-name rule, which only fires when the short name arrives second. Merge
+        # is bidirectional and reference-complete (see _merge_entity_into) and only ever runs on an
+        # unambiguous case. The remap it produces is threaded back so the caller can repoint this
+        # capture's in-memory entity_ids too.
+        backmerge_remap = self._backmerge_leading_token_entities(conn, user_id, row, captured_at)
+        if backmerge_remap:
+            row = conn.execute("SELECT * FROM entities WHERE user_id = ? AND id = ?", (user_id, entity_id)).fetchone()
         return {
             "id": row["id"],
             "user_id": user_id,
@@ -31615,7 +32091,216 @@ class CortexStore:
             "context": row["context"],
             "first_seen": row["first_seen"],
             "last_seen": row["last_seen"],
+            "_backmerge_remap": backmerge_remap,
         }
+
+    def _backmerge_leading_token_entities(self, conn, user_id: str, full_row, captured_at: str) -> dict[str, str]:
+        """#18: back-merge an existing unambiguous single-token person entity into the fuller
+        multi-word entity `full_row` just saved. Returns {old_id: new_id} for every node merged in
+        (empty when nothing merges).
+
+        Only fires when it is UNAMBIGUOUS: the full name must be a multi-token person, its leading
+        token T must match EXACTLY ONE existing single-token person entity, and NO OTHER multi-word
+        person entity may also lead with T (otherwise "Sarah" could belong to "Sarah Chen" OR "Sarah
+        Kim" and merging would be a guess). A wrong merge is worse than a duplicate, so anything
+        ambiguous is left alone for a later review pass."""
+        if full_row is None or str(full_row["kind"]) != "person":
+            return {}
+        full_id = str(full_row["id"])
+        full_norm = self._normalize_entity_name(full_row["name"])
+        if " " not in full_norm:
+            return {}  # not a multi-word name — nothing to reclaim
+        leading = full_norm.split(" ", 1)[0]
+        if not leading:
+            return {}
+        rows = conn.execute(
+            "SELECT id, name, aliases_json FROM entities WHERE user_id = ? AND kind = 'person'",
+            (user_id,),
+        ).fetchall()
+        single_token_matches: list[str] = []
+        other_multiword_leads = 0
+        for row in rows:
+            rid = str(row["id"])
+            if rid == full_id:
+                continue
+            names = [row["name"]] + json.loads(row["aliases_json"] or "[]")
+            norms = {n for n in (self._normalize_entity_name(x) for x in names) if n}
+            # Exact single-token node equal to the leading token (its primary name is that token).
+            if self._normalize_entity_name(row["name"]) == leading and " " not in leading:
+                single_token_matches.append(rid)
+            # Another multi-word entity also leading with T => T is ambiguous, do not reclaim.
+            if any(" " in other and other.split(" ", 1)[0] == leading for other in norms):
+                other_multiword_leads += 1
+        if len(single_token_matches) != 1 or other_multiword_leads > 0:
+            return {}
+        old_id = single_token_matches[0]
+        self._merge_entity_into(conn, user_id, old_id, full_id, captured_at, reason="retroactive_leading_token")
+        return {old_id: full_id}
+
+    def _merge_entity_into(self, conn, user_id: str, old_id: str, new_id: str, captured_at: str, *, reason: str) -> None:
+        """Reference-complete entity merge: repoint every reference from `old_id` to `new_id`, fold
+        `old_id`'s name/aliases into `new_id`'s alias set, delete the now-empty `old_id` row, and
+        record a provenance event on the survivor. Covers memory_entities, task_entities,
+        memories.entity_ids_json, tasks.entity_ids_json, and graph_edges (dropping any self-loops the
+        repoint creates). No silent data loss: the old display name/id survive as searchable aliases,
+        and the merge is audited."""
+        if not old_id or not new_id or old_id == new_id:
+            return
+        old_row = conn.execute(
+            "SELECT id, name, aliases_json, context FROM entities WHERE user_id = ? AND id = ?",
+            (user_id, old_id),
+        ).fetchone()
+        new_row = conn.execute(
+            "SELECT id, name, aliases_json FROM entities WHERE user_id = ? AND id = ?",
+            (user_id, new_id),
+        ).fetchone()
+        if old_row is None or new_row is None:
+            return
+        # Fold aliases (old name + its would-be id + its aliases) into the survivor.
+        aliases = set(json.loads(new_row["aliases_json"] or "[]"))
+        for alias in (old_row["name"], old_row["id"], *json.loads(old_row["aliases_json"] or "[]")):
+            text = str(alias or "").strip()
+            if text and text != new_row["name"] and text != new_row["id"]:
+                aliases.add(text)
+        conn.execute(
+            "UPDATE entities SET aliases_json = ?, last_seen = ?, context = COALESCE(NULLIF(context, ''), ?) WHERE user_id = ? AND id = ?",
+            (json.dumps(sorted(aliases)), captured_at, old_row["context"] or "", user_id, new_id),
+        )
+        # memory_entities / task_entities: move rows, tolerating the PK collision when both ids
+        # already tag the same memory/task (INSERT OR IGNORE then delete the old rows).
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_entities(memory_id, entity_id, user_id, created_at) "
+            "SELECT memory_id, ?, user_id, created_at FROM memory_entities WHERE user_id = ? AND entity_id = ?",
+            (new_id, user_id, old_id),
+        )
+        conn.execute("DELETE FROM memory_entities WHERE user_id = ? AND entity_id = ?", (user_id, old_id))
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO task_entities(task_id, entity_id, user_id, created_at) "
+                "SELECT task_id, ?, user_id, created_at FROM task_entities WHERE user_id = ? AND entity_id = ?",
+                (new_id, user_id, old_id),
+            )
+            conn.execute("DELETE FROM task_entities WHERE user_id = ? AND entity_id = ?", (user_id, old_id))
+        except sqlite3.OperationalError:
+            pass
+        # entity_ids_json on memories + tasks: rewrite any list containing old_id (dedup, preserve order).
+        for table in ("memories", "tasks"):
+            id_rows = conn.execute(
+                f"SELECT id, entity_ids_json FROM {table} WHERE user_id = ? AND entity_ids_json LIKE ?",
+                (user_id, f'%{old_id}%'),
+            ).fetchall()
+            for id_row in id_rows:
+                try:
+                    ids = json.loads(id_row["entity_ids_json"] or "[]")
+                except (TypeError, ValueError):
+                    continue
+                if old_id not in ids:
+                    continue
+                remapped: list[str] = []
+                for eid in ids:
+                    mapped = new_id if eid == old_id else eid
+                    if mapped not in remapped:
+                        remapped.append(mapped)
+                conn.execute(
+                    f"UPDATE {table} SET entity_ids_json = ? WHERE user_id = ? AND id = ?",
+                    (json.dumps(remapped), user_id, id_row["id"]),
+                )
+        # graph_edges: repoint endpoints, then drop self-loops and de-duplicate the repointed pairs.
+        conn.execute(
+            "UPDATE graph_edges SET source_id = ? WHERE user_id = ? AND source_id = ?",
+            (new_id, user_id, old_id),
+        )
+        conn.execute(
+            "UPDATE graph_edges SET target_id = ? WHERE user_id = ? AND target_id = ?",
+            (new_id, user_id, old_id),
+        )
+        conn.execute(
+            "DELETE FROM graph_edges WHERE user_id = ? AND source_id = target_id",
+            (user_id,),
+        )
+        conn.execute(
+            """
+            DELETE FROM graph_edges
+            WHERE user_id = ? AND id NOT IN (
+              SELECT MIN(id) FROM graph_edges WHERE user_id = ?
+              GROUP BY source_id, target_id, kind, evidence_id
+            )
+            """,
+            (user_id, user_id),
+        )
+        conn.execute("DELETE FROM entities WHERE user_id = ? AND id = ?", (user_id, old_id))
+        self._event(
+            conn,
+            user_id,
+            new_id,
+            "entity",
+            "merged",
+            {"merged_from": old_id, "merged_from_name": old_row["name"], "reason": reason},
+        )
+
+    def _save_typed_entity_relationships(
+        self, conn, user_id: str, memories: list[dict[str, Any]], entities: list[dict[str, Any]], captured_at: str
+    ) -> list[dict[str, Any]]:
+        """#24: extract typed, directed relationships (works_at / reports_to / part_of / blocks) from
+        memory content and persist them as directed graph_edges whose evidence_id is the source
+        memory (edge provenance). High-precision surface patterns only, and BOTH endpoints must
+        resolve to entities this capture actually knows about — a typed edge between phantom names is
+        never invented. Idempotent: edge ids are content-derived (see _edge), so reprocessing the
+        same capture re-derives the same edges. Returns the edges created for the caller to collect."""
+        if not memories or not entities:
+            return []
+        name_to_id: dict[str, str] = {}
+        for ent in entities:
+            eid = str(ent.get("id") or "").strip()
+            if not eid:
+                continue
+            for surface in (ent.get("name"), *(ent.get("aliases") or [])):
+                norm = self._normalize_entity_name(surface or "")
+                if norm:
+                    name_to_id.setdefault(norm, eid)
+
+        def _resolve(surface: str) -> str | None:
+            norm = self._normalize_entity_name(surface)
+            if not norm:
+                return None
+            if norm in name_to_id:
+                return name_to_id[norm]
+            if " " not in norm:  # unambiguous leading-token (first-name) match only
+                candidates = {
+                    eid for name, eid in name_to_id.items()
+                    if " " in name and name.split(" ", 1)[0] == norm
+                }
+                if len(candidates) == 1:
+                    return next(iter(candidates))
+            return None
+
+        created: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for memory in memories:
+            content = str(memory.get("content") or "")
+            if not content:
+                continue
+            evidence_id = str(memory.get("id") or "").strip()
+            if not evidence_id:
+                continue
+            for relation, pattern, _directed in _TYPED_RELATIONSHIP_PATTERNS:
+                for match in pattern.finditer(content):
+                    subject_id = _resolve(match.group(1))
+                    object_id = _resolve(match.group(2))
+                    if not subject_id or not object_id or subject_id == object_id:
+                        continue
+                    kind = relation
+                    source_id, target_id = subject_id, object_id
+                    if relation == "blocks_reversed":
+                        kind, source_id, target_id = "blocks", object_id, subject_id
+                    key = (source_id, target_id, kind, evidence_id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    created.append(
+                        self._edge(conn, user_id, source_id, target_id, kind, evidence_id, captured_at, weight=1.0)
+                    )
+        return created
 
     def _edge(self, conn, user_id: str, source_id: str, target_id: str, kind: str, evidence_id: str, created_at: str, weight: float = 1.0) -> dict[str, Any]:
         edge_id = stable_id("edge_", user_id + source_id + target_id + kind + evidence_id)
