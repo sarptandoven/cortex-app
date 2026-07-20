@@ -655,10 +655,13 @@ def download_page() -> Response:
         for artifact in feed.get("artifacts", []):
             if artifact.get("kind") == "dmg" and artifact.get("url"):
                 dmg_url = str(artifact["url"])
+                # The checksums file is named after the release artifact (Cortex-<ver>-<build>),
+                # so derive it from the DMG filename rather than re-composing the prefix (which
+                # would also re-introduce a bare brand literal the brand-guard forbids).
+                dmg_name = dmg_url.rsplit("/", 1)[-1]
+                if dmg_name.endswith(".dmg"):
+                    checksums_name = dmg_name[: -len(".dmg")] + ".checksums.txt"
                 break
-        version, build = str(feed.get("version") or ""), str(feed.get("build") or "")
-        if version and build:
-            checksums_name = f"Cortex-{version}-{build}.checksums.txt"
     except Exception:
         pass
     body = (
