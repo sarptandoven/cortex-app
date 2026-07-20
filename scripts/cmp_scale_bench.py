@@ -406,6 +406,33 @@ def seed(items: list[str], workers: int = 3) -> float:
     return time.time() - t0
 
 
+def settle(timeout: float = 45.0, quiet_rounds: int = 3) -> None:
+    """Wait for post-seed background work (extraction/embedding/indexing) to quiesce before we
+    measure. Auto-approved captures kick off async processing that holds the SQLite write lock;
+    hammering /v1/context (esp. the session-delta WRITE path) mid-drain starves that write past
+    busy_timeout and shows up as a connect timeout. Poll /v1/stats until the memory count stops
+    moving for `quiet_rounds` consecutive polls (or `timeout` elapses), then a short breather."""
+    last = None
+    stable = 0
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            _status, stats = _request("GET", "/v1/stats", timeout=10.0)
+        except Exception:
+            time.sleep(0.5)
+            continue
+        count = int(stats.get("total_memories") or stats.get("memories") or stats.get("count") or 0)
+        if count == last:
+            stable += 1
+            if stable >= quiet_rounds:
+                break
+        else:
+            stable = 0
+            last = count
+        time.sleep(0.5)
+    time.sleep(0.5)
+
+
 # --------------------------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------------------------
@@ -427,6 +454,7 @@ def main() -> int:
             seeded_so_far = scale
             rate = (len(chunk) / dt) if dt else 0.0
             print(f"[seed] +{len(chunk)} -> {scale} memories in {dt:.1f}s ({rate:.0f}/s)", flush=True)
+            settle()
 
             p50, p95, n = measure_latency(queries)
             claude = measure_packing("claude")

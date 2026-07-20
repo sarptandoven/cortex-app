@@ -3170,6 +3170,16 @@ class CortexStore:
         # Current-head Proof-of-Belief substrate. The cache key is a trigger-maintained per-user
         # memory-event revision, so direct SQL edits/deletes/inserts invalidate it too.
         self._belief_integrity_cache: dict[str, dict[str, Any]] = {}
+        # Speculative session-prefetch bounding. The fire-and-forget warm path (_spawn_session_prefetch)
+        # must never pile up: a per-user single-slot guard (drop, never queue) plus a small server-wide
+        # cap keep the background warm load bounded no matter how fast an agent fires session context
+        # calls. Without this, rapid multi-turn calls spawn heavy background assembles faster than they
+        # finish and starve the foreground path on the SQLite write lock.
+        import threading as _threading
+
+        self._prefetch_lock = _threading.Lock()
+        self._prefetch_inflight_users: set[str] = set()
+        self._prefetch_slots = _threading.BoundedSemaphore(self.SESSION_PREFETCH_MAX_INFLIGHT)
         # Reconcile the vector index to the active model's dimension once, up front, on a dedicated
         # connection (safe: not nested in any caller transaction).
         self._ensure_vector_index()
@@ -17746,6 +17756,11 @@ class CortexStore:
     SESSION_PREFETCH_DEADLINE_MS = 25.0
     # How many next-step candidates the prefetch may warm per response (bounded fan-out).
     SESSION_PREFETCH_FANOUT = 3
+    # Server-wide ceiling on concurrent speculative prefetch workers across ALL users. Combined with
+    # the per-user single-slot guard, this bounds total background warm load: a burst from many users
+    # can never spawn an unbounded number of heavy background assembles. Speculative warms are
+    # droppable, so this cap is a non-blocking skip, never a queue.
+    SESSION_PREFETCH_MAX_INFLIGHT = 4
 
     @staticmethod
     def _session_query_tokens(task: str) -> list[str]:
@@ -18059,6 +18074,15 @@ class CortexStore:
         """Fire-and-forget speculative prefetch: warm the generic hot-cache for the likely next
         request (the trajectory's own task and its 1-hop entity-graph neighbors) on a daemon thread
         under a HARD wall-clock deadline. Never blocks, never raises into the response path."""
+        # OFF by default. Speculative warming re-runs the *heaviest* assemble (a full max-budget pack)
+        # on a background daemon thread concurrent with the foreground request. That both burns idle
+        # CPU on a guess (against the "no crazy CPU all the time" invariant) and, because the warm
+        # opens its own sqlite-vec connection while the foreground request is mid-connection on the
+        # same DB, contends at the connection layer and can wedge a rapid multi-turn session. It is a
+        # latency nicety, not a correctness feature, so it stays opt-in until the warm path is made
+        # fully read-only + connection-isolated. Enable with CORTEX_SESSION_PREFETCH=1.
+        if os.environ.get("CORTEX_SESSION_PREFETCH", "").strip().lower() not in {"1", "true", "on", "yes"}:
+            return
         candidates: list[str] = []
         seen: set[str] = set()
 
@@ -18074,22 +18098,53 @@ class CortexStore:
         if not candidates:
             return
 
+        # Bound the speculative warm: at most one in-flight worker per user, and a small server-wide
+        # cap across all users. If this user already has a warm running (or the global cap is full),
+        # drop this one — speculative work is droppable and must never queue into a pile-up.
+        if not self._acquire_prefetch_slot(user_id):
+            return
+
         def _worker() -> None:
-            deadline = time.monotonic() + (self.SESSION_PREFETCH_DEADLINE_MS / 1000.0)
-            for candidate in candidates:
-                if time.monotonic() >= deadline:
-                    return
-                try:
-                    self._warm_context_candidate(user_id, candidate, sector, project)
-                except Exception:
-                    return
+            try:
+                deadline = time.monotonic() + (self.SESSION_PREFETCH_DEADLINE_MS / 1000.0)
+                for candidate in candidates:
+                    if time.monotonic() >= deadline:
+                        return
+                    try:
+                        self._warm_context_candidate(user_id, candidate, sector, project)
+                    except Exception:
+                        return
+            finally:
+                self._release_prefetch_slot(user_id)
 
         try:
             import threading
 
             threading.Thread(target=_worker, name="cortex-session-prefetch", daemon=True).start()
         except Exception:
-            pass
+            # The worker never started, so it will never release — free the slot here.
+            self._release_prefetch_slot(user_id)
+
+    def _acquire_prefetch_slot(self, user_id: str) -> bool:
+        """Non-blocking reservation for one speculative prefetch worker. Returns True (and marks the
+        slot taken) only when this user has none in flight AND the server-wide cap has room; else
+        False so the caller drops the warm. Both gates are released together in _release_prefetch_slot."""
+        with self._prefetch_lock:
+            if user_id in self._prefetch_inflight_users:
+                return False
+            if not self._prefetch_slots.acquire(blocking=False):
+                return False
+            self._prefetch_inflight_users.add(user_id)
+            return True
+
+    def _release_prefetch_slot(self, user_id: str) -> None:
+        """Release a reservation taken by _acquire_prefetch_slot. Idempotent per (acquire, release)
+        pair: only releases the global semaphore when the user was actually marked in-flight, so a
+        stray release can never over-release the BoundedSemaphore."""
+        with self._prefetch_lock:
+            if user_id in self._prefetch_inflight_users:
+                self._prefetch_inflight_users.discard(user_id)
+                self._prefetch_slots.release()
 
     def _warm_context_candidate(self, user_id: str, task: str, sector: str | None, project: str | None) -> None:
         """Warm one generic hot-cache entry for a speculative task. Skips work when the entry is
