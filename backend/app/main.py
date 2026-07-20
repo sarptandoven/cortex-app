@@ -32,7 +32,21 @@ from .authn import (
 from .config import APP_BRAND, load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import CORE_TOOL_NAMES, MCP_TOOL_SURFACES, TOOLS, _assemble_context_ext_kwargs, call_tool, export_tool_schema, tool_call_result, tools_for_scopes
+from .mcp_tools import (
+    CORE_TOOL_NAMES,
+    MCP_TOOL_SURFACES,
+    TOOLS,
+    _assemble_context_ext_kwargs,
+    call_tool,
+    export_tool_schema,
+    get_prompt,
+    list_prompts,
+    list_resource_templates,
+    list_resources,
+    read_resource,
+    tool_call_result,
+    tools_for_scopes,
+)
 from .observability import metrics, route_label
 from .models import AgentSessionsSyncRequest, AgentSessionsSyncResponse, APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
@@ -2200,6 +2214,8 @@ def get_context(
     as_of: str | None = Query(default=None, max_length=40),
     format: str = Query(default="json", pattern="^(json|markdown|smp)$"),
     model: str | None = Query(default=None, max_length=80),
+    session_id: str | None = Query(default=None, max_length=120),
+    pin: bool = Query(default=False),
     user_id: str = Depends(auth),
 ) -> Any:
     # 'smp' selects the self-describing SMP envelope (response_format), not a text renderer, so the
@@ -2216,9 +2232,14 @@ def get_context(
         as_of=as_of,
         intent=intent,
         # Reaching this endpoint already required the read scope, and the identity layer is a read
-        # of distilled context — so it is always included here.
+        # of distilled context — so it is always included here (parity with the local server's GET).
         include_identity=True,
         format=internal_format,
+        # Transport parity with POST /v1/context and the local server: a session_id turns on the
+        # per-session working-set delta channel (pay once per fact), and pin content-addresses the
+        # pack for later verification. Absent both, behavior is byte-identical to before.
+        pin=pin,
+        session_id=str(session_id or "") or None,
         **_assemble_context_ext_kwargs(response_format, model),
     )
     return _context_response(pack, internal_format)
@@ -4490,7 +4511,14 @@ async def mcp(request: Request, context: dict[str, Any] = Depends(mcp_auth)) -> 
             result = {
                 "protocolVersion": requested_version if requested_version in MCP_PROTOCOL_VERSIONS else MCP_PROTOCOL_VERSIONS[0],
                 "serverInfo": {"name": "cortex", "version": BACKEND_VERSION},
-                "capabilities": {"tools": {}},
+                # Advertise resources + prompts alongside tools, in parity with the local server, so a
+                # remote MCP client discovers the cortex:// resources and curated prompts off the same
+                # hosted endpoint. listChanged=False: the catalog is static per protocol revision.
+                "capabilities": {
+                    "tools": {"listChanged": False},
+                    "resources": {"listChanged": False, "subscribe": False},
+                    "prompts": {"listChanged": False},
+                },
             }
         elif method == "ping":
             result = {}
@@ -4514,6 +4542,29 @@ async def mcp(request: Request, context: dict[str, Any] = Depends(mcp_auth)) -> 
                 store.record_agent_event(user_id, tool_name, arguments, success=False, error=str(exc), token=context)
                 raise
             result = tool_call_result(value)
+        elif method == "resources/list":
+            result = {"resources": list_resources(), "resourceTemplates": list_resource_templates()}
+        elif method == "resources/read":
+            params = message.get("params") or {}
+            uri = str(params.get("uri") or "")
+            try:
+                result = read_resource(store, user_id, uri, token_scopes=token_scopes)
+                store.record_agent_event(user_id, f"resource:{uri}", {}, success=True, token=context)
+            except Exception as exc:
+                store.record_agent_event(user_id, f"resource:{uri}", {}, success=False, error=str(exc), token=context)
+                raise
+        elif method == "prompts/list":
+            result = {"prompts": list_prompts()}
+        elif method == "prompts/get":
+            params = message.get("params") or {}
+            prompt_name = str(params.get("name") or "")
+            prompt_args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+            try:
+                result = get_prompt(store, user_id, prompt_name, prompt_args, token_scopes=token_scopes)
+                store.record_agent_event(user_id, f"prompt:{prompt_name}", {}, success=True, token=context)
+            except Exception as exc:
+                store.record_agent_event(user_id, f"prompt:{prompt_name}", {}, success=False, error=str(exc), token=context)
+                raise
         else:
             return _mcp_response({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32601, "message": f"Method not found: {method}"}}, event_stream=event_stream, session_id=None)
         # Mcp-Session-Id is returned only on the initialize response (where it is minted).

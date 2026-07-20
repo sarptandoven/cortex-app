@@ -3815,7 +3815,16 @@ END:VCALENDAR
             self.assertEqual(result["protocolVersion"], requested)
             self.assertEqual(result["serverInfo"]["name"], "cortex")
             self.assertEqual(result["serverInfo"]["version"], main_module.BACKEND_VERSION)
-            self.assertEqual(result["capabilities"], {"tools": {}})
+            # Parity with the local server: hosted /mcp advertises resources + prompts alongside
+            # tools so a remote MCP client discovers the cortex:// resources and curated prompts.
+            self.assertEqual(
+                result["capabilities"],
+                {
+                    "tools": {"listChanged": False},
+                    "resources": {"listChanged": False, "subscribe": False},
+                    "prompts": {"listChanged": False},
+                },
+            )
 
         for params in ({"protocolVersion": "1999-01-01"}, {}, None):
             response = self.client.post(
@@ -3877,14 +3886,37 @@ END:VCALENDAR
     def test_mcp_unknown_method_returns_method_not_found(self) -> None:
         response = self.client.post(
             "/mcp",
-            json={"jsonrpc": "2.0", "id": 4, "method": "resources/list", "params": {}},
+            json={"jsonrpc": "2.0", "id": 4, "method": "does/not/exist", "params": {}},
             headers={"Authorization": "Bearer test-token"},
         )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertNotIn("result", payload)
         self.assertEqual(payload["error"]["code"], -32601)
-        self.assertIn("resources/list", payload["error"]["message"])
+        self.assertIn("does/not/exist", payload["error"]["message"])
+
+    def test_mcp_exposes_resources_and_prompts(self) -> None:
+        # Hosted /mcp parity with the local server: resources/list + prompts/list are served (not
+        # method-not-found), so a remote MCP client can discover the cortex:// resources and prompts.
+        headers = {"Authorization": "Bearer test-token"}
+        resources = self.client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 5, "method": "resources/list", "params": {}},
+            headers=headers,
+        )
+        self.assertEqual(resources.status_code, 200)
+        res_result = resources.json()["result"]
+        uris = {r["uri"] for r in res_result["resources"]}
+        self.assertIn("cortex://profile/person-map", uris)
+        self.assertIn("resourceTemplates", res_result)
+
+        prompts = self.client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 6, "method": "prompts/list", "params": {}},
+            headers=headers,
+        )
+        self.assertEqual(prompts.status_code, 200)
+        self.assertIsInstance(prompts.json()["result"]["prompts"], list)
 
     def test_mcp_tool_calls_return_structured_content_for_retrieval_and_catalog(self) -> None:
         user = "mcp-structured-content-contract"
