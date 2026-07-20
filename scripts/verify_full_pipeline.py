@@ -390,8 +390,11 @@ def stage_entrance(client: Client, r: Results, corpus: dict) -> dict:
                 raise PipelineError(stage, f"has_more=true but next_offset invalid ({nxt!r})")
             offset = nxt
         else:
-            r.ok(stage, "paginated import terminates (final page has_more=false)",
-                 page.get("next_offset") in (None, 0) or not page.get("has_more"),
+            # This runs only in the has_more==false branch, so `not page.get('has_more')` would be
+            # vacuously true and mask a final page that clears has_more but leaves a stale non-zero
+            # cursor. Assert the cursor is genuinely cleared on the terminal page.
+            r.ok(stage, "paginated import terminates (final page clears its cursor)",
+                 page.get("next_offset") in (None, 0),
                  f"next_offset={page.get('next_offset')}")
             break
 

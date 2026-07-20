@@ -3918,6 +3918,21 @@ END:VCALENDAR
         self.assertEqual(prompts.status_code, 200)
         self.assertIsInstance(prompts.json()["result"]["prompts"], list)
 
+    def test_mcp_error_message_redacts_absolute_paths(self) -> None:
+        # Parity with the local server: a store error carrying an absolute vault/DB path (or secret)
+        # must be redacted before it reaches a remote MCP client, not returned as raw str(exc).
+        leaky_path = "/Users/victim/Library/Application Support/Cortex/vault.db"
+        with patch.object(main_module, "read_resource", side_effect=OSError(f"unable to open database file: {leaky_path}")):
+            response = self.client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "id": 7, "method": "resources/read", "params": {"uri": "cortex://profile/personal"}},
+                headers={"Authorization": "Bearer test-token"},
+            )
+        self.assertEqual(response.status_code, 200)
+        message = response.json()["error"]["message"]
+        self.assertNotIn(leaky_path, message)
+        self.assertNotIn("/Users/victim", message)
+
     def test_mcp_tool_calls_return_structured_content_for_retrieval_and_catalog(self) -> None:
         user = "mcp-structured-content-contract"
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}

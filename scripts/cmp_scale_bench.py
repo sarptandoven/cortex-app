@@ -308,6 +308,8 @@ def measure_delta(session_id: str) -> dict:
     naive_total = 0
     delta_total = 0
     per_turn: list[dict] = []
+    turn1_new = 0
+    turn1_items = 0
     for turn, task in enumerate(delta_session_turns(), start=1):
         payload = _context_smp(task, model="claude", token_budget=6000, session_id=session_id)
         items = payload.get("items") or []
@@ -317,10 +319,19 @@ def measure_delta(session_id: str) -> dict:
                 ref_content[ref] = str(it.get("content") or "")
         pack_tokens = sum(_est_tokens(it.get("content") or "") for it in items)
 
-        wm = payload.get("working_memory") or {}
+        # A session-linked /v1/context MUST carry a working_memory delta object. Record its PRESENCE
+        # explicitly (isinstance dict) rather than swallowing absence with `or {}` — an absent/None
+        # delta means the pay-once channel is broken and must fail the floor, not score as free.
+        wm_raw = payload.get("working_memory")
+        wm_present = isinstance(wm_raw, dict)
+        wm = wm_raw if wm_present else {}
         new_refs = [str(x.get("ref") or "") for x in (wm.get("new") or [])]
         # Pay-once cost of this turn = content tokens of only the facts newly introduced this turn.
         new_tokens = sum(_est_tokens(ref_content.get(r, "")) for r in new_refs if r)
+
+        if turn == 1:
+            turn1_new = len(new_refs)
+            turn1_items = len(items)
 
         naive_total += pack_tokens          # naive: resend the entire pack every turn
         delta_total += new_tokens           # CMP: send only the delta content
@@ -330,6 +341,7 @@ def measure_delta(session_id: str) -> dict:
             "pack_tokens": pack_tokens,
             "new": len(new_refs),
             "new_tokens": new_tokens,
+            "wm_present": wm_present,
         })
     savings = (1.0 - (delta_total / naive_total)) if naive_total else 0.0
     return {
@@ -338,6 +350,13 @@ def measure_delta(session_id: str) -> dict:
         "savings_pct": savings * 100.0,
         "fraction_of_naive": (delta_total / naive_total) if naive_total else 0.0,
         "per_turn": per_turn,
+        # Soundness signals so the floor can reject a broken/absent delta instead of scoring it as
+        # maximally efficient: the delta object was present every turn, turn 1 introduced facts, and
+        # on a fresh session turn 1's `new` set equals the whole served pack (every served id is new).
+        "wm_present_all_turns": all(t["wm_present"] for t in per_turn),
+        "turn1_new": turn1_new,
+        "turn1_items": turn1_items,
+        "turn1_new_equals_served": turn1_new > 0 and turn1_new == turn1_items,
     }
 
 
@@ -528,7 +547,25 @@ def main() -> int:
             )
 
         for r in results:
-            frac = r["delta"]["fraction_of_naive"]
+            dm = r["delta"]
+            frac = dm["fraction_of_naive"]
+            # Soundness FIRST: a fraction of 0.0 is only meaningful when the delta channel actually
+            # fired. Without these, an absent/empty working_memory yields delta_total=0 -> frac=0.0 and
+            # would score as maximally efficient, certifying a fully-broken "pay once per fact" feature.
+            if not dm.get("wm_present_all_turns"):
+                failures.append(
+                    f"session-delta at {r['scale']} MISSING: a session-linked /v1/context returned no working_memory delta"
+                )
+            if not dm.get("turn1_new_equals_served"):
+                failures.append(
+                    f"session-delta at {r['scale']} unsound: turn 1 introduced {dm.get('turn1_new')} new vs {dm.get('turn1_items')} served "
+                    f"(a fresh session's turn-1 `new` set must equal the served pack)"
+                )
+            if dm.get("delta_total", 0) <= 0:
+                failures.append(
+                    f"session-delta at {r['scale']} sent 0 delta tokens across the whole session (delta channel not producing `new` ids)"
+                )
+            # Then the efficiency ceiling (now trustworthy because the delta is confirmed present).
             if not (frac < DELTA_MAX_FRACTION_OF_NAIVE):
                 failures.append(
                     f"session-delta at {r['scale']} is {frac*100:.1f}% of naive (must be < {DELTA_MAX_FRACTION_OF_NAIVE*100:.0f}%)"

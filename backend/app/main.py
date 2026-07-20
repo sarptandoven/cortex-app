@@ -4570,7 +4570,13 @@ async def mcp(request: Request, context: dict[str, Any] = Depends(mcp_auth)) -> 
         # Mcp-Session-Id is returned only on the initialize response (where it is minted).
         return _mcp_response({"jsonrpc": "2.0", "id": message.get("id"), "result": jsonable_encoder(result)}, event_stream=event_stream, session_id=session_id if method == "initialize" else None)
     except Exception as exc:
-        return _mcp_response({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32000, "message": str(exc)}}, event_stream=event_stream, session_id=None)
+        # Redact before returning to a remote MCP client: a store error (sqlite3.OperationalError,
+        # OSError, ...) can carry an absolute vault/DB path or an embedded secret. _safe_tool_error_message
+        # keeps PermissionError/ValueError user-facing and runs everything else through the store's
+        # agent-facing redaction — parity with the local server (standalone_server.py's _safe_error_message)
+        # and with this file's own /v1/tools/* endpoints. Without it the newly-added resources/read +
+        # prompts/get branches (and tools/call) would leak raw paths/secrets on the hosted transport only.
+        return _mcp_response({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32000, "message": _safe_tool_error_message(exc)}}, event_stream=event_stream, session_id=None)
 
 
 def _safe_tool_error_message(exc: Exception) -> str:

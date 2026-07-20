@@ -2799,6 +2799,15 @@ def _apply_source_record_metadata(extracted: dict[str, Any], metadata: dict[str,
         if source_topics:
             existing_topics = [str(topic) for topic in (record.get("topics") or []) if str(topic).strip()]
             record["topics"] = _unique_preserving_order([*existing_topics, *source_topics])[:12]
+        # Promote an anchor-resolved occurred_at (e.g. a relative date like "yesterday" that
+        # source_ingest._annotate_occurred_at resolved into metadata['occurred_at']) onto the record
+        # itself: _save_memory reads record['occurred_at'], not record['metadata'], so without this the
+        # resolved date is stored in metadata and silently never reaches the memory's occurred_at column
+        # (item #19 no-ops). Only fill when the extractor's own absolute-date scan didn't already set a
+        # more specific per-memory occurred_at.
+        anchored_occurred_at = str(metadata.get("occurred_at") or "").strip()
+        if anchored_occurred_at and not str(record.get("occurred_at") or "").strip():
+            record["occurred_at"] = anchored_occurred_at
     return extracted
 
 

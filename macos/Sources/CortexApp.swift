@@ -9135,7 +9135,15 @@ final class AppState: ObservableObject {
         // source still sees the connect flow on the next launch until real memory lands. Because
         // `onboardingDismissedForSession` is in-memory only, a Skip quiets it for this launch but it
         // returns next launch while still not connected.
-        if onboardingComplete && !onboardingHasSource {
+        // Hard guard against re-onboarding a returning user who already has real memory: onboardingHasSource
+        // goes false on any source-health dip (expired OAuth token, offline/renamed Obsidian vault, a single
+        // failed extraction -> status "needs_attention"), because onboardingHasSyncedMemory ignores durable
+        // stats.memories/inbox once the readiness report is loaded. Without this guard a fully set-up user
+        // with thousands of stored memories gets bounced into first-run onboarding on every launch until the
+        // source happens to report healthy again. Durable memory (or pending/inbox) means setup genuinely
+        // happened, so only self-heal when the user truly has NOTHING usable yet.
+        let hasDurableMemory = (stats?.memories ?? 0) > 0 || (stats?.pending_captures ?? 0) > 0 || !inbox.isEmpty
+        if onboardingComplete && !onboardingHasSource && !hasDurableMemory {
             onboardingComplete = false
             UserDefaults.standard.set(false, forKey: "onboardingComplete.v1")
         }

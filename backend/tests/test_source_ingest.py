@@ -2086,6 +2086,25 @@ class RelativeDateResolutionTests(unittest.TestCase):
         # captured/anchor timestamp is preserved, never overwritten.
         self.assertEqual(record.metadata.get("lifelog_start"), "2026-07-01T08:00:00Z")
 
+    def test_anchored_occurred_at_is_promoted_onto_the_memory_record(self) -> None:
+        # Regression: the anchor-resolved occurred_at lived only in metadata, and _save_memory reads
+        # record['occurred_at'], so the relative-date feature silently set nothing on the memory row.
+        # _apply_source_record_metadata must promote metadata['occurred_at'] onto the record.
+        from backend.app.storage import _apply_source_record_metadata
+
+        extracted = {"records": [{"content": "finished the prototype", "metadata": {}}]}
+        out = _apply_source_record_metadata(extracted, {"service": "Limitless", "occurred_at": "2026-06-30"})
+        self.assertEqual(out["records"][0]["occurred_at"], "2026-06-30")
+
+    def test_extractor_absolute_date_wins_over_anchor(self) -> None:
+        # A per-memory absolute date the extractor already scanned is more specific than the
+        # capture-level anchor, so promotion must NOT clobber an existing record occurred_at.
+        from backend.app.storage import _apply_source_record_metadata
+
+        extracted = {"records": [{"content": "shipped on 2026-05-01", "occurred_at": "2026-05-01", "metadata": {}}]}
+        out = _apply_source_record_metadata(extracted, {"occurred_at": "2026-06-30"})
+        self.assertEqual(out["records"][0]["occurred_at"], "2026-05-01")
+
 
 class ChunkOverlapStitchTests(unittest.TestCase):
     """Item #22: adjacent chunks overlap so a fact spanning a chunk boundary is
