@@ -4504,35 +4504,68 @@ struct ConnectAppWizard: View {
     /// no Pick/Continue detour.
     private func activateTool(_ tool: AIIntegration) {
         if case .connecting = tileFlow[tool.id] { return }
-        let canAutoConnect = !DistributionMode.isAppStore && !tool.referenceOnly && (
-            (tool.connectionKind == .mcpConfig && tool.supportsInstall && state.integrationState(for: tool).appInstalled)
-                || tool.connectionKind == .mcpDeeplink
-        )
-        guard canAutoConnect else {
-            selectTool(tool)
-            withAnimation(.easeInOut(duration: 0.2)) { step = .connect }
+
+        // Reference-only tools (no live path yet) just open in the browser alongside Cortex.
+        if tool.referenceOnly {
+            state.connectIntegration(tool)
+            withAnimation(CortexMotion.press) {
+                tileFlow[tool.id] = .attention("Opened \(tool.name). A live connection isn't available for it yet.")
+            }
             return
         }
+
+        // ChatGPT / Claude web / Perplexity / Grok / Gemini reach Cortex through the HOSTED
+        // connector, which needs a Cortex account (the browser can't reach your Mac's local server).
+        // That is a real precondition, so say it honestly on the tile instead of firing a no-op.
+        if tool.connectionKind == .remoteMCP && state.requiresSignIn {
+            withAnimation(CortexMotion.press) {
+                tileFlow[tool.id] = .attention("Sign in to Cortex first (Connections → Sign in), then click \(tool.name) to connect it.")
+            }
+            return
+        }
+
         withAnimation(CortexMotion.press) { tileFlow[tool.id] = .connecting }
-        // connectIntegration picks the most automated live path per kind: config-write +
-        // relaunch for config apps, the tool's own install deeplink for Cursor / VS Code.
+        // connectIntegration runs the most automated LIVE path for this tool's kind:
+        //  - mcpConfig: write the tool's config + relaunch it
+        //  - mcpDeeplink: fire the tool's native one-click install URL
+        //  - remoteMCP: mint the hosted connector token, copy the link+key, open the tool's
+        //    connector settings page (the paste + Save happens in the browser, unavoidably)
+        //  - cliCommand: copy the ready-to-run connect command
+        //  - httpAPI: copy the local endpoint + key
         state.connectIntegration(tool)
-        if tool.connectionKind == .mcpDeeplink {
-            // The deeplink tool confirms the install on its own end; Cortex cannot probe it here.
+
+        switch tool.connectionKind {
+        case .mcpConfig where !DistributionMode.isAppStore && tool.supportsInstall && state.integrationState(for: tool).appInstalled:
+            // Config was written + the app relaunched; confirm with a real probe.
+            Task { @MainActor in
+                let result = await state.testToolConnection(tool)
+                withAnimation(CortexMotion.press) {
+                    tileFlow[tool.id] = result.ok
+                        ? .connected("Connected. \(tool.name) restarted with your memory.")
+                        : .attention("Set up. Open \(tool.name) once to finish; it confirms there.")
+                }
+            }
+        case .mcpDeeplink:
             withAnimation(CortexMotion.press) {
                 tileFlow[tool.id] = .connected("Opened \(tool.name). Approve the prompt there and you're done.")
             }
-            return
-        }
-        Task { @MainActor in
-            let result = await state.testToolConnection(tool)
+        case .remoteMCP:
             withAnimation(CortexMotion.press) {
-                if result.ok {
-                    tileFlow[tool.id] = .connected("Connected. \(tool.name) restarted with your memory.")
-                } else {
-                    tileFlow[tool.id] = .attention("Set up. Open \(tool.name) once to finish; it confirms there.")
-                }
+                tileFlow[tool.id] = .attention("Link and key copied, and \(tool.name)'s connector settings opened. Paste them there and Save.")
             }
+        case .cliCommand:
+            withAnimation(CortexMotion.press) {
+                tileFlow[tool.id] = .attention("Connect command copied. Paste it into your terminal to finish.")
+            }
+        case .httpAPI:
+            withAnimation(CortexMotion.press) {
+                tileFlow[tool.id] = .attention("Endpoint and key copied. Paste them into \(tool.name)'s settings.")
+            }
+        default:
+            // mcpConfig on the sandboxed build (no file write) copies a config; jump to the
+            // per-tool screen so the paste target is explicit.
+            selectTool(tool)
+            withAnimation(.easeInOut(duration: 0.2)) { step = .connect }
         }
     }
 
