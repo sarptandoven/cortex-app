@@ -3716,6 +3716,10 @@ struct ConnectAppWizard: View {
 
     @State private var step: ConnectAppWizardStep = .pick
     @State private var selected: AIIntegration?
+    /// One-click tile flow: the tile itself carries the connect lifecycle for tools Cortex can
+    /// wire up with no user steps (config-write + relaunch, or a native install deeplink).
+    private enum TileFlow: Equatable { case connecting, connected(String), attention(String) }
+    @State private var tileFlow: [String: TileFlow] = [:]
     /// True once the user copied the config / command / pack for the selected tool (drives
     /// connected-state on MAS via markIntegrationConfigCopied, called inside copyMCPConfig).
     @State private var didCopy = false
@@ -3729,7 +3733,11 @@ struct ConnectAppWizard: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    progressBar
+                    // The step rail only appears once a manual flow starts; the pick grid is a
+                    // clean click-to-connect surface with no stepper to walk.
+                    if step != .pick {
+                        progressBar
+                    }
                     stepContent
                 }
                 .padding(24)
@@ -3877,7 +3885,7 @@ struct ConnectAppWizard: View {
 
     private var stepTitle: String {
         switch step {
-        case .pick: return "Pick a tool"
+        case .pick: return "Click a tool to connect it"
         case .connect: return "Connect"
         case .verify: return "Verify"
         case .done: return "Done"
@@ -3905,10 +3913,8 @@ struct ConnectAppWizard: View {
     private var footerPrimary: some View {
         switch step {
         case .pick:
-            CortexButton(title: "Continue", systemImage: "arrow.right", role: .primary, size: .large) {
-                withAnimation(.easeInOut(duration: 0.2)) { step = .connect }
-            }
-            .disabled(selected == nil)
+            // Tiles connect directly; the grid needs no Continue. Close lives in the header.
+            EmptyView()
         case .connect:
             CortexButton(title: "Next: verify", systemImage: "arrow.right", role: .primary, size: .large) {
                 withAnimation(.easeInOut(duration: 0.2)) { step = .verify }
@@ -4045,30 +4051,57 @@ struct ConnectAppWizard: View {
     }
 
     private func toolPickCard(_ tool: AIIntegration) -> some View {
-        let isSelected = selected?.id == tool.id
+        let flow = tileFlow[tool.id]
+        let isBusy: Bool = { if case .connecting = flow { return true }; return false }()
+        let isDone: Bool = { if case .connected = flow { return true }; return false }()
         return Button {
-            selectTool(tool)
+            activateTool(tool)
         } label: {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: tool.systemImage)
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(isSelected ? CortexDesign.accent : CortexDesign.inkSecondary)
-                    .frame(width: 24)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(tool.name)
-                        .font(.callout)
-                        .fontWeight(.semibold)
-                        .foregroundColor(CortexDesign.ink)
-                    Text(tool.summary)
-                        .font(.caption)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .multilineTextAlignment(.leading)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: tool.systemImage)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(isDone ? CortexDesign.sealMoss : CortexDesign.inkSecondary)
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(tool.name)
+                            .font(.callout)
+                            .fontWeight(.semibold)
+                            .foregroundColor(CortexDesign.ink)
+                        Text(tool.summary)
+                            .font(.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
+                    if isBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                    } else if isDone {
+                        Image(systemName: "checkmark.seal.fill")
+                            .foregroundColor(CortexDesign.sealMoss)
+                    }
                 }
-                Spacer(minLength: 0)
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
+                // The connect lifecycle lives ON the tile: connecting, connected, or what's left.
+                switch flow {
+                case .connecting:
+                    Text("Connecting…")
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                case .connected(let note):
+                    Text(note)
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.sealMoss)
+                        .fixedSize(horizontal: false, vertical: true)
+                case .attention(let note):
+                    Text(note)
+                        .font(CortexDesign.Typography.caption)
                         .foregroundColor(CortexDesign.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                case nil:
+                    EmptyView()
                 }
             }
             .padding(12)
@@ -4076,12 +4109,16 @@ struct ConnectAppWizard: View {
             .background(CortexDesign.cardBackground)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(isSelected ? CortexDesign.accent : CortexDesign.hairline, lineWidth: isSelected ? 1.5 : 1)
+                    .stroke(isDone ? CortexDesign.sealMoss.opacity(0.6) : CortexDesign.hairline, lineWidth: isDone ? 1.5 : 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .disabled(isBusy)
+        .help(isDone ? "\(tool.name) is connected" : "Click to connect \(tool.name)")
+        .accessibilityLabel("Connect \(tool.name)")
+        .accessibilityValue(isBusy ? "connecting" : (isDone ? "connected" : ""))
     }
 
     // Step 2 — Connect: ONE primary button per tool that does the right LIVE thing by kind. Every
@@ -4458,6 +4495,45 @@ struct ConnectAppWizard: View {
         // state onto a different tool.
         didCopy = false
         testResult = nil
+    }
+
+    /// ONE CLICK: clicking a tile IS the connection. Tools Cortex can wire up autonomously
+    /// (config-write + relaunch, or a native install deeplink) connect right here, with the
+    /// lifecycle shown on the tile itself. Tools that genuinely need the user in the loop
+    /// (remote connector key, CLI paste, sign-in) jump straight to their connect screen with
+    /// no Pick/Continue detour.
+    private func activateTool(_ tool: AIIntegration) {
+        if case .connecting = tileFlow[tool.id] { return }
+        let canAutoConnect = !DistributionMode.isAppStore && !tool.referenceOnly && (
+            (tool.connectionKind == .mcpConfig && tool.supportsInstall && state.integrationState(for: tool).appInstalled)
+                || tool.connectionKind == .mcpDeeplink
+        )
+        guard canAutoConnect else {
+            selectTool(tool)
+            withAnimation(.easeInOut(duration: 0.2)) { step = .connect }
+            return
+        }
+        withAnimation(CortexMotion.press) { tileFlow[tool.id] = .connecting }
+        // connectIntegration picks the most automated live path per kind: config-write +
+        // relaunch for config apps, the tool's own install deeplink for Cursor / VS Code.
+        state.connectIntegration(tool)
+        if tool.connectionKind == .mcpDeeplink {
+            // The deeplink tool confirms the install on its own end; Cortex cannot probe it here.
+            withAnimation(CortexMotion.press) {
+                tileFlow[tool.id] = .connected("Opened \(tool.name). Approve the prompt there and you're done.")
+            }
+            return
+        }
+        Task { @MainActor in
+            let result = await state.testToolConnection(tool)
+            withAnimation(CortexMotion.press) {
+                if result.ok {
+                    tileFlow[tool.id] = .connected("Connected. \(tool.name) restarted with your memory.")
+                } else {
+                    tileFlow[tool.id] = .attention("Set up. Open \(tool.name) once to finish; it confirms there.")
+                }
+            }
+        }
     }
 
     private func goBack() {
