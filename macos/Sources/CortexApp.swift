@@ -1855,9 +1855,12 @@ extension Notification.Name {
 }
 
 enum IntegrationCategory: String, CaseIterable, Hashable {
+    // Order = discovery order everywhere allCases is rendered. Browser assistants (ChatGPT, Claude
+    // web, Perplexity, ...) sit right after the fully-automatic one-click tools so the services most
+    // people ask for are visible without scrolling past the coding tools.
     case oneClick = "One-click tools"
-    case developer = "Coding tools"
     case browser = "Browser assistants"
+    case developer = "Coding tools"
     case local = "Local and team stacks"
 }
 

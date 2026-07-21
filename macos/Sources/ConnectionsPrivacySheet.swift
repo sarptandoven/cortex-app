@@ -3823,7 +3823,7 @@ struct ConnectAppWizard: View {
 
     private var headerSubtitle: String {
         switch step {
-        case .pick: return "Pick the tool you want to give access to your reviewed memory."
+        case .pick: return "Click a tool to connect it. Your memory stays here; the tool reads it on demand."
         case .connect: return selected.map { "Add \(DistributionMode.appDisplayName) to \($0.name)." } ?? "Add \(DistributionMode.appDisplayName) to your tool."
         case .verify: return selected.map { "Check that \($0.name) can reach your memory." } ?? "Check the connection."
         case .done: return "You're set. Your memory is available where you work."
