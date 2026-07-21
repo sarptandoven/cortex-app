@@ -244,7 +244,8 @@ private struct ProfileLimitationsFootnote: View {
 ///
 /// This is not a footnote, it is the product's purpose stated as an action. It sits high on Home
 /// (right under the north-star hero) and is ALWAYS visible so the next step is never in doubt. The
-/// single primary wax button opens the shared Connect-an-AI-tool wizard
+/// card's paper secondary button opens the shared Connect-an-AI-tool wizard
+/// (Home's one wax primary lives on the hero above)
 /// (state.presentConnectToolsWizard). The status line and button label read the LIVE
 /// @Published counts (connectedAIIntegrationCount / detectedAIIntegrationCount) directly, so the
 /// app-wide 6s live refresh keeps them fresh with no local timer of our own.
@@ -314,7 +315,7 @@ struct ConnectAIToolsHeroCard: View {
                 CortexButton(
                     title: primaryTitle,
                     systemImage: "wand.and.stars",
-                    role: .primary,
+                    role: .secondary,
                     size: .large
                 ) {
                     state.presentConnectToolsWizard()
@@ -327,7 +328,7 @@ struct ConnectAIToolsHeroCard: View {
                     CortexButton(
                         title: "Connect the \(detected) we found",
                         systemImage: "sparkles",
-                        role: .secondary,
+                        role: .ghost,
                         size: .large
                     ) {
                         state.presentConnectToolsWizard(statusMessage: "Connect detected AI tools")
@@ -1290,7 +1291,7 @@ struct HomeHeroSection: View {
             // Two-zone living portrait: text/action on the left, the breathing real-graph
             // Constellation on the right. On the narrow first-run column the portrait would only
             // show drifting motes, so it stands alone as the text zone there.
-            let showPortrait = !state.graphNodes.isEmpty || (state.isLocalServiceReady && hasMemory)
+            let showPortrait = heroState != .needsAttention && (!state.graphNodes.isEmpty || (state.isLocalServiceReady && hasMemory))
             if showPortrait {
                 HStack(alignment: .center, spacing: CortexDesign.Space.xl) {
                     heroTextZone

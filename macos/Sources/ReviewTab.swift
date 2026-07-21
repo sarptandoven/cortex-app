@@ -30,7 +30,8 @@ struct ReviewTab: View {
                 }
             }
             .frame(maxWidth: 680, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // Center the reading column in the window (matches AskTab); text inside stays leading.
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, CortexDesign.Space.xl)
             .padding(.vertical, CortexDesign.Space.xl)
         }
@@ -83,6 +84,7 @@ struct ReviewHeaderSection: View {
     // The tab drives the reload; the header only surfaces the affordance and its in-flight state.
     var isReloading: Bool = false
     var onRefresh: (() -> Void)? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -108,9 +110,9 @@ struct ReviewHeaderSection: View {
                         onRefresh()
                     }
                     .disabled(isReloading)
-                    .rotationEffect(.degrees(isReloading ? 360 : 0))
+                    .rotationEffect(.degrees(isReloading && !reduceMotion ? 360 : 0))
                     .animation(
-                        isReloading
+                        isReloading && !reduceMotion
                             ? .linear(duration: 0.9).repeatForever(autoreverses: false)
                             : .default,
                         value: isReloading
@@ -195,16 +197,16 @@ struct ReviewSourceHealthStrip: View {
         return "circle"
     }
 
-    /// U-REV1: the first source actually flagged as needing attention, used to title the fix button
-    /// with its own concrete `next_action` and to target Connections at that exact source.
+    /// U-REV1: the first source actually flagged as needing attention, used to name the fix button
+    /// and to target Connections at that exact source.
     private var firstFailing: SourceReadinessItem? {
         sources.first(where: \.needsAttention)
     }
 
-    /// The fix button's title: the source's own next action when it names one, else a plain fallback.
+    /// The fix button's title: a short verb phrase naming the source. The full next_action sentence
+    /// already reads out in the line above, so the button stays a button, not a repeated sentence.
     private var fixTitle: String {
-        let action = firstFailing?.next_action.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return action.isEmpty ? "Fix source" : action
+        "Fix \(firstFailing?.name ?? "source")"
     }
 
     var body: some View {
@@ -262,7 +264,7 @@ struct ReviewSourceHealthStrip: View {
             }
 
             // U-REV1: the strip is a dead read-out no longer. When a source needs attention we hand
-            // the reviewer the exact fix (titled from the source's own next_action); when the queue is
+            // the reviewer a direct fix button naming that source; when the queue is
             // simply pending/healthy we offer a "Sync now" pull so an impatient reviewer can refresh.
             HStack(spacing: 10) {
                 if needsAttentionCount > 0 {
@@ -324,7 +326,8 @@ struct ReviewSourceHealthChip: View {
 
     private var label: String {
         if source.pending > 0 {
-            return "\(source.name) · \(source.pending) pending"
+            let shown = source.pending > 99 ? "99+" : "\(source.pending)"
+            return "\(source.name) · \(shown) pending"
         }
         if let lastSeen = source.sync_plan?.last_completed_at ?? source.last_seen_at {
             return "\(source.name) · synced \(reviewShortDate(lastSeen))"
@@ -446,16 +449,22 @@ struct ReviewSectionCard: View {
     let approve: () -> Void
     let archive: () -> Void
     @State private var isHovered = false
-    // Armed = the in-card wax-seal archive confirm is showing (replaces the native dialog).
-    @State private var armed = false
+    // Which in-card wax-seal confirm is showing, if any. Archive always confirms; Approve
+    // confirms only past a size threshold (a whole section can carry thousands of items).
+    private enum ArmedSectionAction { case archive, approve }
+    @State private var armedAction: ArmedSectionAction? = nil
+
+    private var groupedCaptureCount: String {
+        AnimatableNumber.groupedInteger(Double(section.capture_count))
+    }
 
     private var countLine: String {
-        var parts = ["\(section.capture_count) note\(section.capture_count == 1 ? "" : "s")"]
+        var parts = ["\(groupedCaptureCount) note\(section.capture_count == 1 ? "" : "s")"]
         if section.memory_count > 0 {
-            parts.append("\(section.memory_count) memories")
+            parts.append("\(AnimatableNumber.groupedInteger(Double(section.memory_count))) memories")
         }
         if section.task_count > 0 {
-            parts.append("\(section.task_count) tasks")
+            parts.append("\(AnimatableNumber.groupedInteger(Double(section.task_count))) tasks")
         }
         return parts.joined(separator: " · ")
     }
@@ -464,7 +473,9 @@ struct ReviewSectionCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
+                    // Title gets the full row; counts move to their own caption line so neither
+                    // truncates while the user decides the fate of a thousand-item section.
+                    VStack(alignment: .leading, spacing: 2) {
                         Text(section.label)
                             .font(CortexDesign.Typography.title)
                             .foregroundColor(CortexDesign.ink)
@@ -485,41 +496,50 @@ struct ReviewSectionCard: View {
                         .frame(maxWidth: 220)
                     }
                 }
+                .layoutPriority(1)
                 Spacer(minLength: 12)
-                if !armed {
+                if armedAction == nil {
                     if isInFlight {
                         // Ghost skeleton stamp instead of the stock spinner while acting.
                         ReviewGhostStamp()
                     }
                     CortexButton(title: "Archive", systemImage: "archivebox", role: .ghost) {
-                        withAnimation(CortexMotion.press) { armed = true }
+                        withAnimation(CortexMotion.press) { armedAction = .archive }
                     }
                     .disabled(isInFlight)
-                    .help("Archives the \(section.capture_count) items in this section")
-                    CortexButton(title: "Approve", systemImage: "checkmark.seal", role: .primary) {
-                        approve()
+                    .help("Archives the \(groupedCaptureCount) items in this section")
+                    CortexButton(title: "Approve", systemImage: "checkmark.seal", role: .secondary) {
+                        // A big section is thousands of memories in one click; arm the same seal
+                        // Archive uses. Small sections keep the frictionless single click.
+                        if section.capture_count > 25 {
+                            withAnimation(CortexMotion.press) { armedAction = .approve }
+                        } else {
+                            approve()
+                        }
                     }
                     .disabled(isInFlight)
-                    .help("Approves the \(section.capture_count) items in this section")
+                    .help("Approves the \(groupedCaptureCount) items in this section")
                 }
             }
 
             // Peeking sample mini-cards: a sniff test of what's inside, as tiny stacked index cards.
-            if !armed, !section.sample_titles.isEmpty {
+            if armedAction == nil, !section.sample_titles.isEmpty {
                 ReviewSampleMiniCards(titles: section.sample_titles)
             }
 
-            // The in-card wax-seal archive confirm, morphing in over the action row.
-            if armed {
+            // The in-card wax-seal confirm, morphing in over the action row.
+            if let action = armedAction {
                 ReviewWaxSealConfirm(
-                    message: "Archive \(section.capture_count) items in “\(section.label)”? Your original notes stay in your source.",
-                    confirmTitle: "Archive section",
+                    message: action == .archive
+                        ? "Archive \(groupedCaptureCount) items in “\(section.label)”? Your original notes stay in your source."
+                        : "Approve \(groupedCaptureCount) note\(section.capture_count == 1 ? "" : "s") in “\(section.label)”? They become memory \(DistributionMode.appDisplayName) can use in Ask.",
+                    confirmTitle: action == .archive ? "Archive section" : "Approve section",
                     onConfirm: {
-                        withAnimation(CortexMotion.press) { armed = false }
-                        archive()
+                        withAnimation(CortexMotion.press) { armedAction = nil }
+                        if action == .archive { archive() } else { approve() }
                     },
                     onCancel: {
-                        withAnimation(CortexMotion.press) { armed = false }
+                        withAnimation(CortexMotion.press) { armedAction = nil }
                     }
                 )
             }
@@ -616,6 +636,8 @@ struct ReviewSampleMiniCards: View {
 /// capture action is in flight — a small pulsing mono "sealing…" mark on a quiet ground.
 struct ReviewGhostStamp: View {
     @State private var pulse = false
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Text("SEALING")
@@ -629,12 +651,19 @@ struct ReviewGhostStamp: View {
                     .fill(CortexDesign.quietBackground)
             )
             .opacity(pulse ? 0.5 : 1)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
-                    pulse = true
-                }
-            }
+            .onChange(of: scenePhase) { _ in updatePulse() }
+            .onChange(of: reduceMotion) { _ in updatePulse() }
+            .onAppear { updatePulse() }
             .accessibilityLabel("Working")
+    }
+
+    // Pulse only while active and motion is welcome; rest at full legibility otherwise.
+    private func updatePulse() {
+        guard scenePhase == .active, !reduceMotion else {
+            withAnimation(.easeInOut(duration: 0.2)) { pulse = false }
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) { pulse = true }
     }
 }
 
@@ -741,7 +770,7 @@ struct ReviewInboxSection: View {
         VStack(alignment: .leading, spacing: 20) {
             // The calm focus lead: leads with the small set on screen ("A few to look at"), and only
             // whispers the rest of the backlog as a soft secondary line. Never a scary raw number.
-            if !captures.isEmpty {
+            if !captures.isEmpty && !showSections {
                 ReviewFocusLead(
                     focusCount: focusCount,
                     backlogBeyondFocus: backlogBeyondFocus,
@@ -1176,6 +1205,8 @@ struct ReviewLoadingCard: View {
 /// One ghost review card — the silhouette a real `ReviewQueueCaptureCard` casts while loading.
 struct ReviewGhostCard: View {
     @State private var pulse = false
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1196,11 +1227,18 @@ struct ReviewGhostCard: View {
         .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.panelBackground)
         .archiveSpine(CortexDesign.gold.opacity(0.5))
         .opacity(pulse ? 0.65 : 1)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-                pulse = true
-            }
+        .onChange(of: scenePhase) { _ in updatePulse() }
+        .onChange(of: reduceMotion) { _ in updatePulse() }
+        .onAppear { updatePulse() }
+    }
+
+    // Pulse only while active and motion is welcome; rest at full legibility otherwise.
+    private func updatePulse() {
+        guard scenePhase == .active, !reduceMotion else {
+            withAnimation(.easeInOut(duration: 0.2)) { pulse = false }
+            return
         }
+        withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { pulse = true }
     }
 
     private func skeletonBar(width: CGFloat, height: CGFloat) -> some View {
@@ -1465,7 +1503,7 @@ struct ReviewQueueCaptureCard: View {
                     .keyboardShortcut(isTopItem ? KeyboardShortcut(.delete, modifiers: .command) : nil)
                     .help("Archive (⌘⌫ archives the top item)")
                     // Approve: the moss checkmark-seal — the "kept" gesture, the wax-red primary.
-                    CortexButton(title: "Approve", systemImage: "checkmark.seal", role: .primary, size: .large) {
+                    CortexButton(title: "Approve", systemImage: "checkmark.seal", role: .secondary, size: .large) {
                         approve()
                     }
                     .disabled(isInFlight)
@@ -1995,7 +2033,24 @@ func reviewOpenableSourceURL(_ capture: CaptureItem) -> URL? {
 private func reviewShortDate(_ value: String) -> String {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return "recently" }
-    return String(trimmed.prefix(10))
+    var parsed: Date?
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    parsed = iso.date(from: trimmed)
+    if parsed == nil {
+        iso.formatOptions = [.withInternetDateTime]
+        parsed = iso.date(from: trimmed)
+    }
+    if parsed == nil {
+        let bare = DateFormatter()
+        bare.locale = Locale(identifier: "en_US_POSIX")
+        bare.dateFormat = "yyyy-MM-dd"
+        parsed = bare.date(from: String(trimmed.prefix(10)))
+    }
+    guard let date = parsed else { return "recently" }
+    let out = DateFormatter()
+    out.dateFormat = "MMM d"
+    return out.string(from: date)
 }
 
 /// A short, human-friendly name for a memory kind — shown in the review pills instead of the raw

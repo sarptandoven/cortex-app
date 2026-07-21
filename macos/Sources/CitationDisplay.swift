@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 
 /// The single source of truth for turning an internal source id (e.g. "obsidian", "chatgpt") into a
 /// user-facing name. Product rule: a raw connector id must NEVER be shown to a user. Two forms exist
@@ -232,6 +233,40 @@ enum MemoryText {
         var words = subject.split(separator: " ").map(String.init)
         while let last = words.last, dangling.contains(last.lowercased()) {
             words.removeLast()
+        }
+        let clause = words.joined(separator: " ")
+
+        // The clause is often a full statement ("Claude walked through token estimation"); jammed
+        // into an "about X?" template that reads as broken grammar. Keep only the leading noun
+        // phrase by truncating before the first verb, then re-strip any newly dangling tail.
+        var truncated = false
+        if !clause.isEmpty {
+            let tagger = NLTagger(tagSchemes: [.lexicalClass])
+            tagger.string = clause
+            var verbStart: String.Index? = nil
+            tagger.enumerateTags(in: clause.startIndex..<clause.endIndex, unit: .word, scheme: .lexicalClass) { tag, range in
+                if tag == .verb {
+                    verbStart = range.lowerBound
+                    return false
+                }
+                return true
+            }
+            if let cut = verbStart, cut > clause.startIndex {
+                let head = String(clause[..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
+                words = head.split(separator: " ").map(String.init)
+                while let last = words.last, dangling.contains(last.lowercased()) {
+                    words.removeLast()
+                }
+                truncated = true
+            }
+        }
+
+        if truncated {
+            // A short noun phrase ("Claude", "Costs for Sonnet 5") is a fine topic on its own.
+            guard words.contains(where: { $0.count > 2 }) else {
+                return clause.isEmpty ? nil : "\u{201C}\(clause)\u{201D}"
+            }
+            return words.joined(separator: " ")
         }
         // Meaningful subjects have a few real words; metadata fragments do not.
         let meaningful = words.filter { $0.count > 2 }

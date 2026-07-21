@@ -749,12 +749,13 @@ struct MemoryWrappedEntry: View {
                     .font(.callout)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                // U-DIFF4: the first-week card is no longer a dead-end at activation. The primary
-                // action gets the user to the one thing that starts filling the card in — connecting
-                // an AI — and a quiet secondary lets a curious user preview the (empty) card so the
-                // firstWeek card states are reachable rather than dead code (U-DIFF10).
+                // U-DIFF4: the first-week card is no longer a dead-end at activation. Its main
+                // action (a paper secondary; Home's one wax primary lives on the hero) gets the user
+                // to the one thing that starts filling the card in — connecting an AI — and a quiet
+                // ghost lets a curious user preview the (empty) card so the firstWeek card states are
+                // reachable rather than dead code (U-DIFF10).
                 HStack(spacing: CortexDesign.Space.sm) {
-                    CortexButton(title: "Connect an AI", systemImage: "link", role: .primary, size: .small) {
+                    CortexButton(title: "Connect an AI", systemImage: "link", role: .secondary, size: .small) {
                         state.showConnectionsPrivacy = true
                     }
                     CortexButton(title: "Preview my card", systemImage: "sparkles.rectangle.stack", role: .ghost, size: .small) {

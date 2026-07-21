@@ -10072,6 +10072,7 @@ struct CortexTabBar: View {
                 .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 .help("\(tab.label) (⌘\(index + 1))")
                 .accessibilityLabel(tab.label)
+                .accessibilityValue(tab == .review && pendingCount > 0 ? (pendingCount > 99 ? "more than 99 waiting" : "\(pendingCount) waiting") : "")
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
                 .frame(maxWidth: .infinity)
             }
@@ -10213,15 +10214,9 @@ struct CortexView: View {
                     .font(.system(size: 20, weight: .semibold, design: .serif))
                     .foregroundColor(CortexDesign.ink)
                 Spacer()
-                Button {
+                CortexButton(title: "Connections", systemImage: "lock.shield", role: .secondary) {
                     state.openConnectionsPrivacy()
-                } label: {
-                    Label("Connections", systemImage: "lock.shield")
-                        .labelStyle(.titleAndIcon)
-                        .frame(minHeight: CortexDesign.controlHeight)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
             }
             .frame(maxWidth: 760)
             .frame(maxWidth: .infinity)
@@ -13576,9 +13571,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private static func preferredDefaultWindowSize() -> NSSize {
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         // Cortex is a full knowledge workspace, so it should open large — taking up most of the
-        // screen — rather than as a compact utility window. Caps keep it sensible on huge displays.
-        let width = min(1680, max(1200, visible.width * 0.88))
-        let height = min(1080, max(820, visible.height * 0.90))
+        // screen — rather than as a compact utility window. Caps keep it sensible on huge displays,
+        // and the outer clamps guarantee the frame FITS the visible screen (a 13" Air or a
+        // default-scaled 14" is smaller than the roomy preferred size): -16 breathing room on
+        // width, -44 on height for the titlebar setContentSize adds. The 820x640 floor matches
+        // window.minSize so a pathological screen can never clamp below the supported minimum.
+        let width = max(820, min(min(1680, max(1200, visible.width * 0.88)), visible.width - 16))
+        let height = max(640, min(min(1080, max(820, visible.height * 0.90)), visible.height - 44))
         return NSSize(width: width, height: height)
     }
 

@@ -260,7 +260,11 @@ struct RecallHeadlineCard: View {
     /// The purposeful zero: no external AI has read memory yet → one quiet nudge into the
     /// existing Connect-an-app wizard (via the same Connections presentation every tab uses).
     private func emptyNudgeCard(_ headline: RecallHeadline) -> some View {
-        VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+        // With apps already connected, "Connect an app" is the wrong remedy (the card right above
+        // says "2 connected"): recall starts when the user asks those apps a question, so say that.
+        // Only the truly-unconnected state keeps the Connect nudge and its button.
+        let isConnected = state.connectedAIIntegrationCount > 0
+        return VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
             stampHeader
 
             Text("No AI has read your memory yet \(RecallHeadlineText.windowPhrase(headline.window_days))")
@@ -268,20 +272,29 @@ struct RecallHeadlineCard: View {
                 .foregroundColor(CortexDesign.ink)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("Connect an app and it can read your approved memory, with citations.")
-                .font(.callout)
-                .foregroundColor(CortexDesign.inkSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if isConnected {
+                Text("Your connected apps read approved memory when you ask them questions.")
+                    .font(.callout)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Connect an app and it can read your approved memory, with citations.")
+                    .font(.callout)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .secondary, size: .small) {
-                state.openConnectionsPrivacy(statusMessage: "Connect an app")
+                CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .secondary, size: .small) {
+                    state.openConnectionsPrivacy(statusMessage: "Connect an app")
+                }
+                .help("Opens Connections: the step-by-step wizard connects Claude, Cursor, and other AI apps to your memory.")
             }
-            .help("Opens Connections: the step-by-step wizard connects Claude, Cursor, and other AI apps to your memory.")
         }
         .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.panelBackground)
         .frame(maxWidth: 620, alignment: .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("No AI has read your memory yet \(RecallHeadlineText.windowPhrase(headline.window_days)). Connect an app to change that.")
+        .accessibilityLabel(isConnected
+            ? "No AI has read your memory yet \(RecallHeadlineText.windowPhrase(headline.window_days)). Your connected apps read approved memory when you ask them questions."
+            : "No AI has read your memory yet \(RecallHeadlineText.windowPhrase(headline.window_days)). Connect an app to change that.")
     }
 
     private func clientAccessibilitySummary(_ headline: RecallHeadline) -> String {
