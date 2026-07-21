@@ -4224,6 +4224,11 @@ final class AppState: ObservableObject {
         // (Also serves as a visible on-launch proof that the icon animates at all.)
         beginMenuBarWork()
         defer { endMenuBarWork() }
+        // Quiet automatic update check: a product that ships weekly is invisible to users who never
+        // open Advanced settings, so check the bundled feed at most once a day. Never blocks launch
+        // (checkForUpdates runs its own Task) and stays silent unless a newer build exists, in which
+        // case updateStatus surfaces it in Connections & Privacy.
+        scheduleAutomaticUpdateCheck()
         // Local-first + cloud-sync (Option A): make sure the data plane is local before anything reads
         // it — a prior build may have persisted a remote `endpoint` for a signed-in user.
         migrateToLocalFirstDataPlane()
@@ -9716,6 +9721,18 @@ final class AppState: ObservableObject {
         if let url = URL(string: endpoint + "/health") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// At-most-daily silent update check on launch. Skips when no feed URL is configured and
+    /// throttles on a persisted timestamp so relaunches don't ping the feed repeatedly.
+    private func scheduleAutomaticUpdateCheck() {
+        let raw = updateFeedURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return }
+        let last = UserDefaults.standard.double(forKey: "lastAutoUpdateCheck")
+        let now = Date().timeIntervalSince1970
+        guard now - last > 20 * 3600 else { return }
+        UserDefaults.standard.set(now, forKey: "lastAutoUpdateCheck")
+        checkForUpdates()
     }
 
     func checkForUpdates() {
