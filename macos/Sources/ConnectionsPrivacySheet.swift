@@ -3220,10 +3220,12 @@ private struct ConnectionsAIToolsSection: View {
                 // destination was a dead end, so lead with the guided wizard (pick → connect →
                 // verify) and keep the raw config copy as a quiet secondary for power users.
                 VStack(alignment: .trailing, spacing: 8) {
-                    CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .primary, size: .large) {
+                    // Paper secondary: the START HERE hero above carries this surface's one wax
+                    // primary, and both rows open the same one-click connect grid.
+                    CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .secondary, size: .large) {
                         state.presentConnectToolsWizard()
                     }
-                    .help("Opens the guided wizard: pick a tool, connect it, and verify it can reach your memory.")
+                    .help("Opens the connect grid: click a tool and it connects.")
                     CortexButton(
                         title: copiedCluster == .toolConfig ? "Copied" : "Copy tool config",
                         systemImage: copiedCluster == .toolConfig ? "checkmark" : "doc.on.doc",
@@ -3280,7 +3282,7 @@ private struct ConnectionsAIToolsSection: View {
             CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .primary, size: .large) {
                 state.presentConnectToolsWizard()
             }
-            .help("Opens a step-by-step wizard: pick a tool, copy its connection, and test that it can reach your memory.")
+            .help("Opens the connect grid: click a tool and it connects to your memory.")
         }
         .padding(18)
         .background(connectionsPanelBackground)
@@ -4546,12 +4548,17 @@ struct ConnectAppWizard: View {
                 }
             }
         case .mcpDeeplink:
+            // Not .connected yet: the install completes only when the user approves inside the tool,
+            // and Cortex cannot probe that from here. Attention = honest "one step left".
             withAnimation(CortexMotion.press) {
-                tileFlow[tool.id] = .connected("Opened \(tool.name). Approve the prompt there and you're done.")
+                tileFlow[tool.id] = .attention("Opened \(tool.name). Approve the prompt there to finish.")
             }
         case .remoteMCP:
+            // connectRemoteMCP mints the key and copies the link asynchronously, then opens the
+            // tool's connector settings. Describe the in-progress action; the app status line
+            // confirms when the copy lands, so the tile never claims work that hasn't happened.
             withAnimation(CortexMotion.press) {
-                tileFlow[tool.id] = .attention("Link and key copied, and \(tool.name)'s connector settings opened. Paste them there and Save.")
+                tileFlow[tool.id] = .attention("Preparing your \(tool.name) link and key. Its connector settings open next: paste them there and Save.")
             }
         case .cliCommand:
             withAnimation(CortexMotion.press) {

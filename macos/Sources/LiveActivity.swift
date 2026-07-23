@@ -1044,14 +1044,16 @@ struct LiveActivityTicker: View {
 /// branch, so it (and the animation) are torn down the instant the card hides.
 private struct LivePulse: View {
     @State private var pulsing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Circle()
             .fill(CortexDesign.gold)
             .frame(width: 6, height: 6)
             .scaleEffect(pulsing ? 1.0 : 0.6)
-            .opacity(pulsing ? 1.0 : 0.4)
+            .opacity(reduceMotion ? 0.8 : (pulsing ? 1.0 : 0.4))
             .onAppear {
+                guard !reduceMotion else { return }
                 withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
                     pulsing = true
                 }

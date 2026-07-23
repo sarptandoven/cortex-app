@@ -397,11 +397,18 @@ final class QuickCapture {
         }
     }
 
-    /// Snapshot the main display as a CGImage. `CGWindowListCreateImage` is 13-compatible (we do NOT
-    /// use ScreenCaptureKit-14 APIs). Without Screen Recording permission this yields desktop-only
-    /// pixels, which we pre-empt with the permission check above.
+    /// Snapshot the display the user is actually on as a CGImage. `CGWindowListCreateImage` is
+    /// 13-compatible (we do NOT use ScreenCaptureKit-14 APIs). Without Screen Recording permission
+    /// this yields desktop-only pixels, which we pre-empt with the permission check above.
+    /// The display is the one under the mouse, not CGMainDisplayID(): on multi-monitor setups the
+    /// hotkey fires wherever the user works, and OCRing another screen reads the wrong content.
     private func captureMainDisplay() -> CGImage? {
-        let displayID = CGMainDisplayID()
+        var displayID = CGMainDisplayID()
+        let mouse = NSEvent.mouseLocation
+        if let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main,
+           let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+            displayID = CGDirectDisplayID(number.uint32Value)
+        }
         let bounds = CGDisplayBounds(displayID)
         return CGWindowListCreateImage(
             bounds,

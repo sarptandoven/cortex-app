@@ -869,6 +869,15 @@ private struct OnboardingWelcomeBackStep: View {
             // Honest reconnect guidance: MCP/tool configs are per-device and are NOT synced, so we do
             // NOT claim they auto-restored. Route into the existing Connect-an-app wizard.
             reconnectToolsCard
+
+            // The way out. Without this the restore flow dead-ends on "Welcome back": onFinish was
+            // declared but nothing ever called it, leaving the returning user stuck on the sheet.
+            HStack {
+                Spacer(minLength: 0)
+                CortexButton(title: "Start using \(DistributionMode.appDisplayName)", systemImage: "arrow.right", role: .primary, size: .large) {
+                    onFinish()
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task {
@@ -1552,7 +1561,7 @@ private struct OnboardingAddMemoryStep: View {
                     handleExportDrop(providers)
                 }
 
-            Text("Or just download it — the moment the export lands in Downloads or on your Desktop, \(DistributionMode.appDisplayName) imports it for you.")
+            Text("Or just download it. The moment the export lands in Downloads or on your Desktop, \(DistributionMode.appDisplayName) imports it for you.")
                 .font(.caption)
                 .foregroundColor(CortexDesign.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)

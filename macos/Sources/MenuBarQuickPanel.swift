@@ -797,9 +797,13 @@ private struct QuickFooterButton: View {
         Button(action: action) {
             VStack(spacing: 3) {
                 Image(systemName: icon).font(.system(size: 14, weight: .medium))
-                Text(title).font(CortexDesign.Typography.hint)
+                Text(title)
+                    .font(CortexDesign.Typography.hint)
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            .frame(width: 72, height: 40)
+            .padding(.horizontal, 10)
+            .frame(minWidth: 72, minHeight: 40)
             .foregroundColor(hovering && !disabled ? CortexDesign.accent : CortexDesign.inkSecondary)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -878,6 +882,7 @@ private struct QuickPanelSkeleton: View {
         .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .onAppear {
+            guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
             withAnimation(.linear(duration: 1.15).repeatForever(autoreverses: false)) { phase = 2 }
         }
     }
