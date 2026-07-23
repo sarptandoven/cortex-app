@@ -2040,5 +2040,126 @@ END:VCARD
         )
 
 
+class RelativeDateResolutionTests(unittest.TestCase):
+    """Item #19: relative/anchored phrases resolve to a concrete occurred_at
+    against the record's captured/anchor time, so episodic memories land at a
+    real timeline position instead of only their ingest time."""
+
+    def test_yesterday_resolves_to_captured_at_minus_one_day(self) -> None:
+        from backend.app.source_ingest import resolve_occurred_at
+
+        captured_at = datetime(2026, 7, 1)
+        resolved = resolve_occurred_at("We shipped the launch yesterday.", captured_at)
+        self.assertEqual(resolved, "2026-06-30")
+        # A string anchor (as stored) resolves identically.
+        self.assertEqual(
+            resolve_occurred_at("shipped yesterday", "2026-07-01T09:12:00Z"),
+            "2026-06-30",
+        )
+
+    def test_anchored_phrases_and_conservative_abstention(self) -> None:
+        from backend.app.source_ingest import resolve_occurred_at
+
+        anchor = datetime(2026, 7, 1)  # a Wednesday
+        self.assertEqual(resolve_occurred_at("the day before yesterday", anchor), "2026-06-29")
+        self.assertEqual(resolve_occurred_at("three weeks ago we met", anchor), "2026-06-10")
+        self.assertEqual(resolve_occurred_at("launched 5 months ago", anchor), "2026-02-01")
+        self.assertEqual(resolve_occurred_at("this morning I ran", anchor), "2026-07-01")
+        self.assertEqual(resolve_occurred_at("let's meet next Friday", anchor), "2026-07-03")
+        self.assertEqual(resolve_occurred_at("we spoke last Tuesday", anchor), "2026-06-30")
+        # No temporal reference, no anchor, and absurd magnitudes never guess.
+        self.assertIsNone(resolve_occurred_at("no date words at all here", anchor))
+        self.assertIsNone(resolve_occurred_at("yesterday", ""))
+        self.assertIsNone(resolve_occurred_at("99999 days ago", anchor))
+
+    def test_relative_date_becomes_record_occurred_at_via_metadata_anchor(self) -> None:
+        from backend.app.source_ingest import SourceRecord, _annotate_occurred_at
+
+        record = SourceRecord(
+            source="limitless",
+            title="Lifelog",
+            content="Reflected on the demo. I finished the prototype yesterday and felt relieved.",
+            metadata={"service": "Limitless", "lifelog_start": "2026-07-01T08:00:00Z"},
+        )
+        _annotate_occurred_at(record)
+        self.assertEqual(record.metadata.get("occurred_at"), "2026-06-30")
+        # captured/anchor timestamp is preserved, never overwritten.
+        self.assertEqual(record.metadata.get("lifelog_start"), "2026-07-01T08:00:00Z")
+
+    def test_anchored_occurred_at_is_promoted_onto_the_memory_record(self) -> None:
+        # Regression: the anchor-resolved occurred_at lived only in metadata, and _save_memory reads
+        # record['occurred_at'], so the relative-date feature silently set nothing on the memory row.
+        # _apply_source_record_metadata must promote metadata['occurred_at'] onto the record.
+        from backend.app.storage import _apply_source_record_metadata
+
+        extracted = {"records": [{"content": "finished the prototype", "metadata": {}}]}
+        out = _apply_source_record_metadata(extracted, {"service": "Limitless", "occurred_at": "2026-06-30"})
+        self.assertEqual(out["records"][0]["occurred_at"], "2026-06-30")
+
+    def test_extractor_absolute_date_wins_over_anchor(self) -> None:
+        # A per-memory absolute date the extractor already scanned is more specific than the
+        # capture-level anchor, so promotion must NOT clobber an existing record occurred_at.
+        from backend.app.storage import _apply_source_record_metadata
+
+        extracted = {"records": [{"content": "shipped on 2026-05-01", "occurred_at": "2026-05-01", "metadata": {}}]}
+        out = _apply_source_record_metadata(extracted, {"occurred_at": "2026-06-30"})
+        self.assertEqual(out["records"][0]["occurred_at"], "2026-05-01")
+
+
+class ChunkOverlapStitchTests(unittest.TestCase):
+    """Item #22: adjacent chunks overlap so a fact spanning a chunk boundary is
+    captured whole in at least one chunk, without reintroducing truncation."""
+
+    def test_fact_spanning_chunk_boundary_survives_whole(self) -> None:
+        from backend.app.source_ingest import (
+            MAX_RECORD_CHUNK_CHARS,
+            MAX_RECORD_CHUNK_LINES,
+            SourceRecord,
+            _chunk_source_record,
+        )
+
+        # A marker-based transcript that splits on the 18-line window. The fact is
+        # engineered to straddle the chunk boundary: its opening clause is the last
+        # line of chunk 1 and its continuation is the first line of chunk 2.
+        opening = "user: Priya committed that the Helios migration will finish"
+        closing = "user: before the November board review and the rollback window stays open for exactly seventy-two hours after cutover."
+        lines = ["--- messages ---"]
+        for i in range(MAX_RECORD_CHUNK_LINES - 1):
+            lines.append(f"user: routine standup note number {i} with no salient facts to extract here.")
+        lines.append(opening)   # lands at the tail of chunk 1
+        lines.append(closing)   # lands at the head of chunk 2
+        for i in range(MAX_RECORD_CHUNK_LINES):
+            lines.append(f"user: follow-up note number {i} unrelated to the migration decision above.")
+        record = SourceRecord(source="slack", title="Helios thread", content="\n".join(lines))
+
+        chunks = _chunk_source_record(record)
+        self.assertGreaterEqual(len(chunks), 2)
+
+        # No chunk was hard-truncated by the overlap: every part stays under the
+        # record cap that would trigger `.bounded()` truncation.
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk.content), MAX_RECORD_CHUNK_CHARS)
+
+        open_clause = "Priya committed that the Helios migration will finish"
+        close_clause = "seventy-two hours after cutover"
+        # With the overlap, some chunk carries BOTH halves of the fact, so the
+        # statement survives whole instead of being split mid-fact.
+        self.assertTrue(
+            any(open_clause in chunk.content and close_clause in chunk.content for chunk in chunks),
+            "the boundary-spanning fact was split mid-fact across chunks",
+        )
+        # The overlap is marked so downstream can reason about the duplication.
+        self.assertTrue(any(chunk.metadata.get("chunk_overlap") for chunk in chunks[1:]))
+
+    def test_small_document_is_not_chunked_or_overlapped(self) -> None:
+        from backend.app.source_ingest import SourceRecord, _chunk_source_record
+
+        record = SourceRecord(source="apple-notes", title="Tiny", content="One short note. Nothing to split.")
+        chunks = _chunk_source_record(record)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].content, "One short note. Nothing to split.")
+        self.assertNotIn("chunk_overlap", chunks[0].metadata)
+
+
 if __name__ == "__main__":
     unittest.main()

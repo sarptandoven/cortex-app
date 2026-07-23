@@ -15,14 +15,14 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from .config import APP_BRAND
 from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
-from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
+from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status, warmup_embedding_provider
 from .query_plan import (
     build_query_plan,
     context_hop_deadline_ms,
@@ -36,7 +36,8 @@ from .mirror import compute_mirror_insight
 from .profile import build_profile_sections
 from .condense import condense_section
 from .graph_analysis import analyze_entity_graph, personalized_page_rank
-from .extractor import content_is_machine_artifact, extract_context, now_iso, stable_id
+from .extractor import _normalize_layer as _extractor_normalize_layer, content_is_machine_artifact, extract_context, now_iso, stable_id
+from .smp import build_smp_envelope
 from .provenance import (
     base_trust_score,
     canonical_shared_write,
@@ -155,6 +156,107 @@ _CONTEXT_INSTRUCTIONS = (
     "If a needed fact is not present, say so instead of inventing it.",
     "Items marked author_class=agent are machine-reported; prefer user- and connector-authored items on conflict.",
 )
+
+
+# ------------------------------------------------------------------------------------------
+# Model profiles (build-plan #7): calibrate the pack to the CONSUMING model, not a flat budget.
+# ------------------------------------------------------------------------------------------
+# A profile carries (a) how big a context pack the model can usefully take (`pack_token_budget`,
+# which CAPS/REPLACES the flat CONTEXT_MAX_TOKEN_BUDGET), (b) how to convert chars→tokens for
+# THAT tokenizer family (`chars_per_token`), and (c) the (w_rel, w_rec, w_auth) mixer weights the
+# marginal-utility knapsack uses to score candidates. The `generic` profile is special: it
+# reproduces today's flat budget and the legacy per-intent greedy fill EXACTLY, so `model=None`
+# stays byte-identical and every existing eval/CI gate is untouched.
+class ModelProfile(NamedTuple):
+    name: str
+    context_window: int
+    pack_token_budget: int
+    chars_per_token: float
+    weights: tuple[float, float, float]  # (w_rel, w_rec, w_auth)
+    knapsack: bool  # False => legacy per-intent greedy fill (generic default)
+
+    @property
+    def is_generic(self) -> bool:
+        return not self.knapsack
+
+    def estimate_tokens(self, text: str) -> int:
+        # Calibrated char→token estimate. For chars_per_token == 4.0 this is byte-identical to
+        # the legacy _estimate_context_tokens: max(1, ceil(len/4)) == max(1, (len+3)//4).
+        return max(1, math.ceil(len(str(text)) / max(self.chars_per_token, 1e-6)))
+
+
+# Registry. Budgets stay within a single pack's useful size (not the full model window — a pack
+# is retrieved evidence, not the whole prompt). Weights: relevance dominates everywhere; tight
+# surfaces (Cursor) lean harder on relevance because every token is precious; large-window
+# models can afford a touch more recency/authority breadth.
+_GENERIC_PROFILE = ModelProfile(
+    name="generic",
+    context_window=8192,
+    pack_token_budget=CONTEXT_MAX_TOKEN_BUDGET,
+    chars_per_token=4.0,
+    weights=(0.6, 0.25, 0.15),
+    knapsack=False,
+)
+MODEL_PROFILES: dict[str, ModelProfile] = {
+    "generic": _GENERIC_PROFILE,
+    "claude": ModelProfile(
+        name="claude",
+        context_window=200000,
+        pack_token_budget=12000,
+        chars_per_token=3.8,
+        weights=(0.58, 0.27, 0.15),
+        knapsack=True,
+    ),
+    "gpt": ModelProfile(
+        name="gpt",
+        context_window=128000,
+        pack_token_budget=8000,
+        chars_per_token=4.0,
+        weights=(0.55, 0.25, 0.20),
+        knapsack=True,
+    ),
+    "cursor": ModelProfile(
+        name="cursor",
+        context_window=32000,
+        pack_token_budget=3000,
+        chars_per_token=3.6,
+        weights=(0.72, 0.14, 0.14),
+        knapsack=True,
+    ),
+}
+# Free-text aliases → profile key. Matched on WORD/TOKEN boundaries against "<model> <surface>"
+# (not raw substring), so "claude-3-5-sonnet", "anthropic", "gpt-4o", "chatgpt", "cursor-agent",
+# "copilot" all resolve — while short tokens never leak into unrelated words. Raw `contains` was a
+# trap: "cline" ⊂ "decline", "zed" ⊂ "customized", "o1"/"o3" ⊂ arbitrary ids, so a large-context
+# caller (e.g. surface="mcp-client", model="command-r-plus") would be silently downshifted to the
+# tiny 3000-token `cursor` pack. Every alias is a single alphanumeric token, so membership against
+# the needle's token set is both correct and boundary-safe.
+_MODEL_PROFILE_ALIASES: tuple[tuple[str, str], ...] = (
+    ("claude", "claude"), ("anthropic", "claude"), ("opus", "claude"), ("sonnet", "claude"), ("haiku", "claude"),
+    ("chatgpt", "gpt"), ("gpt", "gpt"), ("openai", "gpt"), ("o1", "gpt"), ("o3", "gpt"), ("4o", "gpt"),
+    ("cursor", "cursor"), ("copilot", "cursor"), ("codex", "cursor"), ("windsurf", "cursor"),
+    ("cline", "cursor"), ("zed", "cursor"), ("continue", "cursor"),
+)
+_PROFILE_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+
+
+def resolve_profile(model: str | None, surface: str = "agent") -> ModelProfile:
+    """Map a free-text model/surface string to a ModelProfile by WORD-BOUNDARY token match.
+    `model=None` (or any unrecognized string) resolves to the `generic` profile, which reproduces
+    today's flat budget + legacy greedy fill exactly — so the default path is byte-identical.
+
+    Matching is on tokens, not raw substrings: a needle like "mcp-client" or "command-r-plus" is
+    split on non-alphanumerics and each alias must appear as a WHOLE token, so short aliases
+    ("o1", "zed", "cline", …) can no longer masquerade inside unrelated words and mis-map a
+    large-context caller to the tiny `cursor` profile."""
+    needle = f"{str(model or '').strip().lower()} {str(surface or '').strip().lower()}"
+    if not needle.strip():
+        return _GENERIC_PROFILE
+    tokens = {tok for tok in _PROFILE_TOKEN_SPLIT_RE.split(needle) if tok}
+    for token, key in _MODEL_PROFILE_ALIASES:
+        if token in tokens:
+            return MODEL_PROFILES[key]
+    return _GENERIC_PROFILE
 
 
 _SOURCE_DISPLAY_LABELS: dict[str, str] = {
@@ -2465,7 +2567,9 @@ def _memory_edit_signature(record: dict[str, Any]) -> str:
             "content": str(record.get("content") or "").strip(),
             "summary": str(record.get("summary") or "").strip(),
             "kind": str(kind or "").strip(),
-            "layer": memory_layer(kind, record.get("layer")),
+            # Must match the DB insert's layer derivation exactly (see reconcile_memory_layer / #17)
+            # so a hand-edited note's signature converges with the indexed row instead of diverging.
+            "layer": reconcile_memory_layer(kind, record.get("layer"), record.get("content")),
             "confidence": str(record.get("confidence") or "").strip(),
             "importance": importance_value,
             "sector": str(record.get("sector") or "").strip(),
@@ -2496,6 +2600,98 @@ def memory_layer(kind: str | None, value: str | None = None) -> str:
     if explicit in MEMORY_LAYERS:
         return explicit
     return MEMORY_LAYER_BY_KIND.get((kind or "").strip().lower(), "semantic")
+
+
+# Extractor version (#20). Bump this whenever the extraction heuristics/prompt change in a way
+# that should re-derive memories from stored raw text. It rides on capture_processing_state so a
+# store constructed after a bump can detect stale-extractor captures and reprocess them (mirrors
+# how a change in the embedding model reindexes memory_vec). The value is embedded here (not the
+# extractor module) so storage owns the reprocess trigger even if the extractor is edited in place.
+EXTRACTOR_VERSION = "extract_v2"
+
+
+def reconcile_memory_layer(kind: str | None, value: str | None = None, content: str | None = None) -> str:
+    """Canonical, deterministic layer for a memory (#17).
+
+    A strict superset of :func:`memory_layer`: a valid explicit layer is honored, and a
+    kind-mapped layer is honored, but when neither yields a layer the CONTENT heuristic
+    (:func:`extractor._normalize_layer` — the same rule the local extractor applies) classifies
+    the memory instead of blindly defaulting to ``semantic``. This guarantees every memory lands
+    in a correct layer even when the LLM extractor never ran (no ANTHROPIC_API_KEY) or a record
+    reached storage without a layer (checkpoints, remember_this, direct saves). Never overrides a
+    layer that is already valid, so re-running it is idempotent and existing rows never flip.
+    """
+    explicit = (value or "").strip().lower()
+    if explicit in MEMORY_LAYERS:
+        return explicit
+    return _extractor_normalize_layer(value, kind or "", content or "")
+
+
+# Typed entity relationships (#24). Deterministic, high-precision surface patterns over memory
+# content that assert a *typed* edge between two named entities. Each returns the relation kind and
+# the ordered (subject, object) roles; the caller resolves the surface names to entity ids and
+# persists a directed graph edge with the memory as evidence (provenance). Patterns are kept
+# conservative — a wrong typed edge is worse than a missing one — and only fire on Capitalized
+# multi-token or single-token proper-noun spans so ordinary prose does not manufacture edges.
+_TYPED_REL_NAME = r"([A-Z][A-Za-z0-9.\-]+(?:\s+[A-Z][A-Za-z0-9.\-]+){0,3})"
+_TYPED_RELATIONSHIP_PATTERNS: tuple[tuple[str, "re.Pattern[str]", bool], ...] = (
+    # subject works_at object  ("Sarah Chen works at Acme", "... is employed by Acme")
+    ("works_at", re.compile(_TYPED_REL_NAME + r"\s+(?:works?\s+at|is\s+employed\s+by|joined)\s+" + _TYPED_REL_NAME), True),
+    # subject reports_to object ("Marcus reports to Sarah Chen")
+    ("reports_to", re.compile(_TYPED_REL_NAME + r"\s+reports?\s+to\s+" + _TYPED_REL_NAME), True),
+    # subject part_of object    ("Project Meridian is part of Platform", "... belongs to ...")
+    ("part_of", re.compile(_TYPED_REL_NAME + r"\s+(?:is\s+part\s+of|belongs\s+to|is\s+a\s+part\s+of)\s+" + _TYPED_REL_NAME), True),
+    # subject blocks object     ("Project Meridian blocks Platform")
+    ("blocks", re.compile(_TYPED_REL_NAME + r"\s+(?:blocks?|is\s+blocking)\s+" + _TYPED_REL_NAME), True),
+    # reversed surface ("Platform is blocked by Project Meridian") — persisted as object blocks subject
+    ("blocks_reversed", re.compile(_TYPED_REL_NAME + r"\s+is\s+blocked\s+by\s+" + _TYPED_REL_NAME), True),
+)
+
+# Semantic near-duplicate collapse (#21). Cosine at/above this on a REAL embedder means "the same
+# claim, paraphrased" — high enough that ordinary same-topic memories are never merged. Only ever
+# applied under a live model2vec embedder (the deterministic hash never collapses).
+SEMANTIC_NEAR_DUP_THRESHOLD = 0.94
+
+# Polarity/negation markers used to VETO a semantic collapse: two texts with different negation
+# polarity ("X is approved" vs "X is not approved") can sit above the cosine threshold yet assert
+# opposite claims, so we never fold across them.
+_NEGATION_RE = re.compile(
+    r"\b(?:not|no|never|without|cannot|can't|won't|isn't|aren't|ain't|don't|doesn't|didn't|"
+    r"shouldn't|wouldn't|couldn't|haven't|hasn't|hadn't|n't|refuses?|refused|declines?|declined|"
+    r"rejects?|rejected|denies?|denied|avoids?|avoided|stopped|deprecated)\b",
+    re.IGNORECASE,
+)
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity of two equal-length vectors; 0.0 on empty/degenerate input."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        norm_a += x * x
+        norm_b += y * y
+    if norm_a <= 0.0 or norm_b <= 0.0:
+        return 0.0
+    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+
+
+def _claims_conflict(left: str, right: str) -> bool:
+    """Conservative contradiction guard for #21: True when two texts must NOT be treated as the
+    same claim. Trips on (a) differing negation polarity, or (b) differing numeric-value sets — the
+    two ways a high-cosine paraphrase can still assert something contradictory. Being over-cautious
+    here only costs a missed collapse (a harmless near-duplicate), never a wrong merge."""
+    if bool(_NEGATION_RE.search(left or "")) != bool(_NEGATION_RE.search(right or "")):
+        return True
+    left_numbers = set(_NUMBER_RE.findall(left or ""))
+    right_numbers = set(_NUMBER_RE.findall(right or ""))
+    if left_numbers and right_numbers and left_numbers != right_numbers:
+        return True
+    return False
 
 
 def _memory_raw_excerpt(record: dict[str, Any], raw_text: str) -> str:
@@ -2603,6 +2799,15 @@ def _apply_source_record_metadata(extracted: dict[str, Any], metadata: dict[str,
         if source_topics:
             existing_topics = [str(topic) for topic in (record.get("topics") or []) if str(topic).strip()]
             record["topics"] = _unique_preserving_order([*existing_topics, *source_topics])[:12]
+        # Promote an anchor-resolved occurred_at (e.g. a relative date like "yesterday" that
+        # source_ingest._annotate_occurred_at resolved into metadata['occurred_at']) onto the record
+        # itself: _save_memory reads record['occurred_at'], not record['metadata'], so without this the
+        # resolved date is stored in metadata and silently never reaches the memory's occurred_at column
+        # (item #19 no-ops). Only fill when the extractor's own absolute-date scan didn't already set a
+        # more specific per-memory occurred_at.
+        anchored_occurred_at = str(metadata.get("occurred_at") or "").strip()
+        if anchored_occurred_at and not str(record.get("occurred_at") or "").strip():
+            record["occurred_at"] = anchored_occurred_at
     return extracted
 
 
@@ -2974,9 +3179,24 @@ class CortexStore:
         # Current-head Proof-of-Belief substrate. The cache key is a trigger-maintained per-user
         # memory-event revision, so direct SQL edits/deletes/inserts invalidate it too.
         self._belief_integrity_cache: dict[str, dict[str, Any]] = {}
+        # Speculative session-prefetch bounding. The fire-and-forget warm path (_spawn_session_prefetch)
+        # must never pile up: a per-user single-slot guard (drop, never queue) plus a small server-wide
+        # cap keep the background warm load bounded no matter how fast an agent fires session context
+        # calls. Without this, rapid multi-turn calls spawn heavy background assembles faster than they
+        # finish and starve the foreground path on the SQLite write lock.
+        import threading as _threading
+
+        self._prefetch_lock = _threading.Lock()
+        self._prefetch_inflight_users: set[str] = set()
+        self._prefetch_slots = _threading.BoundedSemaphore(self.SESSION_PREFETCH_MAX_INFLIGHT)
         # Reconcile the vector index to the active model's dimension once, up front, on a dedicated
         # connection (safe: not nested in any caller transaction).
         self._ensure_vector_index()
+        # Front-load the embedding model so the health surface is truthful before the first query:
+        # if a model2vec store's model can't load, this trips the failure latch now (so /ready and
+        # search diagnostics report degraded and the vector-write gate drops to FTS-only) instead of
+        # leaving a lying "model2vec" state until the first real query silently falls back to hash.
+        warmup_embedding_provider()
         # Store-owned lightweight migration (same duplicate-column-tolerant pattern as
         # database.MIGRATIONS): the memories dedup/occurrence semantics live here, so the
         # occurrences column is ensured here too. Legacy databases upgrade in place; every
@@ -2984,11 +3204,17 @@ class CortexStore:
         # below can rely on the column existing.
         self._ensure_memory_occurrences_column()
         self._ensure_encrypted_capture_columns()
+        self._ensure_extractor_version_column()
         self._ensure_sync_tombstones_table()
         self._ensure_provenance_substrate()
         self._ensure_event_fingerprints()
         self._ensure_belief_snapshot_search_index()
+        self._ensure_fts_tokenizer()
         self._prewarm_belief_integrity_cache()
+        # #20: once the schema is ready, reprocess any capture whose stored extractor_version is
+        # behind the current one — re-deriving its memories from stored raw text (mirrors how an
+        # embedding-model change re-embeds via _ensure_vector_index/_enqueue_reembed_all).
+        self._reprocess_captures_on_extractor_change()
 
     def _ensure_memory_occurrences_column(self) -> None:
         with connect(self.db_path) as conn:
@@ -3000,6 +3226,208 @@ class CortexStore:
                 # open will converge, and nothing can touch memories before then.
                 if "duplicate column name" not in message and "no such table" not in message:
                     raise
+
+    def _ensure_extractor_version_column(self) -> None:
+        """#20: additive `extractor_version` on `capture_processing_state`, migrated in place.
+
+        Records which extractor derived a capture's memories. NULL for legacy rows (treated as
+        stale, so they reprocess once). Same duplicate-column-tolerant ALTER-ADD-COLUMN mechanism
+        as _ensure_memory_occurrences_column — idempotent and safe to re-run on a live DB."""
+        with connect(self.db_path) as conn:
+            try:
+                conn.execute("ALTER TABLE capture_processing_state ADD COLUMN extractor_version TEXT")
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "duplicate column name" not in message and "no such table" not in message:
+                    raise
+
+    def _stamp_extractor_version(self, conn, user_id: str, capture_id: str, version: str | None = None) -> None:
+        """Record the extractor version that produced this capture's current memories (#20)."""
+        try:
+            conn.execute(
+                "UPDATE capture_processing_state SET extractor_version = ? WHERE user_id = ? AND capture_id = ?",
+                (version or EXTRACTOR_VERSION, user_id, capture_id),
+            )
+        except sqlite3.OperationalError:
+            # Column not migrated yet (brand-new DB before _ensure_extractor_version_column). The
+            # reprocess sweep on the next store open will re-derive; never fail the write path.
+            pass
+
+    def _reprocess_captures_on_extractor_change(self) -> int:
+        """#20: re-enqueue extraction for captures whose stored extractor_version is behind the
+        current EXTRACTOR_VERSION, so improving the extractor re-derives memories from stored raw
+        text. Mirrors _enqueue_reembed_all: bounded, idempotent, and inert when nothing is stale.
+
+        Only reprocesses captures with real plaintext raw_text (never blind-relay / encrypted rows,
+        which derive no server-side memories) and never touches user-archived captures. The
+        version-tagged unique_key means a re-enqueue is never deduped against the prior extraction
+        job, and a second store open after the same version bump is a no-op (unique_key already
+        queued). Best-effort — a failure here must not block store construction."""
+        try:
+            with connect(self.db_path) as conn:
+                try:
+                    rows = conn.execute(
+                        """
+                        SELECT c.id AS capture_id, c.user_id AS user_id, c.raw_hash AS raw_hash
+                        FROM captures c
+                        JOIN capture_processing_state cps
+                          ON cps.capture_id = c.id AND cps.user_id = c.user_id
+                        WHERE cps.extraction_status = 'succeeded'
+                          AND COALESCE(cps.extractor_version, '') != ?
+                          AND COALESCE(c.review_status, '') != 'archived'
+                          AND c.encrypted_payload IS NULL
+                          AND COALESCE(c.raw_text, '') != ''
+                        ORDER BY c.captured_at ASC
+                        LIMIT 5000
+                        """,
+                        (EXTRACTOR_VERSION,),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    return 0  # schema not ready yet; the next store open retries
+                queued = 0
+                now = now_iso()
+                for row in rows:
+                    unique_key = f"reextract_capture:{row['capture_id']}:{EXTRACTOR_VERSION}:{row['raw_hash'] or ''}"
+                    job = self._enqueue_job(
+                        conn,
+                        user_id=row["user_id"],
+                        job_type="extract_capture",
+                        object_type="capture",
+                        object_id=row["capture_id"],
+                        unique_key=unique_key,
+                        payload={
+                            "capture_id": row["capture_id"],
+                            "reprocess": True,
+                            "reason": "extractor_version_change",
+                            "extractor_version": EXTRACTOR_VERSION,
+                        },
+                        priority=120,
+                    )
+                    if job:
+                        queued += 1
+                return queued
+        except sqlite3.Error:
+            return 0
+
+    def sweep_orphan_memories(self, user_id: str, *, limit: int = 1000) -> dict[str, Any]:
+        """#23 orphan sweep: route active memories with NO entity links AND no source citation to
+        re-extraction/review instead of leaving them unlinked and unreachable. Re-extracting from
+        the capture's stored raw text re-derives entities + citations (the real fix); memories
+        without a re-derivable capture (missing/archived/blind-relay) are flagged for review via a
+        durable event. Idempotent — the version-tagged unique_key dedupes repeated sweeps, and a
+        flag event is a no-op re-record. Returns a summary of what was routed."""
+        swept_at = now_iso()
+        reprocessed_captures: set[str] = set()
+        flagged = 0
+        with connect(self.db_path) as conn:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT m.id AS memory_id, m.capture_id AS capture_id,
+                           c.raw_hash AS raw_hash, c.encrypted_payload AS encrypted_payload,
+                           c.raw_text AS raw_text, c.review_status AS review_status
+                    FROM memories m
+                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+                    WHERE m.user_id = ?
+                      AND m.status = 'active'
+                      AND COALESCE(m.source_url, '') = ''
+                      AND COALESCE(m.entity_ids_json, '[]') IN ('', '[]')
+                    ORDER BY m.captured_at DESC
+                    LIMIT ?
+                    """,
+                    (user_id, max(1, int(limit))),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {"orphan_memories": 0, "reprocessed_captures": 0, "flagged_for_review": 0, "swept_at": swept_at}
+            for row in rows:
+                capture_id = row["capture_id"]
+                reextractable = bool(
+                    capture_id
+                    and row["encrypted_payload"] is None
+                    and str(row["raw_text"] or "").strip()
+                    and str(row["review_status"] or "") != "archived"
+                )
+                if reextractable:
+                    if capture_id not in reprocessed_captures:
+                        unique_key = f"orphan_reextract_capture:{capture_id}:{EXTRACTOR_VERSION}:{row['raw_hash'] or ''}"
+                        self._enqueue_job(
+                            conn,
+                            user_id=user_id,
+                            job_type="extract_capture",
+                            object_type="capture",
+                            object_id=capture_id,
+                            unique_key=unique_key,
+                            payload={"capture_id": capture_id, "reprocess": True, "reason": "orphan_sweep"},
+                            priority=130,
+                        )
+                        reprocessed_captures.add(capture_id)
+                else:
+                    self._event(
+                        conn,
+                        user_id,
+                        row["memory_id"],
+                        "memory",
+                        "orphan_flagged_for_review",
+                        {"reason": "no_entities_no_source", "capture_id": capture_id},
+                    )
+                    flagged += 1
+        return {
+            "orphan_memories": len(rows),
+            "reprocessed_captures": len(reprocessed_captures),
+            "flagged_for_review": flagged,
+            "swept_at": swept_at,
+        }
+
+    def _ensure_fts_tokenizer(self) -> None:
+        """#25: reconcile memory_fts to the porter stemming tokenizer for better recall on word
+        variants (run/running/ran, ship/shipped/shipping), rebuilding the index on a
+        tokenizer/schema change. Runs once at store construction on a DEDICATED connection —
+        CREATE/DROP VIRTUAL TABLE auto-commits in SQLite, so this must never nest inside a caller's
+        transaction (mirrors _ensure_vector_index). memory_fts is a rebuildable cache (the memories
+        table is the source of truth), so a tokenizer change drops + recreates it and reindexes
+        every ACTIVE memory. A marker in fts_index_meta makes this a no-op once the tokenizer
+        matches. Best-effort — any error leaves the existing tokenizer in place."""
+        desired = "porter"
+        try:
+            with connect(self.db_path) as conn:
+                table_sql_row = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE name = 'memory_fts'"
+                ).fetchone()
+                if table_sql_row is None:
+                    return  # brand-new DB before init_db; the next store open reconciles
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS fts_index_meta (id INTEGER PRIMARY KEY CHECK (id = 1), "
+                    "tokenizer TEXT NOT NULL, updated_at TEXT NOT NULL)"
+                )
+                meta = conn.execute("SELECT tokenizer FROM fts_index_meta WHERE id = 1").fetchone()
+                table_sql = (table_sql_row[0] or "").lower()
+                if meta and meta[0] == desired and desired in table_sql:
+                    return  # already reconciled
+                conn.execute("DROP TABLE IF EXISTS memory_fts")
+                conn.execute(
+                    "CREATE VIRTUAL TABLE memory_fts USING fts5("
+                    f"memory_id UNINDEXED, content, summary, source, topics, tokenize = '{desired}')"
+                )
+                rows = conn.execute(
+                    "SELECT id, content, summary, source, topics_json FROM memories WHERE status = 'active'"
+                ).fetchall()
+                for row in rows:
+                    try:
+                        topics = " ".join(json.loads(row["topics_json"] or "[]"))
+                    except (TypeError, ValueError):
+                        topics = ""
+                    conn.execute(
+                        "INSERT INTO memory_fts(memory_id, content, summary, source, topics) VALUES (?, ?, ?, ?, ?)",
+                        (row["id"], row["content"] or "", row["summary"] or "", row["source"] or "", topics),
+                    )
+                conn.execute(
+                    "INSERT INTO fts_index_meta(id, tokenizer, updated_at) VALUES (1, ?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET tokenizer = excluded.tokenizer, updated_at = excluded.updated_at",
+                    (desired, now_iso()),
+                )
+                conn.commit()
+        except sqlite3.Error:
+            return
 
     def _ensure_encrypted_capture_columns(self) -> None:
         """Additive zero-access (E2EE) sync columns on `captures`, migrated in place.
@@ -3391,6 +3819,25 @@ class CortexStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_status ON agent_sessions(user_id, status, updated_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_context_packs_user_created ON context_packs(user_id, created_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_context_packs_session ON context_packs(user_id, session_id, created_at DESC)")
+            # Build-plan #13: the session working-set. One row per (user, session_id) tracks the
+            # served-id known-set, a bounded query trajectory + its lexical centroid, and a
+            # monotonic delta cursor. Fed from the ids Cortex already logs (_served_memory_ids); it
+            # is what lets a response carry a working_memory DELTA instead of re-sending the pack.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_working_set (
+                  user_id TEXT NOT NULL,
+                  session_id TEXT NOT NULL,
+                  known_json TEXT NOT NULL DEFAULT '{}',
+                  trajectory_json TEXT NOT NULL DEFAULT '[]',
+                  centroid_json TEXT NOT NULL DEFAULT 'null',
+                  delta_cursor INTEGER NOT NULL DEFAULT 0,
+                  turn INTEGER NOT NULL DEFAULT 0,
+                  updated_at TEXT NOT NULL,
+                  PRIMARY KEY(user_id, session_id)
+                )
+                """
+            )
             # Phase 6 anticipatory context: proactive alerts need mutable status (pending ->
             # delivered -> dismissed/accepted) so they get a table, not just events. Every
             # status transition is ALSO an event (dismissals are training labels).
@@ -10425,6 +10872,32 @@ class CortexStore:
                 for src, saved in zip(extracted.get("entities", []), entities)
                 if src.get("id") and saved["id"] != str(src["id"])
             }
+            # #18: fold in any retroactive back-merge (old single-token node -> the fuller entity just
+            # saved) so this capture's in-memory entity_ids/edges follow the reclaimed node too. The
+            # DB references were already repointed inside _merge_entity_into; this keeps the in-memory
+            # `entities`/`memories`/`tasks` structures (and the edges built below) consistent.
+            for saved in entities:
+                for old_id, new_id in (saved.pop("_backmerge_remap", None) or {}).items():
+                    entity_remap[str(old_id)] = str(new_id)
+            # Collapse the in-memory entities list onto canonical ids (a same-capture "Sarah" +
+            # "Sarah Chen" would otherwise leave a stale, now-deleted single-token entry that feeds a
+            # dangling co_occurs edge below).
+            if entity_remap:
+                deduped_entities: list[dict[str, Any]] = []
+                seen_entity_ids: set[str] = set()
+                for saved in entities:
+                    canonical_id = entity_remap.get(str(saved["id"]), str(saved["id"]))
+                    if canonical_id in seen_entity_ids:
+                        continue
+                    seen_entity_ids.add(canonical_id)
+                    if canonical_id != str(saved["id"]):
+                        canonical_row = conn.execute(
+                            "SELECT * FROM entities WHERE user_id = ? AND id = ?", (user_id, canonical_id)
+                        ).fetchone()
+                        if canonical_row is not None:
+                            saved = self._entity_from_row(canonical_row)
+                    deduped_entities.append(saved)
+                entities = deduped_entities
             if entity_remap:
                 def _remap_ids(ids: list[str]) -> list[str]:
                     out: list[str] = []
@@ -10457,6 +10930,11 @@ class CortexStore:
             for index, left in enumerate(entity_ids):
                 for right in entity_ids[index + 1:]:
                     edges.append(self._edge(conn, user_id, left, right, "co_occurs", capture_id, captured_at, weight=0.5))
+
+            # #24: typed, directed entity relationships (works_at/reports_to/part_of/blocks) with the
+            # source memory as edge provenance, incrementally maintained alongside the co-occurrence
+            # edges above.
+            edges.extend(self._save_typed_entity_relationships(conn, user_id, memories, entities, captured_at))
 
             # Live ticker: surface the ORGANIZING work, not just the raw memories. When a capture
             # links two or more people/projects/topics, show that connection forming in the
@@ -10511,6 +10989,9 @@ class CortexStore:
                     captured_at,
                 ),
             )
+            # #20: stamp the extractor version that derived these memories so a later version bump can
+            # detect this capture as stale and reprocess it from stored raw text.
+            self._stamp_extractor_version(conn, user_id, capture_id)
 
             self.vault.write_settings(user_id, user_settings_snapshot)
 
@@ -10585,6 +11066,11 @@ class CortexStore:
 
         return {
             "capture_id": capture_id,
+            # Surface the real review state at the top level so callers can tell "saved and
+            # searchable now" from "saved, waiting in Review" — a pending capture is excluded from
+            # search/Ask (see _memory_filters), so a confirmation must not claim it's usable yet.
+            "review_status": review_status,
+            "usable_count": len(memories) if review_status == "approved" else 0,
             "summary": summary,
             "memories": memories,
             "tasks": tasks,
@@ -11042,6 +11528,9 @@ class CortexStore:
         vector_available = False
         vector_count = 0
         active_memory_count = 0
+        # Threaded query↔candidate cosines the reranker computes (id -> {cosine, base}); reused to
+        # surface true `relevance` on results without re-embedding. Empty under hash / rerank-off.
+        rerank_scores: dict[str, dict[str, Any]] = {}
 
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
@@ -11134,7 +11623,7 @@ class CortexStore:
             )
             # Optional reranking (flag-gated, no-op by default) reorders the fused candidates
             # before provenance diversification narrows to `limit`.
-            rows = self._rerank_rows(query, rows, len(rows), user_settings=user_settings)
+            rows = self._rerank_rows(query, rows, len(rows), user_settings=user_settings, scores_out=rerank_scores)
             scoped_to_memory = bool(source or source_account_id or _normalize_retrieval_metadata_filters(metadata_filters))
             if rows:
                 rows = self._diversify_memory_rows(rows, limit, scoped_to_source=scoped_to_memory)
@@ -11151,7 +11640,7 @@ class CortexStore:
                 ).fetchall()
                 mode_counts["fallback_like"] = len(fallback_rows)
                 rows = self._rank_rows_with_layer_boosts(query, fallback_rows, ranked_limit, user_settings=user_settings)
-                rows = self._rerank_rows(query, rows, len(rows), user_settings=user_settings)
+                rows = self._rerank_rows(query, rows, len(rows), user_settings=user_settings, scores_out=rerank_scores)
                 rows = self._diversify_memory_rows(rows, limit, scoped_to_source=scoped_to_memory)
             if not rows:
                 existing_ids = {row["id"] for row in rows}
@@ -11183,6 +11672,18 @@ class CortexStore:
                 mode_counts["task"] = len(task_rows)
 
         memory_results = [self._memory_from_row(row) for row in rows]
+        # Additive relevance/why annotations (never reorders, never changes which rows return): true
+        # cosine under a live embedder (reusing the reranker's threaded score), rank-derived under hash.
+        self._annotate_search_relevance(
+            query,
+            rows,
+            memory_results,
+            fts_rows=fts_rows,
+            vector_rows=vector_rows,
+            temporal_rows=temporal_rows,
+            intent_rows=intent_rows,
+            rerank_scores=rerank_scores,
+        )
         if include_related and memory_results and limit > 1:
             related_slot_count = min(2, max(1, limit // 4), limit - 1)
             anchor_results = memory_results[: max(1, limit - related_slot_count)]
@@ -11265,6 +11766,10 @@ class CortexStore:
             final_results = task_results[:limit]
         else:
             final_results = memory_results
+        # Ensure every returned result (incl. related/task rows merged off the retriever path) carries
+        # relevance/basis/why; primary rows keep their retriever/cosine annotation, others get a
+        # rank-derived fallback. Additive only — ordering and membership are already fixed above.
+        final_results = self._finalize_result_relevance(query, final_results)
         if _diagnostics is not None:
             _diagnostics.update(
                 self._search_diagnostics_payload(
@@ -11389,7 +11894,13 @@ class CortexStore:
         elif active_memories and vector_available and vector_indexed_memories == 0:
             degraded_reasons.append("no_vector_embeddings_indexed")
         if active_memories and embedding.get("provider") == "hash":
-            degraded_reasons.append("hash_embedding_provider")
+            # A model2vec-configured store whose live model failed to load is really emitting hash
+            # noise; surface that distinctly from an intentionally hash-configured (no-model) store
+            # so /ready and search diagnostics honestly show a degraded model, not a config choice.
+            if embedding.get("configured_provider") == "model2vec":
+                degraded_reasons.append("embedding_model_load_failed")
+            else:
+                degraded_reasons.append("hash_embedding_provider")
         fallback_modes = [
             mode
             for mode in ("fallback_like", "lexical_fallback", "recent")
@@ -12081,6 +12592,11 @@ class CortexStore:
                     "excerpt": self._answer_excerpt(excerpt),
                     "topics": item.get("topics") or [],
                     "relationship": item.get("relationship"),
+                    # Additive relevance surfacing (item #1): carry the retrieval relevance/why from
+                    # the cited candidate so a caller can see how strongly (and why) it matched.
+                    "relevance": item.get("relevance"),
+                    "relevance_basis": item.get("relevance_basis"),
+                    "why": item.get("why"),
                 }
             )
         conflicts = self._answer_conflicts(query, cited_results, citations)
@@ -15969,6 +16485,20 @@ class CortexStore:
                     """,
                     (user_id,),
                 ).fetchone()[0],
+                # #23 orphan sweep: an active memory with NO entity links AND no citation is
+                # unreachable by both the graph and source-scoped retrieval — an organization-
+                # completeness gap that should be re-extracted/reviewed, not left dangling.
+                "orphan_memories": conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM memories
+                    WHERE user_id = ?
+                      AND status = 'active'
+                      AND COALESCE(source_url, '') = ''
+                      AND COALESCE(entity_ids_json, '[]') IN ('', '[]')
+                    """,
+                    (user_id,),
+                ).fetchone()[0],
             }
             vector_ready = self._vector_ready(conn)
             active_vector_memories = (
@@ -16144,6 +16674,9 @@ class CortexStore:
         if totals["orphaned_memory_relations"] > 0:
             warnings.append("Some memory relationship rows no longer point at active memories.")
             recommendations.append("Run storage repair before relying on related-memory expansion.")
+        if totals.get("orphan_memories", 0) > 0:
+            warnings.append("Some memories have no entity links and no source citation.")
+            recommendations.append("Re-extract or review unlinked memories so they are reachable by graph and source-scoped retrieval.")
         if totals["active_memories"] > 0 and vector_ready and vector_coverage < 0.8:
             warnings.append("Vector retrieval coverage is still catching up.")
             recommendations.append("Run the local worker so queued embedding jobs can finish.")
@@ -17218,220 +17751,460 @@ class CortexStore:
             "hot_cache": self.hot_context_cache_status(user_id, limit=limit),
         }
 
-    def assemble_context(
+    # ------------------------------------------------------------------
+    # Build-plan #13: session working-set (delta over what a session already knows)
+    # ------------------------------------------------------------------
+    # Last-N queries kept for the trajectory + centroid (prefetch signal + eviction context).
+    SESSION_TRAJECTORY_WINDOW = 8
+    # A known id unseen for this many turns is trajectory-cold -> safe to evict (soundness floor).
+    SESSION_EVICTION_TTL_TURNS = 4
+    # Upper bound on the persisted known-set so a long session's row stays cheap.
+    SESSION_KNOWN_CAP = 512
+    # HARD wall-clock deadline for speculative prefetch. The warm loop checks a monotonic clock
+    # between candidates and bails the instant it is exceeded — prefetch never blocks the response.
+    SESSION_PREFETCH_DEADLINE_MS = 25.0
+    # How many next-step candidates the prefetch may warm per response (bounded fan-out).
+    SESSION_PREFETCH_FANOUT = 3
+    # Server-wide ceiling on concurrent speculative prefetch workers across ALL users. Combined with
+    # the per-user single-slot guard, this bounds total background warm load: a burst from many users
+    # can never spawn an unbounded number of heavy background assembles. Speculative warms are
+    # droppable, so this cap is a non-blocking skip, never a queue.
+    SESSION_PREFETCH_MAX_INFLIGHT = 4
+
+    @staticmethod
+    def _session_query_tokens(task: str) -> list[str]:
+        return sorted({tok for tok in re.findall(r"[a-z0-9]+", str(task or "").lower()) if len(tok) > 2})
+
+    def _load_session_working_set(self, user_id: str, session_id: str) -> dict[str, Any]:
+        """Load the (user, session) working-set row, or a fresh empty state. `known` maps a served
+        memory id -> the turn index it was last served (drives eviction); `trajectory` is the last-N
+        {turn, tokens, ids}; `centroid` is the recency-weighted lexical centroid of the trajectory."""
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM session_working_set WHERE user_id = ? AND session_id = ?",
+                (user_id, str(session_id or "").strip()),
+            ).fetchone()
+        if row is None:
+            return {"known": {}, "trajectory": [], "centroid": {}, "delta_cursor": 0, "turn": 0}
+        known_raw = self._json_or_empty(row["known_json"])
+        known = {str(k): int(v) for k, v in known_raw.items()} if isinstance(known_raw, dict) else {}
+        trajectory = self._json_or_empty(row["trajectory_json"])
+        if not isinstance(trajectory, list):
+            trajectory = []
+        centroid = self._json_or_empty(row["centroid_json"])
+        if not isinstance(centroid, dict):
+            centroid = {}
+        return {
+            "known": known,
+            "trajectory": trajectory,
+            "centroid": centroid,
+            "delta_cursor": int(row["delta_cursor"] or 0),
+            "turn": int(row["turn"] or 0),
+        }
+
+    def _save_session_working_set(self, user_id: str, session_id: str, state: dict[str, Any]) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO session_working_set
+                (user_id, session_id, known_json, trajectory_json, centroid_json, delta_cursor, turn, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, session_id) DO UPDATE SET
+                  known_json = excluded.known_json,
+                  trajectory_json = excluded.trajectory_json,
+                  centroid_json = excluded.centroid_json,
+                  delta_cursor = excluded.delta_cursor,
+                  turn = excluded.turn,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    str(session_id or "").strip(),
+                    json.dumps(state.get("known") or {}, sort_keys=True, separators=(",", ":")),
+                    json.dumps(state.get("trajectory") or [], separators=(",", ":")),
+                    json.dumps(state.get("centroid") or {}, sort_keys=True, separators=(",", ":")),
+                    int(state.get("delta_cursor") or 0),
+                    int(state.get("turn") or 0),
+                    now_iso(),
+                ),
+            )
+
+    def _resolve_active_head(self, conn: Any, user_id: str, memory_id: str, *, _depth: int = 0) -> str:
+        """Walk superseded_by forward to the current active head (cycle- and depth-guarded).
+        Returns '' when the chain dead-ends at a missing/inactive row."""
+        cursor = str(memory_id or "").strip()
+        seen: set[str] = set()
+        while cursor and cursor not in seen and len(seen) < 16:
+            seen.add(cursor)
+            row = conn.execute(
+                "SELECT id, superseded_by, status FROM memories WHERE user_id = ? AND id = ?",
+                (user_id, cursor),
+            ).fetchone()
+            if row is None:
+                return ""
+            nxt = str(row["superseded_by"] or "").strip()
+            if not nxt:
+                return cursor if str(row["status"] or "") == "active" else ""
+            cursor = nxt
+        return ""
+
+    def _session_supersessions(self, user_id: str, ids: set[str]) -> dict[str, str]:
+        """For the given (previously-served or currently-cited) ids, map each id that is now
+        superseded -> its current active replacement head. IDs only; no content is read."""
+        clean = [str(i) for i in ids if str(i or "").strip()]
+        if not clean:
+            return {}
+        out: dict[str, str] = {}
+        with connect(self.db_path) as conn:
+            placeholders = ",".join("?" for _ in clean)
+            rows = conn.execute(
+                f"SELECT id, superseded_by FROM memories WHERE user_id = ? AND id IN ({placeholders}) "
+                f"AND COALESCE(superseded_by, '') != ''",
+                [user_id, *clean],
+            ).fetchall()
+            for row in rows:
+                head = self._resolve_active_head(conn, user_id, str(row["superseded_by"] or ""))
+                out[str(row["id"])] = head
+        return out
+
+    def _compute_working_memory_delta(
         self,
         user_id: str,
-        task: str = "",
-        *,
-        surface: str = "agent",
-        token_budget: int = 2000,
-        sector: str | None = None,
-        project: str | None = None,
-        as_of: str | None = None,
-        intent: str | None = None,
-        include_identity: bool = True,
-        format: str = "json",
-        pin: bool = False,
-        session_id: str | None = None,
-        record_reuse: bool = True,
-        use_hot_cache: bool = True,
-    ) -> dict[str, Any] | str:
-        """The context assembly engine: given a task (+ surface + budget), build a
-        token-budgeted, permissioned, cited context pack for an external agent.
+        session_id: str,
+        task: str,
+        cited: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Compute the working_memory delta for this response versus what the session already knows.
 
-        Deterministic and stdlib-only: composes the existing retrieval primitives
-        (search, decision_history, entity_neighborhood, open_tasks, recent) under a
-        per-intent budget allocator. Every included item is citation-backed
-        (`_has_source_citation`); superseded facts are never served; drops are counted
-        and visible, never silent. `include_identity=False` (read-only tokens) replaces
-        the identity layer with an explicit omission record instead of erroring.
+        `cited` is the ordered list of THIS pack's cited items ({ref, relevance}) — the only ids
+        allowed to surface, so the delta can never leak a non-cited/redacted id. The delta is:
+          * new        — cited ids the session has not seen (each with its pack relevance), never
+                         re-sending an id already in the known-set (delta_no_resend).
+          * superseded — known ids whose memory is now superseded, mapped to the current head
+                         (replacement suppressed to null unless the head is itself served/known).
+          * evicted    — known ids gone trajectory-cold (unseen for SESSION_EVICTION_TTL_TURNS
+                         turns and absent from this pack): genuinely cold, so eviction is sound.
+          * cursor     — monotonic per-session delta counter.
+        Returns (delta, next_state); the caller persists next_state so the known-set advances."""
+        state = self._load_session_working_set(user_id, session_id)
+        known: dict[str, int] = dict(state["known"])
+        turn = int(state["turn"]) + 1
+        cursor = int(state["delta_cursor"]) + 1
 
-        With `pin=True` (Phase 2) the assembled pack is also persisted as an immutable,
-        content-addressed artifact: canonical JSON bytes hashed with sha256, written
-        byte-exact to the vault (context_packs/<sha[:2]>/<sha>.json) and indexed in the
-        context_packs table. The returned pack gains a `pin` block with the sha, so an
-        agent can later prove exactly what context it acted on (get_context_pack replays
-        and re-verifies the hash). `session_id` links the pin to an agent continuity
-        session so a resumed conversation can find the packs its predecessor used."""
-        self.require_agent_access(user_id, "read")
-        task = str(task or "").strip()[:500]
-        surface = str(surface or "agent").strip().lower()[:40] or "agent"
-        try:
-            token_budget = int(token_budget)
-        except (TypeError, ValueError):
-            token_budget = 2000
-        token_budget = min(max(token_budget, CONTEXT_MIN_TOKEN_BUDGET), CONTEXT_MAX_TOKEN_BUDGET)
-        sector = _normalize_sector_filter(sector) or None
-        # Query planning (Phase 4, flag-gated) upgrades intent from keyword rules to a semantic
-        # classifier (model2vec nearest-prototype) when a real embedder is active; falls back to
-        # the keyword result under the hash provider, so default behavior is unchanged.
-        if query_plan_enabled() and task:
-            resolved_intent = build_query_plan(task, intent).intent
-        else:
-            resolved_intent = _derive_context_intent(task, intent)
-        output_format = str(format or "json").strip().lower()
-        hot_request = self._hot_context_request(
-            task=task,
-            surface=surface,
-            token_budget=token_budget,
-            sector=sector,
-            project=project,
-            intent=resolved_intent,
-            include_identity=include_identity,
-        )
-        if use_hot_cache and not pin and not session_id and not as_of:
-            cached = self._load_hot_context_pack(user_id, hot_request)
-            if cached is not None:
-                if record_reuse:
-                    try:
-                        self.record_context_reuse(user_id, surface=surface, query=task, target="context-cache")
-                    except Exception:
-                        pass
-                if output_format == "markdown":
-                    return self._render_context_markdown(cached)
-                return cached
-        user_settings = self.settings(user_id)
-        redact_sensitive = bool(user_settings["redact_sensitive_context"])
-
-        def _memory_candidates(layer: str, limit: int) -> list[dict[str, Any]]:
-            # Task-relevant first; but constraints/procedures/identity describe the PERSON, not
-            # the task — when the task shares no keywords with them they must still surface, so
-            # fall back to the most recent memories of that layer instead of vanishing.
-            if task:
-                matched = self.search(user_id, task, limit=limit, layer=layer, sector=sector, as_of=as_of)
-                if matched:
-                    return matched
-            return self.recent(user_id, limit=limit, layer=layer, sector=sector, as_of=as_of)
-
-        def _pack_item(item: dict[str, Any]) -> dict[str, Any]:
-            content = self._shared_text(
-                str(item.get("content") or item.get("summary") or ""),
-                redact_sensitive=redact_sensitive,
-            )
-            return {
-                "memory_id": item.get("id"),
-                "layer": item.get("layer"),
-                "kind": item.get("kind"),
-                "content": content,
-                "source": item.get("source"),
-                "source_url": self._safe_source_locator(item.get("source_url"), force_local=True) or None,
-                "captured_at": item.get("captured_at"),
-                "sector": item.get("sector") or None,
-                "provenance_class": _context_provenance_class(item),
-                # Phase 3 trust surfacing: every packed item carries WHO asserted it and the
-                # derived trust signal, so consuming agents can weigh conflicting claims.
-                "author_class": normalize_author_class(item.get("author_class")),
-                "trust_score": normalize_trust_score(item.get("trust_score"), item.get("author_class")),
-                "treat_as_data": True,
-                "truncated": False,
-            }
-
-        # Zero-weight layers for this intent are never packed, so never fetched — each fetch is
-        # a store pass, and under concurrent load the pass count IS the latency.
-        weights = CONTEXT_INTENT_WEIGHTS[resolved_intent]
-
-        candidates: dict[str, list[dict[str, Any]]] = {layer: [] for layer in CONTEXT_LAYER_ORDER}
-        if weights.get("constraints"):
-            candidates["constraints"] = _memory_candidates("negative", 12)
-        if weights.get("decisions"):
-            history = self.decision_history(user_id, task, limit=12, sector=sector, include_superseded=False, as_of=as_of)
-            candidates["decisions"] = list(history.get("current_decisions") or [])
-        # Facts are claims (semantic/episodic) only: preference/style/negative/procedural/decision
-        # memories belong to their dedicated layers and must not be consumed here by dedup.
-        if weights.get("facts") and task:
-            candidates["facts"] = [
-                item
-                for item in self.search(user_id, task, limit=24, sector=sector, as_of=as_of, include_related=True)
-                if str(item.get("layer") or "") in {"semantic", "episodic"}
-            ]
-        entity_query = ""
-        entity_connections: list[dict[str, Any]] = []
-        if weights.get("entity"):
-            entity_query = str(project or "").strip() or (self._match_context_entity(user_id, task) if task else "")
-        if entity_query:
-            neighborhood = self.entity_neighborhood(user_id, entity_query)
-            if neighborhood:
-                entity_connections = [
-                    {
-                        "entity_id": connection.get("entity_id") or connection.get("id"),
-                        "label": connection.get("label"),
-                        "weight": connection.get("weight"),
-                        "shared_memory_ids": list(connection.get("shared_memory_ids") or [])[:6],
-                    }
-                    for connection in (neighborhood.get("connections") or [])[:6]
-                ]
-            # Entity context is claims/decisions about the entity; preference/style/procedural
-            # memories that merely mention it belong to their own layers (packed later) and
-            # must not be consumed here by dedup.
-            candidates["entity"] = [
-                item
-                for item in self.search(user_id, entity_query, limit=8, sector=sector, as_of=as_of)
-                if str(item.get("layer") or "") in {"semantic", "episodic", "decision"}
-            ]
-        if weights.get("procedures"):
-            candidates["procedures"] = _memory_candidates("procedural", 8)
-        identity_omitted = not include_identity
-        if include_identity and weights.get("identity"):
-            candidates["identity"] = [*_memory_candidates("preference", 6), *_memory_candidates("style", 4)]
-        open_loop_tasks = self.open_tasks(user_id, limit=10, sector=sector) if weights.get("open_loops") else []
-        if weights.get("recency"):
-            candidates["recency"] = self.recent(user_id, limit=12, sector=sector, as_of=as_of)
-
-        # Cited-only + global dedup (first layer in pack order wins), all counted.
-        excluded_uncited = 0
-        deduped = 0
-        seen_ids: set[str] = set()
-        prepared: dict[str, list[dict[str, Any]]] = {}
-        for layer in CONTEXT_LAYER_ORDER:
-            if layer == "open_loops":
+        cited_pairs: list[tuple[str, Any]] = []
+        seen_ref: set[str] = set()
+        for entry in cited:
+            ref = str(entry.get("ref") or "").strip()
+            if not ref or ref in seen_ref:
                 continue
-            items: list[dict[str, Any]] = []
-            for item in candidates.get(layer) or []:
-                memory_id = str(item.get("id") or "")
-                if not memory_id:
-                    continue
-                if not self._has_source_citation(item):
-                    excluded_uncited += 1
-                    continue
-                if memory_id in seen_ids:
-                    deduped += 1
-                    continue
-                seen_ids.add(memory_id)
-                items.append(_pack_item(item))
-            prepared[layer] = items
-        loop_items: list[dict[str, Any]] = []
-        for task_item in open_loop_tasks:
-            content = self._shared_text(str(task_item.get("content") or ""), redact_sensitive=redact_sensitive)
-            if not content:
-                continue
-            loop_items.append(
+            seen_ref.add(ref)
+            cited_pairs.append((ref, entry.get("relevance")))
+        cited_ids = [ref for ref, _ in cited_pairs]
+        cited_set = set(cited_ids)
+
+        supers = self._session_supersessions(user_id, set(known) | cited_set)
+        stale_ids = set(supers)
+
+        new: list[dict[str, Any]] = []
+        for ref, rel in cited_pairs:
+            if ref in stale_ids or ref in known:
+                continue  # stale -> reported under superseded; known+unchanged -> never re-send
+            new.append(
                 {
-                    "task_id": task_item.get("id"),
-                    "layer": "open_loops",
-                    "kind": "task",
-                    "content": content,
-                    "source": task_item.get("source"),
-                    "source_url": self._safe_source_locator(task_item.get("source_url"), force_local=True) or None,
-                    "capture_id": task_item.get("capture_id"),
-                    "captured_at": task_item.get("captured_at"),
-                    "provenance_class": _context_provenance_class(task_item),
-                    "treat_as_data": True,
-                    "truncated": False,
+                    "ref": ref,
+                    "delta_relevance": round(float(rel), 6) if isinstance(rel, (int, float)) else None,
                 }
             )
-        prepared["open_loops"] = loop_items
 
-        # Budget: reserve the instructions header, split the rest by intent weights, pack in
-        # fixed order with carry-forward. Constraints are protected: their first item is always
-        # included when one exists. The top fact is truncated-to-fit rather than dropped.
-        instructions = list(_CONTEXT_INSTRUCTIONS)
-        instructions_cost = sum(_estimate_context_tokens(line) for line in instructions)
-        packable_budget = max(token_budget - instructions_cost, 120)
+        superseded: list[dict[str, Any]] = []
+        for sid, head in supers.items():
+            if sid not in known:
+                continue  # only tell the session about supersession of ids it actually holds
+            replacement = head if (head and (head in cited_set or head in known)) else None
+            superseded.append({"ref": sid, "replacement": replacement})
+
+        evicted: list[str] = []
+        for kid, last_turn in known.items():
+            if kid in cited_set or kid in stale_ids:
+                continue
+            if (turn - int(last_turn)) >= self.SESSION_EVICTION_TTL_TURNS:
+                evicted.append(kid)
+
+        drop = set(evicted) | {s["ref"] for s in superseded}
+        next_known = {k: v for k, v in known.items() if k not in drop}
+        for ref in cited_ids:
+            next_known[ref] = turn
+        for s in superseded:
+            rep = s["replacement"]
+            if rep and rep in cited_set:
+                next_known[rep] = turn
+        if len(next_known) > self.SESSION_KNOWN_CAP:
+            next_known = dict(
+                sorted(next_known.items(), key=lambda kv: (-kv[1], kv[0]))[: self.SESSION_KNOWN_CAP]
+            )
+
+        tokens = self._session_query_tokens(task)
+        trajectory = [e for e in state["trajectory"] if isinstance(e, dict)]
+        trajectory.append({"turn": turn, "tokens": tokens, "ids": cited_ids[: self.SERVED_MEMORY_IDS_CAP]})
+        trajectory = trajectory[-self.SESSION_TRAJECTORY_WINDOW :]
+        centroid: dict[str, float] = {}
+        for weight, entry in enumerate(trajectory, start=1):
+            for tok in entry.get("tokens") or []:
+                centroid[tok] = centroid.get(tok, 0.0) + float(weight)
+
+        delta = {
+            "new": new,
+            "evicted": sorted(evicted),
+            "superseded": superseded,
+            "cursor": str(cursor),
+        }
+        next_state = {
+            "known": next_known,
+            "trajectory": trajectory,
+            "centroid": centroid,
+            "delta_cursor": cursor,
+            "turn": turn,
+        }
+        return delta, next_state
+
+    # ------------------------------------------------------------------
+    # Build-plan #10: claim folding + compression ladder (density operators)
+    # ------------------------------------------------------------------
+    def _fold_claims(
+        self,
+        user_id: str,
+        prepared: dict[str, list[dict[str, Any]]],
+        redact_sensitive: bool,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Fold same-polarity near-duplicate claims in the facts layer into ONE line before packing.
+
+        Grouping key is the lexical `_memory_duplicate_key` (identical under the deterministic hash
+        embedder; model2vec cosine would refine it when a live embedder is active). The kept
+        representative absorbs the folded siblings' source_urls (merged) and occurrences (summed),
+        and records their ids in `folded_refs` — so a cited fact is COMPRESSED into the survivor,
+        never dropped silently. A group is folded only when NO member is flagged by the conflict
+        scan (never fold across a contradiction). Pure over `prepared`; other layers pass through."""
+        facts = prepared.get("facts") or []
+        if len(facts) < 2:
+            return prepared
+        conflict_ids: set[str] = set()
+        for conflict in self.detect_conflicts(user_id, limit=100):
+            for side in ("current", "stale"):
+                mid = str((conflict.get(side) or {}).get("memory_id") or "").strip()
+                if mid:
+                    conflict_ids.add(mid)
+        groups: dict[str, list[int]] = {}
+        order: list[str] = []
+        for index, item in enumerate(facts):
+            key = _memory_duplicate_key(str(item.get("content") or ""))
+            if not key:
+                key = f"__solo_{index}"  # unfoldable (too short) -> its own group
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(index)
+        folded_facts: list[dict[str, Any]] = []
+        changed = False
+        for key in order:
+            members = groups[key]
+            if len(members) < 2 or any(
+                str(facts[i].get("memory_id") or "") in conflict_ids for i in members
+            ):
+                folded_facts.extend(facts[i] for i in members)
+                continue
+            changed = True
+            rep = dict(facts[members[0]])
+            merged_urls: list[str] = []
+            folded_refs: list[str] = []
+            occurrences = 0
+            for i in members:
+                sibling = facts[i]
+                url = sibling.get("source_url")
+                if url and url not in merged_urls:
+                    merged_urls.append(url)
+                try:
+                    occurrences += int(sibling.get("occurrences") or 1)
+                except (TypeError, ValueError):
+                    occurrences += 1
+                if i != members[0]:
+                    ref = str(sibling.get("memory_id") or "")
+                    if ref:
+                        folded_refs.append(ref)
+            rep["folded_refs"] = folded_refs
+            rep["folded_source_urls"] = merged_urls
+            rep["occurrences"] = occurrences
+            rep["folded"] = True
+            folded_facts.append(rep)
+        if not changed:
+            return prepared
+        out = dict(prepared)
+        out["facts"] = folded_facts
+        return out
+
+    @staticmethod
+    def _compression_ladder_pick(
+        item: dict[str, Any],
+        summary: str,
+        est: Any,
+        item_overhead: int,
+        room: int,
+    ) -> tuple[dict[str, Any], int] | None:
+        """Step a would-be-dropped item down the density ladder (full -> stored summary -> head
+        sentence) and return the FIRST rung whose token cost fits `room`, or None if even the head
+        sentence will not fit. A cited fact is compressed, never silently deleted."""
+        content = str(item.get("content") or "").strip()
+        if not content or room <= 0:
+            return None
+        full_cost = est(content) + item_overhead
+        if full_cost <= room:
+            return dict(item), full_cost
+        summary = str(summary or "").strip()
+        if summary and len(summary) < len(content):
+            cost = est(summary) + item_overhead
+            if cost <= room:
+                return {**item, "content": summary, "compressed": "summary", "truncated": True}, cost
+        head = re.split(r"(?<=[.!?])\s+", content, maxsplit=1)[0].strip()
+        if head and len(head) < len(content):
+            cost = est(head) + item_overhead
+            if cost <= room:
+                return {**item, "content": head, "compressed": "head", "truncated": True}, cost
+        return None
+
+    def _spawn_session_prefetch(
+        self,
+        user_id: str,
+        *,
+        task: str,
+        sector: str | None,
+        project: str | None,
+        centroid: dict[str, Any],
+        entity_connections: list[dict[str, Any]],
+    ) -> None:
+        """Fire-and-forget speculative prefetch: warm the generic hot-cache for the likely next
+        request (the trajectory's own task and its 1-hop entity-graph neighbors) on a daemon thread
+        under a HARD wall-clock deadline. Never blocks, never raises into the response path."""
+        # OFF by default. Speculative warming re-runs the *heaviest* assemble (a full max-budget pack)
+        # on a background daemon thread concurrent with the foreground request. That both burns idle
+        # CPU on a guess (against the "no crazy CPU all the time" invariant) and, because the warm
+        # opens its own sqlite-vec connection while the foreground request is mid-connection on the
+        # same DB, contends at the connection layer and can wedge a rapid multi-turn session. It is a
+        # latency nicety, not a correctness feature, so it stays opt-in until the warm path is made
+        # fully read-only + connection-isolated. Enable with CORTEX_SESSION_PREFETCH=1.
+        if os.environ.get("CORTEX_SESSION_PREFETCH", "").strip().lower() not in {"1", "true", "on", "yes"}:
+            return
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def _add(text: str) -> None:
+            key = str(text or "").strip()
+            if key and key.lower() not in seen and len(candidates) < self.SESSION_PREFETCH_FANOUT:
+                seen.add(key.lower())
+                candidates.append(key[:500])
+
+        _add(task)
+        for connection in entity_connections or []:
+            _add(str(connection.get("label") or ""))
+        if not candidates:
+            return
+
+        # Bound the speculative warm: at most one in-flight worker per user, and a small server-wide
+        # cap across all users. If this user already has a warm running (or the global cap is full),
+        # drop this one — speculative work is droppable and must never queue into a pile-up.
+        if not self._acquire_prefetch_slot(user_id):
+            return
+
+        def _worker() -> None:
+            try:
+                deadline = time.monotonic() + (self.SESSION_PREFETCH_DEADLINE_MS / 1000.0)
+                for candidate in candidates:
+                    if time.monotonic() >= deadline:
+                        return
+                    try:
+                        self._warm_context_candidate(user_id, candidate, sector, project)
+                    except Exception:
+                        return
+            finally:
+                self._release_prefetch_slot(user_id)
+
+        try:
+            import threading
+
+            threading.Thread(target=_worker, name="cortex-session-prefetch", daemon=True).start()
+        except Exception:
+            # The worker never started, so it will never release — free the slot here.
+            self._release_prefetch_slot(user_id)
+
+    def _acquire_prefetch_slot(self, user_id: str) -> bool:
+        """Non-blocking reservation for one speculative prefetch worker. Returns True (and marks the
+        slot taken) only when this user has none in flight AND the server-wide cap has room; else
+        False so the caller drops the warm. Both gates are released together in _release_prefetch_slot."""
+        with self._prefetch_lock:
+            if user_id in self._prefetch_inflight_users:
+                return False
+            if not self._prefetch_slots.acquire(blocking=False):
+                return False
+            self._prefetch_inflight_users.add(user_id)
+            return True
+
+    def _release_prefetch_slot(self, user_id: str) -> None:
+        """Release a reservation taken by _acquire_prefetch_slot. Idempotent per (acquire, release)
+        pair: only releases the global semaphore when the user was actually marked in-flight, so a
+        stray release can never over-release the BoundedSemaphore."""
+        with self._prefetch_lock:
+            if user_id in self._prefetch_inflight_users:
+                self._prefetch_inflight_users.discard(user_id)
+                self._prefetch_slots.release()
+
+    def _warm_context_candidate(self, user_id: str, task: str, sector: str | None, project: str | None) -> None:
+        """Warm one generic hot-cache entry for a speculative task. Skips work when the entry is
+        already warm; stores only cited packs (mirrors the normal warm path)."""
+        intent = _derive_context_intent(task, None)
+        request = self._hot_context_request(
+            task=task,
+            surface="agent",
+            token_budget=CONTEXT_MAX_TOKEN_BUDGET,
+            sector=sector,
+            project=project,
+            intent=intent,
+            include_identity=True,
+        )
+        if self._load_hot_context_pack(user_id, request, record_hit=False) is not None:
+            return
+        pack = self.assemble_context(
+            user_id,
+            task,
+            token_budget=CONTEXT_MAX_TOKEN_BUDGET,
+            sector=sector,
+            project=project,
+            use_hot_cache=False,
+            record_reuse=False,
+        )
+        if isinstance(pack, dict) and pack.get("citations"):
+            try:
+                self._store_hot_context_pack(user_id, request, pack)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _pack_context_legacy(
+        prepared: dict[str, list[dict[str, Any]]],
+        weights: dict[str, int],
+        *,
+        packable_budget: int,
+        instructions_cost: int,
+        item_overhead: int,
+        identity_omitted: bool,
+        entity_connections: list[dict[str, Any]],
+        task: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+        """The original per-intent budget allocator: split the packable budget by intent weights,
+        pack each layer greedily in CONTEXT_LAYER_ORDER with carry-forward, protect the first
+        constraint, truncate the top fact to fit. Extracted verbatim so the generic-profile
+        default (model=None) stays byte-identical."""
         total_weight = sum(weights.values()) or 1
         allocations = {
             layer: (packable_budget * weights.get(layer, 0)) // total_weight for layer in CONTEXT_LAYER_ORDER
         }
-        item_overhead = 12  # estimated metadata cost per item
         layers_payload: list[dict[str, Any]] = []
         citations: list[dict[str, Any]] = []
         carry = 0
@@ -17492,6 +18265,464 @@ class CortexStore:
                         "source_url": item.get("source_url"),
                     }
                 )
+        return layers_payload, citations, used_total
+
+    def _pack_context_knapsack(
+        self,
+        prepared: dict[str, list[dict[str, Any]]],
+        weights: dict[str, int],
+        profile: "ModelProfile",
+        *,
+        token_budget: int,
+        instructions: list[str],
+        item_overhead: int,
+        identity_omitted: bool,
+        entity_connections: list[dict[str, Any]],
+        summaries: dict[str, str] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+        """Global marginal-utility knapsack with MMR diversity (build-plan #8).
+
+        Instead of a fixed per-intent split + per-layer greedy fill, ALL cited candidates compete
+        in one pool. Each item's utility mixes the Wave-1 relevance (cosine/rrf/rank), a recency
+        decay, and the author trust signal, weighted by the model profile's (w_rel, w_rec, w_auth)
+        and scaled by a per-layer prior derived from the intent weights (so intent still shapes
+        which layers dominate, but a genuinely stronger cross-layer item can win a slot):
+
+            utility(item) = layer_prior[layer] * (w_rel*relevance + w_rec*recency + w_auth*trust)
+
+        Packing is greedy by *density* = adjusted_utility / (tokens + overhead) under the total
+        budget, where adjusted_utility applies an MMR redundancy penalty against already-selected
+        items (Jaccard over content tokens). This maximizes marginal utility per token while
+        avoiding near-duplicate picks. Invariants are preserved: candidates arrive already
+        cited-only, superseded-free, and globally deduped; the top constraint is force-included
+        (protected floor); packed tokens never exceed the budget (upper bound), and the loop fills
+        until nothing more fits (utilization floor when evidence exists)."""
+        w_rel, w_rec, w_auth = profile.weights
+        cpt = profile.chars_per_token
+
+        def est(text: Any) -> int:
+            return max(1, math.ceil(len(str(text or "")) / max(cpt, 1e-6)))
+
+        instructions_cost = sum(est(line) for line in instructions)
+        packable_budget = max(token_budget - instructions_cost, 120)
+        total_weight = sum(weights.values()) or 1
+        layer_prior = {layer: weights.get(layer, 0) / total_weight for layer in CONTEXT_LAYER_ORDER}
+        now = datetime.now(timezone.utc)
+        half_life_days = 30.0
+
+        def recency_decay(item: dict[str, Any]) -> float:
+            age = _age_seconds(str(item.get("captured_at") or ""), now=now)
+            if age is None:
+                return 0.0
+            age_days = max(0.0, age / 86400.0)
+            return math.exp(-age_days * math.log(2) / half_life_days)
+
+        # Build the unified candidate pool. Each candidate remembers its source layer and the
+        # order it arrived in (deterministic tie-break), its token cost, utility, and a content
+        # token-set for the MMR redundancy penalty.
+        candidates: list[dict[str, Any]] = []
+        for layer in CONTEXT_LAYER_ORDER:
+            prior = layer_prior.get(layer, 0.0)
+            for order, item in enumerate(prepared.get(layer) or []):
+                content = str(item.get("content") or "")
+                relevance = float(item.get("relevance") or 0.0)
+                trust = item.get("trust_score")
+                trust_val = float(trust) if trust is not None else 0.5
+                base = w_rel * relevance + w_rec * recency_decay(item) + w_auth * trust_val
+                utility = prior * base
+                tokens = est(content)
+                tokset = frozenset(re.findall(r"[a-z0-9]+", content.lower()))
+                candidates.append(
+                    {
+                        "layer": layer,
+                        "order": order,
+                        "item": item,
+                        "tokens": tokens,
+                        "cost": tokens + item_overhead,
+                        "utility": utility,
+                        "tokset": tokset,
+                    }
+                )
+
+        MMR_LAMBDA = 0.35
+
+        def max_sim(tokset: frozenset[str], chosen: list[dict[str, Any]]) -> float:
+            best = 0.0
+            for other in chosen:
+                other_set = other["tokset"]
+                if not tokset or not other_set:
+                    continue
+                inter = len(tokset & other_set)
+                if not inter:
+                    continue
+                union = len(tokset | other_set)
+                if union:
+                    best = max(best, inter / union)
+            return best
+
+        selected: list[dict[str, Any]] = []
+        used_pack = 0
+        remaining = list(candidates)
+        # Greedy marginal-utility fill: each round pick the highest-density candidate that still
+        # fits, re-scoring density with the MMR penalty against the current selection.
+        while remaining and used_pack < packable_budget:
+            best_cand = None
+            best_density = float("-inf")
+            for cand in remaining:
+                if used_pack + cand["cost"] > packable_budget:
+                    continue
+                adjusted = cand["utility"] * (1.0 - MMR_LAMBDA * max_sim(cand["tokset"], selected))
+                density = adjusted / max(cand["cost"], 1)
+                # Deterministic tie-break: higher density, then lower (layer_index, order).
+                if density > best_density + 1e-12:
+                    best_density = density
+                    best_cand = cand
+            if best_cand is None:
+                break
+            selected.append(best_cand)
+            used_pack += best_cand["cost"]
+            remaining.remove(best_cand)
+
+        # Protected floor: the top constraint is never sacrificed to the budget, mirroring the
+        # legacy allocator. Force-include the highest-utility constraint if none was selected.
+        selected_ids = {id(c["item"]) for c in selected}
+        constraint_pool = [c for c in candidates if c["layer"] == "constraints"]
+        if constraint_pool and not any(c["layer"] == "constraints" for c in selected):
+            top = max(constraint_pool, key=lambda c: (c["utility"], -c["order"]))
+            selected.append(top)
+            used_pack += top["cost"]
+            selected_ids.add(id(top["item"]))
+
+        # Compression ladder (build-plan #10): every candidate that lost its slot to the budget gets
+        # one more chance in COMPRESSED form (full -> stored summary -> head sentence) before it is
+        # dropped, so a cited fact is densified into the pack rather than silently deleted. Ordered
+        # by utility so the most valuable evictees are recovered first; strictly additive (never
+        # removes a selection) and bounded by the same packable_budget (adherence holds).
+        summaries = summaries or {}
+        layer_rank = {layer: index for index, layer in enumerate(CONTEXT_LAYER_ORDER)}
+        ladder_remaining = sorted(
+            (c for c in candidates if id(c["item"]) not in selected_ids),
+            key=lambda c: (-c["utility"], layer_rank.get(c["layer"], 99), c["order"]),
+        )
+        for cand in ladder_remaining:
+            room = packable_budget - used_pack
+            if room <= item_overhead:
+                break
+            summary = summaries.get(str(cand["item"].get("memory_id") or ""), "")
+            picked = self._compression_ladder_pick(cand["item"], summary, est, item_overhead, room)
+            if picked is None:
+                continue
+            new_item, new_cost = picked
+            selected.append({**cand, "item": new_item, "cost": new_cost, "tokens": new_cost - item_overhead})
+            used_pack += new_cost
+            selected_ids.add(id(new_item))
+
+        # Reconstruct per-layer payload in canonical order, preserving within-layer input order
+        # for stable, replayable output.
+        by_layer: dict[str, list[dict[str, Any]]] = {layer: [] for layer in CONTEXT_LAYER_ORDER}
+        for cand in selected:
+            by_layer[cand["layer"]].append(cand)
+        layers_payload: list[dict[str, Any]] = []
+        citations: list[dict[str, Any]] = []
+        used_total = instructions_cost
+        for layer in CONTEXT_LAYER_ORDER:
+            if layer == "identity" and identity_omitted:
+                layers_payload.append(
+                    {"layer": "identity", "omitted": {"reason": "requires read scope", "required_scopes": ["read"]}}
+                )
+                continue
+            chosen = sorted(by_layer.get(layer) or [], key=lambda c: c["order"])
+            included = [c["item"] for c in chosen]
+            used = sum(c["cost"] for c in chosen)
+            used_total += used
+            all_items = prepared.get(layer) or []
+            entry: dict[str, Any] = {
+                "layer": layer,
+                "budget_tokens": 0,  # global knapsack: no fixed per-layer allocation
+                "used_tokens": used,
+                "dropped": len(all_items) - len(included),
+                "status": "cited" if included else ("budget_exhausted" if all_items else "no_evidence"),
+                "items": included,
+            }
+            if layer == "entity" and entity_connections:
+                entry["connections"] = entity_connections
+            layers_payload.append(entry)
+            for item in included:
+                citations.append(
+                    {
+                        "index": len(citations) + 1,
+                        "memory_id": item.get("memory_id") or item.get("task_id"),
+                        "source": item.get("source"),
+                        "source_url": item.get("source_url"),
+                    }
+                )
+        return layers_payload, citations, used_total
+
+    def assemble_context(
+        self,
+        user_id: str,
+        task: str = "",
+        *,
+        surface: str = "agent",
+        token_budget: int = 2000,
+        sector: str | None = None,
+        project: str | None = None,
+        as_of: str | None = None,
+        intent: str | None = None,
+        include_identity: bool = True,
+        format: str = "json",
+        pin: bool = False,
+        session_id: str | None = None,
+        record_reuse: bool = True,
+        use_hot_cache: bool = True,
+        model: str | None = None,
+        response_format: str = "text",
+    ) -> dict[str, Any] | str:
+        """The context assembly engine: given a task (+ surface + budget), build a
+        token-budgeted, permissioned, cited context pack for an external agent.
+
+        Deterministic and stdlib-only: composes the existing retrieval primitives
+        (search, decision_history, entity_neighborhood, open_tasks, recent) under a
+        per-intent budget allocator. Every included item is citation-backed
+        (`_has_source_citation`); superseded facts are never served; drops are counted
+        and visible, never silent. `include_identity=False` (read-only tokens) replaces
+        the identity layer with an explicit omission record instead of erroring.
+
+        With `pin=True` (Phase 2) the assembled pack is also persisted as an immutable,
+        content-addressed artifact: canonical JSON bytes hashed with sha256, written
+        byte-exact to the vault (context_packs/<sha[:2]>/<sha>.json) and indexed in the
+        context_packs table. The returned pack gains a `pin` block with the sha, so an
+        agent can later prove exactly what context it acted on (get_context_pack replays
+        and re-verifies the hash). `session_id` links the pin to an agent continuity
+        session so a resumed conversation can find the packs its predecessor used."""
+        self.require_agent_access(user_id, "read")
+        task = str(task or "").strip()[:500]
+        surface = str(surface or "agent").strip().lower()[:40] or "agent"
+        try:
+            token_budget = int(token_budget)
+        except (TypeError, ValueError):
+            token_budget = 2000
+        # Model profile (build-plan #7) calibrates the budget cap + estimator + knapsack weights to
+        # the consuming model. model=None (or unknown) => generic profile whose pack_token_budget is
+        # CONTEXT_MAX_TOKEN_BUDGET and whose packer is the legacy per-intent fill, so the default
+        # path stays byte-identical.
+        profile = resolve_profile(model, surface)
+        token_budget = min(max(token_budget, CONTEXT_MIN_TOKEN_BUDGET), profile.pack_token_budget)
+        response_format = str(response_format or "text").strip().lower()
+        sector = _normalize_sector_filter(sector) or None
+        # Query planning (Phase 4, flag-gated) upgrades intent from keyword rules to a semantic
+        # classifier (model2vec nearest-prototype) when a real embedder is active; falls back to
+        # the keyword result under the hash provider, so default behavior is unchanged.
+        if query_plan_enabled() and task:
+            resolved_intent = build_query_plan(task, intent).intent
+        else:
+            resolved_intent = _derive_context_intent(task, intent)
+        output_format = str(format or "json").strip().lower()
+        hot_request = self._hot_context_request(
+            task=task,
+            surface=surface,
+            token_budget=token_budget,
+            sector=sector,
+            project=project,
+            intent=resolved_intent,
+            include_identity=include_identity,
+        )
+        # The hot cache is keyed without model/response_format, so it may only serve the generic
+        # text pack; a model-calibrated or SMP request bypasses it (and never poisons it).
+        if use_hot_cache and profile.is_generic and response_format == "text" and not pin and not session_id and not as_of:
+            cached = self._load_hot_context_pack(user_id, hot_request)
+            if cached is not None:
+                if record_reuse:
+                    try:
+                        self.record_context_reuse(user_id, surface=surface, query=task, target="context-cache")
+                    except Exception:
+                        pass
+                if output_format == "markdown":
+                    return self._render_context_markdown(cached)
+                return cached
+        user_settings = self.settings(user_id)
+        redact_sensitive = bool(user_settings["redact_sensitive_context"])
+
+        def _memory_candidates(layer: str, limit: int) -> list[dict[str, Any]]:
+            # Task-relevant first; but constraints/procedures/identity describe the PERSON, not
+            # the task — when the task shares no keywords with them they must still surface, so
+            # fall back to the most recent memories of that layer instead of vanishing.
+            if task:
+                matched = self.search(user_id, task, limit=limit, layer=layer, sector=sector, as_of=as_of)
+                if matched:
+                    return matched
+            return self.recent(user_id, limit=limit, layer=layer, sector=sector, as_of=as_of)
+
+        def _pack_item(item: dict[str, Any]) -> dict[str, Any]:
+            content = self._shared_text(
+                str(item.get("content") or item.get("summary") or ""),
+                redact_sensitive=redact_sensitive,
+            )
+            return {
+                "memory_id": item.get("id"),
+                "layer": item.get("layer"),
+                "kind": item.get("kind"),
+                "content": content,
+                "source": item.get("source"),
+                "source_url": self._safe_source_locator(item.get("source_url"), force_local=True) or None,
+                "captured_at": item.get("captured_at"),
+                "sector": item.get("sector") or None,
+                "provenance_class": _context_provenance_class(item),
+                # Phase 3 trust surfacing: every packed item carries WHO asserted it and the
+                # derived trust signal, so consuming agents can weigh conflicting claims.
+                "author_class": normalize_author_class(item.get("author_class")),
+                "trust_score": normalize_trust_score(item.get("trust_score"), item.get("author_class")),
+                # Additive relevance surfacing (item #1): how strongly (and why) this item matched the
+                # task. Search-sourced items carry a real signal; recency/decision-history items (no
+                # retrieval score) surface null relevance rather than a fabricated number.
+                "relevance": item.get("relevance"),
+                "relevance_basis": item.get("relevance_basis"),
+                "why": item.get("why"),
+                "treat_as_data": True,
+                "truncated": False,
+            }
+
+        # Zero-weight layers for this intent are never packed, so never fetched — each fetch is
+        # a store pass, and under concurrent load the pass count IS the latency.
+        weights = CONTEXT_INTENT_WEIGHTS[resolved_intent]
+
+        candidates: dict[str, list[dict[str, Any]]] = {layer: [] for layer in CONTEXT_LAYER_ORDER}
+        if weights.get("constraints"):
+            candidates["constraints"] = _memory_candidates("negative", 12)
+        if weights.get("decisions"):
+            history = self.decision_history(user_id, task, limit=12, sector=sector, include_superseded=False, as_of=as_of)
+            candidates["decisions"] = list(history.get("current_decisions") or [])
+        # Facts are claims (semantic/episodic) only: preference/style/negative/procedural/decision
+        # memories belong to their dedicated layers and must not be consumed here by dedup.
+        if weights.get("facts") and task:
+            candidates["facts"] = [
+                item
+                for item in self.search(user_id, task, limit=24, sector=sector, as_of=as_of, include_related=True)
+                if str(item.get("layer") or "") in {"semantic", "episodic"}
+            ]
+        entity_query = ""
+        entity_connections: list[dict[str, Any]] = []
+        if weights.get("entity"):
+            entity_query = str(project or "").strip() or (self._match_context_entity(user_id, task) if task else "")
+        if entity_query:
+            neighborhood = self.entity_neighborhood(user_id, entity_query)
+            if neighborhood:
+                entity_connections = [
+                    {
+                        "entity_id": connection.get("entity_id") or connection.get("id"),
+                        "label": connection.get("label"),
+                        "weight": connection.get("weight"),
+                        "shared_memory_ids": list(connection.get("shared_memory_ids") or [])[:6],
+                    }
+                    for connection in (neighborhood.get("connections") or [])[:6]
+                ]
+            # Entity context is claims/decisions about the entity; preference/style/procedural
+            # memories that merely mention it belong to their own layers (packed later) and
+            # must not be consumed here by dedup.
+            candidates["entity"] = [
+                item
+                for item in self.search(user_id, entity_query, limit=8, sector=sector, as_of=as_of)
+                if str(item.get("layer") or "") in {"semantic", "episodic", "decision"}
+            ]
+        if weights.get("procedures"):
+            candidates["procedures"] = _memory_candidates("procedural", 8)
+        identity_omitted = not include_identity
+        if include_identity and weights.get("identity"):
+            candidates["identity"] = [*_memory_candidates("preference", 6), *_memory_candidates("style", 4)]
+        open_loop_tasks = self.open_tasks(user_id, limit=10, sector=sector) if weights.get("open_loops") else []
+        if weights.get("recency"):
+            candidates["recency"] = self.recent(user_id, limit=12, sector=sector, as_of=as_of)
+
+        # Cited-only + global dedup (first layer in pack order wins), all counted.
+        excluded_uncited = 0
+        deduped = 0
+        seen_ids: set[str] = set()
+        prepared: dict[str, list[dict[str, Any]]] = {}
+        # Stored summaries keyed by memory id, kept out of the packed item shape (which stays
+        # byte-identical) so the #10 compression ladder can reach for the "summary" rung without
+        # perturbing the generic pack.
+        summaries: dict[str, str] = {}
+        for layer in CONTEXT_LAYER_ORDER:
+            if layer == "open_loops":
+                continue
+            items: list[dict[str, Any]] = []
+            for item in candidates.get(layer) or []:
+                memory_id = str(item.get("id") or "")
+                if not memory_id:
+                    continue
+                if not self._has_source_citation(item):
+                    excluded_uncited += 1
+                    continue
+                if memory_id in seen_ids:
+                    deduped += 1
+                    continue
+                seen_ids.add(memory_id)
+                summary_text = str(item.get("summary") or "").strip()
+                if summary_text:
+                    summaries[memory_id] = summary_text
+                items.append(_pack_item(item))
+            prepared[layer] = items
+        loop_items: list[dict[str, Any]] = []
+        for task_item in open_loop_tasks:
+            content = self._shared_text(str(task_item.get("content") or ""), redact_sensitive=redact_sensitive)
+            if not content:
+                continue
+            loop_items.append(
+                {
+                    "task_id": task_item.get("id"),
+                    "layer": "open_loops",
+                    "kind": "task",
+                    "content": content,
+                    "source": task_item.get("source"),
+                    "source_url": self._safe_source_locator(task_item.get("source_url"), force_local=True) or None,
+                    "capture_id": task_item.get("capture_id"),
+                    "captured_at": task_item.get("captured_at"),
+                    "provenance_class": _context_provenance_class(task_item),
+                    "treat_as_data": True,
+                    "truncated": False,
+                }
+            )
+        prepared["open_loops"] = loop_items
+
+        # Budget: reserve the instructions header, split the rest by intent weights, pack in
+        # fixed order with carry-forward. Constraints are protected: their first item is always
+        # included when one exists. The top fact is truncated-to-fit rather than dropped.
+        instructions = list(_CONTEXT_INSTRUCTIONS)
+        instructions_cost = sum(_estimate_context_tokens(line) for line in instructions)
+        packable_budget = max(token_budget - instructions_cost, 120)
+        item_overhead = 12  # estimated metadata cost per item
+        # Claim folding (build-plan #10): fold same-polarity near-duplicate facts into one line
+        # (merged source_urls + summed occurrences) before packing so the budget buys distinct
+        # facts, not restatements. Gated to model profiles so the generic default stays
+        # byte-identical; never folds across a conflict-flagged pair (see _fold_claims).
+        if not profile.is_generic:
+            prepared = self._fold_claims(user_id, prepared, redact_sensitive)
+        # Packing strategy is profile-driven. The generic profile (model=None) runs the legacy
+        # per-intent split + per-layer greedy fill BYTE-IDENTICALLY; a real model profile runs a
+        # global marginal-utility knapsack/MMR (build-plan #8) mixed by the profile's weights.
+        if profile.is_generic:
+            layers_payload, citations, used_total = self._pack_context_legacy(
+                prepared,
+                weights,
+                packable_budget=packable_budget,
+                instructions_cost=instructions_cost,
+                item_overhead=item_overhead,
+                identity_omitted=identity_omitted,
+                entity_connections=entity_connections,
+                task=task,
+            )
+        else:
+            layers_payload, citations, used_total = self._pack_context_knapsack(
+                prepared,
+                weights,
+                profile,
+                token_budget=token_budget,
+                instructions=instructions,
+                item_overhead=item_overhead,
+                identity_omitted=identity_omitted,
+                entity_connections=entity_connections,
+                summaries=summaries,
+            )
 
         included_ids = {str(citation.get("memory_id") or "") for citation in citations}
         conflicts_payload: list[dict[str, Any]] = []
@@ -17540,13 +18771,35 @@ class CortexStore:
             except Exception:
                 pass
 
+        # Budget block: generic profile keeps the exact legacy shape (byte-identical); a model
+        # profile annotates which model/estimator/strategy shaped the pack.
+        budget_block: dict[str, Any] = {"token_budget": token_budget, "used_tokens": used_total, "estimator": "chars/4"}
+        if not profile.is_generic:
+            budget_block["estimator"] = f"chars/{profile.chars_per_token:g}"
+            budget_block["model"] = profile.name
+            budget_block["strategy"] = "knapsack-mmr"
+            # Density signal (build-plan #10): distinct fact-layer claims the pack delivers per 1k
+            # spent tokens — the payoff of folding + compression. Non-generic only (keeps the
+            # generic budget block byte-identical).
+            distinct_facts = len(
+                {
+                    str(item.get("memory_id") or "")
+                    for entry in layers_payload
+                    if entry.get("layer") == "facts"
+                    for item in entry.get("items") or []
+                    if str(item.get("memory_id") or "")
+                }
+            )
+            budget_block["distinct_facts_per_1k_tokens"] = round(
+                distinct_facts / max(used_total / 1000.0, 1e-6), 4
+            )
         result: dict[str, Any] = {
             "version": CONTEXT_ENGINE_VERSION,
             "task": task,
             "intent": resolved_intent,
             "surface": surface,
             "generated_at": now_iso(),
-            "budget": {"token_budget": token_budget, "used_tokens": used_total, "estimator": "chars/4"},
+            "budget": budget_block,
             "filters": {"sector": sector, "project": project or None, "as_of": as_of},
             "coverage": {
                 "status": coverage_status,
@@ -17562,13 +18815,80 @@ class CortexStore:
             "citations": citations,
             "receipt": {"tool": "get_context", "audited": True, "event_kind": "context_pack"},
         }
-        if output_format == "markdown":
-            if pin:
-                pinned = self.pin_context_pack(user_id, result, session_id=session_id)
-                result["pin"] = pinned
-            return self._render_context_markdown(result)
+        # Session working-set delta (build-plan #13): when the call carries a session_id, compute
+        # the delta of THIS pack's cited ids versus what the session already knows and advance the
+        # working-set. The delta rides the SMP envelope's `working_memory` field (or the warnings[]
+        # channel for non-SMP callers). It is session state, NOT pack content, so it is computed
+        # after `result` is built and never enters the content-addressed pack bytes.
+        working_memory_delta: dict[str, Any] | None = None
+        prefetch_centroid: dict[str, Any] = {}
+        linked_session = str(session_id or "").strip()
+        if linked_session:
+            cited_seq = [
+                {"ref": str(item.get("memory_id") or ""), "relevance": item.get("relevance")}
+                for entry in layers_payload
+                for item in entry.get("items") or []
+                if str(item.get("memory_id") or "")
+            ]
+            try:
+                working_memory_delta, next_state = self._compute_working_memory_delta(
+                    user_id, linked_session, task, cited_seq
+                )
+                self._save_session_working_set(user_id, linked_session, next_state)
+                prefetch_centroid = next_state.get("centroid") or {}
+            except Exception:
+                working_memory_delta = None
         if pin:
+            # Pin the underlying pack first so the SMP/markdown response references a real,
+            # content-addressed artifact (the pin block is envelope metadata, excluded from the sha).
             result["pin"] = self.pin_context_pack(user_id, result, session_id=session_id)
+        # Speculative trajectory + 1-hop-graph prefetch (build-plan #13): warm the hot-cache for the
+        # likely next request on a background thread under a HARD deadline. Never blocks the reply.
+        if linked_session and record_reuse:
+            self._spawn_session_prefetch(
+                user_id,
+                task=task,
+                sector=sector,
+                project=project,
+                centroid=prefetch_centroid,
+                entity_connections=entity_connections,
+            )
+        if response_format == "smp":
+            # Pure projection of the already-packed rows into the self-describing SMP envelope
+            # (build-plan #4). Invents no data; every upstream invariant carries through.
+            smp_items: list[dict[str, Any]] = []
+            for entry in layers_payload:
+                for item in entry.get("items") or []:
+                    smp_items.append(item)
+            envelope = build_smp_envelope(
+                smp_items,
+                budget=budget_block,
+                model=profile.name,
+                coverage=result["coverage"],
+                cursor=None,
+                follow_ups=[],
+                working_memory=working_memory_delta,
+                receipt=None,
+            )
+            if pin:
+                envelope["pin"] = result["pin"]
+            return envelope
+        # Non-SMP callers get the same delta on the existing warnings[] channel (added only when a
+        # session is in play, so the no-session pack stays byte-identical to Wave-2).
+        if working_memory_delta is not None:
+            warning = {
+                "kind": "working_memory",
+                "detail": (
+                    f"session delta: {len(working_memory_delta['new'])} new, "
+                    f"{len(working_memory_delta['evicted'])} evicted, "
+                    f"{len(working_memory_delta['superseded'])} superseded"
+                ),
+                "working_memory": working_memory_delta,
+            }
+            existing = result.get("warnings")
+            result["warnings"] = [*existing, warning] if isinstance(existing, list) else [warning]
+        if output_format == "markdown":
+            return self._render_context_markdown(result)
         return result
 
     # ------------------------------------------------------------------
@@ -21144,11 +22464,12 @@ class CortexStore:
     # test_phase4_eval_harness.py asserts these sets agree with mcp_tools.READ_TOOLS /
     # WRITE_TOOLS so drift is caught at test time, not in production.
     SCORECARD_READ_TOOL_PREFIXES = ("get_", "list_", "search_", "ask_", "resume_", "prepare_", "build_", "expand_", "use_", "would_", "draft_", "verify_")
-    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_", "record_", "import_")
+    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "propose_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_", "record_", "import_")
     # Exact read-tool names that don't carry a read prefix. The ChatGPT connector aliases `search`
-    # and `fetch` are pure reads (mcp_tools.READ_TOOLS) but have no underscore prefix — name them
-    # here so the scorecard classifier stays in parity with READ_TOOLS (drift guard: test_phase4).
-    SCORECARD_READ_TOOL_NAMES = ("search", "fetch")
+    # and `fetch`, plus the MQL tools `query_memory` and `expand`, are pure reads
+    # (mcp_tools.READ_TOOLS) but have no underscore prefix — name them here so the scorecard
+    # classifier stays in parity with READ_TOOLS (drift guard: test_phase4).
+    SCORECARD_READ_TOOL_NAMES = ("search", "fetch", "query_memory", "expand")
 
     def _scorecard_tool_kind(self, tool_name: str) -> str:
         name = str(tool_name or "")
@@ -23801,7 +25122,56 @@ class CortexStore:
                 parent_chain.append({"id": parent["id"], "goal": parent["goal"], "status": parent["status"], "last_checkpoint_at": parent["last_checkpoint_at"]})
                 cursor = parent["parent_session_id"]
             self._event(conn, user_id, session_id, "agent_session", "resumed", {"checkpoints": len(checkpoints)})
-        return {"session": session, "checkpoints": checkpoints, "parent_chain": parent_chain}
+        # Rehydrate the exact known-set from the session's pinned context_packs (build-plan #13):
+        # replay each pinned pack's cited ids in creation order, so a fresh conversation resumes
+        # with precisely the ids its predecessor was served — byte-comparable to the running
+        # working-set, and re-seeded so subsequent deltas continue coherently.
+        working_set = self._rehydrate_session_known_set(user_id, session_id)
+        return {
+            "session": session,
+            "checkpoints": checkpoints,
+            "parent_chain": parent_chain,
+            "working_set": working_set,
+        }
+
+    def _rehydrate_session_known_set(self, user_id: str, session_id: str) -> dict[str, Any]:
+        """Reconstruct (and persist) the session known-set from its pinned context_packs. Reads
+        each pack body (source of truth), unions the cited memory ids in creation order, and
+        re-seeds session_working_set so the reconstruction is byte-comparable to a live run."""
+        packs = self.list_context_packs(user_id, session_id=session_id, limit=100)
+        # Oldest-first so the rebuilt turn order matches the original serve order.
+        packs = sorted(packs, key=lambda p: (str(p.get("created_at") or ""), str(p.get("pack_sha") or "")))
+        known: dict[str, int] = {}
+        turn = 0
+        pack_shas: list[str] = []
+        for pack_meta in packs:
+            sha = str(pack_meta.get("pack_sha") or "")
+            if not sha:
+                continue
+            try:
+                stored = self.get_context_pack(user_id, sha)
+            except (ValueError, OSError, json.JSONDecodeError):
+                continue
+            body = stored.get("pack") if isinstance(stored.get("pack"), dict) else None
+            if not isinstance(body, dict):
+                continue
+            turn += 1
+            pack_shas.append(sha)
+            memory_ids, _tasks = self._cached_pack_object_ids(body)
+            for memory_id in sorted(memory_ids):
+                known[memory_id] = turn
+        state = self._load_session_working_set(user_id, session_id)
+        # Only re-seed when the session has no live delta cursor yet (a genuine cold resume), so a
+        # resume never clobbers an in-flight working-set that has already advanced past the packs.
+        if int(state.get("delta_cursor") or 0) == 0 and known:
+            state["known"] = known
+            state["turn"] = turn
+            self._save_session_working_set(user_id, session_id, state)
+        return {
+            "known_ids": sorted(known),
+            "pack_count": len(pack_shas),
+            "cursor": str(state.get("delta_cursor") or 0),
+        }
 
     def close_agent_session(self, user_id: str, session_id: str, *, outcome: str = "") -> dict[str, Any]:
         session = self._require_agent_session(user_id, session_id)
@@ -26677,6 +28047,9 @@ class CortexStore:
                     completed_at,
                 ),
             )
+            # #20: stamp the extractor version for reprocess-on-change detection (this INSERT OR
+            # REPLACE runs after save_capture already stamped it, so re-stamp to keep it set).
+            self._stamp_extractor_version(conn, user_id, capture_id)
             self._event(
                 conn,
                 user_id,
@@ -27073,7 +28446,10 @@ class CortexStore:
         if self._is_tombstoned_in_conn(conn, user_id, "memory", memory_id):
             return None
         kind = record.get("kind", "observation")
-        layer = memory_layer(kind, record.get("layer"))
+        # #17 deterministic layer: honor a valid explicit/kind layer, else classify by content via
+        # the canonical heuristic so no memory lands unlayered/misc when a deterministic rule applies
+        # (covers the no-ANTHROPIC_API_KEY path and any record that reached storage without a layer).
+        layer = reconcile_memory_layer(kind, record.get("layer"), record.get("content"))
         topics = record.get("topics", [])
         entity_ids = record.get("entity_ids", [])
         raw_excerpt = _memory_raw_excerpt(record, raw_text)
@@ -27184,6 +28560,24 @@ class CortexStore:
                 )
             return self._bump_duplicate_memory_occurrences(
                 conn, duplicate, user_id=user_id, capture_id=capture_id, captured_at=captured_at
+            )
+        # #21 semantic near-duplicate collapse: the lexical key above only catches word-for-word
+        # repeats. When a REAL embedder is live (model2vec — never the deterministic hash, which
+        # would collapse on keyword noise), also fold a genuine paraphrase of an existing same-kind
+        # memory into it (merge provenance + sum occurrences) rather than storing a near-twin. Never
+        # collapses across a polarity/value contradiction. Inert under the hash embedder, so the
+        # tuned retrieval/context evals (hash provider) are unaffected.
+        semantic_twin = self._find_semantic_near_duplicate(
+            conn, user_id, capture_id, memory_id, kind, layer, record.get("content", "")
+        )
+        if semantic_twin is not None:
+            return self._collapse_semantic_near_duplicate(
+                conn,
+                semantic_twin,
+                user_id=user_id,
+                capture_id=capture_id,
+                captured_at=captured_at,
+                source_url=memory_source_url,
             )
         # Repetition support: memory ids are content-derived, so saving the exact same
         # statement again lands on an EXISTING id. A genuinely new save (different capture)
@@ -27514,6 +28908,96 @@ class CortexStore:
         memory["trust_score"] = trust_score
         memory["captured_at"] = captured_at
         memory["updated_at"] = captured_at
+        return memory
+
+    def _find_semantic_near_duplicate(
+        self, conn, user_id: str, capture_id: str, memory_id: str, kind: str, layer: str, content: str
+    ):
+        """#21: find an active, same-kind+same-layer memory whose embedding is a true near-duplicate
+        of `content` (cosine >= threshold) so a paraphrase collapses into it. Returns the row, or
+        None. ONLY runs under a real embedder (never the deterministic hash, whose vectors are
+        keyword plumbing) and NEVER treats a polarity/value-contradicting claim as a duplicate."""
+        text = str(content or "").strip()
+        if len(text) < 16:
+            return None
+        # Hash-provider stores rank on FTS, not vectors; collapsing on hash noise would be wrong.
+        if embedding_status().get("provider") == "hash":
+            return None
+        try:
+            pending_vec = embed_text(text)
+        except Exception:
+            return None
+        if not pending_vec:
+            return None
+        rows = conn.execute(
+            """
+            SELECT m.*
+            FROM memories m
+            LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+            WHERE m.user_id = ?
+              AND m.status = 'active'
+              AND m.kind = ?
+              AND m.layer = ?
+              AND m.id != ?
+              AND (m.capture_id = ? OR m.capture_id IS NULL OR c.review_status = 'approved')
+            ORDER BY m.captured_at DESC
+            LIMIT 40
+            """,
+            (user_id, kind, layer, memory_id, capture_id),
+        ).fetchall()
+        best_row = None
+        best_score = 0.0
+        for row in rows:
+            candidate_text = str(row["content"] or "").strip()
+            if not candidate_text or _claims_conflict(text, candidate_text):
+                continue
+            try:
+                candidate_vec = embed_text(candidate_text)
+            except Exception:
+                continue
+            score = _cosine_similarity(pending_vec, candidate_vec)
+            if score > best_score:
+                best_score = score
+                best_row = row
+        if best_row is not None and best_score >= SEMANTIC_NEAR_DUP_THRESHOLD:
+            return best_row
+        return None
+
+    def _collapse_semantic_near_duplicate(
+        self, conn, twin, *, user_id: str, capture_id: str, captured_at: str, source_url: str | None
+    ) -> dict[str, Any]:
+        """#21: fold a paraphrase into its semantic twin — sum occurrences (via the shared bump path)
+        and merge the incoming citation into the survivor's provenance as corroboration, so a cited
+        paraphrase is COMPRESSED into the survivor, never dropped silently (no provenance loss)."""
+        memory = self._bump_duplicate_memory_occurrences(
+            conn, twin, user_id=user_id, capture_id=capture_id, captured_at=captured_at
+        )
+        incoming_url = str(source_url or "").strip()
+        if incoming_url:
+            provenance = memory.get("provenance") if isinstance(memory.get("provenance"), dict) else None
+            if provenance is None:
+                try:
+                    provenance = json.loads(twin["provenance_json"] or "{}")
+                except (TypeError, ValueError, IndexError):
+                    provenance = {}
+            corroborating = list(provenance.get("corroborating_source_urls") or [])
+            survivor_url = str(provenance.get("source_url") or memory.get("source_url") or "").strip()
+            if incoming_url != survivor_url and incoming_url not in corroborating:
+                corroborating.append(incoming_url)
+                provenance["corroborating_source_urls"] = corroborating
+                conn.execute(
+                    "UPDATE memories SET provenance_json = ? WHERE user_id = ? AND id = ?",
+                    (json.dumps(provenance), user_id, memory["id"]),
+                )
+                memory["provenance"] = provenance
+        self._event(
+            conn,
+            user_id,
+            memory["id"],
+            "memory",
+            "semantic_near_duplicate_collapsed",
+            {"source_url": incoming_url, "occurrences": memory.get("occurrences")},
+        )
         return memory
 
     def _refresh_duplicate_source_memory(
@@ -28380,6 +29864,9 @@ class CortexStore:
         # vector ranking pollutes results (and the tuned retrieval eval) with keyword-hash noise.
         # Semantic vector search is therefore enabled only for a REAL embedding model; hash-provider
         # users (the no-model default) get FTS ranking, which is what the eval is tuned against.
+        # embedding_status() reports the EFFECTIVE provider, so a model2vec store whose model failed
+        # to load (live embed degraded to hash) also returns 'hash' here — it cleanly drops to
+        # FTS-only instead of writing 256-dim hash noise into the model2vec index.
         if embedding_status().get("provider") == "hash":
             return False
         status = sqlite_vec_status(conn)
@@ -28850,6 +30337,7 @@ class CortexStore:
         limit: int,
         *,
         user_settings: dict[str, Any] | None = None,
+        scores_out: dict[str, dict[str, Any]] | None = None,
     ) -> list[Any]:
         """Optional reranking stage between fusion and diversification (Phase 2/3 of the outbound
         retrieval plan). Reorders the fused candidate set with a stronger signal than RRF+boosts:
@@ -28857,12 +30345,21 @@ class CortexStore:
         and — in mmr mode — Maximal Marginal Relevance to suppress near-duplicate neighbours before
         provenance diversification. Stdlib/CPU only (reuses the bundled embedder).
 
-        No-ops (returns rows unchanged) when reranking is disabled (CORTEX_RERANK unset/"off"), the
+        No-ops (returns rows unchanged) when reranking is disabled (CORTEX_RERANK "off"), the
         embedder is the hash fallback (no real semantics), the query is empty, there are <2 rows, or
         the query fails to embed. Only reorders — never changes which rows are eligible — so the
-        citation/review gates downstream are untouched. Modes: off | linear | mmr | linear+mmr."""
-        mode = os.environ.get("CORTEX_RERANK", "off").strip().lower()
-        if mode in {"", "off", "0", "false", "none"} or not rows or len(rows) <= 1:
+        citation/review gates downstream are untouched. Modes: off | linear | mmr | linear+mmr.
+
+        `scores_out` (when provided) is populated with the discarded query↔candidate signal keyed by
+        memory id — {id: {"cosine": float|None, "base": float}} — so callers can surface true
+        semantic relevance without re-embedding. Default selection: when CORTEX_RERANK is unset the
+        reranker engages (linear+mmr) under a live model2vec embedder and stays off under hash."""
+        mode = os.environ.get("CORTEX_RERANK", "").strip().lower()
+        if not mode:
+            # No explicit setting: engage the reranker only when a real semantic embedder is live, so
+            # it activates with the bundled model2vec default and is a byte-identical no-op under hash.
+            mode = "linear+mmr" if embedding_status().get("provider") == "model2vec" else "off"
+        if mode in {"off", "0", "false", "none"} or not rows or len(rows) <= 1:
             return rows
         if embedding_status().get("provider") == "hash":
             return rows
@@ -28914,6 +30411,12 @@ class CortexStore:
             rank_prior = 1.0 / (1.0 + index)  # rows arrive best-first from fusion
             base = w_sem * max(0.0, cosine) + w_rank * rank_prior + w_ent * entity_overlap
             features.append({"row": row, "index": index, "vector": vector, "vec_norm": vec_norm, "base": base})
+            if scores_out is not None:
+                mid = str(self._row_value(row, "id") or "")
+                if mid:
+                    # Thread the query↔candidate cosine (real semantics) that would otherwise be
+                    # discarded; None when the candidate had no embeddable text so callers fall back.
+                    scores_out[mid] = {"cosine": cosine if vector is not None else None, "base": base}
 
         cap = limit if limit and limit > 0 else len(features)
         if "mmr" not in mode:
@@ -29563,6 +31066,144 @@ class CortexStore:
                 clean = clean[:-1]
             row_terms.add(clean)
         return {term for term in terms if any(candidate.startswith(term) for candidate in row_terms)}
+
+    def _relevance_terms(self, obj: Any, terms: list[str]) -> list[str]:
+        """Which of `terms` (query tokens) appear in a result — dict OR sqlite-row safe (unlike
+        _lexical_matched_terms which hard-indexes row columns). Used for the `why.matched_terms`
+        explainer, so it must work on the memory dicts produced by _memory_from_row too."""
+        if not terms:
+            return []
+        topics = self._row_value(obj, "topics")
+        topics_text = (
+            " ".join(str(topic or "") for topic in topics)
+            if isinstance(topics, list)
+            else str(self._row_value(obj, "topics_json") or "")
+        )
+        text = " ".join(
+            str(self._row_value(obj, field) or "") for field in ("content", "summary", "source")
+        ) + " " + topics_text
+        row_terms: set[str] = set()
+        for token in re.findall(r"[a-z0-9_]+", text.lower().replace("'", "")):
+            clean = token.strip("_")
+            if not clean:
+                continue
+            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
+                clean = clean[:-1]
+            row_terms.add(clean)
+        return sorted(term for term in terms if any(candidate.startswith(term) for candidate in row_terms))
+
+    def _annotate_search_relevance(
+        self,
+        query: str,
+        rows: list[Any],
+        results: list[dict[str, Any]],
+        *,
+        fts_rows: list[Any],
+        vector_rows: list[Any],
+        temporal_rows: list[Any],
+        intent_rows: list[Any],
+        rerank_scores: dict[str, dict[str, Any]] | None,
+    ) -> None:
+        """Attach a normalized `relevance` (0..1), `relevance_basis`, and a compact `why` block onto
+        each primary search result — purely additive diagnostics that never change ordering or which
+        rows are returned. `results` is parallel to `rows` (both best-first from the pipeline).
+
+        Basis is honest about the signal: "cosine" when a real embedder is live and a true
+        query↔candidate cosine is available (reused from the reranker's discarded score, or computed
+        on demand); otherwise rank-derived — "rrf" when the row came through multi-retriever fusion,
+        "rank" for the fallback paths. Under the hash embedder there is never a cosine, so relevance
+        is rank-derived and tagged basis="rank"/"rrf" (byte-identical retrieval, additive payload)."""
+        if not results:
+            return
+        provider = str(embedding_status().get("provider") or "hash")
+        real_embedder = provider not in ("", "hash")
+        query = (query or "").strip()
+        query_terms = self._lexical_fallback_terms(query, limit=12)
+
+        def _ids(rowlist: list[Any]) -> set[str]:
+            out: set[str] = set()
+            for candidate in rowlist or []:
+                mid = str(self._row_value(candidate, "id") or "")
+                if mid:
+                    out.add(mid)
+            return out
+
+        retriever_ids = {
+            "fts": _ids(fts_rows),
+            "vector": _ids(vector_rows),
+            "temporal": _ids(temporal_rows),
+            "intent": _ids(intent_rows),
+        }
+
+        query_cache: dict[str, tuple[list[float] | None, float]] = {}
+
+        def _query_vector() -> tuple[list[float] | None, float]:
+            if "v" not in query_cache:
+                try:
+                    vec = embed_text(query)
+                    query_cache["v"] = (vec, math.sqrt(sum(value * value for value in vec)))
+                except Exception:
+                    query_cache["v"] = (None, 0.0)
+            return query_cache["v"]
+
+        def _cosine_for(mid: str, row: Any) -> float | None:
+            if not real_embedder or not query:
+                return None
+            if rerank_scores and mid in rerank_scores:
+                cached = rerank_scores[mid].get("cosine")
+                if cached is not None:
+                    return float(cached)
+            query_vector, query_norm = _query_vector()
+            if not query_norm:
+                return None
+            text = self._contextualized_text(row)
+            if not text:
+                return None
+            try:
+                vec = embed_text(text)
+                vec_norm = math.sqrt(sum(value * value for value in vec))
+                if not vec_norm:
+                    return None
+                return sum(a * b for a, b in zip(query_vector, vec)) / (query_norm * vec_norm)
+            except Exception:
+                return None
+
+        for index, (row, item) in enumerate(zip(rows, results)):
+            if not isinstance(item, dict):
+                continue
+            mid = str(self._row_value(row, "id") or item.get("id") or "")
+            fired = sorted(name for name, ids in retriever_ids.items() if mid and mid in ids)
+            cosine = _cosine_for(mid, row)
+            if cosine is not None:
+                relevance = round(max(0.0, min(1.0, cosine)), 4)
+                basis = "cosine"
+            else:
+                relevance = round(1.0 / (1.0 + index), 4)
+                basis = "rrf" if fired else "rank"
+            item["relevance"] = relevance
+            item["relevance_basis"] = basis
+            item["why"] = {
+                "retrievers": fired,
+                "matched_terms": self._relevance_terms(row, query_terms),
+                "fused_rank": index + 1,
+            }
+
+    def _finalize_result_relevance(self, query: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Guarantee every returned result carries relevance/basis/why. Primary rows are annotated in
+        _annotate_search_relevance with the retriever/cosine signal; related & task results (merged in
+        later, off the retriever path) get a rank-derived fallback here so the payload is consistent."""
+        query_terms = self._lexical_fallback_terms((query or "").strip(), limit=12)
+        for index, item in enumerate(results):
+            if not isinstance(item, dict) or "relevance" in item:
+                continue
+            item["relevance"] = round(1.0 / (1.0 + index), 4)
+            item["relevance_basis"] = "rank"
+            item["why"] = {
+                "retrievers": [],
+                "matched_terms": self._relevance_terms(item, query_terms),
+                "fused_rank": index + 1,
+            }
+        return results
 
     def _query_has_task_intent(self, query: str) -> bool:
         lowered = re.sub(r"\s+", " ", str(query or "").strip().lower())
@@ -30496,6 +32137,15 @@ class CortexStore:
                     (entity_id, user_id, entity.get("kind", "person"), entity.get("name", entity_id), json.dumps(entity.get("aliases", [])), entity.get("context", ""), captured_at, captured_at),
                 )
         row = conn.execute("SELECT * FROM entities WHERE user_id = ? AND id = ?", (user_id, entity_id)).fetchone()
+        # #18 retroactive entity resolution: a fuller multi-word name ("Sarah Chen") arriving now can
+        # reclaim an existing UNAMBIGUOUS single-token node ("Sarah") that predates it — the reverse
+        # of the forward first-name rule, which only fires when the short name arrives second. Merge
+        # is bidirectional and reference-complete (see _merge_entity_into) and only ever runs on an
+        # unambiguous case. The remap it produces is threaded back so the caller can repoint this
+        # capture's in-memory entity_ids too.
+        backmerge_remap = self._backmerge_leading_token_entities(conn, user_id, row, captured_at)
+        if backmerge_remap:
+            row = conn.execute("SELECT * FROM entities WHERE user_id = ? AND id = ?", (user_id, entity_id)).fetchone()
         return {
             "id": row["id"],
             "user_id": user_id,
@@ -30505,7 +32155,216 @@ class CortexStore:
             "context": row["context"],
             "first_seen": row["first_seen"],
             "last_seen": row["last_seen"],
+            "_backmerge_remap": backmerge_remap,
         }
+
+    def _backmerge_leading_token_entities(self, conn, user_id: str, full_row, captured_at: str) -> dict[str, str]:
+        """#18: back-merge an existing unambiguous single-token person entity into the fuller
+        multi-word entity `full_row` just saved. Returns {old_id: new_id} for every node merged in
+        (empty when nothing merges).
+
+        Only fires when it is UNAMBIGUOUS: the full name must be a multi-token person, its leading
+        token T must match EXACTLY ONE existing single-token person entity, and NO OTHER multi-word
+        person entity may also lead with T (otherwise "Sarah" could belong to "Sarah Chen" OR "Sarah
+        Kim" and merging would be a guess). A wrong merge is worse than a duplicate, so anything
+        ambiguous is left alone for a later review pass."""
+        if full_row is None or str(full_row["kind"]) != "person":
+            return {}
+        full_id = str(full_row["id"])
+        full_norm = self._normalize_entity_name(full_row["name"])
+        if " " not in full_norm:
+            return {}  # not a multi-word name — nothing to reclaim
+        leading = full_norm.split(" ", 1)[0]
+        if not leading:
+            return {}
+        rows = conn.execute(
+            "SELECT id, name, aliases_json FROM entities WHERE user_id = ? AND kind = 'person'",
+            (user_id,),
+        ).fetchall()
+        single_token_matches: list[str] = []
+        other_multiword_leads = 0
+        for row in rows:
+            rid = str(row["id"])
+            if rid == full_id:
+                continue
+            names = [row["name"]] + json.loads(row["aliases_json"] or "[]")
+            norms = {n for n in (self._normalize_entity_name(x) for x in names) if n}
+            # Exact single-token node equal to the leading token (its primary name is that token).
+            if self._normalize_entity_name(row["name"]) == leading and " " not in leading:
+                single_token_matches.append(rid)
+            # Another multi-word entity also leading with T => T is ambiguous, do not reclaim.
+            if any(" " in other and other.split(" ", 1)[0] == leading for other in norms):
+                other_multiword_leads += 1
+        if len(single_token_matches) != 1 or other_multiword_leads > 0:
+            return {}
+        old_id = single_token_matches[0]
+        self._merge_entity_into(conn, user_id, old_id, full_id, captured_at, reason="retroactive_leading_token")
+        return {old_id: full_id}
+
+    def _merge_entity_into(self, conn, user_id: str, old_id: str, new_id: str, captured_at: str, *, reason: str) -> None:
+        """Reference-complete entity merge: repoint every reference from `old_id` to `new_id`, fold
+        `old_id`'s name/aliases into `new_id`'s alias set, delete the now-empty `old_id` row, and
+        record a provenance event on the survivor. Covers memory_entities, task_entities,
+        memories.entity_ids_json, tasks.entity_ids_json, and graph_edges (dropping any self-loops the
+        repoint creates). No silent data loss: the old display name/id survive as searchable aliases,
+        and the merge is audited."""
+        if not old_id or not new_id or old_id == new_id:
+            return
+        old_row = conn.execute(
+            "SELECT id, name, aliases_json, context FROM entities WHERE user_id = ? AND id = ?",
+            (user_id, old_id),
+        ).fetchone()
+        new_row = conn.execute(
+            "SELECT id, name, aliases_json FROM entities WHERE user_id = ? AND id = ?",
+            (user_id, new_id),
+        ).fetchone()
+        if old_row is None or new_row is None:
+            return
+        # Fold aliases (old name + its would-be id + its aliases) into the survivor.
+        aliases = set(json.loads(new_row["aliases_json"] or "[]"))
+        for alias in (old_row["name"], old_row["id"], *json.loads(old_row["aliases_json"] or "[]")):
+            text = str(alias or "").strip()
+            if text and text != new_row["name"] and text != new_row["id"]:
+                aliases.add(text)
+        conn.execute(
+            "UPDATE entities SET aliases_json = ?, last_seen = ?, context = COALESCE(NULLIF(context, ''), ?) WHERE user_id = ? AND id = ?",
+            (json.dumps(sorted(aliases)), captured_at, old_row["context"] or "", user_id, new_id),
+        )
+        # memory_entities / task_entities: move rows, tolerating the PK collision when both ids
+        # already tag the same memory/task (INSERT OR IGNORE then delete the old rows).
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_entities(memory_id, entity_id, user_id, created_at) "
+            "SELECT memory_id, ?, user_id, created_at FROM memory_entities WHERE user_id = ? AND entity_id = ?",
+            (new_id, user_id, old_id),
+        )
+        conn.execute("DELETE FROM memory_entities WHERE user_id = ? AND entity_id = ?", (user_id, old_id))
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO task_entities(task_id, entity_id, user_id, created_at) "
+                "SELECT task_id, ?, user_id, created_at FROM task_entities WHERE user_id = ? AND entity_id = ?",
+                (new_id, user_id, old_id),
+            )
+            conn.execute("DELETE FROM task_entities WHERE user_id = ? AND entity_id = ?", (user_id, old_id))
+        except sqlite3.OperationalError:
+            pass
+        # entity_ids_json on memories + tasks: rewrite any list containing old_id (dedup, preserve order).
+        for table in ("memories", "tasks"):
+            id_rows = conn.execute(
+                f"SELECT id, entity_ids_json FROM {table} WHERE user_id = ? AND entity_ids_json LIKE ?",
+                (user_id, f'%{old_id}%'),
+            ).fetchall()
+            for id_row in id_rows:
+                try:
+                    ids = json.loads(id_row["entity_ids_json"] or "[]")
+                except (TypeError, ValueError):
+                    continue
+                if old_id not in ids:
+                    continue
+                remapped: list[str] = []
+                for eid in ids:
+                    mapped = new_id if eid == old_id else eid
+                    if mapped not in remapped:
+                        remapped.append(mapped)
+                conn.execute(
+                    f"UPDATE {table} SET entity_ids_json = ? WHERE user_id = ? AND id = ?",
+                    (json.dumps(remapped), user_id, id_row["id"]),
+                )
+        # graph_edges: repoint endpoints, then drop self-loops and de-duplicate the repointed pairs.
+        conn.execute(
+            "UPDATE graph_edges SET source_id = ? WHERE user_id = ? AND source_id = ?",
+            (new_id, user_id, old_id),
+        )
+        conn.execute(
+            "UPDATE graph_edges SET target_id = ? WHERE user_id = ? AND target_id = ?",
+            (new_id, user_id, old_id),
+        )
+        conn.execute(
+            "DELETE FROM graph_edges WHERE user_id = ? AND source_id = target_id",
+            (user_id,),
+        )
+        conn.execute(
+            """
+            DELETE FROM graph_edges
+            WHERE user_id = ? AND id NOT IN (
+              SELECT MIN(id) FROM graph_edges WHERE user_id = ?
+              GROUP BY source_id, target_id, kind, evidence_id
+            )
+            """,
+            (user_id, user_id),
+        )
+        conn.execute("DELETE FROM entities WHERE user_id = ? AND id = ?", (user_id, old_id))
+        self._event(
+            conn,
+            user_id,
+            new_id,
+            "entity",
+            "merged",
+            {"merged_from": old_id, "merged_from_name": old_row["name"], "reason": reason},
+        )
+
+    def _save_typed_entity_relationships(
+        self, conn, user_id: str, memories: list[dict[str, Any]], entities: list[dict[str, Any]], captured_at: str
+    ) -> list[dict[str, Any]]:
+        """#24: extract typed, directed relationships (works_at / reports_to / part_of / blocks) from
+        memory content and persist them as directed graph_edges whose evidence_id is the source
+        memory (edge provenance). High-precision surface patterns only, and BOTH endpoints must
+        resolve to entities this capture actually knows about — a typed edge between phantom names is
+        never invented. Idempotent: edge ids are content-derived (see _edge), so reprocessing the
+        same capture re-derives the same edges. Returns the edges created for the caller to collect."""
+        if not memories or not entities:
+            return []
+        name_to_id: dict[str, str] = {}
+        for ent in entities:
+            eid = str(ent.get("id") or "").strip()
+            if not eid:
+                continue
+            for surface in (ent.get("name"), *(ent.get("aliases") or [])):
+                norm = self._normalize_entity_name(surface or "")
+                if norm:
+                    name_to_id.setdefault(norm, eid)
+
+        def _resolve(surface: str) -> str | None:
+            norm = self._normalize_entity_name(surface)
+            if not norm:
+                return None
+            if norm in name_to_id:
+                return name_to_id[norm]
+            if " " not in norm:  # unambiguous leading-token (first-name) match only
+                candidates = {
+                    eid for name, eid in name_to_id.items()
+                    if " " in name and name.split(" ", 1)[0] == norm
+                }
+                if len(candidates) == 1:
+                    return next(iter(candidates))
+            return None
+
+        created: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for memory in memories:
+            content = str(memory.get("content") or "")
+            if not content:
+                continue
+            evidence_id = str(memory.get("id") or "").strip()
+            if not evidence_id:
+                continue
+            for relation, pattern, _directed in _TYPED_RELATIONSHIP_PATTERNS:
+                for match in pattern.finditer(content):
+                    subject_id = _resolve(match.group(1))
+                    object_id = _resolve(match.group(2))
+                    if not subject_id or not object_id or subject_id == object_id:
+                        continue
+                    kind = relation
+                    source_id, target_id = subject_id, object_id
+                    if relation == "blocks_reversed":
+                        kind, source_id, target_id = "blocks", object_id, subject_id
+                    key = (source_id, target_id, kind, evidence_id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    created.append(
+                        self._edge(conn, user_id, source_id, target_id, kind, evidence_id, captured_at, weight=1.0)
+                    )
+        return created
 
     def _edge(self, conn, user_id: str, source_id: str, target_id: str, kind: str, evidence_id: str, created_at: str, weight: float = 1.0) -> dict[str, Any]:
         edge_id = stable_id("edge_", user_id + source_id + target_id + kind + evidence_id)

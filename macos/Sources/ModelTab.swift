@@ -16,7 +16,19 @@ struct ModelTab: View {
                 // above the north-star proof, so "use your memory where you already work" is the
                 // first thing after the headline. Its primary wax button opens the shared
                 // Connect-an-AI-tool wizard (state.presentConnectToolsWizard).
-                ConnectAIToolsHeroCard(state: state)
+                // Outbound + inbound as one pair: use your memory in your AI apps, and bring
+                // your chats in. Grouped so the top-level stack stays within the ViewBuilder
+                // child limit.
+                Group {
+                    ConnectAIToolsHeroCard(state: state)
+
+                    // The other half of the loop: one click per service opens a secure sign-in
+                    // window and imports the whole history automatically. Direct builds only
+                    // (the sandbox cannot host the embedded session importer).
+                    if !DistributionMode.isAppStore {
+                        ImportChatsQuickCard(state: state)
+                    }
+                }
 
                 // The north-star headline — the felt proof of "your memory, actively used
                 // across every AI". Hidden until the endpoint answers once; empty weeks get a
@@ -244,7 +256,8 @@ private struct ProfileLimitationsFootnote: View {
 ///
 /// This is not a footnote, it is the product's purpose stated as an action. It sits high on Home
 /// (right under the north-star hero) and is ALWAYS visible so the next step is never in doubt. The
-/// single primary wax button opens the shared Connect-an-AI-tool wizard
+/// card's paper secondary button opens the shared Connect-an-AI-tool wizard
+/// (Home's one wax primary lives on the hero above)
 /// (state.presentConnectToolsWizard). The status line and button label read the LIVE
 /// @Published counts (connectedAIIntegrationCount / detectedAIIntegrationCount) directly, so the
 /// app-wide 6s live refresh keeps them fresh with no local timer of our own.
@@ -314,7 +327,7 @@ struct ConnectAIToolsHeroCard: View {
                 CortexButton(
                     title: primaryTitle,
                     systemImage: "wand.and.stars",
-                    role: .primary,
+                    role: .secondary,
                     size: .large
                 ) {
                     state.presentConnectToolsWizard()
@@ -327,7 +340,7 @@ struct ConnectAIToolsHeroCard: View {
                     CortexButton(
                         title: "Connect the \(detected) we found",
                         systemImage: "sparkles",
-                        role: .secondary,
+                        role: .ghost,
                         size: .large
                     ) {
                         state.presentConnectToolsWizard(statusMessage: "Connect detected AI tools")
@@ -1290,7 +1303,7 @@ struct HomeHeroSection: View {
             // Two-zone living portrait: text/action on the left, the breathing real-graph
             // Constellation on the right. On the narrow first-run column the portrait would only
             // show drifting motes, so it stands alone as the text zone there.
-            let showPortrait = !state.graphNodes.isEmpty || (state.isLocalServiceReady && hasMemory)
+            let showPortrait = heroState != .needsAttention && (!state.graphNodes.isEmpty || (state.isLocalServiceReady && hasMemory))
             if showPortrait {
                 HStack(alignment: .center, spacing: CortexDesign.Space.xl) {
                     heroTextZone
@@ -1499,5 +1512,57 @@ struct HomeStatusRow: View {
         .padding(.vertical, 6)
         .frame(minHeight: 44, alignment: .leading)
         .contentShape(Rectangle())
+    }
+}
+
+
+/// HOME'S ONE-CLICK IMPORT ROW. Four chips, one per service; a single click opens that service's
+/// secure sign-in window and the import runs itself from there (chat vendors auto-start on sign-in;
+/// Notion exports the whole workspace). This is the same AIChatSessionImportView the Connections
+/// sheet uses, surfaced at the top level so bringing memory IN is as one-click as wiring it out.
+struct ImportChatsQuickCard: View {
+    @ObservedObject var state: AppState
+    @State private var importVendor: AIChatImportVendor?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
+            Text("BRING YOUR CHATS IN")
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.accent)
+            Text("One click, sign in, and your whole history becomes memory.")
+                .font(.callout)
+                .foregroundColor(CortexDesign.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: CortexDesign.Space.sm) {
+                ForEach(AIChatImportVendor.allCases) { vendor in
+                    CortexButton(title: vendor.displayName, systemImage: vendor.symbolName, role: .secondary, size: .small) {
+                        importVendor = vendor
+                    }
+                    .help(vendor.usesAsyncExport
+                          ? "Sign in to \(vendor.rawValue) and Cortex exports your whole workspace. This can take a minute."
+                          : "Sign in to \(vendor.rawValue) and your chats import automatically.")
+                    .accessibilityLabel("Import from \(vendor.displayName)")
+                }
+            }
+        }
+        .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.panelBackground)
+        .frame(maxWidth: 620, alignment: .leading)
+        // Same host contract as the Connections card: the sheet stays up through the import so the
+        // user sees the confirmation or the retry; only Done/Close dismisses it.
+        .sheet(item: $importVendor) { vendor in
+            AIChatSessionImportView(
+                vendor: vendor,
+                state: state,
+                onFinished: { success in
+                    if success {
+                        Task { await state.detectAvailableExports() }
+                    }
+                },
+                onDismiss: {
+                    importVendor = nil
+                }
+            )
+        }
     }
 }

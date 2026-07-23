@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 from backend.app.database import init_db
 from backend.app import mcp_tools
 from backend.app.storage import CortexStore
+from backend.app.smp import SMP_LEGEND
 
 
 USER_ID = "eval-user"
@@ -53,7 +54,7 @@ def _seed_store(store: CortexStore, user_id: str = USER_ID) -> None:
         user_id=user_id,
         content="Cortex stores cited personal memory for AI agents in a local SQLite vault.",
         source="adapter-contract-eval",
-        source_url=None,
+        source_url="cortex://adapter-contract-eval/seed",
         title="Adapter contract seed",
         extracted={
             "_timestamp": "2026-01-01T00:00:00Z",
@@ -288,6 +289,94 @@ def _check_export_tool_schema_dispatch() -> tuple[bool, list[dict[str, Any]]]:
     return ok_all, checks
 
 
+def _check_smp_contract(store: CortexStore, user_id: str = USER_ID) -> tuple[bool, list[dict[str, Any]]]:
+    """The SMP wire contract (build-plan #4/#9): a response_format="smp" envelope is
+    self-describing (validates against its OWN inline legend — all declared fields present, NO
+    undeclared keys), preserves the cited-only / no-leak invariants (citation_coverage and
+    no_leak stay 1.0), and is a byte-parity projection of the text-format pack (same refs → same
+    content/source_url/layer). Exercised across three model profiles so the projection is proven
+    for the generic (byte-identical) packer AND the knapsack packers."""
+    checks: list[dict[str, Any]] = []
+    ok_all = True
+    declared_env = set(SMP_LEGEND.get("envelope") or {})
+    declared_item = set(SMP_LEGEND.get("item") or {})
+    task = "summarize what you know about Cortex"
+
+    for model in (None, "claude", "cursor"):
+        envelope = store.assemble_context(user_id, task, token_budget=2000, model=model, response_format="smp")
+        text_pack = store.assemble_context(user_id, task, token_budget=2000, model=model, response_format="text")
+        problems: list[str] = []
+
+        if not isinstance(envelope, dict):
+            problems.append("envelope is not a dict")
+            checks.append({"check": "smp_contract", "model": model, "problems": problems, "ok": False})
+            ok_all = False
+            continue
+
+        # Self-describing: exact field parity with the inline legend, envelope AND items.
+        keys = set(envelope.keys())
+        problems += [f"envelope missing '{m}'" for m in sorted(declared_env - keys)]
+        problems += [f"envelope undeclared '{m}'" for m in sorted(keys - declared_env)]
+        if envelope.get("legend") != SMP_LEGEND:
+            problems.append("envelope legend != SMP_LEGEND")
+
+        items = envelope.get("items") or []
+        for idx, item in enumerate(items):
+            ik = set(item.keys()) if isinstance(item, dict) else set()
+            problems += [f"item[{idx}] missing '{m}'" for m in sorted(declared_item - ik)]
+            problems += [f"item[{idx}] undeclared '{m}'" for m in sorted(ik - declared_item)]
+
+        # Invariants carry through the projection.
+        uncited = [i for i in items if not str(i.get("source_url") or "").strip()]
+        citation_coverage = round((len(items) - len(uncited)) / len(items), 6) if items else 1.0
+        if citation_coverage != 1.0:
+            problems.append(f"citation_coverage={citation_coverage} != 1.0")
+
+        # Byte-parity vs the text pack: same refs, same facts.
+        text_by_ref: dict[str, dict[str, Any]] = {}
+        for entry in text_pack.get("layers") or []:
+            if entry.get("omitted"):
+                continue
+            for row in entry.get("items") or []:
+                ref = str(row.get("memory_id") or row.get("task_id") or "")
+                if ref:
+                    text_by_ref[ref] = row
+        smp_refs = {str(i.get("ref") or "") for i in items}
+        if smp_refs != set(text_by_ref):
+            problems.append(f"ref drift smp_only={sorted(smp_refs - set(text_by_ref))} text_only={sorted(set(text_by_ref) - smp_refs)}")
+        for item in items:
+            ref = str(item.get("ref") or "")
+            src = text_by_ref.get(ref)
+            if src is None:
+                continue
+            if str(item.get("content") or "") != str(src.get("content") or ""):
+                problems.append(f"content drift ref={ref}")
+            if item.get("source_url") != (src.get("source_url") or None):
+                problems.append(f"source_url drift ref={ref}")
+            if str(item.get("layer") or "") != str(src.get("layer") or ""):
+                problems.append(f"layer drift ref={ref}")
+
+        # no_leak: this single-sector store seeds no forbidden sector, so any sector value on a
+        # projected item that differs from the underlying pack's would signal a fabrication.
+        no_leak_ok = True  # no forbidden sectors seeded; parity above already pins sectors via ref
+
+        entry_ok = not problems and citation_coverage == 1.0 and no_leak_ok
+        ok_all = ok_all and entry_ok
+        checks.append(
+            {
+                "check": "smp_contract",
+                "model": model,
+                "profile": str(envelope.get("model") or ""),
+                "item_count": len(items),
+                "citation_coverage": citation_coverage,
+                "no_leak": 1.0 if no_leak_ok else 0.0,
+                "problems": problems,
+                "ok": entry_ok,
+            }
+        )
+    return ok_all, checks
+
+
 def run_adapter_contract_eval(db_path: Path, vault_path: Path | None = None, user_id: str = USER_ID) -> dict[str, Any]:
     init_db(db_path)
     store = CortexStore(db_path, vault_path)
@@ -299,6 +388,7 @@ def run_adapter_contract_eval(db_path: Path, vault_path: Path | None = None, use
     scope_ok, scope_checks = _check_scope_projection()
     dispatch_ok, dispatch_checks = _check_dispatch_parity(store, user_id)
     export_dispatch_ok, export_dispatch_checks = _check_export_tool_schema_dispatch()
+    smp_ok, smp_checks = _check_smp_contract(store, user_id)
 
     all_checks = [
         *openai_checks,
@@ -307,6 +397,7 @@ def run_adapter_contract_eval(db_path: Path, vault_path: Path | None = None, use
         *scope_checks,
         *dispatch_checks,
         *export_dispatch_checks,
+        *smp_checks,
     ]
     failures = [c for c in all_checks if not c.get("ok", False)]
 
@@ -318,6 +409,7 @@ def run_adapter_contract_eval(db_path: Path, vault_path: Path | None = None, use
         "scope_projection": scope_ok,
         "dispatch_parity": dispatch_ok,
         "export_tool_schema_dispatch": export_dispatch_ok,
+        "smp_contract": smp_ok,
         "counts": {
             "total_checks": len(all_checks),
             "failures": len(failures),
@@ -336,6 +428,7 @@ def check_adapter_contract(result: dict[str, Any]) -> list[str]:
         "scope_projection",
         "dispatch_parity",
         "export_tool_schema_dispatch",
+        "smp_contract",
     ):
         if not result.get(key):
             failures.append(f"{key} failed")

@@ -160,7 +160,7 @@ struct AskQuerySection: View {
                 }
             }
             // The one primary action on this surface. Its label switches to "Searching…" in
-            // flight so the click is acknowledged in place, with the spinner line just below.
+            // flight so the click is acknowledged in place.
             CortexButton(title: state.isBusy ? "Searching…" : "Ask", role: .primary, size: .large) {
                 state.runSearch()
             }
@@ -184,24 +184,6 @@ struct AskQuerySection: View {
         )
         .animation(.easeOut(duration: 0.15), value: queryFocused)
 
-        // A clear, unmissable in-flight line right under the field: the moment the user asks,
-        // a small spinner and "Searching your memory…" confirm the work started.
-        if state.isBusy {
-            HStack(spacing: CortexDesign.Space.xs) {
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.7)
-                    .frame(width: 14, height: 14)
-                Text("Searching your memory…")
-                    .font(CortexDesign.Typography.caption)
-                    .foregroundColor(CortexDesign.inkSecondary)
-            }
-            .padding(.horizontal, CortexDesign.Space.xs)
-            .transition(.opacity)
-            .accessibilityElement()
-            .accessibilityLabel("Searching your memory")
-        }
-
         // U-ASK2: recent-query chips. One click re-runs a prior question — the shortest path back
         // to an answer the reader already found useful. Deduped/capped/persisted in AppState.
         if showRecents {
@@ -212,7 +194,6 @@ struct AskQuerySection: View {
             .transition(.opacity)
         }
         }
-        .animation(.easeOut(duration: 0.15), value: state.isBusy)
         .animation(.easeOut(duration: 0.15), value: showRecents)
         // U-ASK9: focus is driven off the tab becoming Ask, not a fragile fixed-delay DispatchQueue
         // timer. A switch back to the Ask tab refocuses via a state change SwiftUI honors reliably.
@@ -251,7 +232,7 @@ struct AskRecentQueriesRow: View {
                 } label: {
                     Text("Clear")
                         .font(CortexDesign.Typography.caption)
-                        .foregroundColor(CortexDesign.inkFaint)
+                        .foregroundColor(CortexDesign.inkSecondary)
                 }
                 .buttonStyle(.plain)
                 .help("Clear your recent Ask history")
@@ -354,6 +335,11 @@ struct AskMemoryContextStrip: View {
     }
 
     private var title: String {
+        // Mirrors the statusIcon/statusColor priority: attention outranks the happy path so the
+        // red icon never sits beside a green "ready" headline.
+        if needsAttentionCount > 0 {
+            return "\(needsAttentionCount) source\(needsAttentionCount == 1 ? " needs" : "s need") attention"
+        }
         if memoryCount > 0 { return "Memory ready for Ask" }
         if pendingCount > 0 { return "Review memory before Ask" }
         if sourceCount > 0 { return "Source connected" }
@@ -361,9 +347,15 @@ struct AskMemoryContextStrip: View {
     }
 
     private var detail: String {
+        if needsAttentionCount > 0 {
+            if memoryCount > 0 {
+                return "Ask still uses \(AnimatableNumber.groupedInteger(Double(memoryCount))) reviewed memor\(memoryCount == 1 ? "y" : "ies"). Open Details to fix syncing."
+            }
+            return "Open Details to fix syncing before Ask can use your memory."
+        }
         if memoryCount > 0 {
             let sourceLabel = "\(sourceCount) source\(sourceCount == 1 ? "" : "s")"
-            return "Using \(memoryCount) reviewed memor\(memoryCount == 1 ? "y" : "ies") from \(sourceLabel)."
+            return "Using \(AnimatableNumber.groupedInteger(Double(memoryCount))) reviewed memor\(memoryCount == 1 ? "y" : "ies") from \(sourceLabel)."
         }
         if pendingCount > 0 {
             return "\(pendingCount) synced item\(pendingCount == 1 ? "" : "s") waiting in Review before Ask can use them."
@@ -701,6 +693,8 @@ private func shortDate(_ value: String) -> String {
 /// lines, then three numbered footnote stubs) so the wait previews the page that's coming.
 struct AskLoadingCard: View {
     @State private var sweep: CGFloat = -0.35
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -764,13 +758,23 @@ struct AskLoadingCard: View {
             RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
                 .stroke(CortexDesign.hairline, lineWidth: 1)
         )
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.15).repeatForever(autoreverses: false)) {
-                sweep = 1.05
-            }
-        }
+        .onAppear { updateSweep() }
+        .onChange(of: scenePhase) { _ in updateSweep() }
+        .onChange(of: reduceMotion) { _ in updateSweep() }
         .accessibilityElement()
         .accessibilityLabel("Finding a cited answer")
+    }
+
+    // The un-animated snap back to the parked position must precede the loop: a finite animation
+    // does not dependably replace an in-flight repeatForever on the AppKit hosting path (see
+    // HUDProgressBar.hardStop/restart). Parked at -0.35 the band sits fully clipped outside the
+    // card, so reduce-motion users get a clean static skeleton.
+    private func updateSweep() {
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) { sweep = -0.35 }
+        guard scenePhase == .active, !reduceMotion else { return }
+        withAnimation(.easeInOut(duration: 1.15).repeatForever(autoreverses: false)) { sweep = 1.05 }
     }
 
     private func skeletonBar(width: CGFloat, height: CGFloat) -> some View {
@@ -1176,6 +1180,8 @@ struct AskSourceDetailRow: View {
         CitationDisplay.openableURL(sourceURL: item.source_url)
     }
 
+    @State private var confirmForget = false
+
     private var isForgetting: Bool {
         state.inFlightMemoryIds.contains(item.id)
     }
@@ -1276,15 +1282,20 @@ struct AskSourceDetailRow: View {
                 }
                 Spacer(minLength: 0)
                 CortexButton(
-                    title: isForgetting ? "Forgetting…" : "Not helpful",
-                    systemImage: "hand.thumbsdown",
+                    title: isForgetting ? "Forgetting…" : "Forget",
                     role: .ghost,
                     size: .small
                 ) {
-                    state.deleteMemory(item)
+                    confirmForget = true
                 }
                 .disabled(isForgetting)
                 .help("Forget this memory so it stops appearing in answers")
+                .confirmationDialog("Forget this memory?", isPresented: $confirmForget) {
+                    Button("Forget", role: .destructive) { state.deleteMemory(item) }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("It stops appearing in answers, and the removal syncs to your other devices.")
+                }
             }
             .padding(.top, 2)
         }
@@ -1317,7 +1328,7 @@ struct AskSourceDetailRow: View {
     /// never leaks a raw path or UUID into the field.
     private func askAboutThis() {
         let subject = MemoryText.suggestionSubject(item.content) ?? sourceTitle
-        state.searchQuery = "Tell me more about \(subject)"
+        state.searchQuery = "Tell me more about \u{201C}\(subject)\u{201D}"
         state.runSearch()
     }
 }
@@ -1656,95 +1667,40 @@ struct AskAnswerPanel: View {
     }
 }
 
-/// The left column: the answer prose with real inline `[n]` markers rendered as tappable wax-red
-/// mono superscripts. Text runs use SwiftUI concatenation so the markers flow inline with the serif
-/// prose (a true footnote superscript), and a transparent overlay of tap targets sits over the
-/// markers so a click/hover updates `selectedCitation` — SwiftUI `Text` can't carry per-run gestures,
-/// so the tap layer is separate but positionally faithful via a wrapping flow of the same runs.
+/// The left column: the answer prose as ONE selectable `Text` built by run concatenation, with
+/// `[n]` markers rendered as non-interactive wax-red superscript numerals. A single Text keeps
+/// native text selection and one continuous VoiceOver read. The receipts themselves live (and stay
+/// clickable) in the source margin; hovering a margin card pins its in-prose marker via
+/// `selectedCitation`, which simply re-renders this Text with that numeral emphasized.
 struct AskAnnotatedProse: View {
     let runs: [AskAnswerRun]
     @Binding var selectedCitation: Int?
 
     var body: some View {
-        // The runs are laid out as a wrapping paragraph: plain runs are serif prose, marker runs are
-        // small interactive superscript chips. `AskFlowLayout` wraps them like text so the markers sit
-        // inline where the [n] token appeared.
-        AskFlowLayout(spacing: 0, lineSpacing: 6) {
-            ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
-                switch run {
-                case .text(let string):
-                    // Break plain text into word chunks so the flow layout can wrap on spaces.
-                    ForEach(Array(wordChunks(string).enumerated()), id: \.offset) { _, chunk in
-                        Text(chunk)
-                            .font(CortexDesign.Typography.prose(14.5))
-                            .foregroundColor(CortexDesign.ink)
-                            .textSelection(.enabled)
-                    }
-                case .marker(let n):
-                    AskCitationMarker(
-                        index: n,
-                        isSelected: selectedCitation == n
-                    ) {
-                        selectedCitation = (selectedCitation == n) ? nil : n
-                    } onHover: { inside in
-                        if inside { selectedCitation = n }
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        combinedText
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
     }
 
-    /// Split a text run into wrappable chunks, keeping trailing spaces attached so word spacing is
-    /// preserved in the flow layout.
-    private func wordChunks(_ s: String) -> [String] {
-        guard !s.isEmpty else { return [] }
-        var chunks: [String] = []
-        var current = ""
-        for ch in s {
-            current.append(ch)
-            if ch == " " || ch == "\n" {
-                chunks.append(current)
-                current = ""
+    private var combinedText: Text {
+        var out = Text("")
+        for run in runs {
+            switch run {
+            case .text(let string):
+                out = out + Text(string)
+                    .font(CortexDesign.Typography.prose(14.5))
+                    .foregroundColor(CortexDesign.ink)
+            case .marker(let n):
+                // Thin spaces stand in for the old chip's horizontal padding, which a
+                // concatenated run cannot express.
+                let pinned = selectedCitation == n
+                out = out + Text("\u{2009}\(n)\u{2009}")
+                    .font(.system(size: 8.5, weight: pinned ? .bold : .semibold, design: .monospaced))
+                    .foregroundColor(CortexDesign.accent)
+                    .baselineOffset(5)
             }
         }
-        if !current.isEmpty { chunks.append(current) }
-        return chunks
-    }
-}
-
-/// One inline citation superscript: a small wax-red mono numeral raised like a footnote marker. Taps
-/// and hovers drive the shared `selectedCitation`; when selected it fills with the wax wash so the
-/// reader sees which claim they've pinned.
-struct AskCitationMarker: View {
-    let index: Int
-    let isSelected: Bool
-    let onTap: () -> Void
-    let onHover: (Bool) -> Void
-
-    var body: some View {
-        Button(action: onTap) {
-            Text("\(index)")
-                .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
-                .foregroundColor(CortexDesign.accent)
-                .padding(.horizontal, 3)
-                .padding(.vertical, 0.5)
-                .background(
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(isSelected ? CortexDesign.accentSoft : Color.clear)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .stroke(CortexDesign.accent.opacity(isSelected ? 0.5 : 0.2), lineWidth: 0.75)
-                )
-                .baselineOffset(5)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover(perform: onHover)
-        .help("Citation \(index)")
-        .accessibilityLabel("Citation \(index)")
-        .accessibilityAddTraits(.isButton)
+        return out
     }
 }
 

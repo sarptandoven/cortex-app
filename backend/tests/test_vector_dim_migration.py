@@ -37,6 +37,8 @@ class VectorDimMigrationTests(unittest.TestCase):
         self.user_id = "vec-user"
         E._MODEL2VEC_MODEL = None
         E._MODEL2VEC_MODEL_KEY = None
+        E._MODEL2VEC_LOAD_FAILED = False
+        E._MODEL2VEC_FAILURE_LOGGED = False
         # Create the user's settings once (persist in the DB; later stores reread them).
         CortexStore(self.db_path, self.vault_path).update_settings(
             self.user_id, {"review_new_captures": False, "allow_pending_in_context": True}
@@ -45,6 +47,8 @@ class VectorDimMigrationTests(unittest.TestCase):
     def tearDown(self) -> None:
         E._MODEL2VEC_MODEL = None
         E._MODEL2VEC_MODEL_KEY = None
+        E._MODEL2VEC_LOAD_FAILED = False
+        E._MODEL2VEC_FAILURE_LOGGED = False
         self._tmp.cleanup()
 
     def _store(self) -> CortexStore:
@@ -108,6 +112,33 @@ class VectorDimMigrationTests(unittest.TestCase):
             # surface the right memory via the semantic vector path — the whole point of P0.
             hits = store.search(self.user_id, "which datastore did we pick", limit=5)
             self.assertTrue(any(h.get("id") == "mem_db" for h in hits), [h.get("id") for h in hits])
+
+    def test_model2vec_load_failure_reports_degraded_not_model2vec(self) -> None:
+        # HONESTY regression: a model2vec-CONFIGURED store whose model can't load at runtime must
+        # not keep claiming semantic search works. It drops to FTS-only (no hash noise in the index)
+        # and search diagnostics report a degraded provider (hash) with the load-failure reason —
+        # never provider=model2vec over what is really keyword-hash retrieval.
+        with mock.patch.dict(
+            "os.environ",
+            {"CORTEX_EMBEDDING_PROVIDER": "model2vec", "CORTEX_MODEL2VEC_PATH": "/nonexistent/model-dir"},
+            clear=False,
+        ):
+            store = self._store()  # __init__ warmup probe trips the failure latch
+            self.assertTrue(E._MODEL2VEC_LOAD_FAILED)
+            self._seed(store, "mem_db", "We chose sharded SQLite over Postgres for the launch.", ["database"])
+            store.run_due_jobs(self.user_id, limit=50)
+            with connect(self.db_path) as conn:
+                # Degraded model2vec must behave like hash: FTS-only, no vectors written.
+                self.assertFalse(store._vector_ready(conn))
+                self.assertEqual(conn.execute("SELECT count(*) FROM memory_vec").fetchone()[0], 0)
+            payload = store.public_search_payload(self.user_id, "SQLite", limit=5)
+            retrieval = payload["retrieval"]
+            self.assertEqual(retrieval["embedding_provider"], "hash")
+            self.assertTrue(retrieval["degraded"])
+            self.assertIn("embedding_model_load_failed", retrieval["degraded_reasons"])
+            self.assertNotIn("hash_embedding_provider", retrieval["degraded_reasons"])
+            # Retrieval still works by keyword, it just isn't dressed up as semantic.
+            self.assertTrue(any(h.get("id") == "mem_db" for h in payload["results"]))
 
     def test_switching_model_rebuilds_index_and_reembeds(self) -> None:
         if not self._model2vec_available():

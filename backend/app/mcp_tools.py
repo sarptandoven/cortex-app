@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import inspect
 import json
 import re
 from typing import Any
@@ -7,6 +9,7 @@ from urllib.parse import unquote
 
 from .config import APP_BRAND, load_settings
 from .extractor import extract_context
+from .smp import build_receipt, project_memory_object
 from .storage import CortexStore
 
 
@@ -21,6 +24,26 @@ TOOLS = [
     {
         "name": "remember_this",
         "description": f"Save text into {APP_BRAND} memory with extraction, source metadata, and graph links.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string"},
+                "source": {"type": "string", "default": "ai-chat"},
+                "title": {"type": "string"},
+                "source_url": {"type": "string"},
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "propose_memory",
+        "description": (
+            f"Propose a memory for the user to review before it becomes trusted {APP_BRAND} context. "
+            "Like remember_this but never auto-approved: the proposal always lands in the review "
+            "queue (it is not searchable until the user approves it). Returns the same typed "
+            "write-back receipt {stored_id, assigned_layer, verdict, dedup_basis, occurrences, "
+            "supersede_handle} so an agent knows what the write did."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -949,7 +972,8 @@ TOOLS = [
                 "sector": {"type": "string"},
                 "project": {"type": "string", "description": "Entity/project name to center the pack on."},
                 "as_of": {"type": "string"},
-                "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+                "format": {"type": "string", "enum": ["json", "markdown", "smp"], "default": "json", "description": "Output shape. 'smp' returns a self-describing Standard Memory Protocol envelope (read cortex://smp/schema) that any LLM parses zero-shot."},
+                "model": {"type": "string", "description": "Optional target model/profile name (e.g. 'gpt-4o', 'claude-3-5-sonnet') so the pack is budgeted to that model's context window. Unknown/omitted => default profile."},
                 "pin": {"type": "boolean", "default": False, "description": "Persist this pack as an immutable, sha256-addressed audit artifact you can replay later via get_context_pack."},
                 "session_id": {"type": "string", "description": "Agent continuity session (asess_...) to link a pinned pack to."},
             },
@@ -1010,6 +1034,57 @@ TOOLS = [
         },
     },
     {
+        "name": "query_memory",
+        "description": (
+            f"Query {APP_BRAND} memory with a small structured query language (MQL) whose JSON Schema "
+            "IS the query. Provide `ask` (a natural-language question) OR `find` (keywords), then "
+            "optionally narrow with layers/entities/as_of/valid_only/min_relevance/min_trust/"
+            "budget_tokens/model/k. Read-only and cited: the filters only ever NARROW the result "
+            "(a strict subset of the unfiltered retrieval) — MQL can never widen scope, add "
+            "retrieval, or escape read. `expand` suggests a follow-up expand() on the top hit."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ask": {"type": "string", "description": "Natural-language question to retrieve cited context for. Provide ask OR find."},
+                "find": {"type": "string", "description": "Keyword search string. Provide find OR ask, not both."},
+                "layers": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["semantic", "episodic", "style", "decision", "preference", "negative", "procedural"]},
+                    "description": "Restrict results to these memory layers.",
+                },
+                "entities": {"type": "array", "items": {"type": "string"}, "description": "Restrict to items mentioning any of these people/projects/orgs/topics."},
+                "as_of": {"type": "string", "description": "ISO-8601 valid-time slice: retrieve as memory was known then."},
+                "valid_only": {"type": "boolean", "default": True, "description": "Keep only currently-valid (non-superseded) memories."},
+                "min_relevance": {"type": "number", "minimum": 0, "maximum": 1, "description": "Drop items whose retrieval score is below this."},
+                "min_trust": {"type": "number", "minimum": 0, "maximum": 1, "description": "Drop items whose trust/confidence is below this."},
+                "budget_tokens": {"type": "integer", "minimum": 300, "maximum": 6000, "description": "Token budget when `ask` routes to a context pack."},
+                "model": {"type": "string", "description": "Target model/profile name to budget an `ask` pack to."},
+                "expand": {"type": "string", "enum": ["document", "neighbors", "more"], "description": "Optional follow-up expansion suggested for the top hit."},
+                "k": {"type": "integer", "minimum": 1, "maximum": 50, "default": 8, "description": "Max results to return."},
+            },
+        },
+    },
+    {
+        "name": "expand",
+        "description": (
+            "Expand ONE cited memory reference. direction=document returns the full memory document "
+            "for a ref; direction=neighbors returns the entity graph neighborhood around the ref (its "
+            "entities, one cited hop out) with commitments/decisions/recent context; direction=more "
+            "pages the next results for a cursor returned by query_memory. Read-only; a ref with no "
+            "cited memory yields an empty, honest result."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "A memory ref (from any SMP item / query_memory result), an entity name, or — for direction=more — a cursor from query_memory."},
+                "direction": {"type": "string", "enum": ["document", "neighbors", "more"], "default": "document"},
+                "limit": {"type": "integer", "default": 8, "minimum": 1, "maximum": 50},
+            },
+            "required": ["ref"],
+        },
+    },
+    {
         "name": "list_capabilities",
         "description": (
             f"Discover this {APP_BRAND}: memory counts, the scopes your token holds, which tool surface "
@@ -1031,6 +1106,9 @@ TOOLS = [
                 "task": {"type": "string", "description": "What you need from the user's memory, in natural language."},
                 "intent": {"type": "string", "enum": ["answer", "act", "draft", "plan", "recall"], "description": "Optional hint about what you're doing."},
                 "token_budget": {"type": "integer", "default": 2000, "minimum": 300, "maximum": 6000},
+                "surface": {"type": "string", "description": "Which tool you are (cursor, claude, chatgpt, ...); forwarded when the task routes to a context pack."},
+                "model": {"type": "string", "description": "Optional target model/profile name so a routed context pack is budgeted to that model's context window."},
+                "format": {"type": "string", "enum": ["json", "markdown", "smp"], "description": "Output shape for a routed context pack. 'smp' returns a self-describing Standard Memory Protocol envelope (read cortex://smp/schema)."},
             },
             "required": ["task"],
         },
@@ -1325,6 +1403,8 @@ CORE_TOOL_NAMES = frozenset(
         "use_cortex",
         "get_context",
         "ask_memory",
+        "query_memory",
+        "expand",
         "search_memory",
         "get_entity_context",
         "get_person_map",
@@ -1390,6 +1470,8 @@ MCP_TOOL_SURFACES: dict[str, frozenset[str]] = {
             "search",
             "fetch",
             "search_memory",
+            "query_memory",
+            "expand",
             "get_context",
             "ask_memory",
             "list_capabilities",
@@ -1409,6 +1491,11 @@ READ_TOOLS = {
     "get_context_pack",
     "list_context_packs",
     "ask_memory",
+    # MQL: the JSON-schema query language + the ref-expander. Both are pure reads that map onto the
+    # existing search / assemble_context / entity-neighborhood primitives (no new retrieval logic),
+    # so they never escape read scope.
+    "query_memory",
+    "expand",
     "get_entity_context",
     "expand_context",
     "list_capabilities",
@@ -1475,6 +1562,9 @@ REVIEW_TOOLS = {
 }
 WRITE_TOOLS = {
     "remember_this",
+    # propose_memory is a WRITE that always routes to review (never auto-approved) — same scope as
+    # remember_this, and it returns the same typed write-back receipt.
+    "propose_memory",
     "record_shared_memory",
     "record_working_canvas_node",
     "import_memory_bundle",
@@ -1585,6 +1675,11 @@ _OPEN_WORLD_TOOLS = DIRECT_CONNECTOR_SYNC_TOOLS | {
     "sync_connected_sources",
 }
 
+# Export-scoped tools that WRITE files OUTSIDE Cortex custody (vault write-back). Scope-wise they
+# are exports (memory egress), but they must never be advertised readOnly — a client could
+# auto-approve a filesystem mutation. Single-sourced so the annotation + its eval agree.
+_EXTERNAL_FILE_WRITE_TOOLS = {"write_obsidian_pages"}
+
 _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "use_cortex": f"Use {APP_BRAND}",
     "get_context": "Get Working Context",
@@ -1592,6 +1687,9 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "search_memory": "Search Memory",
     "search": "Search (ChatGPT connector)",
     "fetch": "Fetch Document (ChatGPT connector)",
+    "query_memory": "Query Memory (MQL)",
+    "expand": "Expand Reference",
+    "propose_memory": "Propose Memory (review)",
     "get_entity_context": "Get Entity Context",
     "expand_context": "Expand Cited Context",
     "get_person_map": "Whole-Person Map",
@@ -1652,7 +1750,7 @@ def _tool_annotations(name: str) -> dict[str, Any]:
     # Export-scoped tools that WRITE files outside Cortex custody (vault write-back). Scope-wise
     # they are exports (memory egress), but advertising them readOnly would let clients
     # auto-approve a filesystem mutation.
-    writes_external_files = name in {"write_obsidian_pages"}
+    writes_external_files = name in _EXTERNAL_FILE_WRITE_TOOLS
     read_only = (is_read or is_export) and not (is_write or is_maintenance or is_destructive or writes_external_files)
     idempotent = (is_read or is_export) and not is_destructive
     return {
@@ -1703,6 +1801,30 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "get_entity_context": dict(_OUTPUT_OBJECT),
     "get_person_map": dict(_OUTPUT_OBJECT),
     "remember_this": dict(_OUTPUT_OBJECT),
+    "propose_memory": dict(_OUTPUT_OBJECT),
+    "query_memory": {
+        "type": "object",
+        "properties": {
+            "mql": {"type": "object", "additionalProperties": True},
+            "mode": {"type": "string"},
+            "items": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            "count": {"type": "integer"},
+            "candidates_considered": {"type": "integer"},
+            "coverage": {"type": "object", "additionalProperties": True},
+            "cursor": {"type": ["string", "null"]},
+            "follow_ups": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        },
+        "additionalProperties": True,
+    },
+    "expand": {
+        "type": "object",
+        "properties": {
+            "ref": {"type": "string"},
+            "direction": {"type": "string"},
+            "found": {"type": "boolean"},
+        },
+        "additionalProperties": True,
+    },
     "list_capabilities": dict(_OUTPUT_OBJECT),
     # ChatGPT connector contract: it validates structuredContent against these. `search` returns
     # {results:[{id,title,url}]}; `fetch` returns {id,title,text,url,metadata}. Kept
@@ -1909,6 +2031,7 @@ CORTEX_RESOURCES: list[dict[str, Any]] = [
     {"uri": "cortex://profile/personal", "name": "Personal profile", "description": "Distilled, cited profile grouped by memory layer.", "mimeType": "application/json"},
     {"uri": "cortex://profile/adaptation", "name": "Agent adaptation guide", "description": "Cited operating instructions for an AI assistant acting for the user.", "mimeType": "application/json"},
     {"uri": "cortex://schema/capabilities", "name": f"{APP_BRAND} capabilities", "description": "Memory counts + the tool catalog.", "mimeType": "application/json"},
+    {"uri": "cortex://smp/schema", "name": "Standard Memory Protocol schema", "description": "Self-describing legend for the SMP envelope + MemoryObject fields, so any LLM parses a format=smp context pack zero-shot.", "mimeType": "application/json"},
     {"uri": "cortex://review/daily", "name": "Daily review", "description": "Today's pending captures, open loops, decisions, and topics.", "mimeType": "application/json"},
 ]
 CORTEX_RESOURCE_TEMPLATES: list[dict[str, Any]] = [
@@ -1918,6 +2041,7 @@ CORTEX_PROMPTS: list[dict[str, Any]] = [
     {"name": "summarize_recent_decisions", "description": "Summarize the user's recent decisions from cited memory.", "arguments": [{"name": "since", "description": "Optional ISO date to summarize from.", "required": False}]},
     {"name": "extract_action_items", "description": "Extract open action items / commitments from the user's memory.", "arguments": [{"name": "topic", "description": "Optional topic to focus on.", "required": False}]},
     {"name": "brief_me_on", "description": "Produce a cited briefing on a person, project, or topic.", "arguments": [{"name": "subject", "description": "Person/project/topic to brief on.", "required": True}]},
+    {"name": "smp_usage", "description": "How to request and parse the Standard Memory Protocol (SMP) envelope — the self-describing context-pack format any agent can consume zero-shot.", "arguments": []},
 ]
 
 
@@ -1939,6 +2063,12 @@ def list_resource_templates() -> list[dict[str, Any]]:
 def read_resource(store: CortexStore, user_id: str, uri: str, token_scopes: list[str] | None = None) -> dict[str, Any]:
     _read_gate(store, user_id, token_scopes)
     target = str(uri or "").strip()
+    if target == "cortex://smp/schema":
+        # Static protocol legend (no user data): imported from smp, never duplicated, and returned
+        # without agent_payload so the shared SMP_LEGEND dict is never mutated (e.g. warnings[]).
+        from .smp import SMP_LEGEND
+
+        return {"contents": [{"uri": target, "mimeType": "application/json", "text": json.dumps(SMP_LEGEND, ensure_ascii=False)}]}
     if target == "cortex://profile/person-map":
         payload: Any = store.person_map(user_id)
     elif target == "cortex://profile/personal":
@@ -1984,6 +2114,24 @@ def get_prompt(store: CortexStore, user_id: str, name: str, args: dict[str, Any]
     def _cited(payload: Any) -> str:
         return json.dumps(store.agent_payload(user_id, payload), ensure_ascii=False, indent=2)
 
+    if name == "smp_usage":
+        # Generated from the same legend the envelope carries (import, never duplicate) so the
+        # guidance can never drift from the wire format.
+        from .smp import SMP_LEGEND
+
+        return _message(
+            "Standard Memory Protocol (SMP) — how to request and read a "
+            f"{APP_BRAND} context pack that any model parses zero-shot.\n\n"
+            "REQUEST: call get_context (or use_cortex) with format=\"smp\"; optionally pass "
+            "model=\"<your model>\" so the pack is budgeted to your context window. Over HTTP: "
+            "GET /v1/context?format=smp&model=<model>.\n\n"
+            "READ: the response is a single JSON envelope. Every field is described by the legend "
+            "below (also served as the cortex://smp/schema resource). Trust only what is present: "
+            "each item is cited (ref/source_url) and carries its own relevance basis and 'why'; "
+            "superseded facts are never served and dropped items are reflected in coverage — never "
+            "invent memory that is not in items[].\n\n"
+            "SMP LEGEND:\n" + json.dumps(SMP_LEGEND, ensure_ascii=False, indent=2)
+        )
     if name == "summarize_recent_decisions":
         history = store.decision_history(user_id, "", limit=12, include_superseded=False)
         return _message(
@@ -2014,6 +2162,19 @@ def get_prompt(store: CortexStore, user_id: str, name: str, args: dict[str, Any]
             "coverage is thin, say so.\n\n" + _cited(payload)
         )
     raise ValueError(f"Unknown {APP_BRAND} prompt: {name}")
+
+
+def _assemble_context_ext_kwargs(response_format: str, model: str | None) -> dict[str, Any]:
+    """Forward the SMP/model-profile knobs to assemble_context only when it accepts them, so an
+    unknown/missing arg is a silent no-op (current behavior) rather than a TypeError. model=None +
+    response_format='text' is the byte-identical default and is passed through unchanged."""
+    params = inspect.signature(CortexStore.assemble_context).parameters
+    kw: dict[str, Any] = {}
+    if "response_format" in params:
+        kw["response_format"] = response_format
+    if "model" in params:
+        kw["model"] = model
+    return kw
 
 
 def _bool_arg(args: dict[str, Any], key: str, default: bool = False) -> bool:
@@ -2056,6 +2217,19 @@ def _connector_title(memory: dict[str, Any], *, max_chars: int = 120) -> str:
     if len(candidate) > max_chars:
         candidate = candidate[: max_chars - 1].rstrip() + "…"
     return candidate
+
+
+def _connector_excerpt(memory: dict[str, Any], *, max_chars: int = 320) -> str:
+    """A short inline snippet for a memory in the ChatGPT-connector `search` shape: the memory's
+    content (else summary) collapsed to a single trimmed excerpt. Lets the connector rank/quote a
+    hit without a per-result `fetch` round-trip; `fetch` still returns the full document."""
+    text = str(memory.get("content") or memory.get("summary") or "").strip()
+    if not text:
+        return ""
+    text = " ".join(text.split())
+    if len(text) > max_chars:
+        text = text[: max_chars - 1].rstrip() + "…"
+    return text
 
 
 def _text_list_arg(
@@ -2564,7 +2738,301 @@ def _route_use_cortex(task: str, intent: str | None, args: dict[str, Any]) -> tu
     context_args: dict[str, Any] = {"task": text, "token_budget": budget}
     if intent:
         context_args["intent"] = intent
+    # Read-only passthroughs for a routed context pack: which surface asked, which model to budget
+    # to, and the envelope shape (json/markdown/smp). Only forwarded to get_context, which knows them.
+    surface = _text_arg(args, "surface", max_chars=40) or None
+    if surface:
+        context_args["surface"] = surface
+    model = _text_arg(args, "model", max_chars=80) or None
+    if model:
+        context_args["model"] = model
+    fmt = _text_arg(args, "format", max_chars=12) or None
+    if fmt:
+        context_args["format"] = fmt
     return "get_context", context_args, others("get_context")
+
+
+# --- Memory Query Language (MQL, build-plan #11) -------------------------------------------
+# The query_memory tool's JSON Schema IS the query language. mql_parse validates a request and
+# maps it 1:1 onto the kwargs of the EXISTING retrieval primitives (search / assemble_context):
+# it adds no retrieval capability of its own. Every knob either selects the base retrieval or
+# NARROWS its result, so a parsed MQL provably yields a subset of the unfiltered retrieval and can
+# never widen or escape the caller's read scope.
+
+MQL_LAYERS = frozenset({"semantic", "episodic", "style", "decision", "preference", "negative", "procedural"})
+MQL_EXPAND_DIRECTIONS = frozenset({"document", "neighbors", "more"})
+MQL_MAX_K = MCP_READ_LIMIT_MAX
+MQL_MAX_ENTITIES = 20
+MQL_BUDGET_MIN = 300
+MQL_BUDGET_MAX = 6000
+MQL_CURSOR_PREFIX = "mqlc:"
+
+
+def _mql_unit_float(args: dict[str, Any], key: str) -> float | None:
+    """Read an optional [0,1] filter threshold. Absent -> None (no narrowing); present but not a
+    number in [0,1] -> ValueError (over-scoped MQL is rejected, never silently clamped)."""
+    if key not in args or args.get(key) is None:
+        return None
+    value = args.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"MQL '{key}' must be a number in [0,1].")
+    value = float(value)
+    if not (0.0 <= value <= 1.0):
+        raise ValueError(f"MQL '{key}' must be within [0,1].")
+    return value
+
+
+def mql_parse(args: dict[str, Any]) -> dict[str, Any]:
+    """Parse + validate a Memory Query Language request into normalized retrieval kwargs.
+
+    Rejects malformed or over-scoped MQL (unknown layer, out-of-range threshold/budget, both or
+    neither of ask/find). The returned dict feeds ONLY read-scoped retrieval + a pure narrowing
+    pass, so MQL can never escape read."""
+    if not isinstance(args, dict):
+        raise ValueError("MQL must be a JSON object.")
+    ask = str(args.get("ask") or "").strip()
+    find = str(args.get("find") or "").strip()
+    if bool(ask) == bool(find):
+        raise ValueError("query_memory requires exactly one of 'ask' or 'find'.")
+    mode = "ask" if ask else "find"
+    query = ask or find
+    if len(query) > MCP_QUERY_MAX_CHARS:
+        raise ValueError(f"MQL query exceeds {MCP_QUERY_MAX_CHARS} characters.")
+
+    layers_raw = args.get("layers")
+    layers: list[str] = []
+    if layers_raw is not None:
+        if not isinstance(layers_raw, list):
+            raise ValueError("MQL 'layers' must be an array.")
+        for entry in layers_raw:
+            layer = str(entry or "").strip().lower()
+            if layer not in MQL_LAYERS:
+                raise ValueError(f"MQL 'layers' contains an unknown layer: {entry!r}.")
+            if layer not in layers:
+                layers.append(layer)
+
+    entities = _text_list_arg(args, "entities", max_items=MQL_MAX_ENTITIES, max_chars=MCP_NAME_MAX_CHARS) or []
+
+    as_of = str(args.get("as_of") or "").strip()[:40] or None
+    valid_only = _bool_arg(args, "valid_only", True)
+    min_relevance = _mql_unit_float(args, "min_relevance")
+    min_trust = _mql_unit_float(args, "min_trust")
+
+    budget_tokens = args.get("budget_tokens")
+    if budget_tokens is not None:
+        try:
+            budget_tokens = int(budget_tokens)
+        except (TypeError, ValueError):
+            raise ValueError("MQL 'budget_tokens' must be an integer.")
+        if not (MQL_BUDGET_MIN <= budget_tokens <= MQL_BUDGET_MAX):
+            raise ValueError(f"MQL 'budget_tokens' must be within [{MQL_BUDGET_MIN}, {MQL_BUDGET_MAX}].")
+
+    model = str(args.get("model") or "").strip()[:80] or None
+
+    expand = args.get("expand")
+    if expand is not None:
+        expand = str(expand).strip().lower() or None
+        if expand is not None and expand not in MQL_EXPAND_DIRECTIONS:
+            raise ValueError("MQL 'expand' must be one of document|neighbors|more.")
+
+    k = _bounded_int_arg(args, "k", 8, minimum=1, maximum=MQL_MAX_K)
+
+    return {
+        "mode": mode,
+        "query": query,
+        "layers": layers,
+        "entities": entities,
+        "as_of": as_of,
+        "valid_only": valid_only,
+        "min_relevance": min_relevance,
+        "min_trust": min_trust,
+        "budget_tokens": budget_tokens,
+        "model": model,
+        "expand": expand,
+        "k": k,
+    }
+
+
+def _mql_item_mentions(item: dict[str, Any], entities_cf: list[str]) -> bool:
+    haystack = [str(eid).casefold() for eid in (item.get("entity_ids") or [])]
+    haystack += [str(ent).casefold() for ent in (item.get("entities") or [])]
+    content = str(item.get("content") or "").casefold()
+    for want in entities_cf:
+        if not want:
+            continue
+        if want in content or any(want in token or token in want for token in haystack if token):
+            return True
+    return False
+
+
+def _mql_narrow(items: list[dict[str, Any]], mql: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pure narrowing pass over the retrieved memory rows. Only ever REMOVES items, so the output
+    is a strict subset of the input (the subset invariant the MQL contract guarantees)."""
+    layers = set(mql["layers"])
+    entities_cf = [str(e).casefold() for e in (mql["entities"] or [])]
+    min_relevance = mql["min_relevance"]
+    min_trust = mql["min_trust"]
+    valid_only = mql["valid_only"]
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if valid_only and (item.get("superseded_by") or item.get("superseded_at")):
+            continue
+        if layers and str(item.get("layer") or "").strip().lower() not in layers:
+            continue
+        if entities_cf and not _mql_item_mentions(item, entities_cf):
+            continue
+        if min_relevance is not None:
+            rel = item.get("relevance")
+            rel = float(rel) if isinstance(rel, (int, float)) and not isinstance(rel, bool) else 0.0
+            if rel < min_relevance:
+                continue
+        if min_trust is not None:
+            trust = item.get("confidence")
+            if trust is None:
+                trust = item.get("trust_score")
+            trust = float(trust) if isinstance(trust, (int, float)) and not isinstance(trust, bool) else 0.0
+            if trust < min_trust:
+                continue
+        out.append(item)
+    return out
+
+
+def _mql_retrieve(store: CortexStore, user_id: str, mql: dict[str, Any], fetch_limit: int) -> list[dict[str, Any]]:
+    """Base retrieval for an MQL request, via the EXISTING primitives only. find -> search;
+    ask -> assemble_context (flattened to its packed rows). No new retrieval logic."""
+    if mql["mode"] == "find":
+        results = store.search(user_id, mql["query"], max(1, fetch_limit), as_of=mql["as_of"])
+        return [item for item in (results or []) if isinstance(item, dict)]
+    pack = store.assemble_context(
+        user_id,
+        mql["query"],
+        token_budget=mql["budget_tokens"] or 2000,
+        as_of=mql["as_of"],
+        format="json",
+        record_reuse=False,
+        model=mql["model"],
+    )
+    flattened: list[dict[str, Any]] = []
+    if isinstance(pack, dict):
+        for entry in pack.get("layers") or []:
+            for item in (entry.get("items") if isinstance(entry, dict) else None) or []:
+                if isinstance(item, dict):
+                    flattened.append(item)
+    return flattened
+
+
+def _mql_encode_cursor(mql: dict[str, Any], offset: int) -> str:
+    payload = {
+        "q": mql["query"],
+        "mode": mql["mode"],
+        "layers": mql["layers"],
+        "entities": mql["entities"],
+        "as_of": mql["as_of"],
+        "valid_only": mql["valid_only"],
+        "min_relevance": mql["min_relevance"],
+        "min_trust": mql["min_trust"],
+        "budget_tokens": mql["budget_tokens"],
+        "model": mql["model"],
+        "k": mql["k"],
+        "offset": int(offset),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return MQL_CURSOR_PREFIX + base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _mql_decode_cursor(cursor: str) -> dict[str, Any] | None:
+    token = str(cursor or "")
+    if not token.startswith(MQL_CURSOR_PREFIX):
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(token[len(MQL_CURSOR_PREFIX):].encode("ascii"))
+        data = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _mql_args_from_cursor(decoded: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    mode = "ask" if decoded.get("mode") == "ask" else "find"
+    reconstructed = {
+        mode: decoded.get("q", ""),
+        "layers": decoded.get("layers") or [],
+        "entities": decoded.get("entities") or [],
+        "as_of": decoded.get("as_of"),
+        "valid_only": decoded.get("valid_only", True),
+        "min_relevance": decoded.get("min_relevance"),
+        "min_trust": decoded.get("min_trust"),
+        "budget_tokens": decoded.get("budget_tokens"),
+        "model": decoded.get("model"),
+        "k": decoded.get("k", 8),
+    }
+    try:
+        offset = max(0, int(decoded.get("offset") or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    return reconstructed, offset
+
+
+def _run_query_memory(
+    store: CortexStore,
+    user_id: str,
+    args: dict[str, Any],
+    *,
+    offset: int = 0,
+    mql: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    mql = mql or mql_parse(args)
+    k = mql["k"]
+    offset = max(0, int(offset))
+    # Peek one row past the page so has_more (and therefore the paging cursor) can be detected
+    # without a second retrieval. The narrowing pass below still only removes rows, so the returned
+    # page stays a subset of this retrieved candidate pool.
+    fetch_limit = offset + k + 1
+    candidates = _mql_retrieve(store, user_id, mql, fetch_limit)
+    narrowed = _mql_narrow(candidates, mql)
+    page = narrowed[offset:offset + k]
+    has_more = len(narrowed) > offset + k
+    cursor = _mql_encode_cursor(mql, offset + k) if has_more else None
+    items = [project_memory_object(item) for item in page]
+
+    follow_ups: list[dict[str, Any]] = []
+    if mql["expand"] and items:
+        follow_ups.append(
+            {
+                "tool": "expand",
+                "arguments": {"ref": items[0]["ref"], "direction": mql["expand"]},
+                "why": f"Expand the top hit ({mql['expand']}).",
+            }
+        )
+    if cursor:
+        follow_ups.append(
+            {"tool": "expand", "arguments": {"ref": cursor, "direction": "more"}, "why": "Page the next results."}
+        )
+
+    payload = {
+        "mql": {key: mql[key] for key in mql},
+        "mode": mql["mode"],
+        "scope": "read",
+        "items": items,
+        "count": len(items),
+        "offset": offset,
+        "candidates_considered": len(candidates),
+        "narrowed_total": len(narrowed),
+        "coverage": {
+            "narrowed_from": len(candidates),
+            "narrowed_to": len(narrowed),
+            "returned": len(items),
+            "has_more": bool(cursor),
+        },
+        "cursor": cursor,
+        "follow_ups": follow_ups,
+    }
+    return store.agent_payload(user_id, payload)
 
 
 def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any], token_scopes: list[str] | None = None) -> Any:
@@ -2585,7 +3053,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             author_aliases=store.settings(user_id).get("identity_aliases"),
             self_authored=True,
         )
-        return store.agent_payload(user_id, store.save_capture(
+        saved = store.save_capture(
             user_id=user_id,
             content=content,
             source=source,
@@ -2594,7 +3062,42 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             extracted=extracted,
             cite_capture_provenance=True,
             auto_approve=load_settings().auto_approve_captures,
-        ))
+        )
+        # Typed write-back receipt (build-plan #15): tells the caller what the write did
+        # (id/layer/dedup verdict) without a follow-up read. Built from the write result before
+        # agent_payload so it reflects the store's verdict, then attached as an additive field.
+        receipt = build_receipt(saved, tool="remember_this")
+        payload = store.agent_payload(user_id, saved)
+        if isinstance(payload, dict):
+            payload["receipt"] = receipt
+        return payload
+    if name == "propose_memory":
+        content = args.get("content", "")
+        source = args.get("source", "ai-chat")
+        extracted = extract_context(
+            content,
+            source,
+            author_aliases=store.settings(user_id).get("identity_aliases"),
+            self_authored=True,
+        )
+        # propose_memory ALWAYS routes to review (force_review, never auto-approve): the proposal
+        # is not trusted/searchable until the user approves it.
+        saved = store.save_capture(
+            user_id=user_id,
+            content=content,
+            source=source,
+            source_url=args.get("source_url"),
+            title=args.get("title"),
+            extracted=extracted,
+            cite_capture_provenance=True,
+            auto_approve=False,
+            force_review=True,
+        )
+        receipt = build_receipt(saved, tool="propose_memory")
+        payload = store.agent_payload(user_id, saved)
+        if isinstance(payload, dict):
+            payload["receipt"] = receipt
+        return payload
     if name == "start_agent_session":
         return store.agent_payload(
             user_id,
@@ -2680,6 +3183,11 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         # rest of the picture. Any read-scoped agent gets it; a token with neither read nor export
         # (write/maintenance-only) still sees a visible omission record instead of a hard error.
         include_identity = token_scopes is None or bool({"read", "export"} & set(token_scopes))
+        requested_format = _text_arg(args, "format", "json", max_chars=12) or "json"
+        response_format = "smp" if requested_format == "smp" else "text"
+        # 'smp' is a response-shape (SMP envelope) built by the packer, not a text renderer, so the
+        # internal render format falls back to json in that path.
+        internal_format = "json" if requested_format == "smp" else requested_format
         return store.agent_payload(
             user_id,
             store.assemble_context(
@@ -2692,9 +3200,10 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
                 as_of=_text_arg(args, "as_of", max_chars=40) or None,
                 intent=_text_arg(args, "intent", max_chars=16) or None,
                 include_identity=include_identity,
-                format=_text_arg(args, "format", "json", max_chars=12) or "json",
+                format=internal_format,
                 pin=bool(args.get("pin")),
                 session_id=_text_arg(args, "session_id", max_chars=80) or None,
+                **_assemble_context_ext_kwargs(response_format, _text_arg(args, "model", max_chars=80) or None),
             ),
         )
     if name == "get_context_pack":
@@ -2741,6 +3250,44 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             names_list.append(single)
         limit = _bounded_int_arg(args, "limit", 8)
         return store.agent_payload(user_id, store.expand_context(user_id, names_list, limit=limit))
+    if name == "query_memory":
+        # MQL: schema-as-query. mql_parse rejects malformed/over-scoped requests; retrieval + the
+        # narrowing pass are read-only, so the result is a cited subset that never escapes read.
+        return _run_query_memory(store, user_id, args, offset=0)
+    if name == "expand":
+        ref = _text_arg(args, "ref", max_chars=500)
+        direction = str(args.get("direction") or "document").strip().lower()
+        if direction not in MQL_EXPAND_DIRECTIONS:
+            raise ValueError("expand 'direction' must be one of document|neighbors|more.")
+        limit = _bounded_int_arg(args, "limit", 8, minimum=1, maximum=MQL_MAX_K)
+        if direction == "document":
+            memory = store.get_memory(user_id, ref)
+            if memory is None:
+                return {"ref": ref, "direction": "document", "found": False, "document": None}
+            return store.agent_payload(user_id, {"ref": ref, "direction": "document", "found": True, "document": memory})
+        if direction == "neighbors":
+            # Resolve the ref's own entities (one cited hop out); fall back to treating the ref as an
+            # entity name. expand_context = entity_neighborhood + cited person_context per entity.
+            names: list[str] = []
+            memory = store.get_memory(user_id, ref)
+            if isinstance(memory, dict):
+                for eid in memory.get("entity_ids") or []:
+                    slug = str(eid or "").strip()
+                    if slug and slug not in names:
+                        names.append(slug)
+            if not names and ref:
+                names = [ref]
+            result = store.expand_context(user_id, names, limit=limit)
+            payload = {"ref": ref, "direction": "neighbors", "seed_entities": names}
+            if isinstance(result, dict):
+                payload.update(result)
+            return store.agent_payload(user_id, payload)
+        # direction == "more": page a query_memory cursor.
+        decoded = _mql_decode_cursor(ref)
+        if decoded is None:
+            return {"ref": ref, "direction": "more", "found": False, "items": [], "cursor": None, "reason": "unrecognized_cursor"}
+        reconstructed, offset = _mql_args_from_cursor(decoded)
+        return _run_query_memory(store, user_id, reconstructed, offset=offset)
     if name == "list_capabilities":
         scope_list = sorted(set(token_scopes)) if token_scopes is not None else ["admin"]
         catalog = [
@@ -2761,7 +3308,10 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         }
     if name == "search":
         # ChatGPT connector `search`: thin adapter over the SAME retrieval search_memory uses.
-        # Projects each memory to the {id, title, url} shape ChatGPT expects; nothing else leaks.
+        # Projects each memory to the {id, title, url, text} shape ChatGPT expects; nothing else
+        # leaks. `text` is an inline excerpt so the connector can rank/quote without a per-hit
+        # `fetch` round-trip (fetch still serves the full document for drill-down). `relevance`
+        # is a numeric score carried through when the retrieval payload provides one.
         query = _text_arg(args, "query")
         payload = store.public_search_payload(user_id, query, 10)
         results = []
@@ -2772,11 +3322,16 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             if not memory_id:
                 continue
             source_url = str(item.get("source_url") or "").strip()
-            results.append({
+            hit = {
                 "id": memory_id,
                 "title": _connector_title(item),
                 "url": source_url or f"cortex://memory/{memory_id}",
-            })
+                "text": _connector_excerpt(item),
+            }
+            relevance = item.get("relevance")
+            if isinstance(relevance, (int, float)) and not isinstance(relevance, bool):
+                hit["relevance"] = float(relevance)
+            results.append(hit)
         return {"results": results}
     if name == "fetch":
         # ChatGPT connector `fetch`: full document for one id from `search`. Unknown/foreign id

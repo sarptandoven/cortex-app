@@ -796,30 +796,10 @@ struct CortexCloudSection: View {
 
     private var isSignedIn: Bool { state.isSignedIn }
 
-    private var canUseNativeAppleSignIn: Bool { Self.hasAppleSignInEntitlement() }
-
-    /// Native Sign in with Apple is only usable when the running app is signed with the Apple
-    /// Sign In entitlement. The local beta can be ad-hoc signed, which means the button would open
-    /// the OS sheet and then fail without an actionable explanation. Gate the control at runtime so
-    /// properly signed builds keep the native flow, while unsigned/ad-hoc betas point users at the
-    /// browser or email/password fallback instead.
-    private static func hasAppleSignInEntitlement() -> Bool {
-        guard let task = SecTaskCreateFromSelf(nil),
-              let value = SecTaskCopyValueForEntitlement(
-                  task,
-                  "com.apple.developer.applesignin" as CFString,
-                  nil
-              ) else {
-            return false
-        }
-        if let values = value as? [String] {
-            return !values.isEmpty
-        }
-        if let allowed = value as? Bool {
-            return allowed
-        }
-        return true
-    }
+    // Single source of truth for the entitlement gate (see AppleSignInSupport); the first-run restore
+    // step and this settings surface both read it, so a properly signed build shows the native flow in
+    // both and an ad-hoc beta hides it in both.
+    private var canUseNativeAppleSignIn: Bool { AppleSignInSupport.isAvailable }
 
     /// Mirrors CortexPushSync's (private) `canPushSync`: signed in, a sync target is recorded, and no
     /// sign-in wall is up. When false while signed in, push-sync can never run (e.g. the refresh token
@@ -1511,31 +1491,7 @@ struct CortexCloudSection: View {
             // as an equivalent option whenever third-party social login is). The native endpoint
             // /v1/auth/oauth/apple/native always exists and returns a clear error if the backend has no
             // Apple client id, so this is a real, honest control — never a dead one.
-            if canUseNativeAppleSignIn {
-                SignInWithAppleButton(.signIn) { request in
-                    request.requestedScopes = [.fullName, .email]
-                } onCompletion: { result in
-                    switch result {
-                    case .success(let auth):
-                        if let cred = auth.credential as? ASAuthorizationAppleIDCredential {
-                            state.signInWithApple(
-                                hostedURL: resolvedHostedURL,
-                                idToken: cred.identityToken,
-                                fullName: cred.fullName,
-                                email: cred.email
-                            )
-                        }
-                    case .failure(let error):
-                        // A user-initiated cancel is not an error worth surfacing.
-                        if (error as? ASAuthorizationError)?.code != .canceled {
-                            state.cloudAuthMessage = "Apple sign-in failed. \(error.localizedDescription)"
-                        }
-                    }
-                }
-                .signInWithAppleButtonStyle(.black)
-                .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
-                .disabled(state.cloudAuthBusy)
-            }
+            CortexAppleSignInButton(state: state, hostedURL: resolvedHostedURL)
 
             // A full-width archive button per social provider the hosted backend actually offers
             // (e.g. "Sign in with GitHub", "Continue with Google"). Each opens the browser sign-in
@@ -1724,5 +1680,63 @@ struct CortexCloudSection: View {
         state.cloudAuthBusy
             || email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || password.isEmpty
+    }
+}
+
+/// Whether native Sign in with Apple is usable on this running build. Native SIWA only works when the
+/// app is signed with the `com.apple.developer.applesignin` entitlement; ad-hoc-signed local betas
+/// would open the OS sheet and then fail without an actionable explanation, so the control hides
+/// itself there and those builds fall back to browser / email. Lifted out of the settings sign-in
+/// view so the first-run restore step can gate on the exact same signal (no drift, no dead button).
+enum AppleSignInSupport {
+    static var isAvailable: Bool {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(
+                  task,
+                  "com.apple.developer.applesignin" as CFString,
+                  nil
+              ) else {
+            return false
+        }
+        if let values = value as? [String] { return !values.isEmpty }
+        if let allowed = value as? Bool { return allowed }
+        return true
+    }
+}
+
+/// The native Sign in with Apple control, shared by the settings sign-in surface and the first-run
+/// restore step. Rendering it in BOTH places keeps Apple offered wherever GitHub/Google are (App
+/// Store Guideline 4.8) and guarantees the two never drift. Renders nothing when this build lacks the
+/// Apple Sign In entitlement, where the native sheet would only fail.
+struct CortexAppleSignInButton: View {
+    @ObservedObject var state: AppState
+    let hostedURL: String
+
+    var body: some View {
+        if AppleSignInSupport.isAvailable {
+            SignInWithAppleButton(.signIn) { request in
+                request.requestedScopes = [.fullName, .email]
+            } onCompletion: { result in
+                switch result {
+                case .success(let auth):
+                    if let cred = auth.credential as? ASAuthorizationAppleIDCredential {
+                        state.signInWithApple(
+                            hostedURL: hostedURL,
+                            idToken: cred.identityToken,
+                            fullName: cred.fullName,
+                            email: cred.email
+                        )
+                    }
+                case .failure(let error):
+                    // A user-initiated cancel is not an error worth surfacing.
+                    if (error as? ASAuthorizationError)?.code != .canceled {
+                        state.cloudAuthMessage = "Apple sign-in failed. \(error.localizedDescription)"
+                    }
+                }
+            }
+            .signInWithAppleButtonStyle(.black)
+            .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
+            .disabled(state.cloudAuthBusy)
+        }
     }
 }

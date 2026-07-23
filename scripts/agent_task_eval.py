@@ -195,6 +195,32 @@ class ScriptedAgent:
             args["sector"] = sector
         return self._call("use_cortex", args)
 
+    def session_context(
+        self,
+        task: str,
+        *,
+        sector: str | None = None,
+        intent: str | None = None,
+        session_id: str,
+        token_budget: int = 2500,
+    ) -> dict[str, Any]:
+        """Drive the get_context engine over a stable session_id so the response carries a
+        working_memory DELTA. Read-scoped (assemble_context requires only 'read'); recorded as
+        get_context so read-only discipline still covers it. record_reuse=False keeps the replay
+        deterministic (skips the best-effort background prefetch warm loop)."""
+        self.tools_invoked.append("get_context")
+        pack = self.store.assemble_context(
+            self.user_id,
+            task,
+            token_budget=token_budget,
+            sector=sector,
+            intent=intent,
+            session_id=session_id,
+            record_reuse=False,
+        )
+        assert isinstance(pack, dict)
+        return pack
+
 
 def _cited_texts_from_answer(answer: dict[str, Any]) -> list[tuple[str, str]]:
     """(memory_id, content) for each CITED item in an ask_memory answer. Citations are the

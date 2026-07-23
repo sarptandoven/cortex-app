@@ -1200,8 +1200,17 @@ struct AIChatSessionImportView: View {
         switch coordinator.phase {
         case .harvesting:
             HStack(spacing: 10) {
-                ProgressView(value: progressFraction)
-                    .frame(width: 140)
+                // Only show a determinate bar once a real total is known. During Notion export
+                // (total is always 0) and the ChatGPT/Claude list-pagination phase (before the
+                // first real total arrives) show an INDETERMINATE bar so it reads as "working"
+                // instead of pinned at an empty 0%.
+                if coordinator.totalCount > 0 {
+                    ProgressView(value: progressFraction)
+                        .frame(width: 140)
+                } else {
+                    ProgressView()
+                        .frame(width: 140)
+                }
                 Text(coordinator.statusText)
                     .font(.callout)
                     .foregroundColor(CortexDesign.inkSecondary)

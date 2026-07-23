@@ -1183,6 +1183,19 @@ private struct AIChatsImportCard: View {
     // The export walkthrough starts open until an export shows up — requesting the export is
     // where people stall, not the drop zone. Once one is detected or imported, it tucks away.
     @State private var guideExpanded = true
+    // A card-local, in-sheet result line for a drop/pick that didn't import cleanly. `state.status`
+    // is surfaced only in the main-window chrome (which this modal sheet occludes), so without this
+    // a wrong/empty/already-imported file inside the sheet would be a silent dead-end.
+    @State private var importNotice: String?
+    // The email-export path is now the FALLBACK below the one-tap direct sign-in tiles, so it lives
+    // in a quiet disclosure. It opens by default only in the App Store build, where the embedded
+    // sign-in harvest is stripped and an export is the only way in.
+    @State private var exportFallbackExpanded = DistributionMode.isAppStore
+
+    // File types the export drop target accepts: a ChatGPT / Claude export (.zip or its
+    // conversations.json / .jsonl) or a plain .txt transcript. Anything else gets an immediate
+    // in-sheet notice instead of a pointless round-trip that fails silently.
+    private static let acceptedExportExtensions: Set<String> = ["zip", "json", "jsonl", "txt"]
 
     private let steps = [
         "Tap your provider below. It opens the export page in your browser, already on the right screen.",
@@ -1210,6 +1223,41 @@ private struct AIChatsImportCard: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    /// Run an import from a dropped/picked path and surface an honest in-sheet notice for anything
+    /// that isn't a clean import (already-imported or a real failure). `importFromPathOutcome` writes
+    /// a plain-language reason to `state.status` on every non-imported path, so the notice names what
+    /// actually happened instead of the drop silently returning to the idle zone.
+    private func runImport(path: String) {
+        importNotice = nil
+        Task { @MainActor in
+            let outcome = await state.importFromPathOutcome(path)
+            if outcome != .imported {
+                importNotice = state.status
+            }
+        }
+    }
+
+    /// The Connections-sheet variant of `AppState.importAIChatExport`: identical picker, but it
+    /// checks the outcome so a failed or empty pick raises the in-sheet notice instead of only
+    /// writing the occluded `state.status` line.
+    private func chooseExportFile() {
+        importNotice = nil
+        let panel = NSOpenPanel()
+        panel.title = "Choose export file"
+        panel.message = "Select your ChatGPT or Claude export: a .zip, its conversations.json, or the unzipped folder."
+        panel.prompt = "Import"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            .zip,
+            .json,
+            UTType(filenameExtension: "jsonl") ?? .data,
+        ]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        runImport(path: url.standardizedFileURL.path)
     }
 
     var body: some View {
@@ -1250,100 +1298,18 @@ private struct AIChatsImportCard: View {
                 waitingBanner
             }
 
-            // ONE TAP PER VENDOR: deep-link straight to each provider's export page. This is the step
-            // people abandon, so it's the most prominent thing when no export has been detected yet.
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Get your export in one tap")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
-                    exportVendorButton("ChatGPT", systemImage: "bubble.left.and.bubble.right", urlString: "https://chatgpt.com/#settings/DataControls")
-                    exportVendorButton("Claude", systemImage: "sparkle", urlString: "https://claude.ai/settings/data-privacy-controls")
-                    // Gemini history lives under Takeout's "My Activity" (the standalone "Gemini"
-                    // product is Gems, not chats), so open My Activity pre-selected; the caption below
-                    // tells the user to narrow it to "Gemini Apps".
-                    exportVendorButton("Gemini", systemImage: "diamond", urlString: "https://takeout.google.com/settings/takeout/custom/my_activity")
-                }
-                Text("The provider emails you a download link, usually within a few minutes. Grab the file, then \(DistributionMode.appDisplayName) takes it from there. For Gemini, pick \u{201C}My Activity\u{201D} \u{2192} \u{201C}Gemini Apps\u{201D} in Takeout.")
-                    .font(.caption)
-                    .foregroundColor(CortexDesign.inkFaint)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            // DIRECT SIGN-IN IMPORT (DMG only): skip the email-export round-trip entirely — sign in
-            // to the provider in an embedded browser and harvest history in-app. Gated out of the
-            // App Store build (no compile flag in this codebase; the runtime guard is the idiom).
-            // This is an ADDITIONAL path — the async email-export tiles above stay as they are.
+            // PRIMARY PATH: sign in once and import directly, no export round-trip. For a ChatGPT /
+            // Claude / Perplexity / Notion refugee this is the obvious way in, so it leads. DMG only —
+            // the App Store build strips the embedded-browser harvest and falls back to the export
+            // disclosure below (which opens by default there).
             if !DistributionMode.isAppStore {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Or sign in and import directly, no export needed.")
-                        .font(.caption)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
-                        // Iterate every vendor so newly added ones (Perplexity, Notion, …) surface here
-                        // automatically — no per-vendor wiring. Each tile opens the embedded-browser
-                        // harvest sheet for that vendor via the shared .sheet(item: $sessionImportVendor).
-                        ForEach(AIChatImportVendor.allCases) { vendor in
-                            sessionImportButton("Import from \(vendor.displayName)", systemImage: vendor.symbolName, vendor: vendor)
-                        }
-                    }
-                }
+                directSignInBlock
             }
 
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
-                .foregroundColor(isTargeted || dropZoneHovering ? CortexDesign.accent : CortexDesign.hairline)
-                .frame(height: 66)
-                .overlay(
-                    HStack(spacing: 8) {
-                        if state.importInFlight { ProgressView().scaleEffect(0.7) }
-                        Text(state.importInFlight ? "Importing…" : "Already have the file? Drop it here, or")
-                            .font(.callout).foregroundColor(CortexDesign.inkSecondary)
-                        if !state.importInFlight {
-                            CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .secondary, size: .small) {
-                                state.importAIChatExport()
-                            }
-                        }
-                    }
-                )
-                .onHover { dropZoneHovering = $0 }
-                .animation(.easeOut(duration: 0.12), value: dropZoneHovering)
-                .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
-                    guard let provider = providers.first else { return false }
-                    provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                        var resolved: String?
-                        if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
-                            resolved = url.standardizedFileURL.path
-                        } else if let url = item as? URL {
-                            resolved = url.standardizedFileURL.path
-                        }
-                        guard let path = resolved else { return }
-                        Task { @MainActor in await state.importFromPath(path) }
-                    }
-                    return true
-                }
-
-            DisclosureGroup(isExpanded: $guideExpanded) {
-                // Guided walkthrough: the highlight strolls through the steps on a loop while the
-                // disclosure is open, and clicking a step jumps it there. U-CONN9: the per-vendor
-                // deep-links live once, in the prominent grid above — step 1 just points back up to
-                // them instead of repeating the same three links (which read as a second, competing
-                // export affordance).
-                GuidedStepWalkthrough(steps: steps, isActive: guideExpanded, textFont: .caption) { index in
-                    if index == 0 {
-                        Text("Use the provider buttons above ↑")
-                            .font(CortexDesign.Typography.stamp)
-                            .kerning(0.5)
-                            .foregroundColor(CortexDesign.inkFaint)
-                    }
-                }
-                .padding(.top, 6)
-            } label: {
-                Text("Walk me through it")
-            }
-            .font(.caption)
-            .foregroundColor(CortexDesign.inkSecondary)
+            // FALLBACK PATH: the async email export. Quiet and collapsed beneath the one-tap tiles so
+            // it never competes with them; opened by default in the App Store build, where it is the
+            // only way in. Holds the per-vendor export deep-links, the drop zone, and the walkthrough.
+            exportFallbackSection
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1391,32 +1357,187 @@ private struct AIChatsImportCard: View {
         }
     }
 
-    /// DMG-only: a direct sign-in import tile, styled to match `exportVendorButton`. Tapping it opens
-    /// the embedded-browser harvest sheet for that vendor instead of the email-export round-trip.
-    private func sessionImportButton(_ title: String, systemImage: String, vendor: AIChatImportVendor) -> some View {
+    /// PRIMARY block: one tile per vendor that opens the in-app sign-in + harvest sheet. This is the
+    /// obvious, one-tap way in, so it leads the card. Chat vendors (ChatGPT / Claude / Perplexity)
+    /// auto-start the import the moment you sign in; Notion exports the whole workspace, so its tile
+    /// says so up front and shows per-workspace progress once running (#31).
+    private var directSignInBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Import directly, no export file needed")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(CortexDesign.inkSecondary)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
+                // Iterate every vendor so newly added ones (Perplexity, Notion, …) surface here
+                // automatically, no per-vendor wiring. Each tile opens the embedded-browser harvest
+                // sheet for that vendor via the shared .sheet(item: $sessionImportVendor).
+                ForEach(AIChatImportVendor.allCases) { vendor in
+                    sessionImportButton(vendor: vendor)
+                }
+            }
+            Text("Sign in once in a private in-app window and \(DistributionMode.appDisplayName) imports your history right here. Nothing leaves this Mac.")
+                .font(.caption)
+                .foregroundColor(CortexDesign.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The label for the export fallback disclosure. In the App Store build there's no direct sign-in,
+    /// so it reads as the (only) import path instead of a "fallback".
+    private var exportFallbackLabel: String {
+        DistributionMode.isAppStore ? "Import an AI chat export" : "No direct sign-in? Import an export"
+    }
+
+    /// FALLBACK block: the async email-export path, tucked into a quiet disclosure so it never competes
+    /// with the one-tap direct sign-in tiles above. Holds the per-vendor export deep-links, the "already
+    /// have the file" drop zone, and the guided walkthrough. Opens by default only in the App Store
+    /// build (via `exportFallbackExpanded`), where direct sign-in isn't available.
+    private var exportFallbackSection: some View {
+        DisclosureGroup(isExpanded: $exportFallbackExpanded) {
+            VStack(alignment: .leading, spacing: 12) {
+                // ONE TAP PER VENDOR: deep-link straight to each provider's export page. This is the
+                // step people abandon, so it leads the fallback path.
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Get your export in one tap")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
+                        exportVendorButton("ChatGPT", systemImage: "bubble.left.and.bubble.right", urlString: "https://chatgpt.com/#settings/DataControls")
+                        exportVendorButton("Claude", systemImage: "sparkle", urlString: "https://claude.ai/settings/data-privacy-controls")
+                        // Gemini history lives under Takeout's "My Activity" (the standalone "Gemini"
+                        // product is Gems, not chats), so open My Activity pre-selected; the caption
+                        // below tells the user to narrow it to "Gemini Apps".
+                        exportVendorButton("Gemini", systemImage: "diamond", urlString: "https://takeout.google.com/settings/takeout/custom/my_activity")
+                    }
+                    Text("The provider emails you a download link, usually within a few minutes. Grab the file, then \(DistributionMode.appDisplayName) takes it from there. For Gemini, pick \u{201C}My Activity\u{201D} \u{2192} \u{201C}Gemini Apps\u{201D} in Takeout.")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
+                    .foregroundColor(isTargeted || dropZoneHovering ? CortexDesign.accent : CortexDesign.hairline)
+                    .frame(height: 66)
+                    .overlay(
+                        HStack(spacing: 8) {
+                            if state.importInFlight { ProgressView().scaleEffect(0.7) }
+                            Text(state.importInFlight ? "Importing…" : "Already have the file? Drop it here, or")
+                                .font(.callout).foregroundColor(CortexDesign.inkSecondary)
+                            if !state.importInFlight {
+                                CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .secondary, size: .small) {
+                                    chooseExportFile()
+                                }
+                            }
+                        }
+                    )
+                    .onHover { dropZoneHovering = $0 }
+                    .animation(.easeOut(duration: 0.12), value: dropZoneHovering)
+                    .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
+                        guard let provider = providers.first else { return false }
+                        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                            var resolvedURL: URL?
+                            if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                                resolvedURL = url.standardizedFileURL
+                            } else if let url = item as? URL {
+                                resolvedURL = url.standardizedFileURL
+                            }
+                            Task { @MainActor in
+                                guard let url = resolvedURL else {
+                                    importNotice = "Could not read that dropped item. Try Choose export file instead."
+                                    return
+                                }
+                                // Immediate feedback for an obviously-wrong file type, avoiding a
+                                // pointless round-trip that would fail silently.
+                                let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                                let ext = url.pathExtension.lowercased()
+                                if !isDirectory && !ext.isEmpty
+                                    && !AIChatsImportCard.acceptedExportExtensions.contains(ext) {
+                                    importNotice = "\(DistributionMode.appDisplayName) can import a ChatGPT or Claude export: a .zip, its conversations.json, a .jsonl, or a .txt transcript. \(ext.uppercased()) files aren't supported here."
+                                    return
+                                }
+                                runImport(path: url.path)
+                            }
+                        }
+                        return true
+                    }
+
+                if let notice = importNotice {
+                    Label(notice, systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                DisclosureGroup(isExpanded: $guideExpanded) {
+                    // Guided walkthrough: the highlight strolls through the steps on a loop while the
+                    // disclosure is open, and clicking a step jumps it there. The per-vendor deep-links
+                    // live once, in the grid above — step 1 just points back up to them.
+                    GuidedStepWalkthrough(steps: steps, isActive: guideExpanded, textFont: .caption) { index in
+                        if index == 0 {
+                            Text("Use the provider buttons above ↑")
+                                .font(CortexDesign.Typography.stamp)
+                                .kerning(0.5)
+                                .foregroundColor(CortexDesign.inkFaint)
+                        }
+                    }
+                    .padding(.top, 6)
+                } label: {
+                    Text("Walk me through it")
+                }
+                .font(.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
+            }
+            .padding(.top, 8)
+        } label: {
+            Text(exportFallbackLabel)
+                .font(.caption)
+                .foregroundColor(CortexDesign.inkSecondary)
+        }
+    }
+
+    /// DMG-only: a direct sign-in import tile. Tapping it opens the embedded-browser harvest sheet for
+    /// that vendor instead of the email-export round-trip. Two lines: the vendor name plus an honest
+    /// subtitle — "one tap after you sign in" for the streaming chat vendors, or "exports your whole
+    /// workspace, may take a minute" for Notion's async workspace export (#31).
+    private func sessionImportButton(vendor: AIChatImportVendor) -> some View {
         Button {
             sessionImportVendor = vendor
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage)
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: vendor.symbolName)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(CortexDesign.accent)
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(CortexDesign.ink)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Import from \(vendor.displayName)")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(CortexDesign.ink)
+                    Text(vendor.usesAsyncExport
+                         ? "Exports your whole workspace, may take a minute"
+                         : "One tap after you sign in")
+                        .font(.caption2)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                }
                 Spacer(minLength: 4)
                 Image(systemName: "person.crop.circle.badge.checkmark")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(CortexDesign.inkSecondary)
             }
             .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous).fill(CortexDesign.cardBackground))
             .embossedBorder(radius: CortexDesign.Radius.md)
         }
         .buttonStyle(.plain)
-        .help("Sign in to \(vendor.rawValue) in a secure window and import your chats directly, no export file needed.")
-        .accessibilityLabel(title)
+        .help(vendor.usesAsyncExport
+              ? "Sign in to \(vendor.rawValue) in a secure window and export your whole workspace directly. This can take a minute; progress shows per workspace as it runs."
+              : "Sign in to \(vendor.rawValue) in a secure window and import your chats directly, no export file needed.")
+        .accessibilityLabel("Import from \(vendor.displayName)")
     }
 
     /// A prominent per-vendor deep-link tile: opens that provider's export page in one tap AND records
@@ -1735,12 +1856,44 @@ private struct AppleNotesImportCard: View {
     @ObservedObject var state: AppState
     @State private var isTargeted = false
     @State private var guideExpanded = false
+    // Card-local in-sheet result line for a drop/pick that didn't import cleanly — `state.status`
+    // is surfaced only in the main-window chrome this modal sheet occludes, so a wrong/empty file
+    // dropped here would otherwise be a silent dead-end.
+    @State private var importNotice: String?
 
     private let steps = [
         "Open the Notes app, select the notes you want, then use the File menu and pick Export as PDF (or use the Shortcuts app to save them as text).",
         "Save the exported file somewhere easy to find, like your Desktop or Downloads.",
         "Drop the file here, or click Choose export file. \(DistributionMode.appDisplayName) distills it into cited memory.",
     ]
+
+    /// Run an import from a dropped/picked path and surface an honest in-sheet notice for anything
+    /// that isn't a clean import. `importFromPathOutcome` writes a plain-language reason to
+    /// `state.status` on every non-imported path, so the notice names what actually happened.
+    private func runImport(path: String) {
+        importNotice = nil
+        Task { @MainActor in
+            let outcome = await state.importFromPathOutcome(path)
+            if outcome != .imported {
+                importNotice = state.status
+            }
+        }
+    }
+
+    /// Notes-card variant of the export picker that checks the outcome so a failed or empty pick
+    /// raises the in-sheet notice instead of only writing the occluded `state.status` line.
+    private func chooseExportFile() {
+        importNotice = nil
+        let panel = NSOpenPanel()
+        panel.title = "Choose export file"
+        panel.message = "Select your exported Apple Notes: a .pdf, .txt, or the folder you exported them into."
+        panel.prompt = "Import"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        runImport(path: url.standardizedFileURL.path)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1771,7 +1924,7 @@ private struct AppleNotesImportCard: View {
                             .font(.callout).foregroundColor(CortexDesign.inkSecondary)
                         if !state.importInFlight {
                             CortexButton(title: "Choose export file…", systemImage: "folder.badge.plus", role: .secondary, size: .small) {
-                                state.importAIChatExport()
+                                chooseExportFile()
                             }
                         }
                     }
@@ -1779,17 +1932,29 @@ private struct AppleNotesImportCard: View {
                 .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
                     guard let provider = providers.first else { return false }
                     provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                        var resolved: String?
+                        var resolvedURL: URL?
                         if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
-                            resolved = url.standardizedFileURL.path
+                            resolvedURL = url.standardizedFileURL
                         } else if let url = item as? URL {
-                            resolved = url.standardizedFileURL.path
+                            resolvedURL = url.standardizedFileURL
                         }
-                        guard let path = resolved else { return }
-                        Task { @MainActor in await state.importFromPath(path) }
+                        Task { @MainActor in
+                            guard let url = resolvedURL else {
+                                importNotice = "Could not read that dropped item. Try Choose export file instead."
+                                return
+                            }
+                            runImport(path: url.path)
+                        }
                     }
                     return true
                 }
+
+            if let notice = importNotice {
+                Label(notice, systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             DisclosureGroup(isExpanded: $guideExpanded) {
                 GuidedStepWalkthrough(steps: steps, isActive: guideExpanded, textFont: .caption) { _ in
@@ -3055,10 +3220,12 @@ private struct ConnectionsAIToolsSection: View {
                 // destination was a dead end, so lead with the guided wizard (pick → connect →
                 // verify) and keep the raw config copy as a quiet secondary for power users.
                 VStack(alignment: .trailing, spacing: 8) {
-                    CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .primary, size: .large) {
+                    // Paper secondary: the START HERE hero above carries this surface's one wax
+                    // primary, and both rows open the same one-click connect grid.
+                    CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .secondary, size: .large) {
                         state.presentConnectToolsWizard()
                     }
-                    .help("Opens the guided wizard: pick a tool, connect it, and verify it can reach your memory.")
+                    .help("Opens the connect grid: click a tool and it connects.")
                     CortexButton(
                         title: copiedCluster == .toolConfig ? "Copied" : "Copy tool config",
                         systemImage: copiedCluster == .toolConfig ? "checkmark" : "doc.on.doc",
@@ -3115,7 +3282,7 @@ private struct ConnectionsAIToolsSection: View {
             CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .primary, size: .large) {
                 state.presentConnectToolsWizard()
             }
-            .help("Opens a step-by-step wizard: pick a tool, copy its connection, and test that it can reach your memory.")
+            .help("Opens the connect grid: click a tool and it connects to your memory.")
         }
         .padding(18)
         .background(connectionsPanelBackground)
@@ -3178,7 +3345,7 @@ private struct ConnectionsAIToolsSection: View {
                 // and add an explicit paste next-step for the browser-extension pairing token.
                 VStack(alignment: .trailing, spacing: 8) {
                     CortexButton(
-                        title: copiedCluster == .extensionPairing ? "Token copied" : "Connect extension",
+                        title: copiedCluster == .extensionPairing ? "Key copied" : "Connect extension",
                         systemImage: copiedCluster == .extensionPairing ? "checkmark" : "puzzlepiece.extension",
                         role: .secondary,
                         size: .small
@@ -3207,7 +3374,7 @@ private struct ConnectionsAIToolsSection: View {
                     Image(systemName: "arrow.turn.down.right")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(CortexDesign.accent)
-                    Text("Paste this token into the \(DistributionMode.appDisplayName) browser extension's Options, then click \(DistributionMode.appDisplayName) on a supported site.")
+                    Text("Paste this key into the \(DistributionMode.appDisplayName) browser extension's Options, then click \(DistributionMode.appDisplayName) on a supported site.")
                         .font(.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -3551,6 +3718,10 @@ struct ConnectAppWizard: View {
 
     @State private var step: ConnectAppWizardStep = .pick
     @State private var selected: AIIntegration?
+    /// One-click tile flow: the tile itself carries the connect lifecycle for tools Cortex can
+    /// wire up with no user steps (config-write + relaunch, or a native install deeplink).
+    private enum TileFlow: Equatable { case connecting, connected(String), attention(String) }
+    @State private var tileFlow: [String: TileFlow] = [:]
     /// True once the user copied the config / command / pack for the selected tool (drives
     /// connected-state on MAS via markIntegrationConfigCopied, called inside copyMCPConfig).
     @State private var didCopy = false
@@ -3564,7 +3735,11 @@ struct ConnectAppWizard: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    progressBar
+                    // The step rail only appears once a manual flow starts; the pick grid is a
+                    // clean click-to-connect surface with no stepper to walk.
+                    if step != .pick {
+                        progressBar
+                    }
                     stepContent
                 }
                 .padding(24)
@@ -3650,7 +3825,7 @@ struct ConnectAppWizard: View {
 
     private var headerSubtitle: String {
         switch step {
-        case .pick: return "Pick the tool you want to give access to your reviewed memory."
+        case .pick: return "Click a tool to connect it. Your memory stays here; the tool reads it on demand."
         case .connect: return selected.map { "Add \(DistributionMode.appDisplayName) to \($0.name)." } ?? "Add \(DistributionMode.appDisplayName) to your tool."
         case .verify: return selected.map { "Check that \($0.name) can reach your memory." } ?? "Check the connection."
         case .done: return "You're set. Your memory is available where you work."
@@ -3712,7 +3887,7 @@ struct ConnectAppWizard: View {
 
     private var stepTitle: String {
         switch step {
-        case .pick: return "Pick a tool"
+        case .pick: return "Click a tool to connect it"
         case .connect: return "Connect"
         case .verify: return "Verify"
         case .done: return "Done"
@@ -3740,10 +3915,8 @@ struct ConnectAppWizard: View {
     private var footerPrimary: some View {
         switch step {
         case .pick:
-            CortexButton(title: "Continue", systemImage: "arrow.right", role: .primary, size: .large) {
-                withAnimation(.easeInOut(duration: 0.2)) { step = .connect }
-            }
-            .disabled(selected == nil)
+            // Tiles connect directly; the grid needs no Continue. Close lives in the header.
+            EmptyView()
         case .connect:
             CortexButton(title: "Next: verify", systemImage: "arrow.right", role: .primary, size: .large) {
                 withAnimation(.easeInOut(duration: 0.2)) { step = .verify }
@@ -3880,30 +4053,57 @@ struct ConnectAppWizard: View {
     }
 
     private func toolPickCard(_ tool: AIIntegration) -> some View {
-        let isSelected = selected?.id == tool.id
+        let flow = tileFlow[tool.id]
+        let isBusy: Bool = { if case .connecting = flow { return true }; return false }()
+        let isDone: Bool = { if case .connected = flow { return true }; return false }()
         return Button {
-            selectTool(tool)
+            activateTool(tool)
         } label: {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: tool.systemImage)
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(isSelected ? CortexDesign.accent : CortexDesign.inkSecondary)
-                    .frame(width: 24)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(tool.name)
-                        .font(.callout)
-                        .fontWeight(.semibold)
-                        .foregroundColor(CortexDesign.ink)
-                    Text(tool.summary)
-                        .font(.caption)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .multilineTextAlignment(.leading)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: tool.systemImage)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(isDone ? CortexDesign.sealMoss : CortexDesign.inkSecondary)
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(tool.name)
+                            .font(.callout)
+                            .fontWeight(.semibold)
+                            .foregroundColor(CortexDesign.ink)
+                        Text(tool.summary)
+                            .font(.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
+                    if isBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                    } else if isDone {
+                        Image(systemName: "checkmark.seal.fill")
+                            .foregroundColor(CortexDesign.sealMoss)
+                    }
                 }
-                Spacer(minLength: 0)
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
+                // The connect lifecycle lives ON the tile: connecting, connected, or what's left.
+                switch flow {
+                case .connecting:
+                    Text("Connecting…")
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                case .connected(let note):
+                    Text(note)
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.sealMoss)
+                        .fixedSize(horizontal: false, vertical: true)
+                case .attention(let note):
+                    Text(note)
+                        .font(CortexDesign.Typography.caption)
                         .foregroundColor(CortexDesign.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                case nil:
+                    EmptyView()
                 }
             }
             .padding(12)
@@ -3911,12 +4111,16 @@ struct ConnectAppWizard: View {
             .background(CortexDesign.cardBackground)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(isSelected ? CortexDesign.accent : CortexDesign.hairline, lineWidth: isSelected ? 1.5 : 1)
+                    .stroke(isDone ? CortexDesign.sealMoss.opacity(0.6) : CortexDesign.hairline, lineWidth: isDone ? 1.5 : 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .disabled(isBusy)
+        .help(isDone ? "\(tool.name) is connected" : "Click to connect \(tool.name)")
+        .accessibilityLabel("Connect \(tool.name)")
+        .accessibilityValue(isBusy ? "connecting" : (isDone ? "connected" : ""))
     }
 
     // Step 2 — Connect: ONE primary button per tool that does the right LIVE thing by kind. Every
@@ -4293,6 +4497,83 @@ struct ConnectAppWizard: View {
         // state onto a different tool.
         didCopy = false
         testResult = nil
+    }
+
+    /// ONE CLICK: clicking a tile IS the connection. Tools Cortex can wire up autonomously
+    /// (config-write + relaunch, or a native install deeplink) connect right here, with the
+    /// lifecycle shown on the tile itself. Tools that genuinely need the user in the loop
+    /// (remote connector key, CLI paste, sign-in) jump straight to their connect screen with
+    /// no Pick/Continue detour.
+    private func activateTool(_ tool: AIIntegration) {
+        if case .connecting = tileFlow[tool.id] { return }
+
+        // Reference-only tools (no live path yet) just open in the browser alongside Cortex.
+        if tool.referenceOnly {
+            state.connectIntegration(tool)
+            withAnimation(CortexMotion.press) {
+                tileFlow[tool.id] = .attention("Opened \(tool.name). A live connection isn't available for it yet.")
+            }
+            return
+        }
+
+        // ChatGPT / Claude web / Perplexity / Grok / Gemini reach Cortex through the HOSTED
+        // connector, which needs a Cortex account (the browser can't reach your Mac's local server).
+        // That is a real precondition, so say it honestly on the tile instead of firing a no-op.
+        if tool.connectionKind == .remoteMCP && state.requiresSignIn {
+            withAnimation(CortexMotion.press) {
+                tileFlow[tool.id] = .attention("Sign in to Cortex first (Connections → Sign in), then click \(tool.name) to connect it.")
+            }
+            return
+        }
+
+        withAnimation(CortexMotion.press) { tileFlow[tool.id] = .connecting }
+        // connectIntegration runs the most automated LIVE path for this tool's kind:
+        //  - mcpConfig: write the tool's config + relaunch it
+        //  - mcpDeeplink: fire the tool's native one-click install URL
+        //  - remoteMCP: mint the hosted connector token, copy the link+key, open the tool's
+        //    connector settings page (the paste + Save happens in the browser, unavoidably)
+        //  - cliCommand: copy the ready-to-run connect command
+        //  - httpAPI: copy the local endpoint + key
+        state.connectIntegration(tool)
+
+        switch tool.connectionKind {
+        case .mcpConfig where !DistributionMode.isAppStore && tool.supportsInstall && state.integrationState(for: tool).appInstalled:
+            // Config was written + the app relaunched; confirm with a real probe.
+            Task { @MainActor in
+                let result = await state.testToolConnection(tool)
+                withAnimation(CortexMotion.press) {
+                    tileFlow[tool.id] = result.ok
+                        ? .connected("Connected. \(tool.name) restarted with your memory.")
+                        : .attention("Set up. Open \(tool.name) once to finish; it confirms there.")
+                }
+            }
+        case .mcpDeeplink:
+            // Not .connected yet: the install completes only when the user approves inside the tool,
+            // and Cortex cannot probe that from here. Attention = honest "one step left".
+            withAnimation(CortexMotion.press) {
+                tileFlow[tool.id] = .attention("Opened \(tool.name). Approve the prompt there to finish.")
+            }
+        case .remoteMCP:
+            // connectRemoteMCP mints the key and copies the link asynchronously, then opens the
+            // tool's connector settings. Describe the in-progress action; the app status line
+            // confirms when the copy lands, so the tile never claims work that hasn't happened.
+            withAnimation(CortexMotion.press) {
+                tileFlow[tool.id] = .attention("Preparing your \(tool.name) link and key. Its connector settings open next: paste them there and Save.")
+            }
+        case .cliCommand:
+            withAnimation(CortexMotion.press) {
+                tileFlow[tool.id] = .attention("Connect command copied. Paste it into your terminal to finish.")
+            }
+        case .httpAPI:
+            withAnimation(CortexMotion.press) {
+                tileFlow[tool.id] = .attention("Endpoint and key copied. Paste them into \(tool.name)'s settings.")
+            }
+        default:
+            // mcpConfig on the sandboxed build (no file write) copies a config; jump to the
+            // per-tool screen so the paste target is explicit.
+            selectTool(tool)
+            withAnimation(.easeInOut(duration: 0.2)) { step = .connect }
+        }
     }
 
     private func goBack() {
@@ -4868,7 +5149,7 @@ private struct ConnectionsMCPAccessSection: View {
                     .foregroundColor(activeMCPTokens.isEmpty ? CortexDesign.inkSecondary : CortexDesign.accent)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(activeMCPTokens.isEmpty ? "No AI tool connected yet" : "\(activeMCPTokens.count) active MCP token\(activeMCPTokens.count == 1 ? "" : "s")")
+                    Text(activeMCPTokens.isEmpty ? "No AI tool connected yet" : "\(activeMCPTokens.count) active AI tool connection\(activeMCPTokens.count == 1 ? "" : "s")")
                         .font(.callout)
                         .fontWeight(.semibold)
                         .foregroundColor(CortexDesign.ink)
@@ -4878,10 +5159,10 @@ private struct ConnectionsMCPAccessSection: View {
                         .lineLimit(2)
                 }
                 Spacer(minLength: 8)
-                CortexButton(title: "Reset Token", systemImage: "arrow.triangle.2.circlepath", role: .secondary, size: .small) {
+                CortexButton(title: "Reset access", systemImage: "arrow.triangle.2.circlepath", role: .secondary, size: .small) {
                     Task { await state.resetMCPIntegrationToken() }
                 }
-                .help("Revokes the current MCP token and mints a new one. Connected tools must be reconfigured.")
+                .help("Revokes access for all connected AI tools, which must then be reconnected.")
             }
             .padding(12)
             .background(CortexDesign.cardBackground)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from email.message import EmailMessage
 import json
+import os
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.app.database import init_db
+from backend.app.embeddings import embedding_status
 from backend.app.storage import BASELINE_10K_CONNECTOR_IDS, CortexStore, MEMORY_LAYERS
 
 
@@ -67,6 +69,32 @@ RETRIEVAL_METRIC_THRESHOLDS: dict[str, Any] = {
         "decision_recall",
         "source_scoped",
     ),
+}
+
+# Relevance-monotonicity gate. Every per-case check emits a `relevance` for each returned
+# row (preferring a `relevance`/`relevance_basis` surfaced by the search layer's reranker
+# work, falling back to a strictly rank-monotonic value derived from the emitted order under
+# the deterministic hash embedder). This gate asserts that the emitted relevance is a faithful
+# ranking key:
+#   * pairwise_concordance — across every case, a graded-relevant row (the expected id, and its
+#     expected related companion when the case requests one) outscores a non-relevant returned
+#     row. A rank-correlation floor rather than strict all-pairs so an occasional companion/tail
+#     inversion does not flake, while a scrambled relevance signal (concordance ~0.5) still trips.
+#   * reordered_* — re-sorting each case's rows BY the emitted relevance reproduces the existing
+#     top1/recall@1/recall@3 floors, i.e. ordering by relevance never regresses the ranking.
+#   * allowed_bases — under the hash path relevance is rank/rrf-derived, never cosine; the cosine
+#     basis only appears in the real-embedder rerank path exercised by rerank_eval.py.
+# Floors sit just below the values measured under the deterministic hash embedder so the gate
+# passes today (rank-derived relevance is trivially monotonic with the emitted order) and stays
+# green when an additive real `relevance` signal lands, but a broken relevance key fails it.
+RELEVANCE_MONOTONICITY_THRESHOLDS: dict[str, Any] = {
+    "min_case_count": 120,
+    "min_pair_count": 40,
+    "pairwise_concordance": 0.95,
+    "reordered_top1_accuracy": 0.95,
+    "reordered_recall@1": 0.95,
+    "reordered_recall@3": 0.97,
+    "allowed_bases": ("rank", "rrf"),
 }
 NOISY_IMPORT_SOURCES = {"chatgpt", "claude", "slack", "email", "docs", "notion", "cloud-docs", "calendar", "github"}
 DIRECT_CONNECTOR_SOURCES = {
@@ -3984,6 +4012,160 @@ def _summarize_metrics(checks: list[dict[str, Any]], k_values: tuple[int, ...]) 
     }
 
 
+def _default_relevance_basis() -> str:
+    """Basis label for a relevance the search layer did not tag itself.
+
+    Mirrors CortexStore._rerank_rows' gate: cosine only when reranking is forced on AND a real
+    (non-hash) embedder is active; otherwise the fused reciprocal-rank ordering. Under the
+    deterministic hash embedder (retrieval_eval's default) this is always "rrf".
+    """
+    mode = os.environ.get("CORTEX_RERANK", "off").strip().lower()
+    if mode not in {"", "off", "0", "false", "none"} and embedding_status().get("provider") != "hash":
+        return "cosine"
+    return "rrf"
+
+
+def _emitted_relevance(row: dict[str, Any], rank_index: int) -> tuple[float, str]:
+    """Emitted relevance score + its basis for one returned row.
+
+    Prefers a `relevance`/`relevance_basis` surfaced by the search layer (the additive reranker
+    signal); when absent — the default hash path, which stays byte-identical — derives a strictly
+    rank-monotonic relevance from the emitted order so the monotonicity gate reproduces the
+    emitted ranking exactly and never fires spuriously.
+    """
+    raw = row.get("relevance")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        basis = str(row.get("relevance_basis") or "").strip() or _default_relevance_basis()
+        return float(raw), basis
+    # No emitted relevance: derive strictly from the emitted rank (basis is literally the rank).
+    return 1.0 / (rank_index + 1), "rank"
+
+
+def _relevance_grades(case: RetrievalCase) -> dict[str, int]:
+    """Graded relevance for a case: the expected id is grade 2, its expected related companion
+    (when the case exercises related-memory retrieval) grade 1, everything else grade 0."""
+    grades = {case.expected_id: 2}
+    if case.expected_related_id:
+        grades.setdefault(case.expected_related_id, 1)
+    return grades
+
+
+def _relevance_rows_for_results(case: RetrievalCase, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Tag each returned row with its graded relevance and emitted `relevance`. Captured at the
+    exact limit/corpus state the top1/recall floors are measured on, so re-sorting these rows BY
+    the emitted relevance is an apples-to-apples reproduction of those floors (a fresh re-query
+    would drift as later fixtures are seeded into the shared corpus)."""
+    grades = _relevance_grades(case)
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(results):
+        value, basis = _emitted_relevance(item, index)
+        rows.append(
+            {
+                "id": item["id"],
+                "grade": grades.get(item["id"], 0),
+                "relevance": round(value, 6),
+                "basis": basis,
+                "rank": index + 1,
+            }
+        )
+    return rows
+
+
+def _row_relevance_map(results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """{id -> {relevance, basis, rank}} for a result list, using the emitted relevance (or its
+    rank-derived fallback). First occurrence wins so the strongest rank is kept for an id."""
+    out: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(results):
+        memory_id = item["id"]
+        if memory_id in out:
+            continue
+        value, basis = _emitted_relevance(item, index)
+        out[memory_id] = {"relevance": value, "basis": basis, "rank": index + 1}
+    return out
+
+
+# The pairwise probe re-queries at a wide limit so the fixtures' designed same-topic distractors
+# (a case's disallowed_ids — the labeled non-relevant rows) actually surface to be compared
+# against the expected id, which the precise limit=3 search usually returns alone.
+RELEVANCE_PROBE_LIMIT = 25
+
+
+def evaluate_relevance_monotonicity(
+    store: CortexStore,
+    user_id: str,
+    cases: tuple[RetrievalCase, ...],
+    checks: list[dict[str, Any]],
+    probe_limit: int = RELEVANCE_PROBE_LIMIT,
+) -> dict[str, Any]:
+    """Relevance-monotonicity diagnostics over the graded fixtures.
+
+    Two independent measurements on the emitted `relevance` (preferring a real search-layer
+    signal, else the rank-derived fallback):
+
+    * Pairwise concordance — for every case that labels non-relevant distractors (disallowed_ids),
+      the graded-relevant expected id must outscore each labeled distractor. A distractor that does
+      not surface even at the wide probe limit counts as concordant (excluded ⇒ ranked below the
+      retrieved set). Reported as a rate so an isolated tie/inversion under a future real relevance
+      signal does not flake, while a scrambled signal (~0.5) trips.
+    * Reordered reproduction — re-sorting each case's floor-time rows (captured by _evaluate_case at
+      the exact limit/corpus state the top1/recall floors use) BY the emitted relevance must
+      reproduce those floors, i.e. relevance is a faithful ranking key that never regresses the
+      ordering.
+    """
+    concordant_pairs = 0
+    total_pairs = 0
+    top1_hits = 0
+    recall_at: dict[int, float] = {k: 0.0 for k in METRIC_K_VALUES}
+    reordered_cases = 0
+    bases: set[str] = set()
+
+    for check in checks:
+        rows = check.get("relevance_rows") if isinstance(check, dict) else None
+        if not rows:
+            continue
+        for row in rows:
+            bases.add(str(row.get("basis") or ""))
+        ordered_ids = [row["id"] for row in sorted(rows, key=lambda row: (-row["relevance"], row["rank"]))]
+        expected_id = check.get("expected_id")
+        reordered_cases += 1
+        if ordered_ids[:1] == [expected_id]:
+            top1_hits += 1
+        case_metrics = _metrics_for_results(expected_id, ordered_ids, METRIC_K_VALUES)
+        for k in METRIC_K_VALUES:
+            recall_at[k] += case_metrics[f"recall@{k}"]
+
+    for case in cases:
+        if not case.disallowed_ids:
+            continue
+        wide = store.search(
+            user_id, case.query, limit=probe_limit, sector=case.sector, include_related=case.include_related
+        )
+        wide_map = _row_relevance_map(wide)
+        for meta in wide_map.values():
+            bases.add(str(meta["basis"] or ""))
+        expected = wide_map.get(case.expected_id)
+        if expected is None:
+            # Expected id not retrieved at all — a correctness failure the top1/recall floors
+            # already own; do not double-count it as a monotonicity miss here.
+            continue
+        for distractor_id in case.disallowed_ids:
+            total_pairs += 1
+            distractor = wide_map.get(distractor_id)
+            if distractor is None or expected["relevance"] > distractor["relevance"]:
+                concordant_pairs += 1
+
+    summary: dict[str, Any] = {
+        "case_count": reordered_cases,
+        "pair_count": total_pairs,
+        "pairwise_concordance": round(concordant_pairs / total_pairs, 4) if total_pairs else 1.0,
+        "reordered_top1_accuracy": round(top1_hits / reordered_cases, 4) if reordered_cases else 0.0,
+        "bases": sorted(basis for basis in bases if basis),
+    }
+    for k in METRIC_K_VALUES:
+        summary[f"reordered_recall@{k}"] = round(recall_at[k] / reordered_cases, 4) if reordered_cases else 0.0
+    return summary
+
+
 def _evaluate_case(store: CortexStore, user_id: str, case: RetrievalCase, limit: int) -> dict[str, Any]:
     results = store.search(user_id, case.query, limit=limit, sector=case.sector, include_related=case.include_related)
     if not results:
@@ -4058,6 +4240,7 @@ def _evaluate_case(store: CortexStore, user_id: str, case: RetrievalCase, limit:
         "related_result": related_check,
         "layer_filtered_results": layer_ids,
         "metrics": _metrics_for_results(case.expected_id, result_ids, METRIC_K_VALUES),
+        "relevance_rows": _relevance_rows_for_results(case, results),
     }
 
 
@@ -5340,6 +5523,10 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
     for case in direct_cases:
         checks.append(_evaluate_case(store, user_id, case, limit))
 
+    relevance_monotonicity = evaluate_relevance_monotonicity(
+        store, user_id, (*RETRIEVAL_CASES, *noisy_cases, *direct_cases), checks
+    )
+
     mixed_source_project_memories = seed_mixed_source_project_memories(store, user_id)
     mixed_source_project_contracts = assert_mixed_source_project_contracts(store, user_id)
     mixed_source_authority = assert_mixed_source_trusted_authority_ranking(store, user_id)
@@ -5373,6 +5560,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
         "source_backed_fallback": source_backed_fallback,
         "seeded_layers": sorted(seeded_layers),
         "metrics": _summarize_metrics(checks, METRIC_K_VALUES),
+        "relevance_monotonicity": relevance_monotonicity,
         "checks": checks,
     }
 
@@ -5381,6 +5569,48 @@ def run_retrieval_eval(db_path: Path, vault_path: Path | None = None, user_id: s
     init_db(db_path)
     store = CortexStore(db_path, vault_path)
     return evaluate_retrieval(store, user_id)
+
+
+def check_relevance_monotonicity(result: dict[str, Any]) -> list[str]:
+    """Return relevance-monotonicity gate failures (empty list == pass).
+
+    Additive to check_retrieval_metric_thresholds: it never relaxes an existing floor. It asserts
+    the emitted relevance ranks graded-relevant rows above non-relevant ones (pairwise floor),
+    that ordering by relevance reproduces the top1/recall floors, and that the emitted basis stays
+    rank/rrf under the deterministic hash path (cosine only surfaces in rerank_eval's real path).
+    """
+    failures: list[str] = []
+    summary = result.get("relevance_monotonicity")
+    if not isinstance(summary, dict):
+        failures.append("relevance_monotonicity summary missing from eval result")
+        return failures
+    thresholds = RELEVANCE_MONOTONICITY_THRESHOLDS
+
+    case_count = int(summary.get("case_count") or 0)
+    if case_count < thresholds["min_case_count"]:
+        failures.append(f"relevance monotonicity corpus shrank: case_count={case_count} < {thresholds['min_case_count']}")
+
+    pair_count = int(summary.get("pair_count") or 0)
+    if pair_count < thresholds["min_pair_count"]:
+        failures.append(
+            f"relevance monotonicity has too few graded pairs to be meaningful: pair_count={pair_count} < {thresholds['min_pair_count']}"
+        )
+
+    concordance = float(summary.get("pairwise_concordance") or 0.0)
+    if concordance < thresholds["pairwise_concordance"]:
+        failures.append(f"pairwise_concordance={concordance} < {thresholds['pairwise_concordance']}")
+
+    for key in ("reordered_top1_accuracy", "reordered_recall@1", "reordered_recall@3"):
+        value = float(summary.get(key) or 0.0)
+        if value < thresholds[key]:
+            failures.append(f"{key}={value} < {thresholds[key]}")
+
+    allowed = set(thresholds["allowed_bases"])
+    unexpected = sorted(basis for basis in (summary.get("bases") or []) if basis not in allowed)
+    if unexpected:
+        failures.append(f"unexpected relevance basis under hash path: {unexpected} (allowed {sorted(allowed)})")
+
+    return failures
 
 
 def check_retrieval_metric_thresholds(result: dict[str, Any]) -> list[str]:
@@ -5456,6 +5686,7 @@ def main() -> None:
     print(json.dumps(result, indent=2, sort_keys=True))
 
     failures = check_retrieval_metric_thresholds(result)
+    failures.extend(check_relevance_monotonicity(result))
     if failures and not args.report_only:
         print("\nRETRIEVAL QUALITY GATE FAILED:", file=sys.stderr)
         for failure in failures:

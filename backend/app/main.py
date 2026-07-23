@@ -32,7 +32,21 @@ from .authn import (
 from .config import APP_BRAND, load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import CORE_TOOL_NAMES, MCP_TOOL_SURFACES, TOOLS, call_tool, export_tool_schema, tool_call_result, tools_for_scopes
+from .mcp_tools import (
+    CORE_TOOL_NAMES,
+    MCP_TOOL_SURFACES,
+    TOOLS,
+    _assemble_context_ext_kwargs,
+    call_tool,
+    export_tool_schema,
+    get_prompt,
+    list_prompts,
+    list_resource_templates,
+    list_resources,
+    read_resource,
+    tool_call_result,
+    tools_for_scopes,
+)
 from .observability import metrics, route_label
 from .models import AgentSessionsSyncRequest, AgentSessionsSyncResponse, APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
@@ -630,7 +644,26 @@ def download_page() -> Response:
     (GitHub Releases on the PUBLIC artifacts-only repo doppl-tech/releases; the source repo is
     private, so its release URLs 404 publicly). Checksums + the update feed are served from
     /downloads/ on this host (Caddy file_server over the deployed release)."""
-    dmg_url = "https://github.com/doppl-tech/releases/releases/download/v0.2.0-43/Cortex-0.2.0-43.dmg"
+    # Read the DMG url + checksums filename from the deployed update feed (latest.json), the single
+    # source of truth, so this page tracks the current release automatically and never goes stale;
+    # the hardcoded current-release values are a fallback if the feed can't be read.
+    dmg_url = "https://github.com/doppl-tech/releases/releases/download/v0.2.0-47/Cortex-0.2.0-47.dmg"
+    checksums_name = "Cortex-0.2.0-47.checksums.txt"
+    try:
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        feed = json.loads(open(os.path.join(repo_root, "site", "downloads", "latest.json"), encoding="utf-8").read())
+        for artifact in feed.get("artifacts", []):
+            if artifact.get("kind") == "dmg" and artifact.get("url"):
+                dmg_url = str(artifact["url"])
+                # The checksums file is named after the release artifact (Cortex-<ver>-<build>),
+                # so derive it from the DMG filename rather than re-composing the prefix (which
+                # would also re-introduce a bare brand literal the brand-guard forbids).
+                dmg_name = dmg_url.rsplit("/", 1)[-1]
+                if dmg_name.endswith(".dmg"):
+                    checksums_name = dmg_name[: -len(".dmg")] + ".checksums.txt"
+                break
+    except Exception:
+        pass
     body = (
         "    <h1>Download Doppl for Mac</h1>\n"
         '    <p class="lede">Doppl runs as a native macOS app with a local vault. Download it, open '
@@ -640,7 +673,7 @@ def download_page() -> Response:
         'style="width:auto;padding:12px 22px">Download Doppl for Mac (.dmg)</a>\n'
         "    </div>\n"
         '    <p>Signed and notarized by Apple, so it opens with a normal double-click. '
-        '<a href="/downloads/Cortex-0.2.0-43.checksums.txt">Verify the checksums</a>.</p>\n'
+        f'<a href="/downloads/{checksums_name}">Verify the checksums</a>.</p>\n'
         "    <h2>Install</h2>\n"
         "    <ul>\n"
         "      <li>Open the downloaded <code>.dmg</code> and drag Doppl to Applications.</li>\n"
@@ -2198,9 +2231,16 @@ def get_context(
     sector: str | None = Query(default=None, max_length=120),
     project: str | None = Query(default=None, max_length=160),
     as_of: str | None = Query(default=None, max_length=40),
-    format: str = Query(default="json", pattern="^(json|markdown)$"),
+    format: str = Query(default="json", pattern="^(json|markdown|smp)$"),
+    model: str | None = Query(default=None, max_length=80),
+    session_id: str | None = Query(default=None, max_length=120),
+    pin: bool = Query(default=False),
     user_id: str = Depends(auth),
 ) -> Any:
+    # 'smp' selects the self-describing SMP envelope (response_format), not a text renderer, so the
+    # internal render format falls back to json in that path. model=None + text = byte-identical.
+    response_format = "smp" if format == "smp" else "text"
+    internal_format = "json" if format == "smp" else format
     pack = store.assemble_context(
         user_id,
         task,
@@ -2211,18 +2251,27 @@ def get_context(
         as_of=as_of,
         intent=intent,
         # Reaching this endpoint already required the read scope, and the identity layer is a read
-        # of distilled context — so it is always included here.
+        # of distilled context — so it is always included here (parity with the local server's GET).
         include_identity=True,
-        format=format,
+        format=internal_format,
+        # Transport parity with POST /v1/context and the local server: a session_id turns on the
+        # per-session working-set delta channel (pay once per fact), and pin content-addresses the
+        # pack for later verification. Absent both, behavior is byte-identical to before.
+        pin=pin,
+        session_id=str(session_id or "") or None,
+        **_assemble_context_ext_kwargs(response_format, model),
     )
-    return _context_response(pack, format)
+    return _context_response(pack, internal_format)
 
 
 @app.post("/v1/context", response_model=None)
 def post_context(body: dict[str, Any], request: Request, user_id: str = Depends(auth)) -> Any:
     format = str(body.get("format") or "json").strip().lower()
-    if format not in {"json", "markdown"}:
-        raise HTTPException(status_code=422, detail="format must be json or markdown")
+    if format not in {"json", "markdown", "smp"}:
+        raise HTTPException(status_code=422, detail="format must be json, markdown, or smp")
+    response_format = "smp" if format == "smp" else "text"
+    internal_format = "json" if format == "smp" else format
+    model = str(body.get("model") or "") or None
     try:
         token_budget = int(body.get("token_budget") or 2000)
     except (TypeError, ValueError):
@@ -2237,11 +2286,12 @@ def post_context(body: dict[str, Any], request: Request, user_id: str = Depends(
         as_of=str(body.get("as_of") or "") or None,
         intent=str(body.get("intent") or "") or None,
         include_identity=_bearer_has_export_scope(request),
-        format=format,
+        format=internal_format,
         pin=bool(body.get("pin")),
         session_id=str(body.get("session_id") or "") or None,
+        **_assemble_context_ext_kwargs(response_format, model),
     )
-    return _context_response(pack, format)
+    return _context_response(pack, internal_format)
 
 
 @app.get("/v1/context/packs", response_model=None)
@@ -4480,7 +4530,14 @@ async def mcp(request: Request, context: dict[str, Any] = Depends(mcp_auth)) -> 
             result = {
                 "protocolVersion": requested_version if requested_version in MCP_PROTOCOL_VERSIONS else MCP_PROTOCOL_VERSIONS[0],
                 "serverInfo": {"name": "cortex", "version": BACKEND_VERSION},
-                "capabilities": {"tools": {}},
+                # Advertise resources + prompts alongside tools, in parity with the local server, so a
+                # remote MCP client discovers the cortex:// resources and curated prompts off the same
+                # hosted endpoint. listChanged=False: the catalog is static per protocol revision.
+                "capabilities": {
+                    "tools": {"listChanged": False},
+                    "resources": {"listChanged": False, "subscribe": False},
+                    "prompts": {"listChanged": False},
+                },
             }
         elif method == "ping":
             result = {}
@@ -4504,12 +4561,41 @@ async def mcp(request: Request, context: dict[str, Any] = Depends(mcp_auth)) -> 
                 store.record_agent_event(user_id, tool_name, arguments, success=False, error=str(exc), token=context)
                 raise
             result = tool_call_result(value)
+        elif method == "resources/list":
+            result = {"resources": list_resources(), "resourceTemplates": list_resource_templates()}
+        elif method == "resources/read":
+            params = message.get("params") or {}
+            uri = str(params.get("uri") or "")
+            try:
+                result = read_resource(store, user_id, uri, token_scopes=token_scopes)
+                store.record_agent_event(user_id, f"resource:{uri}", {}, success=True, token=context)
+            except Exception as exc:
+                store.record_agent_event(user_id, f"resource:{uri}", {}, success=False, error=str(exc), token=context)
+                raise
+        elif method == "prompts/list":
+            result = {"prompts": list_prompts()}
+        elif method == "prompts/get":
+            params = message.get("params") or {}
+            prompt_name = str(params.get("name") or "")
+            prompt_args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+            try:
+                result = get_prompt(store, user_id, prompt_name, prompt_args, token_scopes=token_scopes)
+                store.record_agent_event(user_id, f"prompt:{prompt_name}", {}, success=True, token=context)
+            except Exception as exc:
+                store.record_agent_event(user_id, f"prompt:{prompt_name}", {}, success=False, error=str(exc), token=context)
+                raise
         else:
             return _mcp_response({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32601, "message": f"Method not found: {method}"}}, event_stream=event_stream, session_id=None)
         # Mcp-Session-Id is returned only on the initialize response (where it is minted).
         return _mcp_response({"jsonrpc": "2.0", "id": message.get("id"), "result": jsonable_encoder(result)}, event_stream=event_stream, session_id=session_id if method == "initialize" else None)
     except Exception as exc:
-        return _mcp_response({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32000, "message": str(exc)}}, event_stream=event_stream, session_id=None)
+        # Redact before returning to a remote MCP client: a store error (sqlite3.OperationalError,
+        # OSError, ...) can carry an absolute vault/DB path or an embedded secret. _safe_tool_error_message
+        # keeps PermissionError/ValueError user-facing and runs everything else through the store's
+        # agent-facing redaction — parity with the local server (standalone_server.py's _safe_error_message)
+        # and with this file's own /v1/tools/* endpoints. Without it the newly-added resources/read +
+        # prompts/get branches (and tools/call) would leak raw paths/secrets on the hosted transport only.
+        return _mcp_response({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32000, "message": _safe_tool_error_message(exc)}}, event_stream=event_stream, session_id=None)
 
 
 def _safe_tool_error_message(exc: Exception) -> str:

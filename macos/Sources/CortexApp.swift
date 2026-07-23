@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CryptoKit
 import Foundation
 import SwiftUI
@@ -993,6 +994,10 @@ struct SourceImportResultLite: Codable {
     let records_found: Int?
     let has_more: Bool?
     let next_offset: Int?
+    // Per-record import failures the backend records (e.g. a conversation that parsed to empty
+    // content). Surfaced honestly at the UI seam instead of being swallowed into a blanket success.
+    let failed: Int?
+    let errors: [SourceImportError]?
 }
 
 /// GET /v1/imports/detect — AI-chat / app exports auto-found in Downloads/CortexImports.
@@ -1850,9 +1855,12 @@ extension Notification.Name {
 }
 
 enum IntegrationCategory: String, CaseIterable, Hashable {
+    // Order = discovery order everywhere allCases is rendered. Browser assistants (ChatGPT, Claude
+    // web, Perplexity, ...) sit right after the fully-automatic one-click tools so the services most
+    // people ask for are visible without scrolling past the coding tools.
     case oneClick = "One-click tools"
-    case developer = "Coding tools"
     case browser = "Browser assistants"
+    case developer = "Coding tools"
     case local = "Local and team stacks"
 }
 
@@ -3868,7 +3876,10 @@ final class AppState: ObservableObject {
     }
 
     var onboardingHasSource: Bool {
-        onboardingHasConnectedMemoryLayer && onboardingHasSyncedMemory
+        // Gate on the SAME source predicate onboarding completion uses (hasAtLeastOneConnectedSource),
+        // so imports and sample-notes (which set firstSourceAdded) don't get re-onboarded forever, while
+        // still requiring real, citable memory to have landed (onboardingHasSyncedMemory).
+        onboardingHasSyncedMemory && hasAtLeastOneConnectedSource
     }
 
     var onboardingHealthyMemorySources: [SourceReadinessItem] {
@@ -3935,6 +3946,90 @@ final class AppState: ObservableObject {
     /// (it persists the "a source was connected" event) since sourceAccounts may still be loading.
     var hasAtLeastOneConnectedSource: Bool {
         firstSourceAdded || hasConnectedSourceAccount || hasConnectedObsidianVault
+    }
+
+    // MARK: - App-Store-lead + discovery-nudge glue (#32, #33)
+
+    /// True in the App Store (sandboxed) build, where the filesystem watcher, session-import, and
+    /// outbound-OAuth connectors are all stripped by entitlements. Onboarding and Connections must
+    /// therefore LEAD with the local-first import paths (a notes folder, an Apple Notes export) as
+    /// the primary source, rather than surfacing dead "Available soon" tiles for connectors that can
+    /// never sync in this distribution. The single flag those surfaces read to make that decision.
+    var leadsWithLocalFirstImport: Bool { DistributionMode.isAppStore }
+
+    /// A connector that reads only from this machine (a chosen file/export or a loopback desktop
+    /// API) and never opens an outbound connection. In the App Store (local-first) build these are
+    /// the only inbound sources that can work, so this is the shared predicate onboarding +
+    /// Connections use to decide what to surface as primary (previously duplicated privately in
+    /// three views as `connectionSetup?.mode == "native-local-connector"`).
+    func isLocalFirstInboundConnector(_ connector: SourceConnectorCatalogItem) -> Bool {
+        connector.connectionSetup?.mode == "native-local-connector"
+    }
+
+    /// The catalog of inbound connectors that actually work in the current build, filtered so the
+    /// App Store build never leads with a source it can't sync. Callers keep their own ordering; this
+    /// only removes the connectors that would degrade to a dead tile under the sandbox.
+    func inboundConnectorsForCurrentDistribution(_ connectors: [SourceConnectorCatalogItem]) -> [SourceConnectorCatalogItem] {
+        guard leadsWithLocalFirstImport else { return connectors }
+        return connectors.filter { isLocalFirstInboundConnector($0) }
+    }
+
+    /// Open the right "bring your memory in" surface for the current build. The App Store build has
+    /// no direct sign-in import, so it lands on the local-first import lane; the direct build points
+    /// at the one-tap sign-in import. Both route through the existing Connections sheet so there is
+    /// one presentation path.
+    func openDirectImport() {
+        let message = leadsWithLocalFirstImport
+            ? "Bring your notes in"
+            : "Sign in once and bring your memory in"
+        openConnectionsPrivacy(statusMessage: message)
+    }
+
+    // #33: the direct-import discovery nudge. A user who finished onboarding on the bundled sample
+    // notes (or a bare local preview) has no real memory of their own yet; a calm, dismissible
+    // menu-bar hint points them at the one-tap direct sign-in import. Persisted so a dismiss sticks
+    // and the hint never re-nags.
+    static let directImportNudgeDismissedDefaultsKey = "directImportNudgeDismissed.v1"
+    @Published var directImportNudgeDismissed: Bool =
+        UserDefaults.standard.bool(forKey: AppState.directImportNudgeDismissedDefaultsKey) {
+        didSet {
+            UserDefaults.standard.set(directImportNudgeDismissed, forKey: AppState.directImportNudgeDismissedDefaultsKey)
+        }
+    }
+
+    /// True when the app is past onboarding but still has no *real* source of the user's own — only
+    /// the bundled sample notes, or an import-less local preview. `firstSourceAdded` (and therefore
+    /// `onboardingHasSource`) is set by the sample-notes loader too, so neither can tell "real" from
+    /// "sample"; require a genuine non-sample source: a connected account, a real notes folder, or a
+    /// memory-bearing source that isn't the sample-notes source.
+    var hasRealInboundSource: Bool {
+        if hasConnectedSourceAccount || hasConnectedObsidianVault { return true }
+        if let sources = sourceReadinessReport?.sources {
+            let hasRealMemory = sources.contains { source in
+                source.source != AppState.sampleNotesSource
+                    && (source.captures > 0 || source.approved > 0 || source.active_memories > 0 || source.pending > 0)
+            }
+            if hasRealMemory { return true }
+        }
+        // No readiness detail yet: fall back to the flags. Samples set `firstSourceAdded`, so only
+        // treat it as a real source when the sample preview wasn't the thing that set it.
+        return firstSourceAdded && !previewSampleNotesLoaded
+    }
+
+    /// Whether to surface the direct-import discovery nudge. Gated so it is helpful, not naggy:
+    /// only in the direct build (the App Store build has no sign-in import), only past onboarding,
+    /// only when the user has no real source of their own, only when they aren't behind the sign-in
+    /// wall (that moment owns its own call to action), and only until dismissed once.
+    var shouldShowDirectImportNudge: Bool {
+        guard !DistributionMode.isAppStore else { return false }
+        guard onboardingComplete else { return false }
+        guard !requiresSignIn else { return false }
+        guard !directImportNudgeDismissed else { return false }
+        return !hasRealInboundSource
+    }
+
+    func dismissDirectImportNudge() {
+        directImportNudgeDismissed = true
     }
 
     // "Active" = registered and not disconnected (includes unconfigured placeholders); used to
@@ -4129,6 +4224,11 @@ final class AppState: ObservableObject {
         // (Also serves as a visible on-launch proof that the icon animates at all.)
         beginMenuBarWork()
         defer { endMenuBarWork() }
+        // Quiet automatic update check: a product that ships weekly is invisible to users who never
+        // open Advanced settings, so check the bundled feed at most once a day. Never blocks launch
+        // (checkForUpdates runs its own Task) and stays silent unless a newer build exists, in which
+        // case updateStatus surfaces it in Connections & Privacy.
+        scheduleAutomaticUpdateCheck()
         // Local-first + cloud-sync (Option A): make sure the data plane is local before anything reads
         // it — a prior build may have persisted a remote `endpoint` for a signed-in user.
         migrateToLocalFirstDataPlane()
@@ -5037,11 +5137,27 @@ final class AppState: ObservableObject {
         guard syncProgressPollTask == nil else { return }
         syncProgressPollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                await self?.loadJobProgress()
-                // Poll fast (~1.2s) while a sync is active so the bottom Learning HUD's bar advances
-                // live; fall back to a calm 4s cadence when idle to keep energy near zero.
+                // WHEN THE USER IS LOOKING (app frontmost) OR a sync is actually running, keep the
+                // job-health poll live so the bottom Learning HUD's bar advances. AT REST — idle AND
+                // not frontmost — skip the request entirely and settle to a long, near-silent sleep
+                // so nothing wakes while nobody's watching. Resumes seamlessly the moment the app
+                // becomes active or a sync begins (both flip the branch on the next tick).
                 let active = self?.syncProgress?.active == true
-                try? await Task.sleep(nanoseconds: active ? 1_200_000_000 : 4_000_000_000)
+                let frontmost = NSApplication.shared.isActive
+                if active || frontmost {
+                    await self?.loadJobProgress()
+                }
+                // Poll fast (~1.2s) while a sync is active so the HUD bar advances live; a calm 4s
+                // cadence while frontmost-but-idle; a long 24s cadence when at rest (idle + hidden).
+                let interval: UInt64
+                if active {
+                    interval = 1_200_000_000
+                } else if frontmost {
+                    interval = 4_000_000_000
+                } else {
+                    interval = 24_000_000_000
+                }
+                try? await Task.sleep(nanoseconds: interval)
             }
         }
     }
@@ -5060,6 +5176,19 @@ final class AppState: ObservableObject {
         activityStreamTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
+                // WHEN THE USER IS LOOKING (window on-screen) run the live wait=5 long-poll so the
+                // ticker/ripple react instantly. AT REST — the window isn't visible (fully occluded,
+                // hidden, or miniaturized) — nobody can see the ticker, so PAUSE the held connection:
+                // skip the request and await a longer sleep. No events are dropped: `activityCursor`
+                // is preserved, so the first long-poll after the window reappears fetches everything
+                // that landed while we were paused. Resumes the normal 5s cadence seamlessly.
+                let visible = NSApp.occlusionState.contains(.visible)
+                if !visible {
+                    // Let the ticker fade on its own while we're paused (mirror the error-path decay).
+                    if Date().timeIntervalSince(self.lastActivityEventStamp) >= 4 { self.activityBusy = false }
+                    try? await Task.sleep(nanoseconds: 20_000_000_000)
+                    continue
+                }
                 do {
                     let since = self.activityCursor
                     let data = try await self.request(
@@ -6257,6 +6386,8 @@ final class AppState: ObservableObject {
             var added = 0
             var learnedNow = 0  // memories actually distilled THIS pass (async imports queue, so ~0)
             var skipped = 0
+            var failedCount = 0  // per-record failures the backend couldn't read (surfaced, not swallowed)
+            var failedErrors: [SourceImportError] = []
             var offset = 0
             var pages = 0
             var moreRemaining = false
@@ -6273,6 +6404,8 @@ final class AppState: ObservableObject {
                 added += result.saved + result.queued
                 learnedNow += result.saved
                 skipped += result.skipped
+                failedCount += result.failed ?? 0
+                failedErrors.append(contentsOf: result.errors ?? [])
                 status = added > 0 ? "Importing your chats… \(added) so far" : "Importing your chats…"
                 guard result.has_more == true, let next = result.next_offset, next > offset else { break }
                 offset = next
@@ -6295,6 +6428,11 @@ final class AppState: ObservableObject {
             await loadStats()
             await loadImportHistory()
             detectedExportSummary = nil
+            // Never swallow per-record failures: if the backend couldn't read some conversations,
+            // say so honestly (mirrors importSummary's "N couldn't be read" for the Obsidian path).
+            let failedClause = failedCount > 0
+                ? " \(failedCount) couldn’t be read. See Import history."
+                : ""
             if added > 0 {
                 importSucceeded = true
                 outcome = .imported
@@ -6305,10 +6443,14 @@ final class AppState: ObservableObject {
                 if learnedNow > 0 { announceLearned(count: learnedNow) }
                 if moreRemaining {
                     // Never drop the rest silently: this export is larger than one import pass.
-                    status = "Imported \(added) conversations. This export is very large. Run Import again to add the rest (already-imported items are skipped)."
+                    status = "Imported \(added) conversations. This export is very large. Run Import again to add the rest (already-imported items are skipped)." + failedClause
                 } else {
-                    status = "Imported \(added) conversation\(added == 1 ? "" : "s"). Building your memory in the background…"
+                    status = "Imported \(added) conversation\(added == 1 ? "" : "s"). Building your memory in the background…" + failedClause
                 }
+            } else if failedCount > 0 {
+                // Nothing imported and records failed: this is a real failure, not a silent success.
+                outcome = .failed
+                status = "Couldn’t read \(failedCount) conversation\(failedCount == 1 ? "" : "s") in that file. See Import history."
             } else if skipped > 0 {
                 // A dedup-only re-import is a healthy no-op, NOT a failure: the session-import sheet
                 // deliberately reuses the persistent vendor login so re-runs are expected and the
@@ -6546,9 +6688,73 @@ final class AppState: ObservableObject {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = false
+        // Two-tap connect: open the picker already pointed at where this Mac's notes most likely live
+        // (a known Obsidian vault, iCloud Drive, or ~/Documents/Notes), so connecting is usually just
+        // "confirm this folder" instead of hunting the file system. Nil leaves the system default.
+        if let detected = detectedNotesFolderURL() {
+            panel.directoryURL = detected
+            panel.message = "\(DistributionMode.appDisplayName) found this notes location. Confirm it, or pick another folder to keep synced into Review."
+        }
         if panel.runModal() == .OK, let url = panel.url {
             Task { await syncLocalNotesFolder(connector, folderURL: url, rememberPath: true) }
         }
+    }
+
+    /// Best guess at where a first-time user's notes already live, so the folder picker opens there and
+    /// connecting notes is usually a two-tap confirm. Order: a vault the app already remembers, then a
+    /// vault Obsidian itself knows about, then iCloud Drive, then a conventional ~/Documents/Notes.
+    /// Returns nil when none exist on disk, leaving the picker at its system default location.
+    private func detectedNotesFolderURL() -> URL? {
+        let fm = FileManager.default
+        func existingDir(_ url: URL?) -> URL? {
+            guard let url else { return nil }
+            var isDir: ObjCBool = false
+            return (fm.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue) ? url : nil
+        }
+        // A folder we already remembered (the re-choose flow lands the user right back on it).
+        if let stored = existingDir(storedObsidianVaultURL()) { return stored }
+        // A vault Obsidian itself has open or last touched (parsed from its own registry).
+        if let vault = firstKnownObsidianVaultURL() { return vault }
+        let home = fm.homeDirectoryForCurrentUser
+        // iCloud Drive — where most Mac notes sync today.
+        if let icloud = existingDir(home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs")) {
+            return icloud
+        }
+        // A conventional ~/Documents/Notes folder.
+        if let notes = existingDir(home.appendingPathComponent("Documents/Notes")) { return notes }
+        return nil
+    }
+
+    /// Reads Obsidian's own registry (~/Library/Application Support/obsidian/obsidian.json) and returns
+    /// the path of a remembered vault that still exists on disk, preferring the one Obsidian has open,
+    /// then the most recently touched. Returns nil if Obsidian isn't installed or no vault survives.
+    private func firstKnownObsidianVaultURL() -> URL? {
+        let fm = FileManager.default
+        let registry = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/obsidian/obsidian.json")
+        guard let data = try? Data(contentsOf: registry),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let vaults = json["vaults"] as? [String: Any] else { return nil }
+        var candidates: [(path: String, open: Bool, ts: Double)] = []
+        for (_, value) in vaults {
+            guard let entry = value as? [String: Any], let path = entry["path"] as? String else { continue }
+            candidates.append((
+                path: path,
+                open: (entry["open"] as? Bool) ?? false,
+                ts: (entry["ts"] as? Double) ?? 0
+            ))
+        }
+        let ordered = candidates.sorted { lhs, rhs in
+            if lhs.open != rhs.open { return lhs.open }
+            return lhs.ts > rhs.ts
+        }
+        for candidate in ordered {
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: candidate.path, isDirectory: &isDir), isDir.boolValue {
+                return URL(fileURLWithPath: candidate.path)
+            }
+        }
+        return nil
     }
 
     /// Disconnects the primary notes folder. This is non-destructive: already
@@ -8929,10 +9135,23 @@ final class AppState: ObservableObject {
     func presentOnboardingIfNeeded() {
         // See presentOnboardingForFirstRunIfNeeded: onboarding must not present over the sign-in wall.
         guard !requiresSignIn else { return }
-        // Self-heal: if a prior run left onboarding "complete" but no source is actually connected
-        // (stale flag, or the user reset their data), setup isn't really done — reopen onboarding,
-        // because Cortex has nothing to work from until a source is connected.
-        if onboardingComplete && !hasAtLeastOneConnectedSource {
+        // Connect-until-truly-connected gate: onboarding stays "unfinished" (and therefore re-appears
+        // every launch) until a source has actually produced usable memory — not merely "an account
+        // exists" or "a folder was picked". `onboardingHasSource` = a memory layer is connected AND it
+        // synced at least one usable/citable memory. Using it here (instead of the weaker
+        // `hasAtLeastOneConnectedSource`) means a user who created an account or half-connected a
+        // source still sees the connect flow on the next launch until real memory lands. Because
+        // `onboardingDismissedForSession` is in-memory only, a Skip quiets it for this launch but it
+        // returns next launch while still not connected.
+        // Hard guard against re-onboarding a returning user who already has real memory: onboardingHasSource
+        // goes false on any source-health dip (expired OAuth token, offline/renamed Obsidian vault, a single
+        // failed extraction -> status "needs_attention"), because onboardingHasSyncedMemory ignores durable
+        // stats.memories/inbox once the readiness report is loaded. Without this guard a fully set-up user
+        // with thousands of stored memories gets bounced into first-run onboarding on every launch until the
+        // source happens to report healthy again. Durable memory (or pending/inbox) means setup genuinely
+        // happened, so only self-heal when the user truly has NOTHING usable yet.
+        let hasDurableMemory = (stats?.memories ?? 0) > 0 || (stats?.pending_captures ?? 0) > 0 || !inbox.isEmpty
+        if onboardingComplete && !onboardingHasSource && !hasDurableMemory {
             onboardingComplete = false
             UserDefaults.standard.set(false, forKey: "onboardingComplete.v1")
         }
@@ -9504,6 +9723,18 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// At-most-daily silent update check on launch. Skips when no feed URL is configured and
+    /// throttles on a persisted timestamp so relaunches don't ping the feed repeatedly.
+    private func scheduleAutomaticUpdateCheck() {
+        let raw = updateFeedURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return }
+        let last = UserDefaults.standard.double(forKey: "lastAutoUpdateCheck")
+        let now = Date().timeIntervalSince1970
+        guard now - last > 20 * 3600 else { return }
+        UserDefaults.standard.set(now, forKey: "lastAutoUpdateCheck")
+        checkForUpdates()
+    }
+
     func checkForUpdates() {
         Task {
             let raw = updateFeedURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -9861,6 +10092,7 @@ struct CortexTabBar: View {
                 .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 .help("\(tab.label) (⌘\(index + 1))")
                 .accessibilityLabel(tab.label)
+                .accessibilityValue(tab == .review && pendingCount > 0 ? (pendingCount > 99 ? "more than 99 waiting" : "\(pendingCount) waiting") : "")
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
                 .frame(maxWidth: .infinity)
             }
@@ -9915,6 +10147,9 @@ struct CortexView: View {
                     .accessibilityHidden(state.selectedTab != .ask)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // Cross-fade the tab contents in step with the sliding tab-bar indicator instead of a hard
+            // cut. Gentle and short so switching still feels instant; opacity-only, so no layout shift.
+            .animation(.easeInOut(duration: 0.18), value: state.selectedTab)
             // The bottom Live Activity ticker floats above the tab content (self-hiding when idle).
             // As an overlay it never shifts the tab layout. Hit-testing stays ON so the ticker card
             // is tappable (U-LIVE4: tap opens the relevant tab); the surrounding frame is transparent
@@ -10002,15 +10237,9 @@ struct CortexView: View {
                     .font(.system(size: 20, weight: .semibold, design: .serif))
                     .foregroundColor(CortexDesign.ink)
                 Spacer()
-                Button {
+                CortexButton(title: "Connections", systemImage: "lock.shield", role: .secondary) {
                     state.openConnectionsPrivacy()
-                } label: {
-                    Label("Connections", systemImage: "lock.shield")
-                        .labelStyle(.titleAndIcon)
-                        .frame(minHeight: CortexDesign.controlHeight)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
             }
             .frame(maxWidth: 760)
             .frame(maxWidth: .infinity)
@@ -12806,6 +13035,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private let state = AppState()
     private var statusItem: NSStatusItem!
     private var menuBarAnimator: MenuBarAnimator?
+    /// Wakes the (self-suspending) menu-bar loop the instant any AppState input changes, so the static
+    /// idle icon costs zero background wakes yet still reacts instantly. See setupStatusItem().
+    private var menuBarNudgeObserver: AnyCancellable?
     /// Owns the bottom-of-screen live-activity surfaces (Learning HUD, edge glow, ripple, pill).
     private var liveActivity: LiveActivityCenter?
     /// The interactive bottom "N to review" pill (P5), injected into the coordinator.
@@ -12954,6 +13186,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         menuBarAnimator = animator
         animator.start()
+        // The menu-bar loop suspends itself at dead idle (static glyph → zero background wakes). Any
+        // AppState mutation republishes objectWillChange — that includes every input the icon reflects
+        // (menuBarWorkCount/syncing, syncProgress, isBusy, review/inbox pending, and the learned/
+        // captured/completion stamps) — so re-arming the loop here on objectWillChange guarantees a
+        // state change always wakes it (no permanent-sleep bug) while true idle stays perfectly quiet.
+        // The sink is non-Sendable and formed in this @MainActor context, so it inherits @MainActor
+        // isolation and can call the @MainActor nudge() directly.
+        menuBarNudgeObserver = state.objectWillChange.sink { [weak animator] _ in
+            animator?.nudge()
+        }
 
         // Bottom-of-screen live activity: a Learning HUD + ambient glow + "memory formed" ripple
         // while Cortex works, and an idle "N to review" pill. One coordinator owns the bottom region
@@ -12966,12 +13208,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             },
             openApp: { [weak self] in self?.showMainWindow() }
         ))
-        let center = LiveActivityCenter { [weak self] in
+        // The snapshot is derived entirely from AppState, so its `objectWillChange` is a complete
+        // wake source: the coordinator suspends its sampling loop at idle and this restarts it only
+        // when state actually changes (no perpetual 2x/sec heartbeat while idle or live-activity off).
+        let center = LiveActivityCenter(snapshotProvider: { [weak self] in
             self?.currentLiveActivitySnapshot() ?? LiveActivitySnapshot(
                 enabled: false, working: false, done: 0, total: 0, detail: nil, pendingCount: 0,
                 learnedAt: nil, capturedAt: nil, learnedCount: 0, syncCompletedAt: nil
             )
-        }
+        }, changeSignal: state.objectWillChange.eraseToAnyPublisher())
         center.pill = pill
         liveActivityPill = pill
         liveActivity = center
@@ -13349,9 +13594,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private static func preferredDefaultWindowSize() -> NSSize {
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         // Cortex is a full knowledge workspace, so it should open large — taking up most of the
-        // screen — rather than as a compact utility window. Caps keep it sensible on huge displays.
-        let width = min(1680, max(1200, visible.width * 0.88))
-        let height = min(1080, max(820, visible.height * 0.90))
+        // screen — rather than as a compact utility window. Caps keep it sensible on huge displays,
+        // and the outer clamps guarantee the frame FITS the visible screen (a 13" Air or a
+        // default-scaled 14" is smaller than the roomy preferred size): -16 breathing room on
+        // width, -44 on height for the titlebar setContentSize adds. The 820x640 floor matches
+        // window.minSize so a pathological screen can never clamp below the supported minimum.
+        let width = max(820, min(min(1680, max(1200, visible.width * 0.88)), visible.width - 16))
+        let height = max(640, min(min(1080, max(820, visible.height * 0.90)), visible.height - 44))
         return NSSize(width: width, height: height)
     }
 

@@ -260,7 +260,11 @@ struct RecallHeadlineCard: View {
     /// The purposeful zero: no external AI has read memory yet → one quiet nudge into the
     /// existing Connect-an-app wizard (via the same Connections presentation every tab uses).
     private func emptyNudgeCard(_ headline: RecallHeadline) -> some View {
-        VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+        // With apps already connected, "Connect an app" is the wrong remedy (the card right above
+        // says "2 connected"): recall starts when the user asks those apps a question, so say that.
+        // Only the truly-unconnected state keeps the Connect nudge and its button.
+        let isConnected = state.connectedAIIntegrationCount > 0
+        return VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
             stampHeader
 
             Text("No AI has read your memory yet \(RecallHeadlineText.windowPhrase(headline.window_days))")
@@ -268,20 +272,29 @@ struct RecallHeadlineCard: View {
                 .foregroundColor(CortexDesign.ink)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("Connect an app and it can read your approved memory, with citations.")
-                .font(.callout)
-                .foregroundColor(CortexDesign.inkSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if isConnected {
+                Text("Your connected apps read approved memory when you ask them questions.")
+                    .font(.callout)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Connect an app and it can read your approved memory, with citations.")
+                    .font(.callout)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .secondary, size: .small) {
-                state.openConnectionsPrivacy(statusMessage: "Connect an app")
+                CortexButton(title: "Connect an app", systemImage: "wand.and.stars", role: .secondary, size: .small) {
+                    state.openConnectionsPrivacy(statusMessage: "Connect an app")
+                }
+                .help("Opens Connections: the step-by-step wizard connects Claude, Cursor, and other AI apps to your memory.")
             }
-            .help("Opens Connections: the step-by-step wizard connects Claude, Cursor, and other AI apps to your memory.")
         }
         .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.panelBackground)
         .frame(maxWidth: 620, alignment: .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("No AI has read your memory yet \(RecallHeadlineText.windowPhrase(headline.window_days)). Connect an app to change that.")
+        .accessibilityLabel(isConnected
+            ? "No AI has read your memory yet \(RecallHeadlineText.windowPhrase(headline.window_days)). Your connected apps read approved memory when you ask them questions."
+            : "No AI has read your memory yet \(RecallHeadlineText.windowPhrase(headline.window_days)). Connect an app to change that.")
     }
 
     private func clientAccessibilitySummary(_ headline: RecallHeadline) -> String {
@@ -438,6 +451,10 @@ struct RecallProofWatcher: View {
 /// activity ticker's pulse.
 private struct ProofWaitingPulse: View {
     @State private var pulsing = false
+    /// Only breathe when the user is actually looking; freeze at rest so an inactive/background
+    /// window doesn't keep a Core Animation layer looping via repeatForever.
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Circle()
@@ -445,12 +462,23 @@ private struct ProofWaitingPulse: View {
             .frame(width: 7, height: 7)
             .scaleEffect(pulsing ? 1.0 : 0.6)
             .opacity(pulsing ? 1.0 : 0.4)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
-                    pulsing = true
-                }
-            }
+            .onAppear { updatePulse() }
+            .onChange(of: scenePhase) { _ in updatePulse() }
+            .onChange(of: reduceMotion) { _ in updatePulse() }
             .accessibilityHidden(true)
+    }
+
+    /// Start the repeatForever breathe only when the scene is active and reduce-motion is off;
+    /// otherwise settle the dot to a static resting frame (pulsing = false) with a non-repeating
+    /// animation so no layer keeps animating behind an inactive/occluded window.
+    private func updatePulse() {
+        guard scenePhase == .active, !reduceMotion else {
+            withAnimation(.easeInOut(duration: 0.2)) { pulsing = false }
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+            pulsing = true
+        }
     }
 }
 
@@ -494,6 +522,15 @@ private struct ProofBurstMark: View {
 struct ConstellationMiniPreview: View {
     let nodes: [GraphNode]
     let edges: [GraphEdge]
+
+    /// Full-fidelity animation only when the user is actually looking. When Cortex isn't frontmost
+    /// (scene inactive/background) or reduce-motion is on, the per-frame render loops FREEZE their
+    /// last frame and resume seamlessly on return — the visuals are identical while active.
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// True when the display-linked redraw should halt (app not active / reduce-motion).
+    private var paused: Bool { scenePhase != .active || reduceMotion }
 
     /// Layout is computed once at this nominal size and scaled to whatever frame the caller gives
     /// the preview, so the (memoized) force sim never depends on live view geometry.
@@ -618,11 +655,15 @@ struct ConstellationMiniPreview: View {
     private var liveMiniature: some View {
         let drawNodes = previewNodes
         let drawEdges = previewEdges
-        return TimelineView(.animation) { context in
+        // Frame-invariant: the force layout has no time dependence, so compute it ONCE here rather
+        // than inside the per-frame Canvas closure.
+        let layout = MemoryMapLayout.layout(nodes: drawNodes, edges: drawEdges, size: Self.nominalSize)
+        // Cap the display-linked redraw at 30fps and FREEZE it (last frame held) whenever the app
+        // isn't the active foreground surface or reduce-motion is on; resumes seamlessly on return.
+        return TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: paused)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             let rot = rotation(at: t)
             Canvas { ctx, size in
-                let layout = MemoryMapLayout.layout(nodes: drawNodes, edges: drawEdges, size: Self.nominalSize)
                 let sx = size.width / Self.nominalSize.width
                 let sy = size.height / Self.nominalSize.height
                 func scaled(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x * sx, y: p.y * sy) }
@@ -693,20 +734,33 @@ struct ConstellationMiniPreview: View {
         }
     }
 
+    /// Draw the 7 decorative drifting motes at time `t`. Frame-content shared by the live (coarse
+    /// 12fps) path and the frozen paused frame.
+    private func drawMotes(in ctx: inout GraphicsContext, size: CGSize, t: Double) {
+        for i in 0..<7 {
+            let seed = Double(i) * 1.9
+            let x = (sin(t * 0.05 + seed) * 0.5 + 0.5) * size.width
+            let y = (cos(t * 0.04 + seed * 1.3) * 0.5 + 0.5) * size.height
+            let r = 1.5 + (sin(seed) + 1) * 1.1
+            let rect = CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)
+            ctx.fill(Path(ellipseIn: rect), with: .color(CortexDesign.gold.opacity(0.10)))
+        }
+    }
+
     /// Honest empty state: a few clearly-decorative drifting motes (not a fake graph) under a
-    /// plain statement of what will happen.
+    /// plain statement of what will happen. The drift periods are ~125s, so a coarse 12fps cadence
+    /// is visually identical while cutting redraws ~5-10x; when the app is inactive/off-screen (or
+    /// reduce-motion is on) we hold a single frozen frame instead of driving the loop at all.
     private var emptyPlaceholder: some View {
         ZStack {
-            TimelineView(.animation) { context in
-                let t = context.date.timeIntervalSinceReferenceDate
+            if paused {
                 Canvas { ctx, size in
-                    for i in 0..<7 {
-                        let seed = Double(i) * 1.9
-                        let x = (sin(t * 0.05 + seed) * 0.5 + 0.5) * size.width
-                        let y = (cos(t * 0.04 + seed * 1.3) * 0.5 + 0.5) * size.height
-                        let r = 1.5 + (sin(seed) + 1) * 1.1
-                        let rect = CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)
-                        ctx.fill(Path(ellipseIn: rect), with: .color(CortexDesign.gold.opacity(0.10)))
+                    drawMotes(in: &ctx, size: size, t: Date().timeIntervalSinceReferenceDate)
+                }
+            } else {
+                TimelineView(.periodic(from: .now, by: 1.0 / 12.0)) { context in
+                    Canvas { ctx, size in
+                        drawMotes(in: &ctx, size: size, t: context.date.timeIntervalSinceReferenceDate)
                     }
                 }
             }

@@ -120,6 +120,54 @@ def _content_hit(results: list[dict], expected_id: str) -> bool:
     return any(token in str(r.get("content") or "").lower() for r in results)
 
 
+def _observed_bases(results: list[dict]) -> list[str]:
+    """Distinct, non-empty relevance_basis tags across a result set (emitted by the search layer's
+    additive relevance annotation)."""
+    return sorted({str(r.get("relevance_basis")) for r in results if r.get("relevance_basis")})
+
+
+def _probe_bases(store: CortexStore, flags: dict[str, str]) -> list[str]:
+    """Apply `flags` and read back the relevance_basis the search layer emits for the probe query."""
+    _apply(flags)
+    results = store.search(USER, CASES[0]["query"], limit=CASES[0]["k"], include_related=True)
+    return _observed_bases(results)
+
+
+def _relevance_basis_gate(store: CortexStore) -> dict:
+    """Assert the emitted relevance_basis is honest about the signal behind it:
+
+    * rerank-forced path with the real model2vec embedder → "cosine" (a true query↔candidate
+      cosine, reused from / recomputed for the reranker), and
+    * the deterministic hash embedder → rank-derived "rank"/"rrf" (never cosine, since there is
+      no real vector to score).
+
+    The hash contrast flips CORTEX_EMBEDDING_PROVIDER for a single probe and restores it, so the
+    same store proves both branches of the flip in one run.
+    """
+    rerank_bases = _probe_bases(store, FLAGS_OFF | FLAGS_ON | {"CORTEX_RERANK": "linear+mmr"})
+
+    prior_provider = os.environ.get("CORTEX_EMBEDDING_PROVIDER")
+    os.environ["CORTEX_EMBEDDING_PROVIDER"] = "hash"
+    try:
+        hash_bases = _probe_bases(store, FLAGS_OFF)
+    finally:
+        if prior_provider is None:
+            os.environ.pop("CORTEX_EMBEDDING_PROVIDER", None)
+        else:
+            os.environ["CORTEX_EMBEDDING_PROVIDER"] = prior_provider
+    _apply(FLAGS_OFF)
+
+    rerank_is_cosine = bool(rerank_bases) and all(basis == "cosine" for basis in rerank_bases)
+    hash_is_rank = bool(hash_bases) and all(basis in {"rank", "rrf"} for basis in hash_bases)
+    return {
+        "rerank_forced_bases": rerank_bases,
+        "hash_bases": hash_bases,
+        "rerank_forced_is_cosine": rerank_is_cosine,
+        "hash_is_rank_or_rrf": hash_is_rank,
+        "ok": rerank_is_cosine and hash_is_rank,
+    }
+
+
 def run_rerank_eval(db_path: Path, vault_path: Path | None = None) -> dict:
     init_db(db_path)
     store = CortexStore(db_path, vault_path)
@@ -128,6 +176,7 @@ def run_rerank_eval(db_path: Path, vault_path: Path | None = None) -> dict:
     on_recall, on_cases = _recall(store, FLAGS_OFF | FLAGS_ON)
     # Diagnostic only (not enforced): the full reranker on top of the enabled flags.
     rerank_recall, _ = _recall(store, FLAGS_OFF | FLAGS_ON | {"CORTEX_RERANK": "linear+mmr"})
+    relevance_basis = _relevance_basis_gate(store)
     _apply(FLAGS_OFF)  # leave env clean
     floor = 0.8
     return {
@@ -138,6 +187,7 @@ def run_rerank_eval(db_path: Path, vault_path: Path | None = None) -> dict:
         "no_regression": on_recall >= off_recall - 1e-9,
         "clears_floor": on_recall >= floor,
         "floor": floor,
+        "relevance_basis": relevance_basis,
         "enabled_flags": sorted(FLAGS_ON.keys()),
         "off_cases": off_cases,
         "on_cases": on_cases,
@@ -175,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         summary = run_rerank_eval(Path(tmp) / "cortex.db", Path(tmp) / "vault")
     print(json.dumps(summary, indent=2))
-    ok = summary["no_regression"] and summary["clears_floor"]
+    ok = summary["no_regression"] and summary["clears_floor"] and summary["relevance_basis"]["ok"]
     return 0 if ok else 1
 
 

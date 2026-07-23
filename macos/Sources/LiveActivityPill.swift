@@ -62,14 +62,24 @@ final class LiveActivityPill: LiveActivityPillControlling {
             panel.orderFrontRegardless()
             withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { model.visible = true }
         }
-        // Auto-dismiss so it never becomes a permanent fixture; hovering keeps it (see PillView).
+        // Auto-dismiss so it never becomes a permanent fixture; hovering defers it (see PillView).
+        scheduleAutoDismiss(after: Self.autoDismissAfter)
+    }
+
+    /// Schedules the auto-dismiss. If the timer fires while the user is hovering, it re-arms a short
+    /// follow-up check instead of giving up, so a hover can delay the pill but never pin it forever.
+    private func scheduleAutoDismiss(after interval: TimeInterval) {
         autoDismissWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.model.hovering else { return }
-            self.hidePill()
+            guard let self else { return }
+            if self.model.hovering {
+                self.scheduleAutoDismiss(after: 2.0)
+            } else {
+                self.hidePill()
+            }
         }
         autoDismissWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.autoDismissAfter, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: work)
     }
 
     func hidePill() {

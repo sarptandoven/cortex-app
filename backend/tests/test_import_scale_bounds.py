@@ -24,6 +24,7 @@ from backend.app.source_ingest import (
     _parse_single_asset,
     _parse_twitter_archive,
     import_source_records,
+    import_source_records_page,
 )
 
 
@@ -251,6 +252,46 @@ class MboxCapRaiseTests(unittest.TestCase):
         self.assertIn("Scale message 599", titles)
         combined = "\n".join(record.content for record in records)
         self.assertIn("Scale mbox body marker 599", combined)
+
+    def test_mbox_past_5000_ingests_all_across_pagination(self) -> None:
+        # >5000 messages used to be silently dropped by a hard `break`; now every
+        # message becomes its own record and the import-layer pagination reaches
+        # the tail (message #5001+) that the cap made unreachable.
+        message_count = 5200
+        path = self.root / "big.mbox"
+        chunks = []
+        for index in range(message_count):
+            chunks.append(
+                "From alex@example.com Thu Jul  2 10:00:00 2026\n"
+                f"Subject: Huge message {index}\n"
+                "From: alex@example.com\n"
+                "To: sarpt@example.com\n"
+                "Date: Thu, 02 Jul 2026 10:00:00 +0000\n"
+                "\n"
+                f"Huge mbox body marker {index}.\n"
+                "\n"
+            )
+        path.write_text("".join(chunks), encoding="utf-8")
+
+        first = import_source_records_page([str(path)], max_records=1000, offset=0)
+        self.assertEqual(first["total"], message_count)
+        self.assertTrue(first["has_more"])
+
+        # Page all the way through and confirm no message is skipped or dropped,
+        # including the ones past the old 5000 ceiling.
+        titles: set[str] = set()
+        offset = 0
+        while True:
+            page = import_source_records_page([str(path)], max_records=1000, offset=offset)
+            titles.update(record.title for record in page["records"])
+            if not page["has_more"]:
+                break
+            offset = page["next_offset"]
+
+        self.assertEqual(len(titles), message_count)
+        self.assertIn("Huge message 0", titles)
+        self.assertIn("Huge message 5001", titles)
+        self.assertIn(f"Huge message {message_count - 1}", titles)
 
 
 if __name__ == "__main__":

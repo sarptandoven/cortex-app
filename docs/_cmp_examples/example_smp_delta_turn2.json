@@ -1,0 +1,204 @@
+{
+  "smp": "1",
+  "model": "cursor",
+  "budget": {
+    "tokens": 3000,
+    "used": 2950
+  },
+  "coverage": {
+    "status": "usable",
+    "layers_with_evidence": 2,
+    "excluded_uncited": 0,
+    "deduped": 12,
+    "pending_excluded": 0,
+    "sections_omitted": []
+  },
+  "items": [
+    {
+      "ref": "mem_74c8d142c370",
+      "content": "For the Atlas launch, the web workstream owns the marketing site and in-product upgrade path, and the launch team agreed the Atlas launch we \u2026",
+      "layer": "decision",
+      "relevance": 1.0,
+      "relevance_basis": "rrf",
+      "why": {
+        "retrievers": [
+          "fts"
+        ],
+        "matched_terms": [
+          "atla",
+          "launch",
+          "plan",
+          "readiness",
+          "workstream"
+        ],
+        "fused_rank": 1
+      },
+      "source_url": "cortex-capture://cap_91f26b24fd12",
+      "confidence": 1.0,
+      "occurred_at": "2026-07-20T08:16:32+00:00",
+      "entities": []
+    },
+    {
+      "ref": "mem_68c31f5780e5",
+      "content": "For the Atlas launch, the partnerships workstream owns the integration directory and launch partners, and the launch team agreed the Atlas l \u2026",
+      "layer": "decision",
+      "relevance": 0.5,
+      "relevance_basis": "rrf",
+      "why": {
+        "retrievers": [
+          "fts"
+        ],
+        "matched_terms": [
+          "atla",
+          "launch",
+          "plan",
+          "readiness",
+          "workstream"
+        ],
+        "fused_rank": 2
+      },
+      "source_url": "cortex-capture://cap_1524f161f3e8",
+      "confidence": 1.0,
+      "occurred_at": "2026-07-20T08:16:33+00:00",
+      "entities": []
+    },
+    {
+      "ref": "mem_fab81ba9fb26",
+      "content": "For the Atlas launch, the testing workstream owns the end-to-end regression matrix, and the launch team agreed the Atlas launch testing plan \u2026",
+      "layer": "decision",
+      "relevance": 0.3333,
+      "relevance_basis": "rrf",
+      "why": {
+        "retrievers": [
+          "fts"
+        ],
+        "matched_terms": [
+          "atla",
+          "launch",
+          "plan",
+          "readiness",
+          "workstream"
+        ],
+        "fused_rank": 3
+      },
+      "source_url": "cortex-capture://cap_21da47ba7732",
+      "confidence": 1.0,
+      "occurred_at": "2026-07-20T08:16:32+00:00",
+      "entities": []
+    },
+    {
+      "ref": "mem_b673bd66143f",
+      "content": "For the Atlas launch, the billing workstream owns the invoice, proration, and dunning flows, and the launch team agreed the Atlas launch bil \u2026",
+      "layer": "decision",
+      "relevance": 0.25,
+      "relevance_basis": "rrf",
+      "why": {
+        "retrievers": [
+          "fts"
+        ],
+        "matched_terms": [
+          "atla",
+          "launch",
+          "plan",
+          "readiness",
+          "workstream"
+        ],
+        "fused_rank": 4
+      },
+      "source_url": "cortex-capture://cap_29c0a61c4da6",
+      "confidence": 1.0,
+      "occurred_at": "2026-07-20T08:16:32+00:00",
+      "entities": []
+    },
+    {
+      "ref": "mem_5b084b965ca4",
+      "content": "For the Atlas launch, the hiring workstream owns closing three senior engineering roles, and the launch team agreed the Atlas launch hiring  \u2026",
+      "layer": "decision",
+      "relevance": 0.2,
+      "relevance_basis": "rrf",
+      "why": {
+        "retrievers": [
+          "fts"
+        ],
+        "matched_terms": [
+          "atla",
+          "launch",
+          "plan",
+          "readiness",
+          "workstream"
+        ],
+        "fused_rank": 5
+      },
+      "source_url": "cortex-capture://cap_e4f076f41ca9",
+      "confidence": 1.0,
+      "occurred_at": "2026-07-20T08:16:32+00:00",
+      "entities": []
+    }
+  ],
+  "cursor": null,
+  "follow_ups": [],
+  "working_memory": {
+    "new": [
+      {
+        "ref": "mem_5b084b965ca4",
+        "delta_relevance": 0.2
+      },
+      {
+        "ref": "mem_cbcc7cd72fce",
+        "delta_relevance": 0.1667
+      },
+      {
+        "ref": "mem_2af5466526a1",
+        "delta_relevance": 0.1429
+      },
+      {
+        "ref": "mem_bf590ccc3275",
+        "delta_relevance": 0.125
+      },
+      {
+        "ref": "mem_801d9ae45a4d",
+        "delta_relevance": 0.1111
+      },
+      {
+        "ref": "mem_579dbb657eb2",
+        "delta_relevance": 0.1
+      },
+      {
+        "ref": "mem_573f00fa90e1",
+        "delta_relevance": 0.0909
+      },
+      {
+        "ref": "mem_618447e5e307",
+        "delta_relevance": 0.0833
+      },
+      {
+        "ref": "mem_2fa1bf3254d7",
+        "delta_relevance": null
+      },
+      {
+        "ref": "mem_2f26ddd166da",
+        "delta_relevance": null
+      },
+      {
+        "ref": "mem_68f303e49507",
+        "delta_relevance": null
+      },
+      {
+        "ref": "mem_a1f9c6721297",
+        "delta_relevance": null
+      },
+      {
+        "ref": "mem_da9fc94e7961",
+        "delta_relevance": null
+      }
+    ],
+    "evicted": [],
+    "superseded": [],
+    "cursor": "2"
+  },
+  "receipt": null,
+  "graph": null,
+  "pin": null,
+  "legend": "<omitted \u2014 constant SMP_LEGEND; see backend/app/smp.py>",
+  "items_note": "<showing 5 of 17 items>"
+}

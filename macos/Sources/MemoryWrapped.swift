@@ -263,7 +263,7 @@ struct MemoryWrappedCard: View {
         VStack(alignment: .leading, spacing: 14) {
             if model.distinctAIs >= 1 {
                 (Text("Your memory answered ")
-                    + Text("\(model.totalRecalls)").foregroundColor(Night.accent)
+                    + Text(AnimatableNumber.groupedInteger(Double(model.totalRecalls))).foregroundColor(Night.accent)
                     + Text(" recall\(model.totalRecalls == 1 ? "" : "s") across ")
                     + Text("\(model.distinctAIs)").foregroundColor(Night.gold)
                     + Text(" AI\(model.distinctAIs == 1 ? "" : "s") this week"))
@@ -327,7 +327,7 @@ struct MemoryWrappedCard: View {
             } else {
                 ForEach(model.clients) { client in
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("\(client.recalls)")
+                        Text(AnimatableNumber.groupedInteger(Double(client.recalls)))
                             .font(.system(size: 40, weight: .semibold, design: .serif))
                             .monospacedDigit()
                             .foregroundColor(Night.ink)
@@ -749,12 +749,13 @@ struct MemoryWrappedEntry: View {
                     .font(.callout)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                // U-DIFF4: the first-week card is no longer a dead-end at activation. The primary
-                // action gets the user to the one thing that starts filling the card in — connecting
-                // an AI — and a quiet secondary lets a curious user preview the (empty) card so the
-                // firstWeek card states are reachable rather than dead code (U-DIFF10).
+                // U-DIFF4: the first-week card is no longer a dead-end at activation. Its main
+                // action (a paper secondary; Home's one wax primary lives on the hero) gets the user
+                // to the one thing that starts filling the card in — connecting an AI — and a quiet
+                // ghost lets a curious user preview the (empty) card so the firstWeek card states are
+                // reachable rather than dead code (U-DIFF10).
                 HStack(spacing: CortexDesign.Space.sm) {
-                    CortexButton(title: "Connect an AI", systemImage: "link", role: .primary, size: .small) {
+                    CortexButton(title: "Connect an AI", systemImage: "link", role: .secondary, size: .small) {
                         state.showConnectionsPrivacy = true
                     }
                     CortexButton(title: "Preview my card", systemImage: "sparkles.rectangle.stack", role: .ghost, size: .small) {

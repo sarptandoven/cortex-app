@@ -84,6 +84,7 @@ struct MenuBarQuickPanel: View {
         VStack(spacing: 0) {
             header
             Divider().overlay(CortexDesign.hairline)
+            discoveryNudge
             modeSwitcher
                 .padding(.horizontal, 18)
                 .padding(.top, 12)
@@ -130,6 +131,72 @@ struct MenuBarQuickPanel: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
+    }
+
+    // MARK: Discovery nudge (#33)
+
+    /// A calm, dismissible hint for users who finished onboarding on the bundled sample notes and
+    /// have no real source of their own yet. It points at the one-tap direct sign-in import so the
+    /// app starts answering from their own memory. Non-nagging: `state.shouldShowDirectImportNudge`
+    /// hides it in the App Store build, mid-onboarding, once a real source lands, and once dismissed.
+    /// No continuous animation, so the build 46 energy gates stay intact.
+    @ViewBuilder
+    private var discoveryNudge: some View {
+        if state.shouldShowDirectImportNudge {
+            ZStack(alignment: .topTrailing) {
+                Button {
+                    state.openDirectImport()
+                    onOpenApp()
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "tray.and.arrow.down")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(CortexDesign.gold)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Bring your own memory in")
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundColor(CortexDesign.ink)
+                            Text("Sign in once and \(DistributionMode.appDisplayName) imports your history. Right now it only knows the sample notes.")
+                                .font(.system(size: 11))
+                                .foregroundColor(CortexDesign.inkSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .multilineTextAlignment(.leading)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.up.forward")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(CortexDesign.accent)
+                    }
+                    .padding(.vertical, 9)
+                    .padding(.leading, 11)
+                    // Leave room on the trailing edge for the dismiss glyph.
+                    .padding(.trailing, 26)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Open direct sign-in import")
+
+                Button {
+                    state.dismissDirectImportNudge()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .padding(7)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss")
+            }
+            .background(CortexDesign.quietBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(CortexDesign.hairline, lineWidth: 1)
+            )
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+        }
     }
 
     // MARK: Mode switcher (animated segmented control)
@@ -730,9 +797,13 @@ private struct QuickFooterButton: View {
         Button(action: action) {
             VStack(spacing: 3) {
                 Image(systemName: icon).font(.system(size: 14, weight: .medium))
-                Text(title).font(CortexDesign.Typography.hint)
+                Text(title)
+                    .font(CortexDesign.Typography.hint)
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            .frame(width: 72, height: 40)
+            .padding(.horizontal, 10)
+            .frame(minWidth: 72, minHeight: 40)
             .foregroundColor(hovering && !disabled ? CortexDesign.accent : CortexDesign.inkSecondary)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -811,6 +882,7 @@ private struct QuickPanelSkeleton: View {
         .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .onAppear {
+            guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
             withAnimation(.linear(duration: 1.15).repeatForever(autoreverses: false)) { phase = 2 }
         }
     }

@@ -29,6 +29,7 @@ from .hosted_readiness import hosted_readiness_contract
 from .mcp_tools import (
     CORE_TOOL_NAMES,
     TOOLS,
+    _assemble_context_ext_kwargs,
     call_tool,
     export_tool_schema,
     get_prompt,
@@ -138,13 +139,30 @@ def _start_standalone_worker() -> threading.Thread | None:
     interval_seconds = _env_int("CORTEX_STANDALONE_WORKER_INTERVAL_SECONDS", 15, 2, 3600)
     limit = _env_int("CORTEX_STANDALONE_WORKER_LIMIT", 25, 1, 100)
 
+    # Idle backoff cap: after a run of empty ticks the sleep grows geometrically from
+    # interval_seconds toward this ceiling so an idle app settles to a rare poll instead
+    # of a fixed write cycle. The instant any tick sees work (processed or pending) we snap
+    # back to interval_seconds, so new jobs are never left waiting longer than one base tick.
+    idle_cap_seconds = float(_env_int("CORTEX_STANDALONE_WORKER_IDLE_CAP_SECONDS", 300, interval_seconds, 3600))
+
     def worker_loop() -> None:
+        idle_count = 0
         while True:
             try:
-                _run_standalone_worker_tick(limit=limit)
+                result = _run_standalone_worker_tick(limit=limit)
+                if result.get("processed") or result.get("pending"):
+                    # Work happened or is queued — stay responsive at the base cadence.
+                    idle_count = 0
+                elif interval_seconds * (2 ** idle_count) < idle_cap_seconds:
+                    # Only keep growing the exponent while it still matters; once the sleep
+                    # has reached the cap, stop counting so 2**idle_count can't balloon.
+                    idle_count += 1
             except Exception as exc:  # pragma: no cover - defensive server loop
                 print(f"{APP_BRAND} standalone worker error: {exc}", flush=True)
-            time.sleep(interval_seconds)
+                # A failing tick is not "idle" — keep probing at the base cadence.
+                idle_count = 0
+            sleep_seconds = min(interval_seconds * (2 ** idle_count), idle_cap_seconds)
+            time.sleep(sleep_seconds)
 
     thread = threading.Thread(target=worker_loop, name="cortex-standalone-worker", daemon=True)
     thread.start()
@@ -562,7 +580,7 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
     escaped_title = html.escape(title)
     escaped_url = html.escape(url)
     escaped_content = html.escape(content)
-    status_class = "ok" if status == "saved" else "err" if status == "error" else ""
+    status_class = "ok" if status == "saved" else "err" if status == "error" else "review" if status == "review" else ""
     return f"""
 <!doctype html>
 <html>
@@ -576,6 +594,7 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
       button {{ margin-top: 16px; padding: 9px 14px; border-radius: 8px; border: 0; background: #0969da; color: white; font-weight: 700; }}
       .status {{ display: inline-block; padding: 4px 8px; border-radius: 999px; background: #ddf4ff; color: #0969da; font-weight: 700; }}
       .ok {{ background: #dafbe1; color: #116329; }}
+      .review {{ background: #fff4d6; color: #9a6700; }}
       .err {{ background: #ffebe9; color: #cf222e; }}
       .hint {{ color: #57606a; }}
     </style>
@@ -600,6 +619,21 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
   </body>
 </html>
 """
+
+
+def _capture_confirmation(saved: dict) -> tuple[str, str]:
+    """Build a truthful (message, status) pair for a saved capture.
+
+    A pending capture is NOT retrievable yet (search/Ask exclude it until it's approved in
+    Review), so we must not render the green "saved" pill over content the app won't surface.
+    Distinguish "saved and searchable now" from "saved, waiting in Review"."""
+    count = len(saved.get("memories", []))
+    if saved.get("review_status") == "pending":
+        return (
+            f"Saved {count} memories. Approve them in Review before they can answer questions in Ask.",
+            "review",
+        )
+    return (f"Saved {count} memories.", "saved")
 
 
 class CortexRequestHandler(BaseHTTPRequestHandler):
@@ -774,7 +808,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     except ValueError as exc:
                         self._send_text(_capture_page(str(exc), "error", token, title, source_url, payload), status=HTTPStatus.BAD_REQUEST, media_type="text/html")
                         return
-                    self._send_text(_capture_page(f"Saved {len(saved.get('memories', []))} memories.", "saved", token, title, source_url), media_type="text/html")
+                    confirmation, confirmation_status = _capture_confirmation(saved)
+                    self._send_text(_capture_page(confirmation, confirmation_status, token, title, source_url), media_type="text/html")
                     return
                 self._send_text(_capture_page(token=token, title=title, url=source_url, content=payload), media_type="text/html")
                 return
@@ -798,7 +833,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     self._send_text(_capture_page(str(exc), "error", token, title, source_url, content), status=HTTPStatus.BAD_REQUEST, media_type="text/html")
                     return
-                self._send_text(_capture_page(f"Saved {len(saved.get('memories', []))} memories.", "saved", token, title, source_url), media_type="text/html")
+                confirmation, confirmation_status = _capture_confirmation(saved)
+                self._send_text(_capture_page(confirmation, confirmation_status, token, title, source_url), media_type="text/html")
                 return
             if method == "GET" and path == "/v1/connectors/google/oauth/callback":
                 error_value = (params.get("error") or [""])[0]
@@ -2561,6 +2597,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     project = str(body.get("project") or "") or None
                     as_of = str(body.get("as_of") or "") or None
                     output_format = str(body.get("format") or "json").strip().lower()
+                    model = str(body.get("model") or "") or None
                     pin = bool(body.get("pin"))
                     pin_session_id = str(body.get("session_id") or "") or None
                     try:
@@ -2576,12 +2613,18 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     project = (params.get("project") or [None])[0]
                     as_of = (params.get("as_of") or [None])[0]
                     output_format = ((params.get("format") or ["json"])[0] or "json").strip().lower()
+                    model = (params.get("model") or [None])[0] or None
                     token_budget = _int_param(params, "token_budget", 2000, 1, 100000)
                     pin = ((params.get("pin") or [""])[0] or "").strip().lower() in {"1", "true", "yes"}
                     pin_session_id = (params.get("session_id") or [None])[0] or None
-                if output_format not in {"json", "markdown"}:
-                    self._send_json({"detail": "format must be json or markdown"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                if output_format not in {"json", "markdown", "smp"}:
+                    self._send_json({"detail": "format must be json, markdown, or smp"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                     return
+                # 'smp' selects the self-describing SMP envelope (response_format), not a text
+                # renderer; internal render format falls back to json. model=None + text is
+                # byte-identical to the prior behavior.
+                response_format = "smp" if output_format == "smp" else "text"
+                internal_format = "json" if output_format == "smp" else output_format
                 pack = store.assemble_context(
                     user_id,
                     task,
@@ -2594,11 +2637,12 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     # Reaching /v1/context already required read scope; the identity layer is a read
                     # of distilled context, so it is always included.
                     include_identity=True,
-                    format=output_format,
+                    format=internal_format,
                     pin=pin,
                     session_id=pin_session_id,
+                    **_assemble_context_ext_kwargs(response_format, model),
                 )
-                if output_format == "markdown":
+                if internal_format == "markdown":
                     self._send_text(pack, media_type="text/markdown")
                 else:
                     self._send_json(pack)

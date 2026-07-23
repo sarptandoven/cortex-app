@@ -492,6 +492,18 @@ private struct OnboardingRestoreSignInStep: View {
         return trimmed.isEmpty ? AppState.defaultHostedURL : trimmed
     }
 
+    /// Classify the auth status line so a normal progress/success message is never dressed as an
+    /// alarm. `cloudAuthMessage` is one field carrying progress ("Signing in…"), success ("Signed
+    /// in."), a neutral cancel, AND genuine errors — rendering it all as a gold warning made a
+    /// healthy sign-in look like it failed. In-flight => info, a live session => success, an explicit
+    /// cancel => info, and only a real failure keeps the warning styling.
+    private var cloudAuthNoticeSeverity: OnboardingNotice.Severity {
+        if state.cloudAuthBusy { return .info }
+        if state.isSignedIn { return .success }
+        if state.cloudAuthMessage.localizedCaseInsensitiveContains("cancel") { return .info }
+        return .warning
+    }
+
     /// Social providers reached via the browser handoff (Apple has its own native flow elsewhere;
     /// here we keep the returning-user path simple and lean on the universal browser + email paths).
     private var browserProviders: [CloudAuthProvider] {
@@ -560,6 +572,14 @@ private struct OnboardingRestoreSignInStep: View {
             }
 
             VStack(alignment: .leading, spacing: 12) {
+                // Sign in with Apple, first and native. A returning user whose account was created via
+                // Apple previously had NO way to restore during first-run (the browser provider list
+                // deliberately excludes Apple, since native SIWA has no web client secret), leaving
+                // GitHub/Google offered but not Apple — the exact Guideline 4.8 gap the settings surface
+                // already closes. Same shared control, so the two never drift; it self-hides on ad-hoc
+                // builds that lack the entitlement.
+                CortexAppleSignInButton(state: state, hostedURL: resolvedHostedURL)
+
                 ForEach(browserProviders) { provider in
                     CortexButton(
                         title: providerButtonLabel(provider),
@@ -611,7 +631,7 @@ private struct OnboardingRestoreSignInStep: View {
 
             if !state.cloudAuthMessage.isEmpty {
                 OnboardingNoticeBanner(
-                    notice: OnboardingNotice(severity: .warning, title: nil, message: state.cloudAuthMessage),
+                    notice: OnboardingNotice(severity: cloudAuthNoticeSeverity, title: nil, message: state.cloudAuthMessage),
                     onDismiss: nil
                 )
             }
@@ -869,6 +889,15 @@ private struct OnboardingWelcomeBackStep: View {
             // Honest reconnect guidance: MCP/tool configs are per-device and are NOT synced, so we do
             // NOT claim they auto-restored. Route into the existing Connect-an-app wizard.
             reconnectToolsCard
+
+            // The way out. Without this the restore flow dead-ends on "Welcome back": onFinish was
+            // declared but nothing ever called it, leaving the returning user stuck on the sheet.
+            HStack {
+                Spacer(minLength: 0)
+                CortexButton(title: "Start using \(DistributionMode.appDisplayName)", systemImage: "arrow.right", role: .primary, size: .large) {
+                    onFinish()
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task {
@@ -1080,6 +1109,35 @@ private struct OnboardingAddMemoryStep: View {
     /// did nothing at all. Cleared on the next successful drop / file-picker use.
     @State private var dropFeedback: String?
 
+    /// #26/#28 — the single hero action: direct session sign-in for the chosen chat vendor. ChatGPT is
+    /// preselected (the largest first-run cohort); Claude / Perplexity are one quiet tap away on the
+    /// selector. This is the ONE obvious thing a first-timer sees; every other lane is a quiet fallback.
+    @State private var sessionVendor: AIChatImportVendor = .chatgpt
+    /// Non-nil presents the embedded-browser harvest sheet (DMG-only; never set in the App Store build).
+    @State private var presentedSessionVendor: AIChatImportVendor?
+    /// #27 QUICK FIRST SYNC — the memory count captured the moment the first batch of imported chats
+    /// becomes citable, so onboarding flips to a "N memories in — you can start now" beat WITHOUT
+    /// waiting for the whole history to finish streaming.
+    @State private var quickSyncMemories: Int?
+    /// The quiet, collapsed "other ways to add memory" fallbacks (export file, sign-in apps, samples).
+    @State private var otherWaysExpanded = false
+
+    /// The chat vendors offered by the one-tap hero. Notion is deliberately absent: it's an async
+    /// whole-workspace EXPORT, not a chat session, so it lives in the quiet "other ways" fallback.
+    private static let heroChatVendors: [AIChatImportVendor] = [.chatgpt, .claude, .perplexity]
+
+    /// Direct sign-in session import is DMG-only: the App Store build strips outbound HTTPS and can't
+    /// run the embedded harvester, so the hero degrades honestly to the notes-folder primary there.
+    private var sessionImportAvailable: Bool { !DistributionMode.isAppStore }
+
+    /// The count to show in the quick-first-sync success beat: whatever the first import landed, or the
+    /// live memory total once a source is genuinely citable. Nil until the first batch is in.
+    private var quickSyncMemoriesToShow: Int? {
+        if let quickSyncMemories { return quickSyncMemories }
+        if state.onboardingHasSource { return state.stats?.memories ?? state.graphNodes.count }
+        return nil
+    }
+
     private var obsidianConnector: SourceConnectorCatalogItem? {
         state.sourceConnectorCatalog.first { $0.id == "obsidian" }
     }
@@ -1116,7 +1174,7 @@ private struct OnboardingAddMemoryStep: View {
                         .font(CortexDesign.Typography.display(26))
                         .foregroundColor(CortexDesign.ink)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Pick the path that fits you. \(DistributionMode.appDisplayName) distills whatever you bring into cited memory. You can add more any time.")
+                    Text(headerSubtitle)
                         .font(CortexDesign.Typography.prose(15))
                         .lineSpacing(3)
                         .foregroundColor(CortexDesign.inkSecondary)
@@ -1127,65 +1185,260 @@ private struct OnboardingAddMemoryStep: View {
                     .padding(.top, 2)
             }
 
-            // Lead with the fastest path for the biggest first-run cohort: people arriving from
-            // ChatGPT / Claude / Gemini. One tap opens their export page; the file drops in here.
-            OnboardingLaneLabel(
-                systemImage: "bubble.left.and.text.bubble.right",
-                title: "Coming from ChatGPT, Claude, or Gemini?",
-                detail: "Bring that whole history in. It's the quickest way to get real memory in fast."
-            )
-            aiExportOption
-
-            // Then the local notes folder (the primary source path) and the one-tap sign-in apps.
-            OnboardingLaneLabel(
-                systemImage: "folder.badge.plus",
-                title: "Or point \(DistributionMode.appDisplayName) at your notes",
-                detail: "Choose a local notes folder and \(DistributionMode.appDisplayName) keeps it synced on this Mac."
-            )
-            // The card carries the step's `.primary` while no source is live; once one is, the
-            // card relaxes to `.secondary` ("Change source") and the footer Continue takes over.
-            OnboardingConnectionCard(
-                title: connectTitle,
-                detail: connectDetail,
-                systemImage: connectIcon,
-                isPrimary: !state.onboardingHasSource,
-                status: connectStatus,
-                buttonTitle: connectButtonTitle,
-                buttonSystemImage: connectButtonIcon,
-                // In flight while a folder connect / sync this card kicked off is running
-                // (state.isBusy) or any connector sync is active — so the primary can't be
-                // double-fired mid-connect. Also held while the source catalog is still resolving
-                // (U-ONB6) so we never act on a not-yet-known catalog or bounce out of onboarding.
-                isBusy: state.isBusy || !state.connectorSyncingIDs.isEmpty || notesCatalogResolving
-            ) {
-                runConnectAction()
+            // #26/#28 THE hero: one obvious thing to do. Direct session sign-in turns your AI chats into
+            // cited memory in a single tap. Everything below is a quiet fallback.
+            if sessionImportAvailable {
+                aiChatsHero
             }
 
-            // Inline outcome for the connect-notes card: syncLocalNotesFolder writes its guidance
-            // (empty folder, moved folder, …) to `connectorLastMessages`, which otherwise lands on
-            // a Connections surface the user can't see mid-onboarding. Echo it here so a connect
-            // that found no usable notes never resolves silently. Hidden while a connect is in
-            // flight and once a source is live (success is the card's own "Source connected" state).
-            if !state.onboardingHasSource,
-               !state.isBusy,
-               state.connectorSyncingIDs.isEmpty,
-               let connectMessage = state.connectorLastMessages[resolvedNotesConnector.id] {
-                OnboardingNoticeBanner(
-                    notice: OnboardingNotice(severity: .warning, title: nil, message: connectMessage)
-                )
-                .transition(.opacity)
-            }
+            // #27 The quick-first-sync payoff: the instant the first batch of chats becomes citable, we
+            // say so ("N memories in — you can start now") instead of making the user wait for the rest.
+            quickSyncSuccessCard
 
-            appConnectGrid
+            // Quiet fallback 1 — the notes folder. Secondary when the chat hero is present; it only
+            // takes the step's single `.primary` in the App Store build, where session import can't run.
+            notesFallback
 
-            sampleNotesOption
+            // Quiet fallback 2 — everything else, collapsed so a first-timer sees one clear path.
+            otherWaysDisclosure
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: quickSyncMemoriesToShow)
         .task {
             if state.sourceConnectorCatalog.isEmpty {
                 await state.loadSourceConnectivity()
             }
         }
+        // #27 React to first results immediately: the moment memory becomes citable (whether from the
+        // session import finishing its first batch or a background sync landing), capture the count so
+        // the success beat surfaces without waiting for the full history to stream in.
+        .onChange(of: state.onboardingHasSyncedMemory) { synced in
+            if synced, quickSyncMemories == nil {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                    quickSyncMemories = state.stats?.memories ?? state.graphNodes.count
+                }
+            }
+        }
+        // DMG-only direct sign-in harvest sheet. `presentedSessionVendor` is never set in the App Store
+        // build (the hero that sets it is gated on `sessionImportAvailable`), so this presents nothing there.
+        .sheet(item: $presentedSessionVendor) { vendor in
+            AIChatSessionImportView(
+                vendor: vendor,
+                state: state,
+                onFinished: { success in
+                    // Import RESOLVED. Refresh the live memory picture and, if anything landed, flip on
+                    // the quick-first-sync success beat right away — the rest keeps streaming behind it.
+                    guard success else { return }
+                    Task { @MainActor in
+                        await state.loadStats()
+                        await state.loadGraph()
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                            quickSyncMemories = state.stats?.memories ?? state.graphNodes.count
+                        }
+                    }
+                },
+                onDismiss: { presentedSessionVendor = nil }
+            )
+        }
+    }
+
+    /// The header line adapts to the build: lead with the one-tap chat hero on DMG, and stay honest in
+    /// the App Store build (no embedded session import there) by leading with the notes / export paths.
+    private var headerSubtitle: String {
+        sessionImportAvailable
+            ? "The fastest way in: sign in to your AI chats and \(DistributionMode.appDisplayName) turns your history into cited memory. Everything stays on this Mac."
+            : "Point \(DistributionMode.appDisplayName) at your notes, or drop in a ChatGPT or Claude export. Whatever you bring is distilled into cited memory, all on this Mac."
+    }
+
+    // MARK: Hero — connect your AI chats (#26/#28)
+
+    /// The single, unmissable action of this step. A wax primary that opens the embedded sign-in
+    /// importer for the selected chat vendor; a quiet three-way selector picks which. Once real memory
+    /// has landed the primary relaxes to a secondary "Connect more chats" and the footer Continue takes
+    /// over as the step's single `.primary`, so exactly one wax action is ever on screen.
+    private var aiChatsHero: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "bubble.left.and.text.bubble.right")
+                    .font(.title2)
+                    .foregroundColor(CortexDesign.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Connect your AI chats")
+                        .font(.headline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Sign in once and \(DistributionMode.appDisplayName) turns your history into cited memory. It reads only your own chats, and nothing leaves this Mac.")
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                ForEach(OnboardingAddMemoryStep.heroChatVendors) { vendor in
+                    heroVendorChip(vendor)
+                }
+            }
+
+            CortexButton(
+                title: state.onboardingHasSource ? "Connect more chats" : "Connect your \(sessionVendor.displayName) chats",
+                systemImage: "person.crop.circle.badge.checkmark",
+                role: state.onboardingHasSource ? .secondary : .primary,
+                size: .large,
+                fullWidth: true
+            ) {
+                presentedSessionVendor = sessionVendor
+            }
+            .disabled(state.importInFlight)
+            .accessibilityLabel("Connect your \(sessionVendor.displayName) chats")
+
+            if state.importInFlight {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Importing your \(sessionVendor.displayName) chats…")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                }
+                .transition(.opacity)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(CortexDesign.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(CortexDesign.accent.opacity(state.onboardingHasSource ? 0 : 0.32), lineWidth: 1)
+        )
+        .embossedBorder()
+        .shadow(color: CortexDesign.Elevation.rest.ambient.color, radius: CortexDesign.Elevation.rest.ambient.radius, y: CortexDesign.Elevation.rest.ambient.y)
+        .shadow(color: CortexDesign.Elevation.rest.contact.color, radius: CortexDesign.Elevation.rest.contact.radius, y: CortexDesign.Elevation.rest.contact.y)
+    }
+
+    /// A quiet, selectable vendor pill for the hero selector. Selection tints the pill and rings it in
+    /// wax; the primary button below acts on whatever is selected. Not a `.primary` itself, so the
+    /// step keeps exactly one wax action.
+    private func heroVendorChip(_ vendor: AIChatImportVendor) -> some View {
+        let selected = sessionVendor == vendor
+        return Button {
+            withAnimation(CortexMotion.settle) { sessionVendor = vendor }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: vendor.symbolName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(selected ? CortexDesign.accent : CortexDesign.inkSecondary)
+                Text(vendor.displayName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(selected ? CortexDesign.ink : CortexDesign.inkSecondary)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity)
+            .background(selected ? CortexDesign.accentSoft : CortexDesign.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                    .stroke(CortexDesign.accent.opacity(selected ? 0.5 : 0), lineWidth: 1)
+            )
+            .embossedBorder()
+        }
+        .buttonStyle(.plain)
+        .help("Import from \(vendor.displayName)")
+        .accessibilityLabel("Import from \(vendor.displayName)")
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    /// #27 The quick-first-sync success beat. As soon as the first batch of imported chats is citable
+    /// it says "N memories in — you can start now" so the user can move on immediately; the rest of the
+    /// history keeps streaming in the background.
+    @ViewBuilder
+    private var quickSyncSuccessCard: some View {
+        if let count = quickSyncMemoriesToShow {
+            OnboardingCheckRow(
+                title: count > 0
+                    ? "\(count) memories in. You can start now"
+                    : "Your first chats are in. You can start now",
+                detail: "The rest of your history keeps importing in the background. Continue whenever you're ready.",
+                systemImage: "checkmark.seal.fill",
+                color: CortexDesign.sealMoss
+            )
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CortexDesign.panelBackground)
+            .onboardingPanel(radius: 10)
+            .transition(.asymmetric(
+                insertion: .move(edge: .top).combined(with: .opacity),
+                removal: .opacity
+            ))
+        }
+    }
+
+    // MARK: Fallback — notes folder
+
+    /// The quiet notes-folder path. Secondary whenever the chat hero is present; it only becomes the
+    /// step's single `.primary` in the App Store build, where the embedded session import can't run and
+    /// the notes folder is the fastest local path in.
+    @ViewBuilder
+    private var notesFallback: some View {
+        let notesIsPrimary = !sessionImportAvailable && !state.onboardingHasSource
+        OnboardingLaneLabel(
+            systemImage: "folder.badge.plus",
+            title: notesIsPrimary ? "Point \(DistributionMode.appDisplayName) at your notes" : "Or point \(DistributionMode.appDisplayName) at your notes",
+            detail: "Choose a local notes folder and \(DistributionMode.appDisplayName) keeps it synced on this Mac."
+        )
+        OnboardingConnectionCard(
+            title: connectTitle,
+            detail: connectDetail,
+            systemImage: connectIcon,
+            isPrimary: notesIsPrimary,
+            status: connectStatus,
+            buttonTitle: connectButtonTitle,
+            buttonSystemImage: connectButtonIcon,
+            // In flight while a folder connect / sync this card kicked off is running (state.isBusy) or
+            // any connector sync is active — so it can't be double-fired mid-connect. Also held while
+            // the source catalog is still resolving (U-ONB6) so we never act on a not-yet-known catalog.
+            isBusy: state.isBusy || !state.connectorSyncingIDs.isEmpty || notesCatalogResolving
+        ) {
+            runConnectAction()
+        }
+
+        // Inline outcome for the connect-notes card: syncLocalNotesFolder writes its guidance (empty
+        // folder, moved folder, …) to `connectorLastMessages`, which otherwise lands on a Connections
+        // surface the user can't see mid-onboarding. Echo it here so a connect that found no usable
+        // notes never resolves silently. Hidden while a connect is in flight and once a source is live.
+        if !state.onboardingHasSource,
+           !state.isBusy,
+           state.connectorSyncingIDs.isEmpty,
+           let connectMessage = state.connectorLastMessages[resolvedNotesConnector.id] {
+            OnboardingNoticeBanner(
+                notice: OnboardingNotice(severity: .warning, title: nil, message: connectMessage)
+            )
+            .transition(.opacity)
+        }
+    }
+
+    // MARK: Fallback — other ways, collapsed
+
+    /// Every remaining path, tucked into a quiet disclosure so a first-timer isn't asked to choose
+    /// among competing lanes: drop in an export file, sign in to a source app, or explore sample notes.
+    private var otherWaysDisclosure: some View {
+        OnboardingDisclosure(title: "Other ways to add memory", isExpanded: $otherWaysExpanded) {
+            VStack(alignment: .leading, spacing: 16) {
+                OnboardingLaneLabel(
+                    systemImage: "square.and.arrow.down",
+                    title: "Already have an export file?",
+                    detail: "Drag in a ChatGPT, Claude, or Gemini export and \(DistributionMode.appDisplayName) imports it."
+                )
+                aiExportOption
+
+                appConnectGrid
+
+                sampleNotesOption
+            }
+            .padding(.top, 12)
+        }
+        .padding(.top, 2)
     }
 
     /// The lighter, ghost-role path: bundled sample notes so a brand-new user (or a reviewer with
@@ -1277,8 +1530,13 @@ private struct OnboardingAddMemoryStep: View {
                             name: connector.name,
                             systemImage: sourceIcon(connector.id),
                             connectable: sourceIsConnectable(connector),
-                            starting: state.connectorOAuthStartingIDs.contains(connector.id),
-                            connected: state.connectorSyncingIDs.contains(connector.id)
+                            // Mirror ConnectionsPrivacySheet.SignInSourceTile: "starting" covers the
+                            // whole in-flight window (OAuth opening + post-OAuth sync), and "connected"
+                            // reads the DURABLE persisted source account — so a genuinely-connected tile
+                            // STAYS connected instead of showing a premature/reverting checkmark.
+                            starting: state.connectorOAuthStartingIDs.contains(connector.id)
+                                || state.connectorSyncingIDs.contains(connector.id),
+                            connected: state.sourceAccount(connector) != nil
                         ) {
                             connectOnboardingSource(connector)
                         }
@@ -1323,7 +1581,7 @@ private struct OnboardingAddMemoryStep: View {
                     handleExportDrop(providers)
                 }
 
-            Text("Or just download it — the moment the export lands in Downloads or on your Desktop, \(DistributionMode.appDisplayName) imports it for you.")
+            Text("Or just download it. The moment the export lands in Downloads or on your Desktop, \(DistributionMode.appDisplayName) imports it for you.")
                 .font(.caption)
                 .foregroundColor(CortexDesign.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1446,7 +1704,7 @@ private struct OnboardingAddMemoryStep: View {
         if state.hasConnectedObsidianVault {
             return "\(DistributionMode.appDisplayName) checks connected notes on launch and every 30 minutes, then distills new memory with citations."
         }
-        return "Choose a local notes folder, or drag in a ChatGPT / Claude export. Everything stays on your Mac."
+        return "Choose a local notes folder and \(DistributionMode.appDisplayName) keeps it synced. Everything stays on your Mac."
     }
 
     private var connectIcon: String {
@@ -1578,7 +1836,11 @@ private struct OnboardingUseItStep: View {
             CortexButton(
                 title: connected > 0 ? "Connect another tool" : "Connect an AI tool",
                 systemImage: "link",
-                role: .primary,
+                // One wax action per step. Before anything is connected, THIS is the beat's primary and
+                // the footer Continue stays quiet. Once a tool is live the footer Continue takes the
+                // primary (moving on is the next action), so connecting another relaxes to secondary —
+                // otherwise both are wax at once, which the step's single-primary rule forbids.
+                role: connected > 0 ? .secondary : .primary,
                 size: .large,
                 fullWidth: true
             ) {
@@ -2020,6 +2282,7 @@ struct OnboardingHeroMark: View {
     let systemImage: String
     let tint: Color
     @State private var animate = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -2046,44 +2309,57 @@ struct OnboardingHeroMark: View {
                 .animation(.easeInOut(duration: 2).repeatForever(autoreverses: true), value: animate)
         }
         .frame(width: 96, height: 96)
-        .onAppear { animate = true }
+        // Reduce Motion: leave the rings and glyph at their resting scale instead of pulsing forever.
+        .onAppear { guard !reduceMotion else { return }; animate = true }
         .accessibilityHidden(true)
     }
 }
 
 /// Three note cards drifting into a single distilled memory dot — the "notes → memory" idea.
 private struct OnboardingDistillMark: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        TimelineView(.animation) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            Canvas { ctx, size in
-                let center = CGPoint(x: size.width / 2, y: size.height * 0.62)
-                // Three source "note" marks orbiting slightly, feeding the center.
-                for i in 0..<3 {
-                    let phase = t * 0.6 + Double(i) * (.pi * 2 / 3)
-                    let radius = 26.0 + sin(t * 0.9 + Double(i)) * 3
-                    let p = CGPoint(x: center.x + CGFloat(cos(phase)) * radius,
-                                    y: center.y - 34 + CGFloat(sin(phase)) * radius * 0.4)
-                    let rect = CGRect(x: p.x - 7, y: p.y - 9, width: 14, height: 18)
-                    let path = Path(roundedRect: rect, cornerRadius: 2)
-                    ctx.fill(path, with: .color(CortexDesign.gold.opacity(0.55)))
-                    // Faint line drawing each note toward the distilled memory.
-                    var line = Path()
-                    line.move(to: p)
-                    line.addLine(to: center)
-                    ctx.stroke(line, with: .color(CortexDesign.accent.opacity(0.18)), lineWidth: 1)
+        Group {
+            if reduceMotion {
+                // A still frame at a fixed phase — no TimelineView display link running.
+                distillCanvas(at: 0)
+            } else {
+                TimelineView(.animation) { context in
+                    distillCanvas(at: context.date.timeIntervalSinceReferenceDate)
                 }
-                // The distilled memory: a steady wax-red dot with a soft breathing halo.
-                let pulse = 1 + sin(t * 1.4) * 0.12
-                let halo = CGRect(x: center.x - 13 * pulse, y: center.y - 13 * pulse,
-                                  width: 26 * pulse, height: 26 * pulse)
-                ctx.fill(Path(ellipseIn: halo), with: .color(CortexDesign.accent.opacity(0.15)))
-                let dot = CGRect(x: center.x - 7, y: center.y - 7, width: 14, height: 14)
-                ctx.fill(Path(ellipseIn: dot), with: .color(CortexDesign.accent))
             }
         }
         .frame(height: 96)
         .accessibilityHidden(true)
+    }
+
+    private func distillCanvas(at t: Double) -> some View {
+        Canvas { ctx, size in
+            let center = CGPoint(x: size.width / 2, y: size.height * 0.62)
+            // Three source "note" marks orbiting slightly, feeding the center.
+            for i in 0..<3 {
+                let phase = t * 0.6 + Double(i) * (.pi * 2 / 3)
+                let radius = 26.0 + sin(t * 0.9 + Double(i)) * 3
+                let p = CGPoint(x: center.x + CGFloat(cos(phase)) * radius,
+                                y: center.y - 34 + CGFloat(sin(phase)) * radius * 0.4)
+                let rect = CGRect(x: p.x - 7, y: p.y - 9, width: 14, height: 18)
+                let path = Path(roundedRect: rect, cornerRadius: 2)
+                ctx.fill(path, with: .color(CortexDesign.gold.opacity(0.55)))
+                // Faint line drawing each note toward the distilled memory.
+                var line = Path()
+                line.move(to: p)
+                line.addLine(to: center)
+                ctx.stroke(line, with: .color(CortexDesign.accent.opacity(0.18)), lineWidth: 1)
+            }
+            // The distilled memory: a steady wax-red dot with a soft breathing halo.
+            let pulse = 1 + sin(t * 1.4) * 0.12
+            let halo = CGRect(x: center.x - 13 * pulse, y: center.y - 13 * pulse,
+                              width: 26 * pulse, height: 26 * pulse)
+            ctx.fill(Path(ellipseIn: halo), with: .color(CortexDesign.accent.opacity(0.15)))
+            let dot = CGRect(x: center.x - 7, y: center.y - 7, width: 14, height: 14)
+            ctx.fill(Path(ellipseIn: dot), with: .color(CortexDesign.accent))
+        }
     }
 }
 
@@ -2093,25 +2369,37 @@ private struct OnboardingDistillMark: View {
 /// A whisper-quiet drifting field behind the whole walkthrough — a few faint gold motes moving
 /// slowly across the paper. Never busy; opacity stays very low.
 private struct OnboardingAmbientBackground: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         ZStack {
             CortexDesign.appBackground
-            TimelineView(.animation) { context in
-                let t = context.date.timeIntervalSinceReferenceDate
-                Canvas { ctx, size in
-                    for i in 0..<9 {
-                        let seed = Double(i) * 1.7
-                        let x = (sin(t * 0.05 + seed) * 0.5 + 0.5) * size.width
-                        let y = (cos(t * 0.04 + seed * 1.3) * 0.5 + 0.5) * size.height
-                        let r = 1.5 + (sin(seed) + 1) * 1.2
-                        let rect = CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)
-                        ctx.fill(Path(ellipseIn: rect), with: .color(CortexDesign.gold.opacity(0.05)))
+            Group {
+                if reduceMotion {
+                    // Reduce Motion: a still mote field, no display-link animation.
+                    moteCanvas(at: 0)
+                } else {
+                    TimelineView(.animation) { context in
+                        moteCanvas(at: context.date.timeIntervalSinceReferenceDate)
                     }
                 }
             }
             .allowsHitTesting(false)
         }
         .ignoresSafeArea()
+    }
+
+    private func moteCanvas(at t: Double) -> some View {
+        Canvas { ctx, size in
+            for i in 0..<9 {
+                let seed = Double(i) * 1.7
+                let x = (sin(t * 0.05 + seed) * 0.5 + 0.5) * size.width
+                let y = (cos(t * 0.04 + seed * 1.3) * 0.5 + 0.5) * size.height
+                let r = 1.5 + (sin(seed) + 1) * 1.2
+                let rect = CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)
+                ctx.fill(Path(ellipseIn: rect), with: .color(CortexDesign.gold.opacity(0.05)))
+            }
+        }
     }
 }
 
@@ -2231,19 +2519,35 @@ struct OnboardingSourceTile: View {
     let connected: Bool
     let action: () -> Void
 
+    // Hover/press state for a tactile, alive feel. macOS 13-safe (plain withAnimation + onHover).
+    @State private var hovering = false
+    @State private var pressing = false
+
     private var subtitle: String {
-        if connected { return "Syncing…" }
+        if connected { return "Connected" }
         if starting { return "Opening sign-in…" }
         return connectable ? "Connect" : "Available soon"
+    }
+
+    private var iconTint: Color {
+        if connected { return CortexDesign.sealMoss }
+        return connectable ? CortexDesign.accent : CortexDesign.inkFaint
     }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: systemImage)
-                    .font(.title3)
-                    .foregroundColor(connectable ? CortexDesign.accent : CortexDesign.inkFaint)
-                    .frame(width: 22)
+                ZStack {
+                    // Soft halo that blooms on hover, so the eye is drawn to the tappable thing.
+                    Circle()
+                        .fill((connected ? CortexDesign.sealMoss : CortexDesign.accent).opacity(hovering && connectable ? 0.14 : 0))
+                        .frame(width: 34, height: 34)
+                    Image(systemName: connected ? "checkmark.seal.fill" : systemImage)
+                        .font(.title3)
+                        .foregroundColor(iconTint)
+                        .scaleEffect(connected ? 1.06 : 1)
+                }
+                .frame(width: 26)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(name)
                         .font(.callout)
@@ -2251,26 +2555,51 @@ struct OnboardingSourceTile: View {
                         .foregroundColor(CortexDesign.ink)
                     Text(subtitle)
                         .font(.caption2)
-                        .foregroundColor(CortexDesign.inkSecondary)
+                        .foregroundColor(connected ? CortexDesign.sealMoss : CortexDesign.inkSecondary)
                 }
                 Spacer(minLength: 4)
                 if starting {
                     ProgressView().controlSize(.small)
+                } else if connected {
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(CortexDesign.sealMoss)
+                        .transition(.scale.combined(with: .opacity))
                 } else if connectable {
                     Image(systemName: "arrow.right.circle.fill")
                         .foregroundColor(CortexDesign.accent)
+                        // Nudge the arrow on hover to say "go".
+                        .offset(x: hovering ? 2 : 0)
                 }
             }
             .padding(11)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(CortexDesign.cardBackground)
+            .background(hovering && connectable ? CortexDesign.panelBackground : CortexDesign.cardBackground)
             .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                    .strokeBorder((connected ? CortexDesign.sealMoss : CortexDesign.accent).opacity(hovering && connectable ? 0.45 : 0), lineWidth: 1)
+            )
             .embossedBorder()
-            .shadow(color: CortexDesign.Elevation.rest.contact.color, radius: CortexDesign.Elevation.rest.contact.radius, y: CortexDesign.Elevation.rest.contact.y)
+            .shadow(
+                color: CortexDesign.Elevation.rest.contact.color,
+                radius: hovering && connectable ? CortexDesign.Elevation.rest.contact.radius + 3 : CortexDesign.Elevation.rest.contact.radius,
+                y: hovering && connectable ? CortexDesign.Elevation.rest.contact.y + 2 : CortexDesign.Elevation.rest.contact.y
+            )
             .opacity(connectable ? 1 : 0.7)
+            .scaleEffect(pressing ? 0.97 : (hovering && connectable ? 1.02 : 1))
+            .offset(y: hovering && connectable ? -2 : 0)
         }
         .buttonStyle(.plain)
         .disabled(!connectable || starting)
+        .onHover { h in withAnimation(CortexMotion.hover) { hovering = h } }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in if !pressing { withAnimation(CortexMotion.press) { pressing = true } } }
+                .onEnded { _ in withAnimation(CortexMotion.press) { pressing = false } }
+        )
+        .animation(CortexMotion.settle, value: connected)
+        .animation(CortexMotion.settle, value: starting)
         .help(connectable ? "Sign in to \(name) and import your data" : "\(name) sign-in is coming soon")
     }
 }
