@@ -492,6 +492,18 @@ private struct OnboardingRestoreSignInStep: View {
         return trimmed.isEmpty ? AppState.defaultHostedURL : trimmed
     }
 
+    /// Classify the auth status line so a normal progress/success message is never dressed as an
+    /// alarm. `cloudAuthMessage` is one field carrying progress ("Signing in…"), success ("Signed
+    /// in."), a neutral cancel, AND genuine errors — rendering it all as a gold warning made a
+    /// healthy sign-in look like it failed. In-flight => info, a live session => success, an explicit
+    /// cancel => info, and only a real failure keeps the warning styling.
+    private var cloudAuthNoticeSeverity: OnboardingNotice.Severity {
+        if state.cloudAuthBusy { return .info }
+        if state.isSignedIn { return .success }
+        if state.cloudAuthMessage.localizedCaseInsensitiveContains("cancel") { return .info }
+        return .warning
+    }
+
     /// Social providers reached via the browser handoff (Apple has its own native flow elsewhere;
     /// here we keep the returning-user path simple and lean on the universal browser + email paths).
     private var browserProviders: [CloudAuthProvider] {
@@ -560,6 +572,14 @@ private struct OnboardingRestoreSignInStep: View {
             }
 
             VStack(alignment: .leading, spacing: 12) {
+                // Sign in with Apple, first and native. A returning user whose account was created via
+                // Apple previously had NO way to restore during first-run (the browser provider list
+                // deliberately excludes Apple, since native SIWA has no web client secret), leaving
+                // GitHub/Google offered but not Apple — the exact Guideline 4.8 gap the settings surface
+                // already closes. Same shared control, so the two never drift; it self-hides on ad-hoc
+                // builds that lack the entitlement.
+                CortexAppleSignInButton(state: state, hostedURL: resolvedHostedURL)
+
                 ForEach(browserProviders) { provider in
                     CortexButton(
                         title: providerButtonLabel(provider),
@@ -611,7 +631,7 @@ private struct OnboardingRestoreSignInStep: View {
 
             if !state.cloudAuthMessage.isEmpty {
                 OnboardingNoticeBanner(
-                    notice: OnboardingNotice(severity: .warning, title: nil, message: state.cloudAuthMessage),
+                    notice: OnboardingNotice(severity: cloudAuthNoticeSeverity, title: nil, message: state.cloudAuthMessage),
                     onDismiss: nil
                 )
             }
@@ -1816,7 +1836,11 @@ private struct OnboardingUseItStep: View {
             CortexButton(
                 title: connected > 0 ? "Connect another tool" : "Connect an AI tool",
                 systemImage: "link",
-                role: .primary,
+                // One wax action per step. Before anything is connected, THIS is the beat's primary and
+                // the footer Continue stays quiet. Once a tool is live the footer Continue takes the
+                // primary (moving on is the next action), so connecting another relaxes to secondary —
+                // otherwise both are wax at once, which the step's single-primary rule forbids.
+                role: connected > 0 ? .secondary : .primary,
                 size: .large,
                 fullWidth: true
             ) {
@@ -2258,6 +2282,7 @@ struct OnboardingHeroMark: View {
     let systemImage: String
     let tint: Color
     @State private var animate = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -2284,44 +2309,57 @@ struct OnboardingHeroMark: View {
                 .animation(.easeInOut(duration: 2).repeatForever(autoreverses: true), value: animate)
         }
         .frame(width: 96, height: 96)
-        .onAppear { animate = true }
+        // Reduce Motion: leave the rings and glyph at their resting scale instead of pulsing forever.
+        .onAppear { guard !reduceMotion else { return }; animate = true }
         .accessibilityHidden(true)
     }
 }
 
 /// Three note cards drifting into a single distilled memory dot — the "notes → memory" idea.
 private struct OnboardingDistillMark: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        TimelineView(.animation) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            Canvas { ctx, size in
-                let center = CGPoint(x: size.width / 2, y: size.height * 0.62)
-                // Three source "note" marks orbiting slightly, feeding the center.
-                for i in 0..<3 {
-                    let phase = t * 0.6 + Double(i) * (.pi * 2 / 3)
-                    let radius = 26.0 + sin(t * 0.9 + Double(i)) * 3
-                    let p = CGPoint(x: center.x + CGFloat(cos(phase)) * radius,
-                                    y: center.y - 34 + CGFloat(sin(phase)) * radius * 0.4)
-                    let rect = CGRect(x: p.x - 7, y: p.y - 9, width: 14, height: 18)
-                    let path = Path(roundedRect: rect, cornerRadius: 2)
-                    ctx.fill(path, with: .color(CortexDesign.gold.opacity(0.55)))
-                    // Faint line drawing each note toward the distilled memory.
-                    var line = Path()
-                    line.move(to: p)
-                    line.addLine(to: center)
-                    ctx.stroke(line, with: .color(CortexDesign.accent.opacity(0.18)), lineWidth: 1)
+        Group {
+            if reduceMotion {
+                // A still frame at a fixed phase — no TimelineView display link running.
+                distillCanvas(at: 0)
+            } else {
+                TimelineView(.animation) { context in
+                    distillCanvas(at: context.date.timeIntervalSinceReferenceDate)
                 }
-                // The distilled memory: a steady wax-red dot with a soft breathing halo.
-                let pulse = 1 + sin(t * 1.4) * 0.12
-                let halo = CGRect(x: center.x - 13 * pulse, y: center.y - 13 * pulse,
-                                  width: 26 * pulse, height: 26 * pulse)
-                ctx.fill(Path(ellipseIn: halo), with: .color(CortexDesign.accent.opacity(0.15)))
-                let dot = CGRect(x: center.x - 7, y: center.y - 7, width: 14, height: 14)
-                ctx.fill(Path(ellipseIn: dot), with: .color(CortexDesign.accent))
             }
         }
         .frame(height: 96)
         .accessibilityHidden(true)
+    }
+
+    private func distillCanvas(at t: Double) -> some View {
+        Canvas { ctx, size in
+            let center = CGPoint(x: size.width / 2, y: size.height * 0.62)
+            // Three source "note" marks orbiting slightly, feeding the center.
+            for i in 0..<3 {
+                let phase = t * 0.6 + Double(i) * (.pi * 2 / 3)
+                let radius = 26.0 + sin(t * 0.9 + Double(i)) * 3
+                let p = CGPoint(x: center.x + CGFloat(cos(phase)) * radius,
+                                y: center.y - 34 + CGFloat(sin(phase)) * radius * 0.4)
+                let rect = CGRect(x: p.x - 7, y: p.y - 9, width: 14, height: 18)
+                let path = Path(roundedRect: rect, cornerRadius: 2)
+                ctx.fill(path, with: .color(CortexDesign.gold.opacity(0.55)))
+                // Faint line drawing each note toward the distilled memory.
+                var line = Path()
+                line.move(to: p)
+                line.addLine(to: center)
+                ctx.stroke(line, with: .color(CortexDesign.accent.opacity(0.18)), lineWidth: 1)
+            }
+            // The distilled memory: a steady wax-red dot with a soft breathing halo.
+            let pulse = 1 + sin(t * 1.4) * 0.12
+            let halo = CGRect(x: center.x - 13 * pulse, y: center.y - 13 * pulse,
+                              width: 26 * pulse, height: 26 * pulse)
+            ctx.fill(Path(ellipseIn: halo), with: .color(CortexDesign.accent.opacity(0.15)))
+            let dot = CGRect(x: center.x - 7, y: center.y - 7, width: 14, height: 14)
+            ctx.fill(Path(ellipseIn: dot), with: .color(CortexDesign.accent))
+        }
     }
 }
 
@@ -2331,25 +2369,37 @@ private struct OnboardingDistillMark: View {
 /// A whisper-quiet drifting field behind the whole walkthrough — a few faint gold motes moving
 /// slowly across the paper. Never busy; opacity stays very low.
 private struct OnboardingAmbientBackground: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         ZStack {
             CortexDesign.appBackground
-            TimelineView(.animation) { context in
-                let t = context.date.timeIntervalSinceReferenceDate
-                Canvas { ctx, size in
-                    for i in 0..<9 {
-                        let seed = Double(i) * 1.7
-                        let x = (sin(t * 0.05 + seed) * 0.5 + 0.5) * size.width
-                        let y = (cos(t * 0.04 + seed * 1.3) * 0.5 + 0.5) * size.height
-                        let r = 1.5 + (sin(seed) + 1) * 1.2
-                        let rect = CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)
-                        ctx.fill(Path(ellipseIn: rect), with: .color(CortexDesign.gold.opacity(0.05)))
+            Group {
+                if reduceMotion {
+                    // Reduce Motion: a still mote field, no display-link animation.
+                    moteCanvas(at: 0)
+                } else {
+                    TimelineView(.animation) { context in
+                        moteCanvas(at: context.date.timeIntervalSinceReferenceDate)
                     }
                 }
             }
             .allowsHitTesting(false)
         }
         .ignoresSafeArea()
+    }
+
+    private func moteCanvas(at t: Double) -> some View {
+        Canvas { ctx, size in
+            for i in 0..<9 {
+                let seed = Double(i) * 1.7
+                let x = (sin(t * 0.05 + seed) * 0.5 + 0.5) * size.width
+                let y = (cos(t * 0.04 + seed * 1.3) * 0.5 + 0.5) * size.height
+                let r = 1.5 + (sin(seed) + 1) * 1.2
+                let rect = CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)
+                ctx.fill(Path(ellipseIn: rect), with: .color(CortexDesign.gold.opacity(0.05)))
+            }
+        }
     }
 }
 

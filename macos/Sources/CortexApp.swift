@@ -10147,6 +10147,9 @@ struct CortexView: View {
                     .accessibilityHidden(state.selectedTab != .ask)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // Cross-fade the tab contents in step with the sliding tab-bar indicator instead of a hard
+            // cut. Gentle and short so switching still feels instant; opacity-only, so no layout shift.
+            .animation(.easeInOut(duration: 0.18), value: state.selectedTab)
             // The bottom Live Activity ticker floats above the tab content (self-hiding when idle).
             // As an overlay it never shifts the tab layout. Hit-testing stays ON so the ticker card
             // is tappable (U-LIVE4: tap opens the relevant tab); the surrounding frame is transparent

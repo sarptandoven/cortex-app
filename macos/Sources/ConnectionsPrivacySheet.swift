@@ -3345,7 +3345,7 @@ private struct ConnectionsAIToolsSection: View {
                 // and add an explicit paste next-step for the browser-extension pairing token.
                 VStack(alignment: .trailing, spacing: 8) {
                     CortexButton(
-                        title: copiedCluster == .extensionPairing ? "Token copied" : "Connect extension",
+                        title: copiedCluster == .extensionPairing ? "Key copied" : "Connect extension",
                         systemImage: copiedCluster == .extensionPairing ? "checkmark" : "puzzlepiece.extension",
                         role: .secondary,
                         size: .small
@@ -3374,7 +3374,7 @@ private struct ConnectionsAIToolsSection: View {
                     Image(systemName: "arrow.turn.down.right")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(CortexDesign.accent)
-                    Text("Paste this token into the \(DistributionMode.appDisplayName) browser extension's Options, then click \(DistributionMode.appDisplayName) on a supported site.")
+                    Text("Paste this key into the \(DistributionMode.appDisplayName) browser extension's Options, then click \(DistributionMode.appDisplayName) on a supported site.")
                         .font(.caption)
                         .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -5149,7 +5149,7 @@ private struct ConnectionsMCPAccessSection: View {
                     .foregroundColor(activeMCPTokens.isEmpty ? CortexDesign.inkSecondary : CortexDesign.accent)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(activeMCPTokens.isEmpty ? "No AI tool connected yet" : "\(activeMCPTokens.count) active MCP token\(activeMCPTokens.count == 1 ? "" : "s")")
+                    Text(activeMCPTokens.isEmpty ? "No AI tool connected yet" : "\(activeMCPTokens.count) active AI tool connection\(activeMCPTokens.count == 1 ? "" : "s")")
                         .font(.callout)
                         .fontWeight(.semibold)
                         .foregroundColor(CortexDesign.ink)
@@ -5159,10 +5159,10 @@ private struct ConnectionsMCPAccessSection: View {
                         .lineLimit(2)
                 }
                 Spacer(minLength: 8)
-                CortexButton(title: "Reset Token", systemImage: "arrow.triangle.2.circlepath", role: .secondary, size: .small) {
+                CortexButton(title: "Reset access", systemImage: "arrow.triangle.2.circlepath", role: .secondary, size: .small) {
                     Task { await state.resetMCPIntegrationToken() }
                 }
-                .help("Revokes the current MCP token and mints a new one. Connected tools must be reconfigured.")
+                .help("Revokes access for all connected AI tools, which must then be reconnected.")
             }
             .padding(12)
             .background(CortexDesign.cardBackground)

@@ -204,6 +204,11 @@ final class LiveActivityCenter {
                 self.appActive = false
                 self.loopTask?.cancel()
                 self.loopTask = nil
+                // Settle the continuously-animating surfaces too, so a repeatForever breathe/sweep can't
+                // keep running (and drawing) while the app is in the background. didBecomeActive's
+                // resume() restarts them from live state.
+                self.glow.setActive(false)
+                self.hud.forceHide()
             }
             .store(in: &cancellables)
         nc.publisher(for: NSApplication.didBecomeActiveNotification)
@@ -569,6 +574,7 @@ private struct HUDProgressBar: View {
     var accent: Color
 
     @State private var sweep: CGFloat = 0     // indeterminate segment position (0…1)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var shimmer: CGFloat = 0   // determinate gloss position (0…1)
 
     var body: some View {
@@ -627,6 +633,8 @@ private struct HUDProgressBar: View {
 
     private func restart() {
         hardStop()   // kill any prior loop before starting the new one
+        // Reduce Motion: leave a static fill/segment rather than a perpetual sweep/shimmer.
+        guard !reduceMotion else { return }
         if indeterminate {
             withAnimation(.linear(duration: 1.15).repeatForever(autoreverses: false)) { sweep = 1 }
         } else {
@@ -695,6 +703,7 @@ private final class EdgeGlowModel: ObservableObject {
 private struct EdgeGlowView: View {
     @ObservedObject var model: EdgeGlowModel
     @State private var breathe = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         LinearGradient(
@@ -710,7 +719,7 @@ private struct EdgeGlowView: View {
             // repeatForever animation interpolating perpetually even at idle; gating it on
             // `active` starts it when the glow appears and cancels it (finite animation to a
             // resting value) when work stops.
-            if isActive {
+            if isActive && !reduceMotion {
                 withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) {
                     breathe = true
                 }

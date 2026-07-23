@@ -1,8 +1,24 @@
 # Founder go-live — exact, step-by-step
 
-The code is done and verified. To turn on accounts + cloud data for real users, do the steps
-below **in order**. Everything is copy-paste; where you must paste a value, it says so in **bold**.
-Total hands-on time ≈ 30–45 min (plus DNS/OAuth propagation waits).
+## Current status (2026-07-22)
+
+- ✅ **STEP 1 is already done.** The backend is LIVE at `https://api.signindoppl.com` (Hetzner,
+  Hostinger DNS). `curl https://api.signindoppl.com/health` returns ok; the `/admin` dashboard works
+  with your admin token. Email/password sign-up works today with zero further setup. To ship a new
+  backend build later: `deploy/push.sh root@<server IP> --update`.
+- ⏳ **What actually remains (needs YOUR accounts — I cannot do these for you):**
+  1. **GitHub Device Flow** — enable "Device Flow" on the GitHub OAuth app so the app's secretless
+     "Sign in with GitHub" button works (Step 2a note below). ~1 min.
+  2. **Google / GitHub / Apple OAuth apps** — register each and paste its client id/secret into the
+     server env (Step 2). Each is a few minutes; Google's *public* verification (only needed past 100
+     users) takes 1–2 weeks, so start it early.
+  3. **App Store submission** (only if/when you submit "Doppl" to the Mac App Store) — Steps 3–5.
+- The macOS **DMG** (direct distribution, notarized) needs none of the above: it already ships and
+  auto-updates. The OAuth items only light up the hosted "Sign in with …" buttons and connectors.
+
+The code is done and verified. To turn on the remaining social sign-ins + cloud data for real users,
+do the steps below **in order**. Everything is copy-paste; where you must paste a value, it says so
+in **bold**. Hands-on time ≈ 15–20 min now that Step 1 is done (plus OAuth propagation waits).
 
 Legend:
 - `On your Mac:` run in Terminal from the repo folder (`.../taipei`).
@@ -63,7 +79,11 @@ After editing the server's env file, apply it with:
    CORTEX_OIDC_GITHUB_CLIENT_ID=<paste client id>
    CORTEX_OIDC_GITHUB_CLIENT_SECRET=<paste secret>
    ```
-   then `systemctl restart cortex-api`. "Continue with GitHub" now works.
+   then `systemctl restart cortex-api`. "Continue with GitHub" (web) now works.
+5. **Also enable Device Flow** on that same GitHub app (this is what the macOS DMG's secretless
+   "Sign in with GitHub" button uses — no secret ever ships in the app). On the app's settings page,
+   tick **"Enable Device Flow"** → Save. The client id is already embedded in the app; nothing else
+   to paste. Until this is ticked, the in-app GitHub button returns "device flow not enabled".
 
 ### 2b. Google (works, but Google review takes 1–2 weeks for >100 users)
 1. https://console.cloud.google.com → create a project → APIs & Services → **OAuth consent screen**

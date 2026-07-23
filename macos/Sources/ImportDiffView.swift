@@ -667,7 +667,9 @@ struct ImportDiffView: View {
         // How many of these facts still have an "Add to Cortex" action outstanding — the ones that
         // aren't already added. Drives the batch "Add all" button's enabled state and count.
         let addable = facts.filter { !addedFactIDs.contains($0.id) }
-        VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
+        // LazyVStack so a large export's fact rows materialize as they scroll into view instead of
+        // building hundreds of cards eagerly (this whole section lives inside the sheet's ScrollView).
+        LazyVStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
             HStack(spacing: 8) {
                 Image(systemName: status.systemImage)
                     .foregroundColor(status.tone)
@@ -726,7 +728,8 @@ struct ImportDiffView: View {
     private func cortexOnlySection(_ result: ImportDiffResult) -> some View {
         let items = result.cortex_only ?? []
         if !items.isEmpty {
-            VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
+            // LazyVStack: the "what your export missed" list can be long; build rows on scroll.
+            LazyVStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
                 HStack(spacing: 8) {
                     Image(systemName: "tray.full")
                         .foregroundColor(CortexDesign.accent)
@@ -1597,6 +1600,7 @@ struct ImportDiffShareSheet: View {
     @State private var cardImage: NSImage?
     @State private var cardPNG: Data?
     @State private var copied = false
+    @State private var saved = false
     @State private var renderFailed = false
     @State private var activePicker: NSSharingServicePicker?
     @State private var shareAnchor = ImportDiffShareAnchor()
@@ -1626,7 +1630,7 @@ struct ImportDiffShareSheet: View {
                     copyPNG()
                 }
                 .disabled(cardPNG == nil)
-                CortexButton(title: "Save PNG", systemImage: "square.and.arrow.down", role: .secondary) {
+                CortexButton(title: saved ? "Saved" : "Save PNG", systemImage: "square.and.arrow.down", role: .secondary) {
                     savePNG()
                 }
                 .disabled(cardPNG == nil)
@@ -1696,8 +1700,24 @@ struct ImportDiffShareSheet: View {
         panel.nameFieldStringValue = "what-the-ai-thinks-of-me.png"
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
-        if panel.runModal() == .OK, let url = panel.url {
-            try? data.write(to: url)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            // NSSavePanel dismisses before the write, so a swallowed error (disk full, read-only
+            // volume, permission denied) would read exactly like success. Confirm the write and
+            // surface any failure — matching the canonical MemoryWrappedShareSheet.savePNG().
+            try data.write(to: url)
+            saved = true
+            Task {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                saved = false
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Couldn't save the PNG"
+            alert.informativeText = "The file wasn't written to \(url.lastPathComponent). \(error.localizedDescription)"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Done")
+            alert.runModal()
         }
     }
 

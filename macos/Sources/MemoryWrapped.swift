@@ -263,7 +263,7 @@ struct MemoryWrappedCard: View {
         VStack(alignment: .leading, spacing: 14) {
             if model.distinctAIs >= 1 {
                 (Text("Your memory answered ")
-                    + Text("\(model.totalRecalls)").foregroundColor(Night.accent)
+                    + Text(AnimatableNumber.groupedInteger(Double(model.totalRecalls))).foregroundColor(Night.accent)
                     + Text(" recall\(model.totalRecalls == 1 ? "" : "s") across ")
                     + Text("\(model.distinctAIs)").foregroundColor(Night.gold)
                     + Text(" AI\(model.distinctAIs == 1 ? "" : "s") this week"))
@@ -327,7 +327,7 @@ struct MemoryWrappedCard: View {
             } else {
                 ForEach(model.clients) { client in
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("\(client.recalls)")
+                        Text(AnimatableNumber.groupedInteger(Double(client.recalls)))
                             .font(.system(size: 40, weight: .semibold, design: .serif))
                             .monospacedDigit()
                             .foregroundColor(Night.ink)
