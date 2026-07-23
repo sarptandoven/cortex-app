@@ -1665,6 +1665,12 @@ private struct ConnectionsSignInSourcesSection: View {
         // sync. Show nothing rather than a dead tile (mirrors the library's filter). The notes +
         // export + Apple Notes lanes, which work locally, still carry the surface.
         .filter { _ in !DistributionMode.isAppStore }
+        // Only show sources you can actually connect right now. A managed-OAuth source whose provider
+        // isn't configured on the broker and has no pasted-token fallback (Gmail, Google Drive,
+        // Outlook in this build) can't be connected, so it is hidden entirely instead of showing an
+        // "Available soon" tile — matching the library grid, which already excludes and footnotes
+        // these. Nothing on this shelf is a dead end; every tile leads to a real connection.
+        .filter { isConnectable($0) || isConnected($0) }
     }
 
     /// Whether this connector can be connected right now (a live consent path exists). A managed-OAuth
