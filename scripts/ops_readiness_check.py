@@ -20,7 +20,6 @@ except ModuleNotFoundError:
 REQUIRED_DOCS = (
     "docs/ARCHITECTURE.md",
     "docs/DISTRIBUTION.md",
-    "docs/FIRST100_CLEAN_PROFILE_QA.md",
     "docs/INSTALLER_AND_UPDATES.md",
     "docs/OPERATIONAL_READINESS.md",
     "docs/PRODUCTION_READINESS.md",

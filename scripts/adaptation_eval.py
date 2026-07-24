@@ -29,9 +29,9 @@ NOISY_ADAPTATION_EXTERNAL_SIGNAL_GUARDS: tuple[dict[str, str], ...] = (
     {"source": "email", "layer": "style", "phrase": "external sender sales prose"},
     {"source": "slack", "layer": "preference", "phrase": "external Slack consensus rituals"},
 )
-LOCAL_FILE_SOURCE_URL = "/Users/sarptandoven/Documents/Cortex Beta/Adaptation Local Notes.md#line=14&excerpt=adaptation-local-citation"
+LOCAL_FILE_SOURCE_URL = "/Users/alex/Documents/Cortex Beta/Adaptation Local Notes.md#line=14&excerpt=adaptation-local-citation"
 LOCAL_FILE_SAFE_SOURCE_URL_PREFIX = "local-file://Adaptation%20Local%20Notes.md#line=14&excerpt=adaptation-local-citation"
-LOCAL_FILE_RAW_FRAGMENTS = ("/Users/sarptandoven", "Documents/Cortex Beta")
+LOCAL_FILE_RAW_FRAGMENTS = ("/Users/alex", "Documents/Cortex Beta")
 LOCAL_FILE_CITATION_CONTENT = (
     "Local adaptation citation fixture keeps local file source locators sanitized in profile focus and adaptation evidence."
 )

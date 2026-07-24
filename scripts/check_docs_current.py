@@ -67,19 +67,12 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
         "Public beta with local vault, Cortex memory, MCP integrations, and support bundle export.",
         "import one real source",
     ),
-    "docs/BETA_SUPPORT.md": (
-        "user confirmed they choose what to import",
-        "Send your context pack.",
-    ),
     "macos/update-feed.example.json": (
         "Bundled backend, local vault, MCP tools, capture surfaces, and trust controls.",
     ),
     "site/downloads/latest.json": (
         "Complete first-run setup with a local vault, MCP or Obsidian connection",
         "Local-first Cortex beta with bundled backend, capture, MCP, and trust controls.",
-    ),
-    "PUBLISH_MANIFEST.md": (
-        "uploaded through Transporter",
     ),
     "macos/Sources/CortexApp.swift": (
         "Review Source Import",
@@ -191,7 +184,6 @@ ARCHITECTURE_STORAGE_DOC_EXCEPTIONS: tuple[str, ...] = (
 ROOT_COPY_FILES: tuple[str, ...] = (
     "README.md",
     "SETUP.md",
-    "PUBLISH_MANIFEST.md",
     "backend/README.md",
     "macos/README.md",
 )

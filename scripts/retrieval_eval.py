@@ -126,11 +126,11 @@ NOISY_SOURCE_URL_FRAGMENTS: dict[str, tuple[str, ...]] = {
 }
 PENDING_LEAK_PHRASE = "Pending-only retrieval memory must not leak into search"
 ARCHIVED_REJECTED_LEAK_PHRASE = "Archived rejected retrieval memory must not leak into search"
-LOCAL_FILE_SOURCE_URL = "/Users/sarptandoven/Documents/Cortex Beta/Local Citation Plan.md#line=9&excerpt=local-file-citation"
-LOCAL_FILE_DUPLICATE_SOURCE_URL = "/Users/sarptandoven/Archive/Cortex Beta/Local Citation Plan.md#line=17&excerpt=duplicate-local-file-citation"
+LOCAL_FILE_SOURCE_URL = "/Users/alex/Documents/Cortex Beta/Local Citation Plan.md#line=9&excerpt=local-file-citation"
+LOCAL_FILE_DUPLICATE_SOURCE_URL = "/Users/alex/Archive/Cortex Beta/Local Citation Plan.md#line=17&excerpt=duplicate-local-file-citation"
 LOCAL_FILE_SAFE_SOURCE_URL_PREFIX = "local-file://Local%20Citation%20Plan.md#line=9&excerpt=local-file-citation"
 LOCAL_FILE_DUPLICATE_SAFE_SOURCE_URL_PREFIX = "local-file://Local%20Citation%20Plan.md#line=17&excerpt=duplicate-local-file-citation"
-LOCAL_FILE_RAW_FRAGMENTS = ("/Users/sarptandoven", "Documents/Cortex Beta", "Archive/Cortex Beta")
+LOCAL_FILE_RAW_FRAGMENTS = ("/Users/alex", "Documents/Cortex Beta", "Archive/Cortex Beta")
 LOCAL_FILE_CITATION_CONTENT = (
     "Local file citation fixture prefers sanitized source locators in shared answer and context outputs."
 )
