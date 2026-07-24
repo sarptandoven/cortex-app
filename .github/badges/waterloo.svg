@@ -1,5 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="183" height="44" viewBox="0 0 183 44" role="img" aria-label="University of Waterloo">
+<svg xmlns="http://www.w3.org/2000/svg" width="233" height="70" viewBox="0 0 233 70" role="img" aria-label="University of Waterloo">
   <title>University of Waterloo</title>
-  <rect x="5.75" y="5.75" width="171.5" height="32.5" rx="10" ry="10" fill="#FDD54F" stroke="#8b752b" stroke-width="1.5"/>
-  <text x="91.5" y="22.0" fill="#111111" font-family="Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" text-anchor="middle" dominant-baseline="central" textLength="141" lengthAdjust="spacingAndGlyphs">University of Waterloo</text>
+  <defs>
+    <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fee180"/>
+      <stop offset="0.5" stop-color="#FDD54F"/>
+      <stop offset="1" stop-color="#caaa3f"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="clip"><rect x="12" y="9" width="209" height="46" rx="13" ry="13"/></clipPath>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="2.5" stdDeviation="2.8" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="12" y="9" width="209" height="46" rx="13" ry="13" fill="url(#fill)" stroke="#846f29" stroke-width="1"/>
+  </g>
+  <g clip-path="url(#clip)">
+    <rect x="12" y="9" width="209" height="46" fill="url(#gloss)"/>
+    <rect x="12" y="10" width="209" height="1.4" fill="#ffffff" opacity="0.55"/>
+  </g>
+  <text x="116.5" y="33.2" fill="#FFFFFF" fill-opacity="0.35" font-family="Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="700" text-anchor="middle" dominant-baseline="central" textLength="165" lengthAdjust="spacingAndGlyphs">University of Waterloo</text>
+  <text x="116.5" y="32.0" fill="#141414" font-family="Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="700" text-anchor="middle" dominant-baseline="central" textLength="165" lengthAdjust="spacingAndGlyphs">University of Waterloo</text>
 </svg>

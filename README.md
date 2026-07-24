@@ -13,11 +13,11 @@ starting from zero and start picking up where you left off.
 <br/>
 
 <!-- Affiliation, sponsor & license — individual buttons: each bordered, rounded, spaced -->
-[<img src=".github/badges/waterloo.svg" alt="University of Waterloo" height="40" />](https://uwaterloo.ca)
-[<img src=".github/badges/engineering.svg" alt="Faculty of Engineering" height="40" />](https://uwaterloo.ca/engineering)
-[<img src=".github/badges/research.svg" alt="Academic Research" height="40" />](https://uwaterloo.ca/research)
-[<img src=".github/badges/composio.svg" alt="Sponsored by Composio" height="40" />](https://composio.dev)
-[<img src=".github/badges/mit.svg" alt="MIT License" height="40" />](LICENSE)
+[<img src=".github/badges/waterloo.svg" alt="University of Waterloo" height="60" />](https://uwaterloo.ca)
+[<img src=".github/badges/engineering.svg" alt="Faculty of Engineering" height="60" />](https://uwaterloo.ca/engineering)
+[<img src=".github/badges/research.svg" alt="Academic Research" height="60" />](https://uwaterloo.ca/research)
+[<img src=".github/badges/composio.svg" alt="Sponsored by Composio" height="60" />](https://composio.dev)
+[<img src=".github/badges/mit.svg" alt="MIT License" height="60" />](LICENSE)
 
 <br/>
 
@@ -155,7 +155,7 @@ is described honestly in the app and on the site. Questions: **support@trydoppl.
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="https://uwaterloo.ca"><img src=".github/badges/waterloo.svg" alt="University of Waterloo" height="34" /></a><br/>
+      <a href="https://uwaterloo.ca"><img src=".github/badges/waterloo.svg" alt="University of Waterloo" height="48" /></a><br/>
       <sub>Built at the <b>University of Waterloo</b><br/>Faculty of Engineering</sub>
     </td>
     <td align="center" width="33%">

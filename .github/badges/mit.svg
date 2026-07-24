@@ -1,5 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="118" height="44" viewBox="0 0 118 44" role="img" aria-label="MIT License">
+<svg xmlns="http://www.w3.org/2000/svg" width="158" height="70" viewBox="0 0 158 70" role="img" aria-label="MIT License">
   <title>MIT License</title>
-  <rect x="5.75" y="5.75" width="106.5" height="32.5" rx="10" ry="10" fill="#2E9E44" stroke="#195625" stroke-width="1.5"/>
-  <text x="59.0" y="22.0" fill="#FFFFFF" font-family="Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" text-anchor="middle" dominant-baseline="central" textLength="76" lengthAdjust="spacingAndGlyphs">MIT License</text>
+  <defs>
+    <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#69b978"/>
+      <stop offset="0.5" stop-color="#2E9E44"/>
+      <stop offset="1" stop-color="#257e36"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="clip"><rect x="12" y="9" width="134" height="46" rx="13" ry="13"/></clipPath>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="2.5" stdDeviation="2.8" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="12" y="9" width="134" height="46" rx="13" ry="13" fill="url(#fill)" stroke="#185223" stroke-width="1"/>
+  </g>
+  <g clip-path="url(#clip)">
+    <rect x="12" y="9" width="134" height="46" fill="url(#gloss)"/>
+    <rect x="12" y="10" width="134" height="1.4" fill="#ffffff" opacity="0.55"/>
+  </g>
+  <text x="79.0" y="33.2" fill="#000000" fill-opacity="0.4" font-family="Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="700" text-anchor="middle" dominant-baseline="central" textLength="90" lengthAdjust="spacingAndGlyphs">MIT License</text>
+  <text x="79.0" y="32.0" fill="#FFFFFF" font-family="Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="700" text-anchor="middle" dominant-baseline="central" textLength="90" lengthAdjust="spacingAndGlyphs">MIT License</text>
 </svg>

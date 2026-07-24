@@ -1,5 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="164" height="44" viewBox="0 0 164 44" role="img" aria-label="Academic Research">
+<svg xmlns="http://www.w3.org/2000/svg" width="212" height="70" viewBox="0 0 212 70" role="img" aria-label="Academic Research">
   <title>Academic Research</title>
-  <rect x="5.75" y="5.75" width="152.5" height="32.5" rx="10" ry="10" fill="#B5179E" stroke="#630c56" stroke-width="1.5"/>
-  <text x="82.0" y="22.0" fill="#FFFFFF" font-family="Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" text-anchor="middle" dominant-baseline="central" textLength="122" lengthAdjust="spacingAndGlyphs">Academic Research</text>
+  <defs>
+    <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ca58b9"/>
+      <stop offset="0.5" stop-color="#B5179E"/>
+      <stop offset="1" stop-color="#91127e"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="clip"><rect x="12" y="9" width="188" height="46" rx="13" ry="13"/></clipPath>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="2.5" stdDeviation="2.8" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="12" y="9" width="188" height="46" rx="13" ry="13" fill="url(#fill)" stroke="#5e0c52" stroke-width="1"/>
+  </g>
+  <g clip-path="url(#clip)">
+    <rect x="12" y="9" width="188" height="46" fill="url(#gloss)"/>
+    <rect x="12" y="10" width="188" height="1.4" fill="#ffffff" opacity="0.55"/>
+  </g>
+  <text x="106.0" y="33.2" fill="#000000" fill-opacity="0.4" font-family="Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="700" text-anchor="middle" dominant-baseline="central" textLength="144" lengthAdjust="spacingAndGlyphs">Academic Research</text>
+  <text x="106.0" y="32.0" fill="#FFFFFF" font-family="Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="700" text-anchor="middle" dominant-baseline="central" textLength="144" lengthAdjust="spacingAndGlyphs">Academic Research</text>
 </svg>
