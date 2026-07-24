@@ -11942,7 +11942,10 @@ class CortexStore:
 
     def _graph_bridge_insight(self, user_id: str) -> dict[str, Any] | None:
         try:
-            analysis = self.entity_graph_analysis(user_id)
+            # Mirror Moment's fallback beat is exactly as taste-sensitive as the primary
+            # compute_mirror_insight() path above: a "you connect X and Y" insight must never be
+            # built from — or cited to — a memory the user excluded from taste inference.
+            analysis = self.entity_graph_analysis(user_id, exclude_taste_excluded=True)
         except Exception:
             return None
         nodes = analysis.get("nodes") or {}
@@ -11952,7 +11955,7 @@ class CortexStore:
             tgt_label = str((nodes.get(tgt) or {}).get("label") or "").strip()
             if not src_label or not tgt_label or src == tgt:
                 continue
-            shared = self._shared_entity_memory_ids(user_id, str(src), str(tgt))
+            shared = self._shared_entity_memory_ids(user_id, str(src), str(tgt), exclude_taste_excluded=True)
             if len(shared) < 2:
                 continue  # a genuine connection needs more than a single co-mention
             return {
@@ -11965,11 +11968,15 @@ class CortexStore:
             }
         return None
 
-    def _shared_entity_memory_ids(self, user_id: str, entity_a: str, entity_b: str) -> list[str]:
+    def _shared_entity_memory_ids(
+        self, user_id: str, entity_a: str, entity_b: str, *, exclude_taste_excluded: bool = False
+    ) -> list[str]:
         """Current-truth memories that mention BOTH entities — the citation behind a graph bridge."""
         with connect(self.db_path) as conn:
             user_settings = {**self._settings(conn, user_id), "allow_pending_in_context": False}
-            filters, params = self._memory_filters(user_id, user_settings, alias="m")
+            filters, params = self._memory_filters(
+                user_id, user_settings, alias="m", exclude_taste_excluded=exclude_taste_excluded,
+            )
             memory_filter = " AND ".join(filters)
             rows = conn.execute(
                 f"""
@@ -12171,7 +12178,12 @@ class CortexStore:
         new retrieval and no new storage."""
         profile = self.build_profile(user_id, include_pending=include_pending, sector=sector)
         try:
-            analysis = self.entity_graph_analysis(user_id, include_pending=include_pending, sector=sector)
+            # Match build_profile()'s default: the graph half of the "who is this person" map must
+            # be exactly as taste-sensitive as the profile half — a hub/community/bridge built only
+            # from a taste-excluded memory must not surface here either.
+            analysis = self.entity_graph_analysis(
+                user_id, include_pending=include_pending, sector=sector, exclude_taste_excluded=True,
+            )
         except Exception:
             analysis = {}
         nodes = analysis.get("nodes") or {}
@@ -19440,8 +19452,17 @@ class CortexStore:
                 }
             )
 
+        # `focus` (query-matched memories, only populated when a caller passes `query`) reuses the
+        # plain search() path (still identical for every OTHER caller — Ask, audit, export, etc. —
+        # since search() itself never takes exclude_taste_excluded). But profile["focus"] IS part of
+        # Personal Profile generation (agent_adaptation() folds it straight into its "evidence" for
+        # an external AI adapting to act as the user), so it gets the same post-filter
+        # _approved_profile_memories already applies for pending/review status — a targeted filter
+        # on the already-fetched results, not a change to search() itself.
         focus_memories = self.search(user_id, query, limit=limit, sector=sector, include_related=True) if query else []
         focus_memories = self._approved_profile_memories(user_id, focus_memories, include_pending=include_pending)
+        if exclude_taste_excluded:
+            focus_memories = [item for item in focus_memories if not item.get("taste_excluded")]
         open_loops = self.open_tasks(user_id, limit=limit, include_pending=include_pending, sector=sector)
         # Focus areas / People & projects are also part of Personal Profile generation
         # (build_profile_sections reads profile["topics"]/profile["entities"]), so they honor the
@@ -22576,7 +22597,7 @@ class CortexStore:
     # test_phase4_eval_harness.py asserts these sets agree with mcp_tools.READ_TOOLS /
     # WRITE_TOOLS so drift is caught at test time, not in production.
     SCORECARD_READ_TOOL_PREFIXES = ("get_", "list_", "search_", "ask_", "resume_", "prepare_", "build_", "expand_", "use_", "would_", "draft_", "verify_")
-    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "propose_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_", "record_", "import_")
+    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "propose_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_", "record_", "import_", "set_")
     # Exact read-tool names that don't carry a read prefix. The ChatGPT connector aliases `search`
     # and `fetch`, plus the MQL tools `query_memory` and `expand`, are pure reads
     # (mcp_tools.READ_TOOLS) but have no underscore prefix — name them here so the scorecard

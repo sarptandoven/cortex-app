@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS memories (
   author_class TEXT NOT NULL DEFAULT 'unknown',
   author_principal_id TEXT NOT NULL DEFAULT '',
   trust_score REAL NOT NULL DEFAULT 0.5,
+  taste_excluded INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY(capture_id) REFERENCES captures(id) ON DELETE CASCADE
 );
 

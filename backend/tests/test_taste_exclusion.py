@@ -228,6 +228,20 @@ class TasteExclusionTests(unittest.TestCase):
         override_built = self.store.build_profile(self.user_id, include_taste_excluded=True)
         self.assertIn("preferences", {s["id"] for s in override_built["sections"]})
 
+    def test_agent_adaptation_evidence_omits_excluded_focus_memories(self) -> None:
+        """agent_adaptation() folds profile['focus'] straight into its 'evidence' for an external
+        AI adapting to act as the user — an excluded memory must not appear there even though
+        `rules`/`persona`/`style_guide`/etc. were already correctly filtered via personal_profile()."""
+        self._seed("m1", layer="semantic", content="Went to a one-off improv night called Clown College.", source="obsidian")
+        self.store.set_memory_taste_exclusion(self.user_id, "m1", True)
+
+        adaptation = self.store.agent_adaptation(self.user_id, query="Clown College improv night")
+        evidence_ids = {e["id"] for e in adaptation["evidence"]}
+        self.assertNotIn("m1", evidence_ids, "an excluded memory must not appear in agent_adaptation's evidence")
+
+        # But it is still a normal search() hit outside the profile/adaptation surface.
+        self.assertIn("m1", {r["id"] for r in self.store.search(self.user_id, "Clown College improv night")})
+
     def test_focus_and_people_sections_skip_excluded_memories(self) -> None:
         """Focus areas (topics) and People & projects (entities) are also part of Personal
         Profile generation — a topic/entity supported ONLY by excluded memories must not
@@ -316,6 +330,133 @@ class TasteExclusionTests(unittest.TestCase):
         self.store.rebuild_index_from_vault(self.user_id)
         rebuilt = self.store.get_memory(self.user_id, "m1")
         self.assertFalse(rebuilt["taste_excluded"])
+
+
+class MirrorFallbackAndPersonMapTasteExclusionTests(unittest.TestCase):
+    """Regression coverage for a gap an independent review caught: `store.mirror_insight()`'s
+    graph-bridge FALLBACK (`_graph_bridge_insight` / `_shared_entity_memory_ids`) and
+    `person_map()`'s graph half both call `entity_graph_analysis()` — every existing
+    test_mirror_insight.py test exercises `mirror.compute_mirror_insight()` directly, which never
+    touches this fallback path, so it originally shipped unfiltered. These tests hit the exact
+    product-facing methods (`store.mirror_insight()`, `store.person_map()`) that the API/MCP layer
+    calls, using the same two-cluster-plus-bridge fixture as test_entity_graph.py's
+    test_bridge_surfaces_as_mirror_insight_when_no_repetition."""
+
+    ENTITIES = {
+        "ent_alice": {"id": "ent_alice", "kind": "person", "name": "Alice", "aliases": [], "context": ""},
+        "ent_zephyr": {"id": "ent_zephyr", "kind": "project", "name": "Project Zephyr", "aliases": [], "context": ""},
+        "ent_bob": {"id": "ent_bob", "kind": "person", "name": "Bob", "aliases": [], "context": ""},
+        "ent_design": {"id": "ent_design", "kind": "project", "name": "Design System", "aliases": [], "context": ""},
+    }
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        self.db_path = root / "cortex.db"
+        init_db(self.db_path)
+        self.store = CortexStore(self.db_path, root / "vault")
+        self.store._vector_ready = lambda conn: False
+        self.user_id = "graph-taste-user"
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _seed(self, mem_id: str, content: str, entity_ids: list[str], layer: str = "semantic") -> None:
+        self.store.save_capture(
+            user_id=self.user_id,
+            content=content,
+            source="obsidian",
+            source_url=f"local-file://{mem_id}",
+            title=mem_id,
+            extracted={
+                "_timestamp": now_iso(),
+                "summary": content,
+                "records": [
+                    {"id": mem_id, "kind": "claim", "layer": layer, "content": content,
+                     "confidence": "confirmed", "importance": 3, "topics": [], "entity_ids": entity_ids}
+                ],
+                "tasks": [],
+                "entities": [self.ENTITIES[e] for e in entity_ids],
+            },
+        )
+
+    def _seed_bridge_scenario(self) -> tuple[str, str]:
+        """Two internally-dense clusters {Alice,Zephyr} and {Bob,Design} joined ONLY by two
+        cross-cluster bridge memories. No repeated behavioral pattern exists (distinct layers), so
+        the repetition-based Mirror Moment abstains and the graph "surprising connection" is the
+        only candidate left — exactly the scenario the review agent used to reproduce the leak.
+        Returns the two bridge memory ids."""
+        for i, layer in enumerate(("episodic", "decision", "style")):
+            self._seed(f"az{i}", "Alice and Project Zephyr.", ["ent_alice", "ent_zephyr"], layer=layer)
+        for i, layer in enumerate(("semantic", "procedural", "negative")):
+            self._seed(f"bd{i}", "Bob and the Design System.", ["ent_bob", "ent_design"], layer=layer)
+        self._seed("zb0", "Project Zephyr borrowed a pattern from Bob's team.", ["ent_zephyr", "ent_bob"], layer="preference")
+        self._seed("zb1", "Bob advised on the Project Zephyr rollout.", ["ent_zephyr", "ent_bob"], layer="episodic")
+        return "zb0", "zb1"
+
+    def test_mirror_insight_baseline_bridge_still_works(self) -> None:
+        """Regression guard for the unflagged case: the graph-bridge fallback must still fire
+        exactly as before when nothing is excluded (matches test_entity_graph.py's contract)."""
+        bridge_ids = self._seed_bridge_scenario()
+        insight = self.store.mirror_insight(self.user_id)
+        self.assertIsNotNone(insight, "expected a bridge insight when repetition abstains")
+        self.assertEqual(insight["layer"], "relationship")
+        self.assertEqual(set(insight["evidence"]["memory_ids"]), set(bridge_ids))
+
+    def test_mirror_insight_fallback_never_cites_taste_excluded_bridge_memories(self) -> None:
+        """The exact leak the review agent found: store.mirror_insight() — not
+        mirror.compute_mirror_insight() directly — must not surface a "you connect X and Y"
+        insight built only from taste-excluded memories."""
+        bridge_a, bridge_b = self._seed_bridge_scenario()
+        self.store.set_memory_taste_exclusion(self.user_id, bridge_a, True)
+        self.store.set_memory_taste_exclusion(self.user_id, bridge_b, True)
+
+        insight = self.store.mirror_insight(self.user_id)
+        self.assertIsNone(
+            insight,
+            "a Mirror Moment must not be built from a bridge whose only supporting memories are excluded",
+        )
+
+    def test_mirror_insight_fallback_partial_exclusion_only_cites_the_kept_memory(self) -> None:
+        """Excluding ONE of the two bridge memories must drop it from both the count and the
+        cited memory_ids — not silently keep citing it, and not over-suppress the whole insight
+        (a single non-excluded co-mention is below the "genuine connection" floor here, so the
+        bridge itself should no longer surface either; this proves the excluded id specifically
+        never leaks into any citation that might otherwise remain)."""
+        bridge_a, bridge_b = self._seed_bridge_scenario()
+        self.store.set_memory_taste_exclusion(self.user_id, bridge_a, True)
+
+        insight = self.store.mirror_insight(self.user_id)
+        if insight is not None:
+            self.assertNotIn(bridge_a, insight["evidence"]["memory_ids"])
+
+    def test_person_map_graph_omits_relationship_built_only_from_excluded_memories(self) -> None:
+        """person_map()'s graph half (hubs/communities/bridges) must be exactly as taste-sensitive
+        as its profile half. With BOTH Alice<->Zephyr co-mentions excluded, Alice/Zephyr must not
+        surface as a hub/community backed only by excluded evidence, while the untouched Bob/Design
+        cluster still does."""
+        for i, layer in enumerate(("episodic", "decision", "style")):
+            self._seed(f"az{i}", "Alice and Project Zephyr.", ["ent_alice", "ent_zephyr"], layer=layer)
+            self.store.set_memory_taste_exclusion(self.user_id, f"az{i}", True)
+        for i, layer in enumerate(("semantic", "procedural", "negative")):
+            self._seed(f"bd{i}", "Bob and the Design System.", ["ent_bob", "ent_design"], layer=layer)
+
+        result = self.store.person_map(self.user_id)
+        hub_labels = {hub["label"] for hub in result["graph"]["hubs"]}
+        self.assertNotIn("Alice", hub_labels, "a hub supported only by excluded memories must not surface")
+        self.assertNotIn("Project Zephyr", hub_labels)
+        self.assertIn("Bob", hub_labels)
+        self.assertIn("Design System", hub_labels)
+
+    def test_person_map_graph_baseline_still_surfaces_hubs(self) -> None:
+        """Regression guard: person_map()'s graph is unaffected when nothing is excluded."""
+        for i, layer in enumerate(("episodic", "decision", "style")):
+            self._seed(f"az{i}", "Alice and Project Zephyr.", ["ent_alice", "ent_zephyr"], layer=layer)
+        result = self.store.person_map(self.user_id)
+        hub_labels = {hub["label"] for hub in result["graph"]["hubs"]}
+        self.assertIn("Alice", hub_labels)
+        self.assertIn("Project Zephyr", hub_labels)
 
 
 if __name__ == "__main__":
