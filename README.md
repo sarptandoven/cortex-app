@@ -176,5 +176,5 @@ Cortex is released under the **[MIT License](LICENSE)** — free to use, modify,
 
 <div align="center">
 <br/>
-<sub>Built for people who want their AI to remember — without giving up their data.</sub>
+<sub>Built for people who want their AI to remember — without giving up their privacy</sub>
 </div>
