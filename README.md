@@ -55,6 +55,24 @@ it to every tool — without shipping your life to someone else's server.
 - **You hold the controls.** Per-tool permissions for read, save, export, and repair. Redaction on
   by default. Revoke anything, anytime.
 
+## Not another memory layer
+
+Memory layers store and recall. Cortex is built past that, on three bets the "RAG-for-your-notes"
+crowd isn't making:
+
+1. **The model acts like you, not just remembers you.** Recall answers "what did I say?" — the
+   operating model answers "what would I do?" Connected agents load your decisions, preferences, and
+   voice as a calibration brief before they work, so delegation stops meaning re-explaining. That's
+   the Doppl thesis: not a notebook for your AI, a working double of how you operate.
+2. **A protocol, not a prompt-stuffer.** The [Contextual Memory Protocol](docs/CMP_PROTOCOL.md) treats
+   context as an engineered budget: model-calibrated packing, a per-session delta channel that never
+   re-sends what an agent already knows (measured, reproducible token savings with enforced
+   invariants), and retrieval that **cites or abstains** — grounded context, never vibes.
+3. **A compounding asset you own.** Every session makes the model more yours, and it lives in plain
+   files on your Mac — portable across AI vendors, inspectable line by line, deletable in one act.
+   When you switch from one assistant to the next, your operating model moves with you. Nobody else
+   gets to own the model of you.
+
 ## The loop
 
 <div align="center">
