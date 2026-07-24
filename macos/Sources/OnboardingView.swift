@@ -294,7 +294,7 @@ struct OnboardingView: View {
     }
 
     /// True while the add-memory beat has a source connected but not yet ready to continue on: a
-    /// connector sync is actively running, OR a memory layer is wired but its first sync hasn't yet
+    /// connector sync is actively running, OR a memory source is wired but its first sync hasn't yet
     /// produced citable memory (`onboardingHasSyncedMemory` still false). In that window advancing
     /// would land on a step whose gate isn't met and Finish would bounce the user back — so the
     /// footer's Continue reflects the syncing state instead of pretending the gate is satisfied.

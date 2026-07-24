@@ -557,7 +557,7 @@ struct ReviewSectionCard: View {
 }
 
 /// A proportioned two-segment rule showing a section's memory-vs-task mix — the archive's
-/// kind-distribution bar. Wax red = memories (kept knowledge), gold = tasks (open loops). No labels
+/// kind-distribution bar. Wax red = memories (kept knowledge), gold = tasks (still to do). No labels
 /// clutter the rule; a tooltip carries the exact counts.
 struct ReviewKindDistributionBar: View {
     let memoryCount: Int

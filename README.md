@@ -1,108 +1,153 @@
+<div align="center">
+
+<img src="macos/Assets/AppIcon.iconset/icon_256x256.png" alt="Cortex" width="128" height="128" />
+
 # Cortex
 
-Your private personal memory model for AI tools.
+### Your private, personal memory for every AI tool — on your Mac, owned by you.
 
-Cortex is a local-first personal memory and adaptation layer. The current beta connects Obsidian/local notes and local MCP AI tools, turns reviewed source records into cited memory, and lets approved tools retrieve that memory instead of guessing or starting from zero.
+Cortex turns your notes and AI chat history into one **reviewed, cited memory** that lives on your
+Mac. Then it feeds that memory to Claude, ChatGPT, Cursor, and any MCP-capable tool — so they stop
+starting from zero and start picking up where you left off.
 
-## What Exists Now
+<br/>
 
-- Native macOS app that opens as a normal window from the Dock
-- Bundled local service on `127.0.0.1:8766`
-- User-owned memory folder at `~/Library/Application Support/Cortex/Cortex.vault/`
-- SQLite FTS search with optional `sqlite-vec` and opt-in OpenAI embeddings
-- Connected setup for Obsidian/local notes and local MCP AI tools
-- Direct local app connection helpers for supported AI tools, with Advanced/Fallback details hidden unless they are needed
-- Simple product flow: Home, Review, Ask, with Connections & Privacy kept behind one sheet
-- Connection readiness report covering the active beta path, connected accounts, review backlog, source errors, active memory, and citation coverage
-- Lightweight first-run setup for the private memory folder, with source connection, Review, and Ask as guided next steps
-- Review inbox for approve/archive, decisions, recommended actions, and follow-ups
-- Ask screen with cited memory search and MCP retrieval for connected AI tools
-- Advanced local connection bridge and one-click setup helpers
-- Trust controls for connected AI tool reads, saves, exports, redaction, and repair actions
-- Reliability report, backup-first repair, and local memory folder backups
-- Sanitized support bundle for local beta triage
-- Operational readiness gate for tests, build, distribution, manifests, and support checks
-- Repeatable DMG/ZIP packaging and static landing page distribution
+[![Download for macOS](https://img.shields.io/github/v/release/doppl-tech/releases?sort=semver&display_name=tag&label=Download%20for%20macOS&color=8B0000&logo=apple&logoColor=white&style=for-the-badge)](https://github.com/doppl-tech/releases/releases/latest)
 
-## Build The App
+<br/>
+
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=white)
+![Notarized](https://img.shields.io/badge/Apple-Notarized-1a1a1a?logo=apple&logoColor=white)
+![SwiftUI](https://img.shields.io/badge/App-SwiftUI-F05138?logo=swift&logoColor=white)
+![FastAPI](https://img.shields.io/badge/Engine-FastAPI-009688?logo=fastapi&logoColor=white)
+![SQLite + sqlite-vec](https://img.shields.io/badge/Storage-SQLite%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white)
+![MCP](https://img.shields.io/badge/Protocol-MCP-8A63D2?logo=modelcontextprotocol&logoColor=white)
+![Local-first](https://img.shields.io/badge/Local--first-100%25%20on%20your%20Mac-2E7D32?logo=ghost&logoColor=white)
+![Account optional](https://img.shields.io/badge/Account-optional-4C6EF5)
+
+</div>
+
+---
+
+## Why Cortex
+
+Every assistant forgets the work you already did. You re-explain your project, your preferences, your
+decisions — every session, to every tool. Cortex is the layer that remembers **once** and serves that
+memory **everywhere**, without shipping your life to someone else's server.
+
+- 🔒 **Local-first, by default.** Your memory is plain files on your Mac at
+  `~/Library/Application Support/Cortex/Cortex.vault/`. It works with the network off. No account needed.
+- 🧠 **Reviewed, cited memory.** Nothing is "remembered" until you approve it. Every answer cites the
+  source it came from — no hallucinated recall.
+- 🔌 **Works where you already work.** One click wires Cortex into Claude Desktop, Cursor, Windsurf,
+  Zed, and any MCP client. Bring your history in from ChatGPT, Claude, Perplexity, and Notion.
+- 🎛️ **You hold the controls.** Per-tool permissions for read, save, export, and repair. Redaction on
+  by default. Revoke anything, anytime.
+
+## The loop
+
+<div align="center">
+
+| ① Connect | ② Review | ③ Ask | ④ Control |
+|:--:|:--:|:--:|:--:|
+| Bring in notes, an AI-chat export, or sign in and import your history | Approve what's useful, archive the noise — memory stays trustworthy | Ask with cited answers, or let a connected AI tool retrieve what you approved | Keep reads, saves, exports, and every connection visible and revocable |
+
+</div>
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph SOURCES["Your sources"]
+      A1["Local notes / Obsidian"]
+      A2["ChatGPT · Claude · Perplexity · Notion"]
+      A3["Files & exports"]
+    end
+    subgraph CORTEX["Cortex — on your Mac"]
+      B1["Review inbox<br/>(you approve)"]
+      B2["Layered, cited memory<br/>SQLite + sqlite-vec"]
+      B3["Context Assembly Engine<br/>(CMP)"]
+    end
+    subgraph TOOLS["Your AI tools"]
+      C1["Claude Desktop · Cursor<br/>Windsurf · Zed · any MCP client"]
+    end
+    SOURCES --> B1 --> B2 --> B3 --> C1
+    C1 -. "cited retrieval" .-> B3
+```
+
+A native **SwiftUI** app bundles a local **FastAPI** engine on `127.0.0.1:8766`. Ingested sources become
+typed, layered memory in a **SQLite** store (full-text + `sqlite-vec` vectors) that mirrors to a
+human-readable, Obsidian-style vault you own. When a tool asks, the **Contextual Memory Protocol** packs
+the smallest cited, model-calibrated context that answers the task.
+
+## What's inside
+
+- **Contextual Memory Protocol (CMP)** — model-aware context packing (SMP envelope + per-session working
+  set) that gives an agent exactly what it needs, cited, and nothing it doesn't. See [`docs/CMP_PROTOCOL.md`](docs/CMP_PROTOCOL.md).
+- **A vault you own** — plain Markdown + a rebuildable index, portable like an Obsidian vault. See
+  [`docs/LOCAL_VAULT_FORMAT.md`](docs/LOCAL_VAULT_FORMAT.md).
+- **Retrieval that cites or abstains** — hybrid BM25 + vector + temporal ranking, reranking, and a
+  cite-or-abstain gate so answers are grounded, never guessed.
+- **One-click connections** — write-and-relaunch MCP config for desktop tools, session-import for the
+  web chat apps, drag-and-drop for exports. See [`docs/MCP_INTEGRATIONS.md`](docs/MCP_INTEGRATIONS.md).
+- **Trust controls** — scoped, revocable per-tool permissions with redaction. See [`docs/TRUST_CONTROLS.md`](docs/TRUST_CONTROLS.md).
+- **Optional cloud sync** — an end-to-end-encryption design for multi-device sync, opt-in and
+  account-based. Data stays local unless you turn it on. See [`docs/ACCOUNTS_ENCRYPTION_DESIGN.md`](docs/ACCOUNTS_ENCRYPTION_DESIGN.md).
+
+## Install
+
+1. **[Download the latest DMG →](https://github.com/doppl-tech/releases/releases/latest)** (macOS 13 or later).
+2. Open the DMG and drag **Cortex** into Applications.
+3. Launch it. It's Developer ID signed and **notarized by Apple**, so it opens with no warning.
+4. Point Cortex at a notes folder or import your AI chats, review your first memories, then connect a tool.
+
+Cortex checks for updates on its own, so once you're on a recent build, new releases arrive automatically.
+
+## Build from source
 
 ```bash
+# macOS app (SwiftUI)
 ./macos/build.sh
-open macos/build/Cortex.app
-```
 
-The packaged app starts the local service automatically. Local service development can use:
+# Backend engine + test suite (Python 3.11+)
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r backend/runtime-requirements.txt
+python3 -m pytest backend/tests
 
-```bash
-./scripts/dev_backend.sh
-```
-
-## Package A Release
-
-```bash
-./macos/package_release.sh
-python3 scripts/prepare_distribution_site.py
-```
-
-Release artifacts are written to:
-
-```text
-../outputs/Cortex-<version>-<build>/
-```
-
-Each packaged release includes `BETA_HANDOFF.md` with the tester build, install,
-checksum, readiness, live-backend, and hands-on first-user verification steps.
-
-The static landing page lives in:
-
-```text
-site/
-```
-
-Run it locally:
-
-```bash
-cd site
-python3 -m http.server 8780
-```
-
-## Verify
-
-```bash
-python3 -m unittest discover backend/tests
+# Retrieval-quality gate (deterministic, offline)
 python3 scripts/retrieval_eval.py
-python3 scripts/backend_beta_smoke.py
-python3 scripts/ops_readiness_check.py
-python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
-python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
-codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app
 ```
 
-Export a sanitized support bundle:
+See [`SETUP.md`](SETUP.md) for the full development setup and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+for how the pieces fit together.
 
-```bash
-python3 scripts/export_support_bundle.py --mode live --token "$CORTEX_API_KEY"
-python3 scripts/export_support_bundle.py --mode offline
-```
+## Documentation
 
-## Key Docs
+| Area | Doc |
+|---|---|
+| System architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Contextual Memory Protocol | [`docs/CMP_PROTOCOL.md`](docs/CMP_PROTOCOL.md) · [`docs/PORTABLE_MEMORY_PROTOCOL_V2.md`](docs/PORTABLE_MEMORY_PROTOCOL_V2.md) |
+| The vault format you own | [`docs/LOCAL_VAULT_FORMAT.md`](docs/LOCAL_VAULT_FORMAT.md) |
+| Connecting AI tools (MCP) | [`docs/MCP_INTEGRATIONS.md`](docs/MCP_INTEGRATIONS.md) |
+| Importing your sources | [`docs/SOURCE_IMPORTS.md`](docs/SOURCE_IMPORTS.md) |
+| Trust & privacy controls | [`docs/TRUST_CONTROLS.md`](docs/TRUST_CONTROLS.md) |
+| Encryption & sync design | [`docs/ACCOUNTS_ENCRYPTION_DESIGN.md`](docs/ACCOUNTS_ENCRYPTION_DESIGN.md) · [`docs/CXE1_WIRE_FORMAT.md`](docs/CXE1_WIRE_FORMAT.md) |
+| Install & auto-updates | [`docs/INSTALLER_AND_UPDATES.md`](docs/INSTALLER_AND_UPDATES.md) |
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [Memory Backend Blueprint](docs/MEMORY_BACKEND_BLUEPRINT.md)
-- [Simple Product Loop](docs/SIMPLE_PRODUCT_LOOP.md)
-- [Capture Surfaces](docs/CAPTURE_SURFACES.md)
-- [Advanced/Fallback Source Intake](docs/SOURCE_IMPORTS.md)
-- [First 100 Beta Operator Quickstart](docs/BETA_OPERATOR_QUICKSTART.md)
-- [First 100 User Demo Checkpoint](docs/checkpoints/first-100-demo.md)
-- [First 100 User Support and Privacy Runbook](docs/BETA_SUPPORT.md)
-- [Trust Controls](docs/TRUST_CONTROLS.md)
-- [Reliability Hardening](docs/RELIABILITY_HARDENING.md)
-- [Operational Readiness](docs/OPERATIONAL_READINESS.md)
-- [Installer and Updates](docs/INSTALLER_AND_UPDATES.md)
-- [Apple Developer Release](docs/APPLE_RELEASE.md)
-- [Landing Page and Distribution](docs/DISTRIBUTION.md)
-- [Production Readiness](docs/PRODUCTION_READINESS.md)
+## Privacy
 
-## Current Boundaries
+Cortex is local-first: the default experience needs no account and no cloud. Cortex reads a source only
+after you connect it, records nothing ambient (no screen, no microphone), and shares context with an AI
+tool only within the scoped permission you grant. The optional Cortex Cloud tier (for multi-device sync)
+is described honestly in the app and on the site. Questions: **support@trydoppl.com**.
 
-Cortex is ready for local-first beta testing, not broad public distribution yet. The current beta centers on Obsidian/local notes sync, direct local AI-tool integrations, Review, Ask, and Connections & Privacy. Selected export, folder, or file import remains available only as an Advanced/Fallback path for unsupported services or recovery. Public launch still needs Developer ID signing, notarization, hosted HTTPS downloads, a formal support path, a hosted update-feed decision, and a production privacy review.
+## License
+
+Cortex is **source-available** — you can read and audit every line. It is **not yet released under an
+open-source license**; © 2026 Doppl, all rights reserved. Interested in building on it or contributing?
+Open an issue and let's talk.
+
+<div align="center">
+<br/>
+<sub>Built for people who want their AI to remember — without giving up their data.</sub>
+</div>
