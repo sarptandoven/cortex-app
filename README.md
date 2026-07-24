@@ -4,11 +4,12 @@
 
 # Cortex
 
-### Your private, personal memory for every AI tool — on your Mac, owned by you.
+### Your personal operating model for AI — private, on your Mac, owned by you.
 
-Cortex turns your notes and AI chat history into one **reviewed, cited memory** that lives on your
-Mac. Then it feeds that memory to Claude, ChatGPT, Cursor, and any MCP-capable tool — so they stop
-starting from zero and start picking up where you left off.
+Every AI tool you use runs on a generic model of the world. Cortex gives them a model of **you**.
+It distills your notes and AI chat history into a living, **reviewed, cited operating model** — how
+you work, what you've decided, how you write, what matters to you — and serves it to Claude, ChatGPT,
+Cursor, and any MCP-capable tool. They stop starting from zero and start working the way you would.
 
 <br/>
 
@@ -41,8 +42,9 @@ starting from zero and start picking up where you left off.
 ## Why Cortex
 
 Every assistant forgets the work you already did. You re-explain your project, your preferences, your
-decisions — every session, to every tool. Cortex is the layer that remembers **once** and serves that
-memory **everywhere**, without shipping your life to someone else's server.
+decisions — every session, to every tool. The fix isn't a bigger context window; it's a **personal
+operating model**: one place that learns how you work, holds it as reviewed, cited memory, and serves
+it to every tool — without shipping your life to someone else's server.
 
 - **Local-first, by default.** Your memory is plain files on your Mac at
   `~/Library/Application Support/Cortex/Cortex.vault/`. It works with the network off. No account needed.
@@ -72,15 +74,16 @@ flowchart LR
       A2["ChatGPT · Claude · Perplexity · Notion"]
       A3["Files & exports"]
     end
-    subgraph CORTEX["Cortex — on your Mac"]
+    subgraph CORTEX["Cortex — your operating model, on your Mac"]
       B1["Review inbox<br/>(you approve)"]
       B2["Layered, cited memory<br/>SQLite + sqlite-vec"]
+      B4["Profile + knowledge graph<br/>(how you work)"]
       B3["Context Assembly Engine<br/>(CMP)"]
     end
     subgraph TOOLS["Your AI tools"]
       C1["Claude Desktop · Cursor<br/>Windsurf · Zed · any MCP client"]
     end
-    SOURCES --> B1 --> B2 --> B3 --> C1
+    SOURCES --> B1 --> B2 --> B4 --> B3 --> C1
     C1 -. "cited retrieval" .-> B3
 ```
 
@@ -88,6 +91,22 @@ A native **SwiftUI** app bundles a local **FastAPI** engine on `127.0.0.1:8766`.
 typed, layered memory in a **SQLite** store (full-text + `sqlite-vec` vectors) that mirrors to a
 human-readable, Obsidian-style vault you own. When a tool asks, the **Contextual Memory Protocol** packs
 the smallest cited, model-calibrated context that answers the task.
+
+## Your operating model
+
+Memory is the foundation; the operating model is what Cortex builds on top of it. From your approved
+memory, Cortex continuously distills a **cited model of how you work** — and exposes it to your tools:
+
+- **Voice & style** — how you actually write, so drafts come out sounding like you.
+- **Your preferences** — the tools, formats, and ways of working you've settled on.
+- **Key decisions** — what you decided and why, so nothing gets relitigated from scratch.
+- **Your world** — a knowledge graph of the people, projects, and topics around you, with the
+  relationships between them.
+- **Agent adaptation** — a machine-readable brief any connected agent can load to calibrate itself
+  to you before it does the work.
+
+Every claim in the model traces back to a memory you approved — it's *your* operating model, evidenced,
+inspectable, and revocable, not a black-box profile someone else trained on you.
 
 ## What's inside
 
@@ -160,7 +179,7 @@ is described honestly in the app and on the site. Questions: **sdoven@uwaterloo.
     </td>
     <td align="center" width="33%">
       <a href="https://uwaterloo.ca/research"><img src="https://img.shields.io/badge/Academic-Research-B5179E?style=for-the-badge&labelColor=000000" alt="Research" /></a><br/>
-      <sub>An applied <b>research</b> project on<br/>local-first AI memory</sub>
+      <sub>An applied <b>research</b> project on<br/>local-first personal operating models</sub>
     </td>
     <td align="center" width="33%">
       <a href="https://composio.dev"><img src="https://github.com/ComposioHQ.png" width="44" height="44" alt="Composio" /></a><br/>
@@ -176,5 +195,9 @@ Cortex is released under the **[MIT License](LICENSE)** — free to use, modify,
 
 <div align="center">
 <br/>
-<sub>Built for people who want their AI to remember — without giving up their privacy</sub>
+
+**Cortex is not just AI memory. It is your personal operating model for AI tools.**
+
+<sub>It starts local and simple. The long-term product is the memory and action layer that helps
+AI tools make progress the way you would — without giving up your privacy.</sub>
 </div>
