@@ -4061,6 +4061,7 @@ class CortexStore:
                         "confidence": row["confidence"],
                         "importance": row["importance"],
                         "status": row["status"],
+                        "taste_excluded": bool(row["taste_excluded"]) if "taste_excluded" in row.keys() else False,
                         "topics": json.loads(row["topics_json"] or "[]"),
                         "entity_ids": json.loads(row["entity_ids_json"] or "[]"),
                         "occurred_at": row["occurred_at"],
@@ -12061,16 +12062,31 @@ class CortexStore:
             return False
         return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
 
-    def build_profile(self, user_id: str, *, limit: int = 6, include_pending: bool = False, sector: str | None = None) -> dict[str, Any]:
+    def build_profile(
+        self,
+        user_id: str,
+        *,
+        limit: int = 6,
+        include_pending: bool = False,
+        sector: str | None = None,
+        include_taste_excluded: bool = False,
+    ) -> dict[str, Any]:
         """A cited, structured "model of you": regroups the existing personal_profile output into a
         small fixed set of Sections (how you work / voice & style / preferences / dislikes /
         decisions / facts / recent timeline / focus / people & projects / open loops), each with a
         condensed statement, honest confidence, and cited elements.
         Deterministic organize + optional LLM prose (see _condense_llm_enabled). Abstains per-section
-        (and overall) on a thin corpus — sections with no cited support are omitted."""
+        (and overall) on a thin corpus — sections with no cited support are omitted.
+
+        ``include_taste_excluded`` defaults to False, matching ``personal_profile``: memories the
+        user excluded from taste inference are skipped as section candidates unless a caller
+        explicitly opts in."""
         # Over-fetch candidates (personal_profile caps limit at 20) so the grouping/support signal
         # is meaningful; the shared personal_profile path is reused unchanged.
-        profile = self.personal_profile(user_id, limit=20, include_pending=include_pending, sector=sector)
+        profile = self.personal_profile(
+            user_id, limit=20, include_pending=include_pending, sector=sector,
+            include_taste_excluded=include_taste_excluded,
+        )
         # Enrich the profile items with importance/confidence (dropped by _profile_memory_item) via
         # one batched read, so section ranking/abstention can use them — without touching the shared
         # projection that other endpoints/tests depend on.
@@ -15848,6 +15864,39 @@ class CortexStore:
             self.vault.patch_memory(memory_id, {"status": "archived", "updated_at": timestamp})
         return True
 
+    def set_memory_taste_exclusion(self, user_id: str, memory_id: str, excluded: bool) -> bool:
+        """Toggle whether one memory may seed Personal Profile / Mirror Moment / taste-inference
+        candidates. This is deliberately NOT archiving or forgetting: the memory's status,
+        searchability, citability, and audit history are all untouched — only whether the
+        centralized `_memory_filters(exclude_taste_excluded=True)` gate (used by
+        personal_profile()/build_profile()) and mirror.py's own candidate query admit it changes.
+
+        Returns False when the memory does not exist for this user (mirrors archive_capture's
+        bool-return contract); True on success, including a no-op re-set of the same value
+        (idempotent, matching the "archive an already-archived capture" precedent)."""
+        excluded = bool(excluded)
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            row = conn.execute("SELECT id FROM memories WHERE user_id = ? AND id = ?", (user_id, memory_id)).fetchone()
+            if not row:
+                return False
+            conn.execute(
+                "UPDATE memories SET taste_excluded = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (1 if excluded else 0, timestamp, user_id, memory_id),
+            )
+            self._event(
+                conn,
+                user_id,
+                memory_id,
+                "memory",
+                "taste_exclusion_updated",
+                {"excluded": excluded},
+            )
+        # Keep the vault record (JSON + Markdown mirror) in sync so the flag survives
+        # rebuild-index-from-vault, following the same patch_memory precedent as archive/delete.
+        self.vault.patch_memory(memory_id, {"taste_excluded": excluded, "updated_at": timestamp})
+        return True
+
     def delete_memory(self, user_id: str, memory_id: str) -> bool:
         timestamp = now_iso()
         with connect(self.db_path) as conn:
@@ -19310,16 +19359,36 @@ class CortexStore:
         lines.append(", ".join(f"{item['name']} ({item['kind']})" for item in entities) if entities else "No active entities yet.")
         return "\n".join(lines)
 
-    def personal_profile(self, user_id: str, query: str = "", limit: int = 6, include_pending: bool = False, *, sector: str | None = None) -> dict[str, Any]:
+    def personal_profile(
+        self,
+        user_id: str,
+        query: str = "",
+        limit: int = 6,
+        include_pending: bool = False,
+        *,
+        sector: str | None = None,
+        include_taste_excluded: bool = False,
+    ) -> dict[str, Any]:
+        """Assemble the Personal Profile's per-layer candidate memories + coverage stats.
+
+        ``include_taste_excluded`` defaults to False: memories the user has flagged via
+        ``set_memory_taste_exclusion`` (excluded from shaping taste/preference inference) are
+        skipped as candidates here, exactly the same way a caller can already ask for pending
+        captures via ``include_pending``. A caller may explicitly pass ``include_taste_excluded=True``
+        to see the profile as if the flag did not exist (e.g. a debug/preview view) — search,
+        recent(), Ask citations, the audit log, and export are entirely untouched by this flag
+        regardless of this parameter, since they never call the exclusion-aware query path.
+        """
         query = query.strip()
         sector = _normalize_sector_filter(sector) or None
         limit = max(1, min(20, int(limit)))
+        exclude_taste_excluded = not include_taste_excluded
         user_settings = self.settings(user_id)
         profile_settings = {**user_settings}
         if not include_pending:
             profile_settings["allow_pending_in_context"] = False
         redact = bool(user_settings["redact_sensitive_context"])
-        stats = self._profile_stats(user_id, profile_settings, sector=sector)
+        stats = self._profile_stats(user_id, profile_settings, sector=sector, exclude_taste_excluded=exclude_taste_excluded)
         layer_counts = {item["layer"]: int(item["count"]) for item in stats["by_layer"]}
         layer_order = [
             ("preference", "Preference memory", "Durable likes, dislikes, defaults, and working preferences."),
@@ -19332,7 +19401,10 @@ class CortexStore:
         ]
         sections: list[dict[str, Any]] = []
         for layer, title, description in layer_order:
-            memories = self._memories_by_layer(user_id, layer, limit=limit, include_pending=include_pending, sector=sector)
+            memories = self._memories_by_layer(
+                user_id, layer, limit=limit, include_pending=include_pending, sector=sector,
+                exclude_taste_excluded=exclude_taste_excluded,
+            )
             sections.append(
                 {
                     "layer": layer,
@@ -19377,6 +19449,7 @@ class CortexStore:
             "sector": sector,
             "readiness": readiness,
             "include_pending": include_pending,
+            "include_taste_excluded": include_taste_excluded,
             "summary": {
                 "memories": stats["memories"],
                 "decisions": stats["decisions"],
@@ -19416,9 +19489,19 @@ class CortexStore:
         profile["markdown"] = self._personal_profile_markdown(profile)
         return profile
 
-    def _profile_stats(self, user_id: str, user_settings: dict[str, Any], *, sector: str | None = None) -> dict[str, Any]:
+    def _profile_stats(
+        self,
+        user_id: str,
+        user_settings: dict[str, Any],
+        *,
+        sector: str | None = None,
+        exclude_taste_excluded: bool = False,
+    ) -> dict[str, Any]:
         with connect(self.db_path) as conn:
-            memory_filters, memory_params = self._memory_filters(user_id, user_settings, alias="m", sector=sector)
+            memory_filters, memory_params = self._memory_filters(
+                user_id, user_settings, alias="m", sector=sector,
+                exclude_taste_excluded=exclude_taste_excluded,
+            )
             memory_where = " AND ".join(memory_filters)
             task_filters, task_params = self._task_filters(user_id, user_settings, alias="t", capture_alias="c")
             task_where = " AND ".join(task_filters)
@@ -21566,8 +21649,8 @@ class CortexStore:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO memories
-                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, superseded_at, occurrences, captured_at, recorded_at, updated_at, raw_excerpt, author_class, author_principal_id, trust_score)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, superseded_at, occurrences, captured_at, recorded_at, updated_at, raw_excerpt, author_class, author_principal_id, trust_score, taste_excluded)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         memory["id"],
@@ -21603,6 +21686,7 @@ class CortexStore:
                         rebuilt_author_class,
                         rebuilt_principal_id,
                         rebuilt_trust,
+                        1 if memory.get("taste_excluded") else 0,
                     ),
                 )
                 if memory.get("status", "active") == "active":
@@ -24697,6 +24781,7 @@ class CortexStore:
                     "confidence": str(item.get("confidence") or "confirmed")[:40],
                     "importance": max(1, min(int(item.get("importance") or 3), 5)),
                     "status": status,
+                    "taste_excluded": bool(item.get("taste_excluded")),
                     "sector": str(item.get("sector") or "")[:80],
                     "source_type": str(item.get("source_type") or "portable-memory")[:80],
                     "provenance": item["provenance"],
@@ -24723,8 +24808,8 @@ class CortexStore:
                      confidence, importance, status, sector, source_type, provenance_json,
                      topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by,
                      superseded_at, occurrences, captured_at, recorded_at, updated_at, raw_excerpt,
-                     author_class, author_principal_id, trust_score)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     author_class, author_principal_id, trust_score, taste_excluded)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         memory["id"], capture_id, user_id, memory["kind"], memory["layer"],
@@ -24735,6 +24820,7 @@ class CortexStore:
                         memory["superseded_by"], memory["superseded_at"], memory["occurrences"],
                         memory["captured_at"], imported_at, imported_at, memory["raw_excerpt"],
                         memory["author_class"], principal_id, memory["trust_score"],
+                        1 if memory["taste_excluded"] else 0,
                     ),
                 )
                 for topic in topics:
@@ -28584,7 +28670,7 @@ class CortexStore:
         # accrues an occurrence instead of silently collapsing; a re-extraction of the same
         # capture (worker retry, vault rebuild materialization) stays idempotent.
         existing_memory = conn.execute(
-            "SELECT capture_id, occurrences, recorded_at FROM memories WHERE user_id = ? AND id = ?",
+            "SELECT capture_id, occurrences, recorded_at, taste_excluded FROM memories WHERE user_id = ? AND id = ?",
             (user_id, memory_id),
         ).fetchone()
         recorded_at = (
@@ -28598,6 +28684,10 @@ class CortexStore:
             occurrences = _memory_occurrences(existing_memory["occurrences"])
             if (existing_memory["capture_id"] or "") != capture_id:
                 occurrences += 1
+        # This is an INSERT OR REPLACE: re-extracting the same content-derived memory id (worker
+        # retry, extractor version bump, vault rebuild materialization) must NOT silently reset a
+        # user's taste-exclusion choice back to "included" — preserve it exactly like occurrences.
+        taste_excluded = bool(existing_memory["taste_excluded"]) if existing_memory is not None else False
         # Phase 3 trust: deterministic function of durable fields (authorship, citation,
         # corroboration, supersession) so write path, rescore job, and rebuild converge.
         trust_score = (
@@ -28622,8 +28712,8 @@ class CortexStore:
         conn.execute(
             """
             INSERT OR REPLACE INTO memories
-            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, superseded_at, occurrences, captured_at, recorded_at, updated_at, raw_excerpt, author_class, author_principal_id, trust_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, superseded_at, occurrences, captured_at, recorded_at, updated_at, raw_excerpt, author_class, author_principal_id, trust_score, taste_excluded)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 memory_id,
@@ -28655,6 +28745,7 @@ class CortexStore:
                 author_class,
                 author_principal_id,
                 trust_score,
+                1 if taste_excluded else 0,
             ),
         )
         conn.execute("DELETE FROM memory_entities WHERE memory_id = ?", (memory_id,))
@@ -28699,6 +28790,7 @@ class CortexStore:
             "confidence": record.get("confidence", "confirmed"),
             "importance": int(record.get("importance", 3)),
             "status": "active",
+            "taste_excluded": taste_excluded,
             "sector": sector,
             "source_type": source_type,
             "provenance": provenance,
@@ -31816,9 +31908,18 @@ class CortexStore:
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
         as_of: str | None = None,
+        exclude_taste_excluded: bool = False,
     ) -> tuple[list[str], list[Any]]:
         filters = [f"{alias}.user_id = ?", f"{alias}.status = 'active'"]
         params: list[Any] = [user_id]
+        # Taste-exclusion gate (opt-in, off by default): callers building Personal Profile /
+        # preference-inference candidates pass exclude_taste_excluded=True so a memory the user
+        # marked "don't let this shape who you think I am" never seeds a section/statement. This is
+        # the ONE centralized place that predicate is applied for the store's memory queries —
+        # search(), recent(), answer_query/Ask, the audit log, and export never set it, so excluded
+        # memories stay exactly as searchable/citable/auditable as any other active memory.
+        if exclude_taste_excluded:
+            filters.append(f"COALESCE({alias}.taste_excluded, 0) = 0")
         if kind:
             filters.append(f"{alias}.kind = ?")
             params.append(kind)
@@ -32753,6 +32854,11 @@ class CortexStore:
             "confidence": row["confidence"],
             "importance": row["importance"],
             "status": row["status"],
+            # Taste-exclusion flag: surfaced on every memory payload (search, recent, get_memory,
+            # audit-adjacent reads) so a client can show/toggle it — it never GATES whether the row
+            # is returned by these read paths, only whether it seeds Personal Profile / Mirror
+            # Moment candidates (see _memory_filters(exclude_taste_excluded=...)).
+            "taste_excluded": bool(row["taste_excluded"]) if "taste_excluded" in keys else False,
             "sector": row["sector"] if "sector" in keys else "",
             "source_type": row["source_type"] if "source_type" in keys else "",
             "provenance": self._json_or_empty(row["provenance_json"] if "provenance_json" in keys else "{}"),
@@ -32903,12 +33009,24 @@ class CortexStore:
             ).fetchall()
         return [self._memory_from_row(row) for row in rows]
 
-    def _memories_by_layer(self, user_id: str, layer: str, limit: int, *, include_pending: bool = False, sector: str | None = None) -> list[dict[str, Any]]:
+    def _memories_by_layer(
+        self,
+        user_id: str,
+        layer: str,
+        limit: int,
+        *,
+        include_pending: bool = False,
+        sector: str | None = None,
+        exclude_taste_excluded: bool = False,
+    ) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
             if not include_pending:
                 user_settings = {**user_settings, "allow_pending_in_context": False}
-            filters, params = self._memory_filters(user_id, user_settings, alias="m", layer=layer, sector=sector)
+            filters, params = self._memory_filters(
+                user_id, user_settings, alias="m", layer=layer, sector=sector,
+                exclude_taste_excluded=exclude_taste_excluded,
+            )
             where = " AND ".join(filters)
             rows = conn.execute(
                 f"""

@@ -31,6 +31,10 @@ MEMORY_FRONTMATTER_FIELDS: tuple[str, ...] = (
     "confidence",
     "importance",
     "status",
+    # Taste-exclusion flag (independent of the status lifecycle above): whether this memory is
+    # excluded from Personal Profile / Mirror Moment / preference-inference candidate selection.
+    # Round-trips through the vault so rebuild-index-from-vault restores it exactly.
+    "taste_excluded",
     "sector",
     "source",
     "source_url",

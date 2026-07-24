@@ -357,11 +357,18 @@ def _load_active_memories(conn, user_id: str) -> list[dict]:
     # which is intentionally surfaced without manual approval). This is deliberately the conservative
     # "reviewed-only" gate even if a user enabled allow_pending_in_context, so a claim Cortex makes
     # about the user is always backed by data they've actually reviewed.
+    #
+    # Taste-exclusion gate: a memory the user has explicitly marked "don't let this shape who you
+    # think I am" (memories.taste_excluded) must never seed a Mirror Moment pattern, even though it
+    # remains a normal, active, fully searchable/citable memory everywhere else. This is the ONLY
+    # place mirror.py touches the flag — one more WHERE clause alongside the review gate above, not
+    # a change to any candidate-scoring logic below.
     cur = conn.execute(
         """
         SELECT m.id, m.layer, m.kind, m.content, m.summary, m.source, m.importance
         FROM memories m
         WHERE m.user_id = ? AND m.status = 'active'
+          AND COALESCE(m.taste_excluded, 0) = 0
           AND (
             m.capture_id IS NULL
             OR EXISTS (

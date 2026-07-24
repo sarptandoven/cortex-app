@@ -892,6 +892,25 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
     },
     {
+        "name": "set_memory_taste_exclusion",
+        "description": (
+            "Include or exclude one memory from shaping Personal Profile, Mirror Moment, and "
+            "other taste/preference-inference summaries. The memory itself is unaffected: it "
+            "stays active, fully searchable, citable in Ask answers, and present in the audit "
+            "log and exports. Not archiving (does not hide it from retrieval) and not forget_memory "
+            "(does not delete it) — use this when a memory is a true historical record but a bad "
+            "signal for who the user is (a one-off joke, an experiment, a temporary interest)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "excluded": {"type": "boolean", "default": True, "description": "True to exclude from taste inference, false to re-include."},
+            },
+            "required": ["id"],
+        },
+    },
+    {
         "name": "delete_memory_capture",
         "description": "Permanently delete one captured source and its derived memories/tasks from the active index and local vault records.",
         "inputSchema": {"type": "object", "properties": {"capture_id": {"type": "string"}}, "required": ["capture_id"]},
@@ -1596,6 +1615,7 @@ WRITE_TOOLS = {
     "approve_memory_capture",
     "archive_memory_capture",
     "forget_memory",
+    "set_memory_taste_exclusion",
     "delete_memory_capture",
     "delete_source_memories",
 }
@@ -4102,6 +4122,10 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         )
     if name == "forget_memory":
         return {"deleted": store.delete_memory(user_id, args["id"])}
+    if name == "set_memory_taste_exclusion":
+        excluded = bool(args.get("excluded", True))
+        updated = store.set_memory_taste_exclusion(user_id, args["id"], excluded)
+        return {"updated": updated, "taste_excluded": excluded if updated else None}
     if name == "delete_memory_capture":
         return {"deleted": store.delete_capture(user_id, args["capture_id"])}
     if name == "list_memory_sources":

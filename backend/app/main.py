@@ -2362,6 +2362,29 @@ def forget_memory(memory_id: str, user_id: str = Depends(auth)) -> dict[str, Any
     return {"deleted": True}
 
 
+@app.post("/v1/memories/{memory_id}/exclude-from-taste")
+def exclude_memory_from_taste(memory_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Mark one memory as excluded from Personal Profile / Mirror Moment / preference-inference
+    candidate selection. The memory itself is untouched: it stays active, fully searchable,
+    citable in Ask answers, and present in the audit log and exports — this only stops it from
+    shaping who Cortex thinks the user is. Distinct from archiving (which hides a capture's
+    memories from active retrieval entirely) and from forgetting (which deletes the memory)."""
+    updated = store.set_memory_taste_exclusion(user_id, memory_id, True)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"taste_excluded": True}
+
+
+@app.post("/v1/memories/{memory_id}/include-in-taste")
+def include_memory_in_taste(memory_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Reverse of exclude-from-taste: let this memory shape Personal Profile / Mirror Moment /
+    preference-inference candidates again."""
+    updated = store.set_memory_taste_exclusion(user_id, memory_id, False)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"taste_excluded": False}
+
+
 @app.get("/v1/sources/stats")
 def source_stats(user_id: str = Depends(auth)) -> dict[str, Any]:
     """Active memories grouped by source, with counts — powers the purge-by-source surface."""

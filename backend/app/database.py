@@ -556,6 +556,13 @@ MIGRATIONS = [
     "ALTER TABLE memories ADD COLUMN author_class TEXT NOT NULL DEFAULT 'unknown'",
     "ALTER TABLE memories ADD COLUMN author_principal_id TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE memories ADD COLUMN trust_score REAL NOT NULL DEFAULT 0.5",
+    # Taste-exclusion flag: a memory can stay a fully searchable/citable/auditable historical
+    # record while being excluded as a candidate for Personal Profile / Mirror Moment / taste-
+    # inference generation (a one-off joke, an experimental decision, a temporary interest). This
+    # is orthogonal to the pending/approved/archived/deleted capture lifecycle — it never affects
+    # search, Ask citations, the audit log, or export. Existing rows get the column's own default
+    # (0 = not excluded), so pre-existing memories behave exactly as before.
+    "ALTER TABLE memories ADD COLUMN taste_excluded INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE memory_events ADD COLUMN fingerprint_sha256 TEXT",
     "ALTER TABLE import_sessions ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
 ]
