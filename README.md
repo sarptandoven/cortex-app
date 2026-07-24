@@ -148,7 +148,7 @@ for how the pieces fit together.
 Cortex is local-first: the default experience needs no account and no cloud. Cortex reads a source only
 after you connect it, records nothing ambient (no screen, no microphone), and shares context with an AI
 tool only within the scoped permission you grant. The optional Cortex Cloud tier (for multi-device sync)
-is described honestly in the app and on the site. Questions: **support@trydoppl.com**.
+is described honestly in the app and on the site. Questions: **sdoven@uwaterloo.ca** or **vamika_singhal@berkeley.edu**.
 
 ## Affiliations & sponsor
 
