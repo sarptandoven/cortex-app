@@ -505,6 +505,84 @@ CREATE INDEX IF NOT EXISTS idx_memory_topics_topic ON memory_topics(user_id, top
 CREATE INDEX IF NOT EXISTS idx_memory_events_object ON memory_events(user_id, object_type, object_id);
 CREATE INDEX IF NOT EXISTS idx_shared_principals_status ON shared_memory_principals(user_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shared_writes_principal ON shared_memory_writes(user_id, principal_id, created_at, id);
+
+-- Pairwise digital-twin evaluation artifacts are intentionally separate from
+-- memory_events. Runs are immutable replay bundles; child rows make their
+-- candidates, judgments, resolutions, and rankings independently auditable.
+CREATE TABLE IF NOT EXISTS twin_eval_runs (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  artifact_digest TEXT NOT NULL,
+  seed_json TEXT NOT NULL,
+  profile_fingerprint TEXT NOT NULL,
+  spec_json TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  report_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(user_id, run_id),
+  UNIQUE(user_id, artifact_digest)
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_candidates (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  candidate_id TEXT NOT NULL,
+  prompt_id TEXT NOT NULL,
+  system_id TEXT NOT NULL,
+  candidate_json TEXT NOT NULL,
+  candidate_digest TEXT NOT NULL,
+  PRIMARY KEY(user_id, run_id, candidate_id),
+  UNIQUE(user_id, run_id, prompt_id, system_id),
+  FOREIGN KEY(user_id, run_id) REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_comparisons (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  comparison_id TEXT NOT NULL,
+  logical_comparison_id TEXT NOT NULL,
+  left_candidate_id TEXT NOT NULL,
+  right_candidate_id TEXT NOT NULL,
+  comparison_json TEXT NOT NULL,
+  comparison_digest TEXT NOT NULL,
+  PRIMARY KEY(user_id, run_id, comparison_id),
+  FOREIGN KEY(user_id, run_id) REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT,
+  FOREIGN KEY(user_id, run_id, left_candidate_id)
+    REFERENCES twin_eval_candidates(user_id, run_id, candidate_id) ON DELETE RESTRICT,
+  FOREIGN KEY(user_id, run_id, right_candidate_id)
+    REFERENCES twin_eval_candidates(user_id, run_id, candidate_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_resolved_comparisons (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  logical_comparison_id TEXT NOT NULL,
+  resolved_json TEXT NOT NULL,
+  resolved_digest TEXT NOT NULL,
+  PRIMARY KEY(user_id, run_id, logical_comparison_id),
+  FOREIGN KEY(user_id, run_id) REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_rankings (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  system_id TEXT NOT NULL,
+  rating_json TEXT NOT NULL,
+  rating_digest TEXT NOT NULL,
+  PRIMARY KEY(user_id, run_id, system_id),
+  FOREIGN KEY(user_id, run_id) REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_ranking_manifests (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  ranking_json TEXT NOT NULL,
+  ranking_digest TEXT NOT NULL,
+  PRIMARY KEY(user_id, run_id),
+  FOREIGN KEY(user_id, run_id) REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_twin_eval_comparisons_logical
+  ON twin_eval_comparisons(user_id, run_id, logical_comparison_id);
 """
 
 VECTOR_SCHEMA = f"""
@@ -707,6 +785,7 @@ CREATE TABLE IF NOT EXISTS oauth_pending (
   expires_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_oauth_pending_expiry ON oauth_pending(expires_at);
+
 """
 
 
