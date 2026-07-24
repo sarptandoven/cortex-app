@@ -44,13 +44,13 @@ Every assistant forgets the work you already did. You re-explain your project, y
 decisions — every session, to every tool. Cortex is the layer that remembers **once** and serves that
 memory **everywhere**, without shipping your life to someone else's server.
 
-- 🔒 **Local-first, by default.** Your memory is plain files on your Mac at
+- **Local-first, by default.** Your memory is plain files on your Mac at
   `~/Library/Application Support/Cortex/Cortex.vault/`. It works with the network off. No account needed.
-- 🧠 **Reviewed, cited memory.** Nothing is "remembered" until you approve it. Every answer cites the
+- **Reviewed, cited memory.** Nothing is "remembered" until you approve it. Every answer cites the
   source it came from — no hallucinated recall.
-- 🔌 **Works where you already work.** One click wires Cortex into Claude Desktop, Cursor, Windsurf,
+- **Works where you already work.** One click wires Cortex into Claude Desktop, Cursor, Windsurf,
   Zed, and any MCP client. Bring your history in from ChatGPT, Claude, Perplexity, and Notion.
-- 🎛️ **You hold the controls.** Per-tool permissions for read, save, export, and repair. Redaction on
+- **You hold the controls.** Per-tool permissions for read, save, export, and repair. Redaction on
   by default. Revoke anything, anytime.
 
 ## The loop
