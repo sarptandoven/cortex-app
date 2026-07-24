@@ -12,12 +12,12 @@ starting from zero and start picking up where you left off.
 
 <br/>
 
-<!-- Affiliation, sponsor & license — each badge its own accent on a shared black rail -->
-[![University of Waterloo](https://img.shields.io/badge/University_of-Waterloo-FDD54F?style=for-the-badge&labelColor=000000)](https://uwaterloo.ca)
-[![Faculty of Engineering](https://img.shields.io/badge/Faculty_of-Engineering-0E7C86?style=for-the-badge&labelColor=000000)](https://uwaterloo.ca/engineering)
-[![Research](https://img.shields.io/badge/Academic-Research-B5179E?style=for-the-badge&labelColor=000000)](https://uwaterloo.ca/research)
-[![Sponsored by Composio](https://img.shields.io/badge/Sponsored_by-Composio-4361EE?style=for-the-badge&labelColor=000000&logo=githubsponsors&logoColor=white)](https://composio.dev)
-[![License: MIT](https://img.shields.io/badge/License-MIT-2E9E44?style=for-the-badge&labelColor=000000&logo=opensourceinitiative&logoColor=white)](LICENSE)
+<!-- Affiliation, sponsor & license — individual buttons: each bordered, rounded, spaced -->
+[<img src=".github/badges/waterloo.svg" alt="University of Waterloo" height="40" />](https://uwaterloo.ca)
+[<img src=".github/badges/engineering.svg" alt="Faculty of Engineering" height="40" />](https://uwaterloo.ca/engineering)
+[<img src=".github/badges/research.svg" alt="Academic Research" height="40" />](https://uwaterloo.ca/research)
+[<img src=".github/badges/composio.svg" alt="Sponsored by Composio" height="40" />](https://composio.dev)
+[<img src=".github/badges/mit.svg" alt="MIT License" height="40" />](LICENSE)
 
 <br/>
 
@@ -155,7 +155,7 @@ is described honestly in the app and on the site. Questions: **support@trydoppl.
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="https://uwaterloo.ca"><img src="https://img.shields.io/badge/University_of-Waterloo-FDD54F?style=for-the-badge&labelColor=000000" alt="University of Waterloo" /></a><br/>
+      <a href="https://uwaterloo.ca"><img src=".github/badges/waterloo.svg" alt="University of Waterloo" height="34" /></a><br/>
       <sub>Built at the <b>University of Waterloo</b><br/>Faculty of Engineering</sub>
     </td>
     <td align="center" width="33%">
