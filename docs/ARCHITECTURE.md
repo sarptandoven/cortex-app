@@ -190,6 +190,23 @@ Each memory also has a retrieval layer:
 - preference
 - negative
 
+### Taste Exclusion
+
+`memories.taste_excluded` is a boolean flag, independent of the `pending`/`approved`/`archived`/`deleted`
+capture lifecycle above. An excluded memory is a true historical record and stays fully searchable,
+citable in Ask answers, present in the audit log, and included in exports — it is not hidden and not
+deleted. It is only skipped as a candidate when Cortex generates Personal Profile sections, the Mirror
+Moment insight, or other taste/preference-inference summaries, so a one-off joke, an experimental
+decision, or a temporary interest can be recorded honestly without shaping who Cortex thinks the user
+is long-term.
+
+The flag is set with `POST /v1/memories/{memory_id}/exclude-from-taste` (and reversed with
+`POST /v1/memories/{memory_id}/include-in-taste`), or the `set_memory_taste_exclusion` MCP tool. Toggling
+it writes a `taste_exclusion_updated` audit event and round-trips through the vault (JSON + Markdown
+frontmatter) and `rebuild-index-from-vault`. `personal_profile()`/`build_profile()` accept an explicit
+`include_taste_excluded=True` override for a caller that wants to see the profile as if the flag did not
+exist; every other read path (search, recent, Ask, audit, export) ignores the flag entirely.
+
 ### Entity
 
 A stable node in the user's life/work graph:
@@ -299,6 +316,7 @@ The backend exposes an MCP-style JSON-RPC endpoint with these tools:
 - `repair_memory_storage`
 - `rebuild_memory_search`
 - `forget_memory`
+- `set_memory_taste_exclusion`
 - `delete_memory_capture`
 - `rebuild_index_from_vault`
 - `export_memory`

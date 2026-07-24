@@ -50,16 +50,17 @@ class MirrorInsightTests(unittest.TestCase):
         status: str = "active",
         user_id: str | None = None,
         topics: list[str] | None = None,
+        taste_excluded: bool = False,
     ) -> None:
         uid = user_id or self.user_id
         conn.execute(
             """
             INSERT INTO memories
                 (id, user_id, kind, layer, content, summary, source, confidence,
-                 importance, status, captured_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, '2026-07-02T00:00:00Z')
+                 importance, status, captured_at, taste_excluded)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, '2026-07-02T00:00:00Z', ?)
             """,
-            (memory_id, uid, kind, layer, content, summary, source, importance, status),
+            (memory_id, uid, kind, layer, content, summary, source, importance, status, 1 if taste_excluded else 0),
         )
         for topic in topics or []:
             conn.execute(
@@ -307,6 +308,69 @@ class MirrorInsightTests(unittest.TestCase):
             conn.commit()
             insight = compute_mirror_insight(conn, self.user_id)
         self.assertIsNone(insight, "another user's memories must not leak into this user's insight")
+
+    # --- taste-exclusion flag -------------------------------------------------
+
+    def test_taste_excluded_memories_do_not_form_a_pattern(self) -> None:
+        """A memory flagged taste_excluded must never contribute to a Mirror Moment, even
+        though it is otherwise a perfectly normal active memory (this is NOT status='archived')."""
+        with connect(self.db_path) as conn:
+            for i in range(6):
+                self._insert_memory(
+                    conn,
+                    memory_id=f"excl_{i}",
+                    content="Sam prefers to decline meetings scheduled before 10am.",
+                    summary="prefers to decline meetings before 10am",
+                    layer="preference",
+                    kind="preference",
+                    source="calendar",
+                    taste_excluded=True,
+                )
+            conn.commit()
+            insight = compute_mirror_insight(conn, self.user_id)
+        self.assertIsNone(insight, "taste-excluded memories must not seed a Mirror Moment pattern")
+
+    def test_taste_excluded_memories_do_not_dilute_or_leak_into_a_real_pattern(self) -> None:
+        """Six calendar preference memories still form the same insight when extra
+        taste-excluded copies of the SAME statement exist — they must not be counted,
+        and must never appear in the cited memory_ids."""
+        with connect(self.db_path) as conn:
+            pref_ids = self._seed_repeated_calendar_preference(conn)
+            excluded_ids = []
+            for i in range(6):
+                mid = f"excl_extra_{i}"
+                excluded_ids.append(mid)
+                self._insert_memory(
+                    conn,
+                    memory_id=mid,
+                    content="Sam prefers to decline meetings scheduled before 10am.",
+                    summary="prefers to decline meetings before 10am",
+                    layer="preference",
+                    kind="preference",
+                    source="calendar",
+                    taste_excluded=True,
+                )
+            conn.commit()
+            insight = compute_mirror_insight(conn, self.user_id)
+        self.assertIsNotNone(insight)
+        assert insight is not None
+        evidence = insight["evidence"]
+        # Count and cited ids are exactly the non-excluded preference memories.
+        self.assertEqual(evidence["count"], 6)
+        self.assertEqual(set(evidence["memory_ids"]), set(pref_ids))
+        for excluded_id in excluded_ids:
+            self.assertNotIn(excluded_id, evidence["memory_ids"])
+
+    def test_unflagged_memories_are_unaffected_by_the_taste_column(self) -> None:
+        """Regression guard: ordinary memories (taste_excluded defaults to False/0) behave
+        exactly as before the flag existed."""
+        with connect(self.db_path) as conn:
+            pref_ids = self._seed_repeated_calendar_preference(conn)
+            conn.commit()
+            insight = compute_mirror_insight(conn, self.user_id)
+        self.assertIsNotNone(insight)
+        assert insight is not None
+        self.assertEqual(set(insight["evidence"]["memory_ids"]), set(pref_ids))
 
     # --- (c) determinism ----------------------------------------------------
 

@@ -12097,7 +12097,10 @@ class CortexStore:
         # people/projects the user orbits) rather than a raw link count. Best-effort — a graph
         # failure must never break the profile.
         try:
-            graph = self.entity_graph_analysis(user_id, include_pending=include_pending, sector=sector)
+            graph = self.entity_graph_analysis(
+                user_id, include_pending=include_pending, sector=sector,
+                exclude_taste_excluded=not include_taste_excluded,
+            )
         except Exception:
             graph = None
         sections = build_profile_sections(profile, embed_fn=embed_fn, provider=provider, graph=graph)
@@ -14239,12 +14242,16 @@ class CortexStore:
         *,
         include_pending: bool | None = None,
         sector: str | None = None,
+        exclude_taste_excluded: bool = False,
     ) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
             if include_pending is False:
                 user_settings = {**user_settings, "allow_pending_in_context": False}
-            filters, params = self._memory_filters(user_id, user_settings, alias="m", sector=sector)
+            filters, params = self._memory_filters(
+                user_id, user_settings, alias="m", sector=sector,
+                exclude_taste_excluded=exclude_taste_excluded,
+            )
             where = " AND ".join(filters)
             rows = conn.execute(
                 f"""
@@ -14267,12 +14274,16 @@ class CortexStore:
         *,
         include_pending: bool | None = None,
         sector: str | None = None,
+        exclude_taste_excluded: bool = False,
     ) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
             if include_pending is False:
                 user_settings = {**user_settings, "allow_pending_in_context": False}
-            filters, params = self._memory_filters(user_id, user_settings, alias="m", sector=sector)
+            filters, params = self._memory_filters(
+                user_id, user_settings, alias="m", sector=sector,
+                exclude_taste_excluded=exclude_taste_excluded,
+            )
             memory_filter = " AND ".join(filters)
             rows = conn.execute(
                 f"""
@@ -14297,6 +14308,7 @@ class CortexStore:
         include_pending: bool = False,
         sector: str | None = None,
         max_nodes: int = 300,
+        exclude_taste_excluded: bool = False,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """The user's personal knowledge graph on the EXISTING tables: nodes are entities
         (people/projects/orgs/topics) with their supporting-memory count as weight; edges are
@@ -14309,7 +14321,10 @@ class CortexStore:
             user_settings = self._settings(conn, user_id)
             if not include_pending:
                 user_settings = {**user_settings, "allow_pending_in_context": False}
-            filters, params = self._memory_filters(user_id, user_settings, alias="m", sector=sector)
+            filters, params = self._memory_filters(
+                user_id, user_settings, alias="m", sector=sector,
+                exclude_taste_excluded=exclude_taste_excluded,
+            )
             memory_filter = " AND ".join(filters)
             node_rows = conn.execute(
                 f"""
@@ -14366,12 +14381,22 @@ class CortexStore:
                     })
         return nodes, edges
 
-    def entity_graph_analysis(self, user_id: str, *, include_pending: bool = False, sector: str | None = None) -> dict[str, Any]:
+    def entity_graph_analysis(
+        self,
+        user_id: str,
+        *,
+        include_pending: bool = False,
+        sector: str | None = None,
+        exclude_taste_excluded: bool = False,
+    ) -> dict[str, Any]:
         """Deterministic, offline analysis of the personal entity graph (centrality = key
         people/projects, communities = life/work areas, bridges = connecting entities). Pure read;
         safe to call on any tick. Returns the analyze_entity_graph result plus the node metadata so
         callers can label results without a second query."""
-        nodes, edges = self.build_entity_graph(user_id, include_pending=include_pending, sector=sector)
+        nodes, edges = self.build_entity_graph(
+            user_id, include_pending=include_pending, sector=sector,
+            exclude_taste_excluded=exclude_taste_excluded,
+        )
         analysis = analyze_entity_graph(nodes, edges)
         analysis["nodes"] = {node["id"]: node for node in nodes}
         analysis["edges"] = edges
@@ -19418,8 +19443,11 @@ class CortexStore:
         focus_memories = self.search(user_id, query, limit=limit, sector=sector, include_related=True) if query else []
         focus_memories = self._approved_profile_memories(user_id, focus_memories, include_pending=include_pending)
         open_loops = self.open_tasks(user_id, limit=limit, include_pending=include_pending, sector=sector)
-        topics = self.list_topics(user_id, limit=8, include_pending=include_pending, sector=sector)
-        entities = self.list_entities(user_id, limit=8, include_pending=include_pending, sector=sector)
+        # Focus areas / People & projects are also part of Personal Profile generation
+        # (build_profile_sections reads profile["topics"]/profile["entities"]), so they honor the
+        # same exclude_taste_excluded gate as the per-layer sections above.
+        topics = self.list_topics(user_id, limit=8, include_pending=include_pending, sector=sector, exclude_taste_excluded=exclude_taste_excluded)
+        entities = self.list_entities(user_id, limit=8, include_pending=include_pending, sector=sector, exclude_taste_excluded=exclude_taste_excluded)
         sources = self._source_freshness(user_id, limit=8, user_settings=profile_settings)
         covered_layers = sum(1 for item in layer_order if layer_counts.get(item[0], 0) > 0)
         readiness = min(

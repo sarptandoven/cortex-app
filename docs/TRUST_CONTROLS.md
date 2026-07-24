@@ -106,6 +106,7 @@ When disabled, connected agents cannot inspect memory through MCP.
 - `sync_source_records`
 - `approve_memory_capture`
 - `archive_memory_capture`
+- `set_memory_taste_exclusion`
 - `forget_memory` (also requires destructive access)
 - `delete_memory_capture` (also requires destructive access)
 
@@ -189,6 +190,7 @@ Important event types:
 - import created
 - import deleted
 - memory archived
+- memory taste-exclusion updated (does not gate search, citations, or export — see Memory Model's Taste Exclusion in `docs/ARCHITECTURE.md`)
 - settings updated
 - backup created
 - search rebuilt
