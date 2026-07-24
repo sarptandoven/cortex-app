@@ -12,12 +12,12 @@ starting from zero and start picking up where you left off.
 
 <br/>
 
-<!-- Affiliation, sponsor & license — University of Waterloo black + gold -->
+<!-- Affiliation, sponsor & license — each badge its own accent on a shared black rail -->
 [![University of Waterloo](https://img.shields.io/badge/University_of-Waterloo-FDD54F?style=for-the-badge&labelColor=000000)](https://uwaterloo.ca)
-[![Faculty of Engineering](https://img.shields.io/badge/Faculty_of-Engineering-000000?style=for-the-badge&labelColor=FDD54F)](https://uwaterloo.ca/engineering)
-[![Research](https://img.shields.io/badge/Academic-Research-FDD54F?style=for-the-badge&labelColor=000000)](https://uwaterloo.ca/research)
-[![Sponsored by Composio](https://img.shields.io/badge/Sponsored_by-Composio-000000?style=for-the-badge&labelColor=FDD54F&logo=githubsponsors&logoColor=black)](https://composio.dev)
-[![License: MIT](https://img.shields.io/badge/License-MIT-FDD54F?style=for-the-badge&labelColor=000000&logo=opensourceinitiative&logoColor=FDD54F)](LICENSE)
+[![Faculty of Engineering](https://img.shields.io/badge/Faculty_of-Engineering-0E7C86?style=for-the-badge&labelColor=000000)](https://uwaterloo.ca/engineering)
+[![Research](https://img.shields.io/badge/Academic-Research-B5179E?style=for-the-badge&labelColor=000000)](https://uwaterloo.ca/research)
+[![Sponsored by Composio](https://img.shields.io/badge/Sponsored_by-Composio-4361EE?style=for-the-badge&labelColor=000000&logo=githubsponsors&logoColor=white)](https://composio.dev)
+[![License: MIT](https://img.shields.io/badge/License-MIT-2E9E44?style=for-the-badge&labelColor=000000&logo=opensourceinitiative&logoColor=white)](LICENSE)
 
 <br/>
 
@@ -25,14 +25,14 @@ starting from zero and start picking up where you left off.
 
 <br/>
 
-![macOS 13+](https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=FDD54F)
-![Notarized](https://img.shields.io/badge/Apple-Notarized-000000?logo=apple&logoColor=FDD54F)
-![SwiftUI](https://img.shields.io/badge/App-SwiftUI-000000?logo=swift&logoColor=FDD54F)
-![FastAPI](https://img.shields.io/badge/Engine-FastAPI-000000?logo=fastapi&logoColor=FDD54F)
-![SQLite + sqlite-vec](https://img.shields.io/badge/Storage-SQLite%20%2B%20sqlite--vec-000000?logo=sqlite&logoColor=FDD54F)
-![MCP](https://img.shields.io/badge/Protocol-MCP-000000?logo=modelcontextprotocol&logoColor=FDD54F)
-![Works with Claude](https://img.shields.io/badge/Works%20with-Claude-000000?logo=claude&logoColor=FDD54F)
-![Local-first](https://img.shields.io/badge/Local--first-100%25%20on%20your%20Mac-E4B429?labelColor=000000)
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=white)
+![Notarized](https://img.shields.io/badge/Apple-Notarized-555555?logo=apple&logoColor=white)
+![SwiftUI](https://img.shields.io/badge/App-SwiftUI-F05138?logo=swift&logoColor=white)
+![FastAPI](https://img.shields.io/badge/Engine-FastAPI-009688?logo=fastapi&logoColor=white)
+![SQLite + sqlite-vec](https://img.shields.io/badge/Storage-SQLite%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white)
+![MCP](https://img.shields.io/badge/Protocol-MCP-6E56CF?logo=modelcontextprotocol&logoColor=white)
+![Works with Claude](https://img.shields.io/badge/Works%20with-Claude-D97757?logo=claude&logoColor=white)
+![Local-first](https://img.shields.io/badge/Local--first-100%25%20on%20your%20Mac-2E7D32?logo=ghostery&logoColor=white)
 
 </div>
 
@@ -159,7 +159,7 @@ is described honestly in the app and on the site. Questions: **support@trydoppl.
       <sub>Built at the <b>University of Waterloo</b><br/>Faculty of Engineering</sub>
     </td>
     <td align="center" width="33%">
-      <a href="https://uwaterloo.ca/research"><img src="https://img.shields.io/badge/Academic-Research-FDD54F?style=for-the-badge&labelColor=000000" alt="Research" /></a><br/>
+      <a href="https://uwaterloo.ca/research"><img src="https://img.shields.io/badge/Academic-Research-B5179E?style=for-the-badge&labelColor=000000" alt="Research" /></a><br/>
       <sub>An applied <b>research</b> project on<br/>local-first AI memory</sub>
     </td>
     <td align="center" width="33%">
