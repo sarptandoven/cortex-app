@@ -1,0 +1,2 @@
+b416c8af096d9bc2776adc306a9d60f843054bc35e503d993eda9e199436ec64  Cortex-0.2.0-51.dmg
+3a3ee9fc26fca2c3944c9bd4dff49fddb5f8dfc377b5efa14ce8966f5b34e273  Cortex-0.2.0-51.app.zip

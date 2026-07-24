@@ -2,31 +2,24 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-47.dmg",
+      "filename": "Cortex-0.2.0-51.dmg",
       "kind": "dmg",
-      "sha256": "47db0492295120cf2b243f1822c8ed192f469154ec21a7295c987847008a0363",
-      "size_bytes": 88384577,
-      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-47/Cortex-0.2.0-47.dmg"
+      "sha256": "b416c8af096d9bc2776adc306a9d60f843054bc35e503d993eda9e199436ec64",
+      "size_bytes": 74548179,
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-51/Cortex-0.2.0-51.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-47.app.zip",
+      "filename": "Cortex-0.2.0-51.app.zip",
       "kind": "zip",
-      "sha256": "4d0238485e7eb4f61fe2646e748b210cbea0d6449486aa3a4904f94e192066c3",
-      "size_bytes": 70538040,
-      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-47/Cortex-0.2.0-47.app.zip"
-    },
-    {
-      "filename": "cortex-memory-0.1.0.zip",
-      "kind": "obsidian-plugin",
-      "sha256": "e2d997af6f6e57ab37545d3d46817732cebaee5b10a15775bb5bbaf9f5fff9f1",
-      "size_bytes": 3423,
-      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-47/cortex-memory-0.1.0.zip"
+      "sha256": "3a3ee9fc26fca2c3944c9bd4dff49fddb5f8dfc377b5efa14ce8966f5b34e273",
+      "size_bytes": 71687986,
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-51/Cortex-0.2.0-51.app.zip"
     }
   ],
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.2.0-47.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-51.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
@@ -39,11 +32,8 @@
       "Complete getting started by connecting a memory source, reviewing one memory, asking a cited question, then deciding on backup in Connections & Privacy."
     ],
     "known_limitations": [
-      "Manual app replacement is the only update path for this local beta.",
-      "Google, Notion, and Outlook managed OAuth sign-in require configured OAuth app credentials in the app build.",
-      "Hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
-      "Support starts from the sanitized support bundle, not raw memory folder data.",
-      "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution."
+      "Google, Notion, and Outlook managed OAuth sign-in require the founder to register the OAuth apps; email, Google, and GitHub sign-in work today.",
+      "Support starts from the sanitized support bundle, not raw memory folder data."
     ],
     "manual_qa_checklist": [
       "Install from the DMG on a clean macOS 13 or newer user profile.",
@@ -70,22 +60,22 @@
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
-  "build": "47",
+  "build": "51",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "One-click-first connect: direct sign-in is the hero, with a quick first sync and a simpler getting-started flow.",
-    "Memory is organized deterministically on ingest: reconciled layers, retroactive entity merge, real dates from relative phrases, and chunk-boundary stitching so nothing is dropped.",
-    "Contextual Memory Protocol: a self-describing, cited memory envelope any AI (Claude, GPT, Cursor, MCP tools) parses zero-shot, model-aware packing that fits each model's budget, and a per-session working-set delta so each fact costs tokens once.",
-    "Steadier and lighter: fixed a background path that could spike CPU and stall rapid multi-turn context requests; idle stays quiet."
+    "One-click connect, both ways: connect Claude Desktop, Cursor, Windsurf, and Zed in a click, and bring your history in from ChatGPT, Claude, Perplexity, and Notion.",
+    "Automatic updates: Cortex now checks for new builds on its own, so you stay current without re-downloading.",
+    "A cleaner, more intuitive app: dozens of UI refinements, Reduce Motion support, honest states everywhere, and Sign in with Apple in the restore flow.",
+    "Only-functional surfaces: every visible connection now leads to a real connection; nothing on screen is a dead end."
   ],
-  "released_at": "2026-07-20T10:23:42Z",
+  "released_at": "2026-07-24T03:54:50Z",
   "source_provenance": {
-    "built_at": "2026-07-20T10:23:42Z",
+    "built_at": "2026-07-24T03:54:50Z",
     "git_branch": "feat/connect-gate-redesign",
-    "git_commit": "ec20669eb33e671ea2cf3b2d06a28dbc0c57db10",
+    "git_commit": "0f7e33ec58264b9694f4219379d7240313d9936b",
     "git_dirty": false
   },
   "version": "0.2.0"
