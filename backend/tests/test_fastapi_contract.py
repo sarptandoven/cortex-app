@@ -3479,6 +3479,58 @@ END:VCALENDAR
         self.assertIn("# Cortex Agent Adaptation Layer", adaptation_markdown.text)
         self.assertIn("Operating Principles", adaptation_markdown.text)
 
+    def test_taste_exclusion_endpoints_hide_from_profile_but_not_search(self) -> None:
+        headers = {"Authorization": "Bearer test-token"}
+        created = self.client.post(
+            "/v1/captures",
+            json={
+                "content": "Taste exclusion contract: I love wearing zzqorpclownshoes to the office on Fridays.",
+                "source": "fastapi-taste-exclusion-test",
+            },
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200)
+        capture_id = created.json()["capture_id"]
+        approved = self.client.post(f"/v1/captures/{capture_id}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+
+        # approve_capture returns only {"approved": True}; recover the memory id via search,
+        # the same way the memory becomes reachable to any real caller.
+        found = self.client.get("/v1/search", params={"query": "zzqorpclownshoes"}, headers=headers)
+        self.assertEqual(found.status_code, 200)
+        results = found.json()["results"]
+        self.assertTrue(results)
+        memory_id = results[0]["id"]
+
+        exclude = self.client.post(f"/v1/memories/{memory_id}/exclude-from-taste", headers=headers)
+        self.assertEqual(exclude.status_code, 200)
+        self.assertEqual(exclude.json(), {"taste_excluded": True})
+
+        # Excluded but still fully searchable/citable.
+        search_after = self.client.get("/v1/search", params={"query": "zzqorpclownshoes"}, headers=headers)
+        self.assertEqual(search_after.status_code, 200)
+        self.assertTrue(any(item["id"] == memory_id for item in search_after.json()["results"]))
+
+        # Excluded but still in the audit log.
+        audit = self.client.get("/v1/audit-log", headers=headers)
+        self.assertEqual(audit.status_code, 200)
+        self.assertTrue(any(
+            event.get("object_id") == memory_id and event.get("event_type") == "taste_exclusion_updated"
+            for event in audit.json()["results"]
+        ))
+
+        include = self.client.post(f"/v1/memories/{memory_id}/include-in-taste", headers=headers)
+        self.assertEqual(include.status_code, 200)
+        self.assertEqual(include.json(), {"taste_excluded": False})
+
+        # 404 on an id that doesn't exist.
+        missing = self.client.post("/v1/memories/does-not-exist/exclude-from-taste", headers=headers)
+        self.assertEqual(missing.status_code, 404)
+
+        # No auth, no toggle.
+        unauthorized = self.client.post(f"/v1/memories/{memory_id}/exclude-from-taste")
+        self.assertEqual(unauthorized.status_code, 401)
+
     def test_source_import_endpoint_queues_export_records(self) -> None:
         export_dir = Path(MODULE_TMP.name) / "chatgpt-import-contract"
         export_dir.mkdir(exist_ok=True)
