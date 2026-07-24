@@ -4,12 +4,13 @@
 
 # Cortex
 
-### Your personal operating model for AI — private, on your Mac, owned by you.
+### Your personal operating model for AI: a local, cited model of how you work.
 
-Every AI tool you use runs on a generic model of the world. Cortex gives them a model of **you**.
-It distills your notes and AI chat history into a living, **reviewed, cited operating model** — how
-you work, what you've decided, how you write, what matters to you — and serves it to Claude, ChatGPT,
-Cursor, and any MCP-capable tool. They stop starting from zero and start working the way you would.
+Every AI tool runs on a foundation model of the world. Cortex compiles a **model of you** and serves
+it to them. It turns your notes and AI-chat history into a typed, layered, **cited** model of your
+voice, preferences, decisions, and the graph of your world, then feeds it to Claude, ChatGPT, Cursor,
+and any MCP client. Your tools stop starting from zero and start reasoning with your judgment loaded
+in, on hardware you own.
 
 <br/>
 
@@ -39,39 +40,29 @@ Cursor, and any MCP-capable tool. They stop starting from zero and start working
 
 ---
 
-## Why Cortex
+## How the operating model works
 
-Every assistant forgets the work you already did. You re-explain your project, your preferences, your
-decisions — every session, to every tool. The fix isn't a bigger context window; it's a **personal
-operating model**: one place that learns how you work, holds it as reviewed, cited memory, and serves
-it to every tool — without shipping your life to someone else's server.
+Approved memory goes in; a calibrated model of how you operate comes out. Five systems make that real:
 
-- **Local-first, by default.** Your memory is plain files on your Mac at
-  `~/Library/Application Support/Cortex/Cortex.vault/`. It works with the network off. No account needed.
-- **Reviewed, cited memory.** Nothing is "remembered" until you approve it. Every answer cites the
-  source it came from — no hallucinated recall.
-- **Works where you already work.** One click wires Cortex into Claude Desktop, Cursor, Windsurf,
-  Zed, and any MCP client. Bring your history in from ChatGPT, Claude, Perplexity, and Notion.
-- **You hold the controls.** Per-tool permissions for read, save, export, and repair. Redaction on
-  by default. Revoke anything, anytime.
-
-## Not another memory layer
-
-Memory layers store and recall. Cortex is built past that, on three bets the "RAG-for-your-notes"
-crowd isn't making:
-
-1. **The model acts like you, not just remembers you.** Recall answers "what did I say?" — the
-   operating model answers "what would I do?" Connected agents load your decisions, preferences, and
-   voice as a calibration brief before they work, so delegation stops meaning re-explaining. That's
-   the Doppl thesis: not a notebook for your AI, a working double of how you operate.
-2. **A protocol, not a prompt-stuffer.** The [Contextual Memory Protocol](docs/CMP_PROTOCOL.md) treats
-   context as an engineered budget: model-calibrated packing, a per-session delta channel that never
-   re-sends what an agent already knows (measured, reproducible token savings with enforced
-   invariants), and retrieval that **cites or abstains** — grounded context, never vibes.
-3. **A compounding asset you own.** Every session makes the model more yours, and it lives in plain
-   files on your Mac — portable across AI vendors, inspectable line by line, deletable in one act.
-   When you switch from one assistant to the next, your operating model moves with you. Nobody else
-   gets to own the model of you.
+- **It dreams.** A bounded **sleep-time consolidation pass** runs while you are away: it resolves only
+  contradictions that clear deterministic safety rules (your source memory stays authoritative and
+  every decision is logged), and pre-warms **verified hot-context packs** so the next agent request is
+  served from a checked cache, not a cold build.
+- **It recalls associatively.** Retrieval walks a trust-aware **knowledge graph** with bounded
+  multi-hop recall, including a **personalized-PageRank** mode that surfaces what is *connected* to the
+  query, not just lexically near it. Hops are budgeted and carry provenance.
+- **It packs context as a protocol.** The [**Contextual Memory Protocol**](docs/CMP_PROTOCOL.md) fits a
+  model-calibrated **SMP envelope** with a token-aware knapsack, then runs a **per-session delta
+  channel** that never re-sends what an agent already holds (enforced invariants, measured savings).
+  Retrieval fuses BM25, `sqlite-vec` KNN, temporal, and intent, reranks on-device, and **cites or
+  abstains**.
+- **It models judgment.** Deterministic extractors and an LLM condenser build seven typed layers
+  (voice, preferences, decisions, facts, episodic, entities, topics) into a **whole-person map**.
+  Agents call `GET /v1/agent-adaptation` to load your calibration brief before they work. That is the
+  Doppl thesis: a working model of how you operate, so delegation stops meaning re-explanation.
+- **It compounds as an asset you own.** Packs are **sha256-addressed and replayable**. The model lives
+  as plain Markdown plus a rebuildable index on your Mac, vendor-portable, inspectable, and erasable in
+  one act. Switch assistants and your model comes with you.
 
 ## The loop
 
@@ -92,7 +83,7 @@ flowchart LR
       A2["ChatGPT · Claude · Perplexity · Notion"]
       A3["Files & exports"]
     end
-    subgraph CORTEX["Cortex — your operating model, on your Mac"]
+    subgraph CORTEX["Cortex: your operating model, on your Mac"]
       B1["Review inbox<br/>(you approve)"]
       B2["Layered, cited memory<br/>SQLite + sqlite-vec"]
       B4["Profile + knowledge graph<br/>(how you work)"]
@@ -110,35 +101,12 @@ typed, layered memory in a **SQLite** store (full-text + `sqlite-vec` vectors) t
 human-readable, Obsidian-style vault you own. When a tool asks, the **Contextual Memory Protocol** packs
 the smallest cited, model-calibrated context that answers the task.
 
-## Your operating model
+## Also inside
 
-Memory is the foundation; the operating model is what Cortex builds on top of it. From your approved
-memory, Cortex continuously distills a **cited model of how you work** — and exposes it to your tools:
-
-- **Voice & style** — how you actually write, so drafts come out sounding like you.
-- **Your preferences** — the tools, formats, and ways of working you've settled on.
-- **Key decisions** — what you decided and why, so nothing gets relitigated from scratch.
-- **Your world** — a knowledge graph of the people, projects, and topics around you, with the
-  relationships between them.
-- **Agent adaptation** — a machine-readable brief any connected agent can load to calibrate itself
-  to you before it does the work.
-
-Every claim in the model traces back to a memory you approved — it's *your* operating model, evidenced,
-inspectable, and revocable, not a black-box profile someone else trained on you.
-
-## What's inside
-
-- **Contextual Memory Protocol (CMP)** — model-aware context packing (SMP envelope + per-session working
-  set) that gives an agent exactly what it needs, cited, and nothing it doesn't. See [`docs/CMP_PROTOCOL.md`](docs/CMP_PROTOCOL.md).
-- **A vault you own** — plain Markdown + a rebuildable index, portable like an Obsidian vault. See
-  [`docs/LOCAL_VAULT_FORMAT.md`](docs/LOCAL_VAULT_FORMAT.md).
-- **Retrieval that cites or abstains** — hybrid BM25 + vector + temporal ranking, reranking, and a
-  cite-or-abstain gate so answers are grounded, never guessed.
-- **One-click connections** — write-and-relaunch MCP config for desktop tools, session-import for the
+- **One-click connections.** Write-and-relaunch MCP config for desktop tools, session-import for the
   web chat apps, drag-and-drop for exports. See [`docs/MCP_INTEGRATIONS.md`](docs/MCP_INTEGRATIONS.md).
-- **Trust controls** — scoped, revocable per-tool permissions with redaction. See [`docs/TRUST_CONTROLS.md`](docs/TRUST_CONTROLS.md).
-- **Optional cloud sync** — an end-to-end-encryption design for multi-device sync, opt-in and
-  account-based. Data stays local unless you turn it on. See [`docs/ACCOUNTS_ENCRYPTION_DESIGN.md`](docs/ACCOUNTS_ENCRYPTION_DESIGN.md).
+- **Trust controls.** Scoped, revocable per-tool permissions with redaction on by default. See [`docs/TRUST_CONTROLS.md`](docs/TRUST_CONTROLS.md).
+- **Optional cloud sync.** An end-to-end-encryption design for multi-device sync, opt-in and account-based; data stays local unless you turn it on. See [`docs/ACCOUNTS_ENCRYPTION_DESIGN.md`](docs/ACCOUNTS_ENCRYPTION_DESIGN.md).
 
 ## Install
 
@@ -208,14 +176,14 @@ is described honestly in the app and on the site. Questions: **sdoven@uwaterloo.
 
 ## License
 
-Cortex is released under the **[MIT License](LICENSE)** — free to use, modify, and build on.
+Cortex is released under the **[MIT License](LICENSE)**, free to use, modify, and build on.
 © 2026 Doppl.
 
 <div align="center">
 <br/>
 
-**Cortex is not just AI memory. It is your personal operating model for AI tools.**
+**Cortex is your personal operating model for AI:** the cited, local, portable model of how you work,
+that dreams while you rest and calibrates every tool you use.
 
-<sub>It starts local and simple. The long-term product is the memory and action layer that helps
-AI tools make progress the way you would — without giving up your privacy.</sub>
+<sub>The more you bring in, the more your tools act the way you would.</sub>
 </div>
