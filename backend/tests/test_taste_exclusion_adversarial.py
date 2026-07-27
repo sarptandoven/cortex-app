@@ -323,6 +323,45 @@ class AggregateRankingIndirectLeakTests(unittest.TestCase):
         self.assertIn("design-docs", {t["topic"] for t in stats["top_topics"]})
         self.assertIn("design-docs", {t["topic"] for t in review["top_topics"]})
 
+    def test_list_topics_and_entities_exclude_taste_excluded_kwarg_omits_excluded_only_cluster(self) -> None:
+        """Direct store-level proof for the /v1/topics, /v1/entities REST endpoints and the
+        list_memory_topics/list_memory_entities MCP tools, all of which now call
+        list_topics(..., exclude_taste_excluded=True) / list_entities(..., exclude_taste_excluded=True)
+        — the same standalone 'browse my topics/entities' surfaces personal_profile's own
+        topics/entities fields were already gated on, but these independent call sites were not."""
+        clown_entity = {"id": "ent_clownzorb3", "kind": "project", "name": "Clownzorb", "aliases": [], "context": ""}
+        zephyr_entity = {"id": "ent_zephyr3", "kind": "project", "name": "Project Zephyr", "aliases": [], "context": ""}
+
+        def seed_linked(mid, content, entity, topic):
+            self.store.save_capture(
+                user_id=self.user_id, content=content, source="obsidian",
+                source_url=f"local-file://{mid}", title=mid,
+                extracted={"_timestamp": now_iso(), "summary": content,
+                           "records": [{"id": mid, "kind": "claim", "layer": "semantic", "content": content,
+                                        "confidence": "confirmed", "importance": 3, "topics": [topic],
+                                        "entity_ids": [entity["id"]]}],
+                           "tasks": [], "entities": [entity]},
+            )
+
+        seed_linked("cj1", "Clownzorb rehearsal ran long.", clown_entity, "clownzorb")
+        seed_linked("cj2", "Clownzorb rehearsal again.", clown_entity, "clownzorb")
+        seed_linked("zw1", "Shipped the Project Zephyr release.", zephyr_entity, "release-planning")
+        seed_linked("zw2", "Reviewed the Project Zephyr rollout.", zephyr_entity, "release-planning")
+        self.store.set_memory_taste_exclusion(self.user_id, "cj1", True)
+        self.store.set_memory_taste_exclusion(self.user_id, "cj2", True)
+
+        topics = self.store.list_topics(self.user_id, limit=30, exclude_taste_excluded=True)
+        entities = self.store.list_entities(self.user_id, limit=30, exclude_taste_excluded=True)
+        self.assertNotIn("clownzorb", {t["topic"] for t in topics})
+        self.assertNotIn("Clownzorb", {e["name"] for e in entities})
+        self.assertIn("release-planning", {t["topic"] for t in topics})
+        self.assertIn("Project Zephyr", {e["name"] for e in entities})
+
+        # Regression: the default (unfiltered) call is untouched — this is what raw
+        # exploration/graph surfaces that were judged defensible-unfiltered still rely on.
+        topics_unfiltered = self.store.list_topics(self.user_id, limit=30)
+        self.assertIn("clownzorb", {t["topic"] for t in topics_unfiltered})
+
 
 class ToggleSemanticsAndPersistenceTests(unittest.TestCase):
     """Idempotency, re-extraction, and vault round-trip edge cases beyond the happy-path coverage

@@ -2529,11 +2529,11 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/v1/topics":
                 sector = (params.get("sector") or [None])[0]
-                self._send_json({"sector": sector, "results": store.list_topics(user_id, _int_param(params, "limit", 30, 1, 100), sector=sector)})
+                self._send_json({"sector": sector, "results": store.list_topics(user_id, _int_param(params, "limit", 30, 1, 100), sector=sector, exclude_taste_excluded=True)})
                 return
             if method == "GET" and path == "/v1/entities":
                 sector = (params.get("sector") or [None])[0]
-                self._send_json({"sector": sector, "results": store.list_entities(user_id, _int_param(params, "limit", 30, 1, 100), sector=sector)})
+                self._send_json({"sector": sector, "results": store.list_entities(user_id, _int_param(params, "limit", 30, 1, 100), sector=sector, exclude_taste_excluded=True)})
                 return
             if method == "GET" and path.startswith("/v1/people/") and path.endswith("/context"):
                 name = unquote(path.removeprefix("/v1/people/").removesuffix("/context").strip("/"))

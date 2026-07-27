@@ -2132,7 +2132,10 @@ def topics(
     sector: str | None = Query(default=None, max_length=120),
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
-    return {"sector": sector, "results": store.list_topics(user_id, limit, sector=sector)}
+    # "Ranked by frequency" is the same aggregate interest signal personal_profile's own topics
+    # list gates on exclude_taste_excluded — a topic supported only by memories the user excluded
+    # from taste inference must not rank here either.
+    return {"sector": sector, "results": store.list_topics(user_id, limit, sector=sector, exclude_taste_excluded=True)}
 
 
 @app.get("/v1/entities")
@@ -2141,7 +2144,7 @@ def entities(
     sector: str | None = Query(default=None, max_length=120),
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
-    return {"sector": sector, "results": store.list_entities(user_id, limit, sector=sector)}
+    return {"sector": sector, "results": store.list_entities(user_id, limit, sector=sector, exclude_taste_excluded=True)}
 
 
 @app.get("/v1/people/{name}")

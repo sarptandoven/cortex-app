@@ -14703,9 +14703,14 @@ class CortexStore:
     def build_home_page(self, user_id: str) -> dict[str, Any]:
         """Compose the vault Home / Start-Here page from the current graph analysis (hubs +
         communities), recent memories, and open loops. Deterministic ordering; all wikilinks resolve
-        to entity MOC pages / memory notes."""
+        to entity MOC pages / memory notes.
+
+        The hubs/areas below are a ranked, clustered "who/what matters in your life" judgment —
+        exactly the role person_map()'s graph half plays — so they honor exclude_taste_excluded the
+        same way (unlike a single-entity lookup such as entity_neighborhood/MOC pages, which stay
+        unfiltered as a citable, per-entity exploration surface)."""
         try:
-            analysis = self.entity_graph_analysis(user_id, include_pending=False)
+            analysis = self.entity_graph_analysis(user_id, include_pending=False, exclude_taste_excluded=True)
         except Exception:
             analysis = {}
         nodes = analysis.get("nodes") or {}
@@ -14904,9 +14909,14 @@ class CortexStore:
     def build_constellation_canvas(self, user_id: str) -> dict[str, Any] | None:
         """Map the entity graph to an Obsidian .canvas doc: one file-node per entity (linking to its
         MOC page), community-clustered deterministic layout, centrality-sized, community-colored;
-        edges from graph co-mentions. Deterministic (sorted ids, integer coords, no timestamps)."""
+        edges from graph co-mentions. Deterministic (sorted ids, integer coords, no timestamps).
+
+        Like build_home_page()/person_map(), this renders ranked centrality/community judgments
+        about the whole graph (not a single-entity citable lookup), so it honors
+        exclude_taste_excluded for the same reason: an entity/edge whose only support is a
+        taste-excluded memory must not size/color/cluster the Constellation."""
         try:
-            analysis = self.entity_graph_analysis(user_id, include_pending=False)
+            analysis = self.entity_graph_analysis(user_id, include_pending=False, exclude_taste_excluded=True)
         except Exception:
             return None
         nodes = analysis.get("nodes") or {}
@@ -16395,6 +16405,16 @@ class CortexStore:
             memory_where = " AND ".join(memory_filters)
             decision_filters, decision_params = self._memory_filters(user_id, stats_settings, alias="m", kind="decision")
             decision_where = " AND ".join(decision_filters)
+            # top_topics/top_entities are an aggregate "what are your main interests" ranking — the
+            # same signal personal_profile's own topics/entities lists gate on exclude_taste_excluded
+            # (a topic/entity supported ONLY by excluded memories must not inflate a count or clear
+            # the surfacing threshold). The raw counts above (memories/decisions/tasks/entities/edges)
+            # stay unfiltered, matching search()/recent()'s "still fully countable" contract — only
+            # these two ranked-by-frequency lists get the separate, taste-aware filter.
+            taste_memory_filters, taste_memory_params = self._memory_filters(
+                user_id, stats_settings, alias="m", exclude_taste_excluded=True,
+            )
+            taste_memory_where = " AND ".join(taste_memory_filters)
             task_filters, task_params = self._task_filters(user_id, stats_settings, alias="t", capture_alias="c")
             task_where = " AND ".join(task_filters)
             counts = {
@@ -16515,12 +16535,12 @@ class CortexStore:
                     SELECT mt.topic, COUNT(*) AS count
                     FROM memory_topics mt
                     JOIN memories m ON m.id = mt.memory_id AND m.user_id = mt.user_id
-                    WHERE mt.user_id = ? AND {memory_where}
+                    WHERE mt.user_id = ? AND {taste_memory_where}
                     GROUP BY mt.topic
                     ORDER BY count DESC, mt.topic
                     LIMIT 12
                     """,
-                    [user_id, *memory_params],
+                    [user_id, *taste_memory_params],
                 ).fetchall()
             ]
             top_entities = [
@@ -16531,12 +16551,12 @@ class CortexStore:
                     FROM entities e
                     JOIN memory_entities me ON me.entity_id = e.id AND me.user_id = e.user_id
                     JOIN memories m ON m.id = me.memory_id AND m.user_id = me.user_id AND m.status = 'active'
-                    WHERE e.user_id = ? AND {memory_where}
+                    WHERE e.user_id = ? AND {taste_memory_where}
                     GROUP BY e.id
                     ORDER BY count DESC, e.last_seen DESC
                     LIMIT 12
                     """,
-                    [user_id, *memory_params],
+                    [user_id, *taste_memory_params],
                 ).fetchall()
             ]
         return {**counts, "by_kind": by_kind, "by_layer": by_layer, "top_topics": top_topics, "top_entities": top_entities}
@@ -17061,8 +17081,12 @@ class CortexStore:
         recent_memories = self.recent(user_id, limit=8)
         open_tasks = self.open_tasks(user_id, limit=8)
         recent_decisions = self._memories_by_kind(user_id, "decision", limit=6)
-        top_topics = self.list_topics(user_id, limit=8)
-        top_entities = self.list_entities(user_id, limit=8)
+        # top_topics/top_entities are the same aggregate "what are your interests" ranking
+        # personal_profile's own topics/entities lists gate on exclude_taste_excluded — a topic or
+        # entity supported only by memories the user excluded from taste inference must not surface
+        # here either, even though this is a raw-count dashboard rather than a synthesized claim.
+        top_topics = self.list_topics(user_id, limit=8, exclude_taste_excluded=True)
+        top_entities = self.list_entities(user_id, limit=8, exclude_taste_excluded=True)
         with connect(self.db_path) as conn:
             activity = [
                 dict(row)
@@ -18659,15 +18683,28 @@ class CortexStore:
         user_settings = self.settings(user_id)
         redact_sensitive = bool(user_settings["redact_sensitive_context"])
 
-        def _memory_candidates(layer: str, limit: int) -> list[dict[str, Any]]:
+        def _memory_candidates(layer: str, limit: int, *, exclude_taste_excluded: bool = False) -> list[dict[str, Any]]:
             # Task-relevant first; but constraints/procedures/identity describe the PERSON, not
             # the task — when the task shares no keywords with them they must still surface, so
             # fall back to the most recent memories of that layer instead of vanishing.
             if task:
                 matched = self.search(user_id, task, limit=limit, layer=layer, sector=sector, as_of=as_of)
                 if matched:
-                    return matched
-            return self.recent(user_id, limit=limit, layer=layer, sector=sector, as_of=as_of)
+                    items = matched
+                else:
+                    items = self.recent(user_id, limit=limit, layer=layer, sector=sector, as_of=as_of)
+            else:
+                items = self.recent(user_id, limit=limit, layer=layer, sector=sector, as_of=as_of)
+            # search()/recent() themselves must never gate on the flag (an excluded memory stays
+            # fully searchable/citable everywhere) — but 'constraints' (negative), 'procedures'
+            # (procedural), and 'identity' (preference+style) are the exact layers personal_profile
+            # treats as taste-sensitive "who this person is" signal, packed directly into an
+            # AI-consumable context here. A targeted post-filter on the already-fetched results
+            # (same pattern as personal_profile's own focus_memories filter) keeps search/recent
+            # untouched while closing the leak.
+            if exclude_taste_excluded:
+                items = [item for item in items if not item.get("taste_excluded")]
+            return items
 
         def _pack_item(item: dict[str, Any]) -> dict[str, Any]:
             content = self._shared_text(
@@ -18704,10 +18741,17 @@ class CortexStore:
 
         candidates: dict[str, list[dict[str, Any]]] = {layer: [] for layer in CONTEXT_LAYER_ORDER}
         if weights.get("constraints"):
-            candidates["constraints"] = _memory_candidates("negative", 12)
+            candidates["constraints"] = _memory_candidates("negative", 12, exclude_taste_excluded=True)
         if weights.get("decisions"):
             history = self.decision_history(user_id, task, limit=12, sector=sector, include_superseded=False, as_of=as_of)
-            candidates["decisions"] = list(history.get("current_decisions") or [])
+            # decision_history() itself stays unfiltered (it is a standalone, citable decision-log
+            # feature with its own endpoint/MCP tool, same contract as search()/recent()) — but the
+            # 'decisions' layer here is packed straight into the AI-adaptation context pack, the
+            # same "who this person is" role personal_profile's own decision layer plays. Post-filter
+            # exactly like 'constraints'/'procedures'/'identity' above.
+            candidates["decisions"] = [
+                item for item in (history.get("current_decisions") or []) if not item.get("taste_excluded")
+            ]
         # Facts are claims (semantic/episodic) only: preference/style/negative/procedural/decision
         # memories belong to their dedicated layers and must not be consumed here by dedup.
         if weights.get("facts") and task:
@@ -18741,10 +18785,13 @@ class CortexStore:
                 if str(item.get("layer") or "") in {"semantic", "episodic", "decision"}
             ]
         if weights.get("procedures"):
-            candidates["procedures"] = _memory_candidates("procedural", 8)
+            candidates["procedures"] = _memory_candidates("procedural", 8, exclude_taste_excluded=True)
         identity_omitted = not include_identity
         if include_identity and weights.get("identity"):
-            candidates["identity"] = [*_memory_candidates("preference", 6), *_memory_candidates("style", 4)]
+            candidates["identity"] = [
+                *_memory_candidates("preference", 6, exclude_taste_excluded=True),
+                *_memory_candidates("style", 4, exclude_taste_excluded=True),
+            ]
         open_loop_tasks = self.open_tasks(user_id, limit=10, sector=sector) if weights.get("open_loops") else []
         if weights.get("recency"):
             candidates["recency"] = self.recent(user_id, limit=12, sector=sector, as_of=as_of)
@@ -19352,8 +19399,13 @@ class CortexStore:
         memories = self.search(user_id, query, limit=limit, sector=sector, include_related=True) if query else self.recent(user_id, limit=limit, sector=sector)
         decisions = self._memories_by_kind(user_id, "decision", limit=5, sector=sector)
         tasks = self.open_tasks(user_id, limit=8, sector=sector)
-        topics = self.list_topics(user_id, limit=8, sector=sector)
-        entities = self.list_entities(user_id, limit=8, sector=sector)
+        # "Useful Topics"/"Useful Entities" are an aggregate interest ranking, the same signal
+        # personal_profile's own topics/entities lists gate on exclude_taste_excluded — a topic or
+        # entity backed only by taste-excluded memories must not surface as "useful" here. The
+        # "Relevant Memories"/"Decisions" sections above stay unfiltered, matching search()/recent()'s
+        # own contract (an excluded memory remains fully citable/searchable).
+        topics = self.list_topics(user_id, limit=8, sector=sector, exclude_taste_excluded=True)
+        entities = self.list_entities(user_id, limit=8, sector=sector, exclude_taste_excluded=True)
         redact = bool(user_settings["redact_sensitive_context"])
 
         lines = [

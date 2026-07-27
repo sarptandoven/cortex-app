@@ -4038,9 +4038,11 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
     if name == "get_open_questions":
         return store.agent_payload(user_id, store.open_tasks(user_id, _bounded_int_arg(args, "limit", 20)))
     if name == "list_memory_topics":
-        return store.list_topics(user_id, _bounded_int_arg(args, "limit", 30), sector=args.get("sector"))
+        # Ranked-by-frequency topic list is the same aggregate interest signal personal_profile's
+        # own topics list gates on exclude_taste_excluded.
+        return store.list_topics(user_id, _bounded_int_arg(args, "limit", 30), sector=args.get("sector"), exclude_taste_excluded=True)
     if name == "list_memory_entities":
-        return store.agent_payload(user_id, store.list_entities(user_id, _bounded_int_arg(args, "limit", 30), sector=args.get("sector")))
+        return store.agent_payload(user_id, store.list_entities(user_id, _bounded_int_arg(args, "limit", 30), sector=args.get("sector"), exclude_taste_excluded=True))
     if name == "get_about_person":
         return store.agent_payload(user_id, store.about_person(user_id, _text_arg(args, "name", max_chars=MCP_NAME_MAX_CHARS), _bounded_int_arg(args, "limit", 12)))
     if name == "get_relationship_context":
