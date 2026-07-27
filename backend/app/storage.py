@@ -14376,21 +14376,51 @@ class CortexStore:
                 {"source": row["a"], "target": row["b"], "weight": float(row["shared"]), "relation": "co_mention", "confidence": "INFERRED"}
                 for row in co_rows
             ]
-            for row in conn.execute(
+            # Persisted graph_edges (co_occurs + #24 typed relationships like works_at/reports_to)
+            # are NOT re-derived per query the way the co-mention edges above are — they were
+            # written once, at capture time, keyed by an `evidence_id` that is a memory id (typed
+            # relations) or a capture id (co_occurs). Without a taste gate here, excluding every
+            # memory that ever mentioned two entities together would still leave a stale "works_at"
+            # / "co_occurs" edge between them, silently re-introducing the exact relationship the
+            # user asked Cortex to stop drawing conclusions from (an indirect leak: the edge itself
+            # is a derived judgment, even when no excluded content is quoted). Gate it exactly like
+            # the co-mention edges: only keep a persisted edge when the SAME two entities still
+            # share at least one memory that clears `memory_filter` (which already encodes
+            # exclude_taste_excluded) — i.e. the relationship remains supported by non-excluded
+            # evidence. When exclude_taste_excluded is False this reduces to the prior behavior.
+            edge_rows = conn.execute(
                 f"""
                 SELECT source_id, target_id, kind, weight FROM graph_edges
                 WHERE user_id = ? AND source_id IN ({placeholders}) AND target_id IN ({placeholders})
                 """,
                 [user_id, *node_ids, *node_ids],
-            ).fetchall():
-                if row["source_id"] and row["target_id"] and row["source_id"] != row["target_id"]:
-                    edges.append({
-                        "source": row["source_id"],
-                        "target": row["target_id"],
-                        "weight": float(row["weight"] or 1.0),
-                        "relation": row["kind"] or "related",
-                        "confidence": "EXTRACTED",
-                    })
+            ).fetchall()
+            for row in edge_rows:
+                source_id, target_id = row["source_id"], row["target_id"]
+                if not source_id or not target_id or source_id == target_id:
+                    continue
+                if exclude_taste_excluded:
+                    still_supported = conn.execute(
+                        f"""
+                        SELECT 1
+                        FROM memory_entities me1
+                        JOIN memory_entities me2
+                          ON me2.memory_id = me1.memory_id AND me2.user_id = me1.user_id
+                        JOIN memories m ON m.id = me1.memory_id AND m.user_id = me1.user_id AND {memory_filter}
+                        WHERE me1.user_id = ? AND me1.entity_id = ? AND me2.entity_id = ?
+                        LIMIT 1
+                        """,
+                        [*params, user_id, source_id, target_id],
+                    ).fetchone()
+                    if still_supported is None:
+                        continue
+                edges.append({
+                    "source": source_id,
+                    "target": target_id,
+                    "weight": float(row["weight"] or 1.0),
+                    "relation": row["kind"] or "related",
+                    "confidence": "EXTRACTED",
+                })
         return nodes, edges
 
     def entity_graph_analysis(
