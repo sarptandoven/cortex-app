@@ -386,6 +386,23 @@ class ToggleSemanticsAndPersistenceTests(unittest.TestCase):
             self.assertTrue(self.store.set_memory_taste_exclusion(self.user_id, "m1", value))
         self.assertTrue(self.store.get_memory(self.user_id, "m1")["taste_excluded"])
 
+    def test_toggle_succeeds_on_an_archived_memory(self) -> None:
+        """The flag is orthogonal to the archive/delete lifecycle — a user should be able to mark
+        a historical, already-archived memory as taste-excluded too."""
+        _seed(self.store, self.user_id, "m1", "You prefer dark mode.", layer="preference")
+        self.assertTrue(self.store.archive_memory(self.user_id, "m1"))
+        self.assertTrue(self.store.set_memory_taste_exclusion(self.user_id, "m1", True))
+        memory = self.store.get_memory(self.user_id, "m1")
+        self.assertEqual(memory["status"], "archived")
+        self.assertTrue(memory["taste_excluded"])
+
+    def test_toggle_succeeds_on_a_pending_unapproved_capture(self) -> None:
+        """A memory whose capture is still pending review can also be flagged."""
+        self.store.update_settings(self.user_id, {"review_new_captures": True, "allow_pending_in_context": True})
+        _seed(self.store, self.user_id, "m1", "You prefer dark mode.", layer="preference")
+        self.assertTrue(self.store.set_memory_taste_exclusion(self.user_id, "m1", True))
+        self.assertTrue(self.store.get_memory(self.user_id, "m1")["taste_excluded"])
+
     def test_reingesting_the_same_capture_does_not_reset_the_flag(self) -> None:
         """A worker retry / re-extraction of the SAME capture recomputes the same content-derived
         memory id via an INSERT OR REPLACE — this must not silently flip taste_excluded back to
@@ -568,6 +585,81 @@ class ConcurrencyTests(unittest.TestCase):
         for t in threads:
             t.join(timeout=30)
         self.assertFalse(errors, f"concurrent toggle + profile build must not raise: {errors}")
+
+
+class DefensibleUnfilteredExplorationSurfacesTests(unittest.TestCase):
+    """Pins a deliberate judgment call, not a bug: unlike the ranked/aggregate "who matters in
+    your life" surfaces above (person_map, build_profile's People & projects, Home page hubs,
+    Constellation), a handful of surfaces are per-item CITABLE exploration — each thing shown is
+    an individually inspectable record/edge backed by a concrete memory id, exactly the same
+    contract search()/recent() already give an excluded memory. Filtering these would be
+    inconsistent with "an excluded memory remains fully searchable/citable everywhere" and was
+    confirmed (not just inherited) during this audit:
+
+      - graph() — every memory node is labeled with that memory's own content, like a search hit.
+      - entity_neighborhood() / person_context()'s "connections" — a specific entity's connected
+        neighbors, each with the actual co-mention memory ids attached as citations.
+      - build_entity_moc_pages() — one page per entity with its cited co-mention memories.
+
+    These tests assert the CURRENT (intentionally unfiltered) behavior so a future well-meaning
+    "just add exclude_taste_excluded everywhere" pass doesn't silently break this design without
+    someone re-deciding it on purpose."""
+
+    ENTITIES = {
+        "ent_alice2": {"id": "ent_alice2", "kind": "person", "name": "Alice", "aliases": [], "context": ""},
+        "ent_zephyr4": {"id": "ent_zephyr4", "kind": "project", "name": "Project Zephyr", "aliases": [], "context": ""},
+    }
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        self.db_path = root / "cortex.db"
+        init_db(self.db_path)
+        self.store = CortexStore(self.db_path, root / "vault")
+        self.store._vector_ready = lambda conn: False
+        self.user_id = "exploration-user"
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _seed(self, mid: str, content: str, entity_ids: list[str]) -> None:
+        self.store.save_capture(
+            user_id=self.user_id, content=content, source="obsidian",
+            source_url=f"local-file://{mid}", title=mid,
+            extracted={
+                "_timestamp": now_iso(), "summary": content,
+                "records": [{"id": mid, "kind": "claim", "layer": "episodic", "content": content,
+                             "confidence": "confirmed", "importance": 3, "topics": [], "entity_ids": entity_ids}],
+                "tasks": [], "entities": [self.ENTITIES[e] for e in entity_ids],
+            },
+        )
+
+    def test_graph_still_surfaces_an_excluded_memorys_node(self) -> None:
+        self._seed("m1", "You keep a secret list of Clownzorb rehearsal jokes.", [])
+        self.store.set_memory_taste_exclusion(self.user_id, "m1", True)
+        result = self.store.graph(self.user_id)
+        node_ids = {n["id"] for n in (result.get("nodes") or [])}
+        self.assertIn("m1", node_ids, "graph() is a citable exploration surface and must keep showing an excluded memory's node")
+
+    def test_entity_neighborhood_still_surfaces_a_connection_evidenced_only_by_an_excluded_memory(self) -> None:
+        self._seed("rel1", "Alice worked closely with Project Zephyr.", ["ent_alice2", "ent_zephyr4"])
+        self.store.set_memory_taste_exclusion(self.user_id, "rel1", True)
+        neighborhood = self.store.entity_neighborhood(self.user_id, "Alice")
+        self.assertIsNotNone(neighborhood)
+        connected_labels = {c.get("label") for c in (neighborhood.get("connections") or [])}
+        self.assertIn(
+            "Project Zephyr", connected_labels,
+            "entity_neighborhood() is a citable per-entity lookup and must keep showing a connection "
+            "even when its only supporting memory is taste-excluded",
+        )
+
+    def test_moc_pages_still_surface_an_excluded_only_entity(self) -> None:
+        self._seed("m1", "You keep a secret list of Clownzorb rehearsal jokes.", ["ent_alice2"])
+        self.store.set_memory_taste_exclusion(self.user_id, "m1", True)
+        pages = self.store.build_entity_moc_pages(self.user_id)
+        page_ids = {p.get("entity_id") for p in pages}
+        self.assertIn("ent_alice2", page_ids, "MOC pages are a citable per-entity exploration surface and must keep showing an excluded-only entity")
 
 
 if __name__ == "__main__":
