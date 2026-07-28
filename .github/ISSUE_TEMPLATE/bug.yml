@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a reproducible problem in Cortex
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Cortex. Remove personal memory, secrets, tokens, and private chat content from every field, log, and screenshot.
+  - type: input
+    id: version
+    attributes:
+      label: Cortex version or commit
+      placeholder: "v0.2.0-51 or commit SHA"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include macOS version for app issues, or OS and runtime versions for backend and SDK issues.
+      placeholder: "macOS 15.5 on Apple silicon; or Ubuntu 24.04, Python 3.12"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Use synthetic data and the smallest reliable sequence.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Remove memory content, file paths containing personal data, credentials, and tokens.
+      render: shell
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed personal memory, private content, credentials, and tokens.
+          required: true

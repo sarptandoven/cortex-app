@@ -135,6 +135,13 @@ python3 scripts/retrieval_eval.py
 See [`SETUP.md`](SETUP.md) for the full development setup and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 for how the pieces fit together.
 
+## Contributing
+
+External contributions are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) for the component
+map, the smallest useful validation commands, privacy expectations, and the pull-request workflow.
+Issues labeled [`good first issue`](https://github.com/trace-cortex/cortex-app/labels/good%20first%20issue)
+are intended to be independently testable and narrowly scoped.
+
 ## Documentation
 
 | Area | Doc |

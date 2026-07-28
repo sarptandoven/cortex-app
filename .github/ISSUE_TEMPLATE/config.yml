@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Setup and usage documentation
+    url: https://github.com/trace-cortex/cortex-app/blob/main/SETUP.md
+    about: Check the setup guide before filing an installation or usage issue.

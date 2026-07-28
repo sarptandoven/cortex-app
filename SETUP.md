@@ -59,10 +59,13 @@ For backend development without opening the app:
 Run the main verification set:
 
 ```bash
-python3 -W error::ResourceWarning -m unittest discover backend/tests
+python3 -m pytest backend/tests -q
 python3 scripts/retrieval_eval.py
 python3 scripts/adaptation_eval.py
 ./macos/build.sh
 codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app
 python3 scripts/ops_readiness_check.py
 ```
+
+`pytest` is the canonical backend runner used by CI; its fixtures provide the expected temporary
+directory and test isolation.
