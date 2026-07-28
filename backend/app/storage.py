@@ -21563,6 +21563,18 @@ class CortexStore:
                 )
                 if principal_row is not None and str(memory.get("superseded_by") or "").strip():
                     rebuilt_trust = round(rebuilt_trust * 0.5, 4)
+                # Cross-tenant collision guard (same as _save_memory): memories.id is the sole
+                # primary key, and in shared-vault "bucket" deployments a vault markdown file's
+                # frontmatter id is not trust-boundary-checked before rebuild. Re-salt with
+                # user_id only if the id already belongs to a different user, so an ordinary
+                # single-tenant rebuild round-trips ids unchanged.
+                memory_id = str(memory.get("id") or "")
+                if conn.execute(
+                    "SELECT 1 FROM memories WHERE id = ? AND user_id != ? LIMIT 1",
+                    (memory_id, user_id),
+                ).fetchone():
+                    memory_id = stable_id("mem_", f"{user_id}:{memory_id}")
+                    memory["id"] = memory_id
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO memories
@@ -21638,6 +21650,15 @@ class CortexStore:
                 topics = task.get("topics", [])
                 entity_ids = task.get("entity_ids", [])
                 captured_at = task.get("captured_at") or timestamp
+                # Cross-tenant collision guard (same as _save_task); see the matching comment
+                # on the memories rebuild above.
+                task_id = str(task.get("id") or "")
+                if conn.execute(
+                    "SELECT 1 FROM tasks WHERE id = ? AND user_id != ? LIMIT 1",
+                    (task_id, user_id),
+                ).fetchone():
+                    task_id = stable_id("task_", f"{user_id}:{task_id}")
+                    task["id"] = task_id
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO tasks
@@ -28437,6 +28458,19 @@ class CortexStore:
             memory_id = stable_id("mem_", f"{user_id}:{author_principal_id}:{base_memory_id}")
         if source_account and external_id:
             memory_id = stable_id("mem_", f"{user_id}:{capture_id}:{base_memory_id}")
+        # Cross-tenant collision guard: memories.id is the sole primary key (not composite with
+        # user_id), and on the default local/CLI/vault-import path (no principal, no
+        # source_account+external_id) memory_id is derived from content alone, or is whatever
+        # explicit id the caller supplied. Two different users can land on the identical id, and
+        # INSERT OR REPLACE resolves conflicts purely on the primary key — an unguarded write
+        # here would silently delete and replace the other tenant's row. Re-salt with user_id
+        # only in that collision case, so the ordinary (non-colliding) path keeps its id exactly
+        # as derived/supplied, preserving explicit-id passthrough for existing callers.
+        if conn.execute(
+            "SELECT 1 FROM memories WHERE id = ? AND user_id != ? LIMIT 1",
+            (memory_id, user_id),
+        ).fetchone():
+            memory_id = stable_id("mem_", f"{user_id}:{memory_id}")
         # Anti-resurrection: the memory id is deterministic (derived from user+capture+content), so
         # re-processing a capture whose child memory the user explicitly FORGOT would recompute the
         # same id and re-insert it. If that memory was tombstoned, honor the forget — skip the
@@ -32028,6 +32062,17 @@ class CortexStore:
 
     def _save_task(self, conn, capture_id: str, user_id: str, task: dict[str, Any], captured_at: str) -> dict[str, Any]:
         task_id = task["id"]
+        # Cross-tenant collision guard: tasks.id is the sole primary key (not composite with
+        # user_id), and the extractor derives it from content alone (or it's whatever explicit
+        # id the caller supplied), so two different users can land on the identical id. INSERT
+        # OR REPLACE resolves conflicts purely on the primary key, so an unguarded write would
+        # silently delete and replace the other tenant's row. Re-salt only in that collision
+        # case; see the matching guard in _save_memory for the same pattern.
+        if conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ? AND user_id != ? LIMIT 1",
+            (task_id, user_id),
+        ).fetchone():
+            task_id = stable_id("task_", f"{user_id}:{task_id}")
         topics = task.get("topics", [])
         entity_ids = task.get("entity_ids", [])
         conn.execute(
