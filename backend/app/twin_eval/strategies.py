@@ -60,6 +60,15 @@ class AllPairsStrategy:
             "shuffle": self.shuffle,
         }
 
+    def planned_comparison_count(
+        self,
+        prompt_count: int,
+        system_count: int,
+    ) -> int:
+        pairs = system_count * (system_count - 1) // 2
+        presentations = 2 if self.swap_sides else 1
+        return prompt_count * pairs * self.repetitions * presentations
+
     def plan(
         self,
         prompts: Sequence[EvaluationPrompt],
@@ -99,6 +108,19 @@ class AnchorStrategy:
             "swap_sides": self.swap_sides,
             "shuffle": self.shuffle,
         }
+
+    def planned_comparison_count(
+        self,
+        prompt_count: int,
+        system_count: int,
+    ) -> int:
+        presentations = 2 if self.swap_sides else 1
+        return (
+            prompt_count
+            * max(0, system_count - 1)
+            * self.repetitions
+            * presentations
+        )
 
     def plan(
         self,
@@ -152,6 +174,14 @@ class RepeatedSwappedStrategy:
             "repetitions": self.repetitions,
             "shuffle": self.shuffle,
         }
+
+    def planned_comparison_count(
+        self,
+        prompt_count: int,
+        system_count: int,
+    ) -> int:
+        pairs = system_count * (system_count - 1) // 2
+        return prompt_count * pairs * self.repetitions * 2
 
     def plan(
         self,

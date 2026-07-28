@@ -69,6 +69,121 @@ class PairwiseCoreTests(unittest.TestCase):
         self.assertEqual(first.ranking.ratings[0].system_id, "preferred")
         self.assertEqual(len(first.comparisons), 4)
 
+    def test_runner_persists_safe_profile_manifest_automatically(self) -> None:
+        profile = HeldOutProfile(
+            "profile-with-manifest",
+            self.profile.items,
+            metadata={
+                "profile_manifest": {
+                    "schema_version": (
+                        "cortex-pairwise-profile-manifest/v1"
+                    ),
+                    "builder_id": "cortex_context_profile_v1",
+                    "as_of": "2026-07-24T19:00:00Z",
+                    "config_digest": canonical_hash(
+                        {"config": 1},
+                        prefix="pairwise_profile_config_",
+                    ),
+                    "selection_digest": canonical_hash(
+                        {"selection": 1},
+                        prefix="pairwise_profile_selection_",
+                    ),
+                    "prompt_scope_digests": (
+                        (
+                            "prompt-1",
+                            canonical_hash(
+                                {"memory_ids": ["mem-1"]},
+                                prefix="pairwise_prompt_scope_",
+                            ),
+                        ),
+                    ),
+                }
+            },
+        )
+        runner = PairwiseEvaluationRunner(
+            (
+                DeterministicGenerator(
+                    "preferred",
+                    lambda prompt, held_out_profile, seed: "Short update.",
+                ),
+                DeterministicGenerator(
+                    "baseline",
+                    lambda prompt, held_out_profile, seed: "Long update.",
+                ),
+            ),
+            OracleJudge({"prompt-1": "preferred"}),
+            AllPairsStrategy(shuffle=False),
+            WinRateRanker(),
+            blind_judge_inputs=False,
+        )
+
+        report = runner.run(profile, self.prompts[:1], seed=42)
+
+        self.assertEqual(
+            report.metadata["reproducibility_manifest"][
+                "profile_manifest"
+            ]["schema_version"],
+            "cortex-pairwise-profile-manifest/v1",
+        )
+
+    def test_runner_rejects_manifest_fields_that_could_leak_profile_data(
+        self,
+    ) -> None:
+        generator_calls: list[str] = []
+
+        class _FailIfCalledJudge:
+            judge_id = "fail-if-called"
+            requires_candidate_identity = False
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def reproducibility_config(self):
+                return {"judge_id": self.judge_id}
+
+            def judge(self, *args, **kwargs):
+                self.calls += 1
+                raise AssertionError("unsafe manifest reached judge")
+
+        profile = HeldOutProfile(
+            "profile-with-unsafe-manifest",
+            self.profile.items,
+            metadata={
+                "profile_manifest": {
+                    "schema_version": (
+                        "cortex-pairwise-profile-manifest/v1"
+                    ),
+                    "raw_memory": "secret owner evidence",
+                }
+            },
+        )
+        judge = _FailIfCalledJudge()
+        runner = PairwiseEvaluationRunner(
+            (
+                DeterministicGenerator(
+                    "a",
+                    lambda prompt, held_out_profile, seed: (
+                        generator_calls.append("a") or "Candidate A"
+                    ),
+                ),
+                DeterministicGenerator(
+                    "b",
+                    lambda prompt, held_out_profile, seed: (
+                        generator_calls.append("b") or "Candidate B"
+                    ),
+                ),
+            ),
+            judge,
+            AllPairsStrategy(shuffle=False),
+            WinRateRanker(),
+            blind_judge_inputs=False,
+        )
+
+        with self.assertRaisesRegex(ValueError, "digest-only schema"):
+            runner.run(profile, self.prompts[:1], seed=42)
+        self.assertEqual(generator_calls, [])
+        self.assertEqual(judge.calls, 0)
+
     def test_bradley_terry_reports_disconnected_graph_and_ignored_both_bad(self) -> None:
         result = BradleyTerryRanker().rank(
             ("a", "b", "c"),

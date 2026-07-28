@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -19,7 +19,7 @@ MAX_BLOCKS_PER_PAGE = 80
 MAX_BLOCK_TREE_DEPTH = 3
 
 
-RequestJSON = Callable[[str, dict[str, str], dict[str, Any] | None, str], Any]
+RequestJSON = Callable[[str, dict[str, str], Optional[dict[str, Any]], str], Any]
 
 
 @dataclass(frozen=True)

@@ -484,7 +484,10 @@ class ProductionHardeningTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "cortex.db"
             init_db(db_path)
-            repository = TwinEvalRepository(db_path)
+            repository = TwinEvalRepository(
+                db_path,
+                allow_plaintext_reports=True,
+            )
             repository.save_report("u", report)
             conn = sqlite3.connect(db_path)
             try:

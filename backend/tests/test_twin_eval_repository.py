@@ -28,7 +28,10 @@ class TwinEvalRepositoryTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self._tmp.name) / "cortex.db"
         init_db(self.db_path)
-        self.repository = TwinEvalRepository(self.db_path)
+        self.repository = TwinEvalRepository(
+            self.db_path,
+            allow_plaintext_reports=True,
+        )
         self.user_id = "twin-user"
 
     def tearDown(self) -> None:
@@ -75,6 +78,12 @@ class TwinEvalRepositoryTests(unittest.TestCase):
             names,
             {
                 "twin_eval_runs",
+                "twin_eval_profile_artifacts",
+                "twin_eval_report_artifacts",
+                "twin_eval_execution_requests",
+                "twin_eval_execution_call_checkpoints",
+                "twin_eval_dispatch_runtime",
+                "twin_eval_dispatch_consents",
                 "twin_eval_candidates",
                 "twin_eval_comparisons",
                 "twin_eval_resolved_comparisons",
@@ -337,7 +346,10 @@ class TwinEvalRepositoryTests(unittest.TestCase):
         # A second isolated database verifies that deletion is detected too.
         missing_path = Path(self._tmp.name) / "missing-child.db"
         init_db(missing_path)
-        missing_repo = TwinEvalRepository(missing_path)
+        missing_repo = TwinEvalRepository(
+            missing_path,
+            allow_plaintext_reports=True,
+        )
         missing_repo.save_report(self.user_id, report)
         with sqlite3.connect(missing_path) as conn:
             conn.execute(

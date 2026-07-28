@@ -12,7 +12,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.app.database import init_db
-from backend.app.twin_eval import TwinEvalRepository, analyze_stability_reports
+from backend.app.twin_eval import (
+    analyze_stability_reports,
+    build_cli_repository,
+)
 
 
 def main() -> int:
@@ -23,6 +26,8 @@ def main() -> int:
     parser.add_argument("--user-id", required=True)
     parser.add_argument("--run-id", action="append", required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--allow-plaintext-report", action="store_true")
+    parser.add_argument("--keyring-db-path", type=Path)
     args = parser.parse_args()
     if len(args.run_id) < 2:
         parser.error("--run-id must be provided at least twice")
@@ -30,7 +35,11 @@ def main() -> int:
         parser.error(f"database does not exist: {args.db_path}")
     try:
         init_db(args.db_path)
-        repository = TwinEvalRepository(args.db_path)
+        repository = build_cli_repository(
+            args.db_path,
+            keyring_db_path=args.keyring_db_path,
+            allow_plaintext_reports=args.allow_plaintext_report,
+        )
         reports = []
         for run_id in args.run_id:
             repository.replay_bundle(args.user_id, run_id)

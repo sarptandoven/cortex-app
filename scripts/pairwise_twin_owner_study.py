@@ -13,11 +13,11 @@ if str(ROOT) not in sys.path:
 
 from backend.app.database import init_db
 from backend.app.twin_eval import (
-    TwinEvalRepository,
     analyze_owner_study,
     baseline_outcomes_from_dict,
     build_owner_study,
     build_scalar_study,
+    build_cli_repository,
     canonical_json,
     cohort_from_dict,
     key_from_dict,
@@ -50,15 +50,28 @@ def _write_json(path: Path, value: object, *, private: bool = False) -> None:
         path.chmod(0o600)
 
 
-def _repository(db_path: Path) -> TwinEvalRepository:
+def _repository(
+    db_path: Path,
+    *,
+    keyring_db_path: Path | None,
+    allow_plaintext_report: bool,
+):
     if not db_path.exists():
         raise ValueError(f"database does not exist: {db_path}")
     init_db(db_path)
-    return TwinEvalRepository(db_path)
+    return build_cli_repository(
+        db_path,
+        keyring_db_path=keyring_db_path,
+        allow_plaintext_reports=allow_plaintext_report,
+    )
 
 
 def _export(args: argparse.Namespace) -> dict:
-    repository = _repository(args.db_path)
+    repository = _repository(
+        args.db_path,
+        keyring_db_path=args.keyring_db_path,
+        allow_plaintext_report=args.allow_plaintext_report,
+    )
     repository.replay_bundle(args.user_id, args.run_id)
     report = repository.load_report(args.user_id, args.run_id)
     cohort, key = build_owner_study(
@@ -83,7 +96,11 @@ def _export(args: argparse.Namespace) -> dict:
 
 
 def _analyze(args: argparse.Namespace) -> dict:
-    repository = _repository(args.db_path)
+    repository = _repository(
+        args.db_path,
+        keyring_db_path=args.keyring_db_path,
+        allow_plaintext_report=args.allow_plaintext_report,
+    )
     cohort = cohort_from_dict(_read_object(args.public))
     key = key_from_dict(_read_object(args.key))
     labels = labels_from_dict(_read_object(args.labels))
@@ -110,7 +127,11 @@ def _analyze(args: argparse.Namespace) -> dict:
 
 
 def _scalar_export(args: argparse.Namespace) -> dict:
-    repository = _repository(args.db_path)
+    repository = _repository(
+        args.db_path,
+        keyring_db_path=args.keyring_db_path,
+        allow_plaintext_report=args.allow_plaintext_report,
+    )
     owner_key = key_from_dict(_read_object(args.owner_key))
     repository.replay_bundle(args.user_id, owner_key.source_run_id)
     report = repository.load_report(args.user_id, owner_key.source_run_id)
@@ -158,6 +179,8 @@ def main() -> int:
     export.add_argument("--labels-out", type=Path, required=True)
     export.add_argument("--seed", type=int, default=0)
     export.add_argument("--reversed-repeat-fraction", type=float, default=0.2)
+    export.add_argument("--allow-plaintext-report", action="store_true")
+    export.add_argument("--keyring-db-path", type=Path)
     export.set_defaults(handler=_export)
 
     analyze = subparsers.add_parser("analyze", help="Analyze completed blinded labels.")
@@ -170,6 +193,8 @@ def main() -> int:
     analyze.add_argument("--output", type=Path)
     analyze.add_argument("--bootstrap-seed", type=int, default=0)
     analyze.add_argument("--bootstrap-resamples", type=int, default=2_000)
+    analyze.add_argument("--allow-plaintext-report", action="store_true")
+    analyze.add_argument("--keyring-db-path", type=Path)
     analyze.set_defaults(handler=_analyze)
 
     scalar_export = subparsers.add_parser(
@@ -182,6 +207,11 @@ def main() -> int:
     scalar_export.add_argument("--public-out", type=Path, required=True)
     scalar_export.add_argument("--key-out", type=Path, required=True)
     scalar_export.add_argument("--scores-out", type=Path, required=True)
+    scalar_export.add_argument(
+        "--allow-plaintext-report",
+        action="store_true",
+    )
+    scalar_export.add_argument("--keyring-db-path", type=Path)
     scalar_export.set_defaults(handler=_scalar_export)
 
     scalar_baseline = subparsers.add_parser(

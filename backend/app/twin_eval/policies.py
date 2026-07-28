@@ -11,6 +11,7 @@ from .domain import (
     EvaluationPrompt,
     HeldOutProfile,
     JudgeDecision,
+    canonical_hash,
 )
 
 
@@ -109,7 +110,62 @@ class PromptScopedCitationPolicy:
         return {
             "allowed_memory_ids": self.allowed_memory_ids,
             "require_scope_for_decisive": self.require_scope_for_decisive,
+            "profile_scope_mode": "exact_prompt_scope_v1",
         }
+
+    def scope_profile(
+        self,
+        prompt: EvaluationPrompt,
+        profile: HeldOutProfile,
+    ) -> HeldOutProfile:
+        """Return only evidence preregistered for this prompt.
+
+        Citation scope is also a disclosure boundary: generators and remote
+        judges must never receive evidence selected for another prompt.
+        """
+
+        scoped_ids = self.allowed_memory_ids.get(prompt.prompt_id)
+        if not scoped_ids:
+            raise ValueError(
+                f"prompt {prompt.prompt_id!r} has no eligible profile evidence"
+            )
+        by_id = {item.memory_id: item for item in profile.items}
+        unknown = sorted(set(scoped_ids) - set(by_id))
+        if unknown:
+            raise ValueError(
+                "prompt profile scope references unknown memory IDs: "
+                + ", ".join(unknown)
+            )
+        items = tuple(by_id[memory_id] for memory_id in scoped_ids)
+        ineligible = [
+            item.memory_id
+            for item in items
+            if item.author_class != "user"
+            or item.status != "active"
+            or item.trust_score <= 0
+        ]
+        if ineligible:
+            raise ValueError(
+                "prompt profile scope contains ineligible memory IDs: "
+                + ", ".join(sorted(ineligible))
+            )
+        source_fingerprint = profile.fingerprint
+        return HeldOutProfile(
+            profile_id=canonical_hash(
+                {
+                    "source_profile_fingerprint": source_fingerprint,
+                    "prompt_id": prompt.prompt_id,
+                    "memory_ids": scoped_ids,
+                },
+                prefix="prompt_profile_",
+            ),
+            items=items,
+            metadata={
+                "prompt_id": prompt.prompt_id,
+                "scope_policy_id": self.policy_id,
+                "source_profile_fingerprint": source_fingerprint,
+            },
+        )
 
     def invalid_reason(
         self,
@@ -142,7 +198,9 @@ class PromptScopedCitationPolicy:
         return None
 
 
-def _normalized_evidence(value: str) -> str:
+def normalize_evidence_text(value: str) -> str:
+    """Canonical form shared by quote validation and retention redaction."""
+
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
@@ -186,6 +244,19 @@ class QuotedEvidenceCitationPolicy:
             "max_quote_chars": self.max_quote_chars,
         }
 
+    def scope_profile(
+        self,
+        prompt: EvaluationPrompt,
+        profile: HeldOutProfile,
+    ) -> HeldOutProfile:
+        scope = getattr(self.base_policy, "scope_profile", None)
+        if not callable(scope):
+            return profile
+        scoped = scope(prompt, profile)
+        if not isinstance(scoped, HeldOutProfile):
+            raise TypeError("scope_profile() must return HeldOutProfile")
+        return scoped
+
     def invalid_reason(
         self,
         prompt: EvaluationPrompt,
@@ -215,11 +286,13 @@ class QuotedEvidenceCitationPolicy:
             quotes = raw_quotes[memory_id]
             if not isinstance(quotes, (tuple, list)) or not quotes:
                 return "every cited memory requires at least one evidence quote"
-            content = _normalized_evidence(profile_by_id[memory_id].content)
+            content = normalize_evidence_text(
+                profile_by_id[memory_id].content
+            )
             for quote in quotes:
                 if not isinstance(quote, str):
                     return "evidence quotes must be strings"
-                normalized_quote = _normalized_evidence(quote)
+                normalized_quote = normalize_evidence_text(quote)
                 if not self.min_quote_chars <= len(normalized_quote) <= self.max_quote_chars:
                     return "evidence quote length is outside configured bounds"
                 if normalized_quote not in content:

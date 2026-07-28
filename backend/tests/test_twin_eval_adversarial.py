@@ -22,6 +22,7 @@ from backend.app.twin_eval import (
     ObservableRule,
     PairwiseEvaluationRunner,
     PromptScopedCitationPolicy,
+    QuotedEvidenceCitationPolicy,
     RankingDiagnostics,
     RankingResult,
     RepeatedSwappedStrategy,
@@ -102,6 +103,42 @@ class _IdentityEchoJudge:
                 "right_seed": right.seed,
                 "right_metadata": dict(right.metadata),
             },
+        )
+
+
+class _ProfileCaptureGenerator:
+    def __init__(self, system_id: str, seen: list[tuple[str, tuple[str, ...]]]):
+        self.system_id = system_id
+        self.seen = seen
+
+    def generate(self, prompt, profile, *, seed):
+        memory_ids = tuple(item.memory_id for item in profile.items)
+        self.seen.append((prompt.prompt_id, memory_ids))
+        return Candidate(
+            candidate_id=f"{self.system_id}:{prompt.prompt_id}:{seed}",
+            system_id=self.system_id,
+            text=f"{self.system_id} response",
+            prompt_id=prompt.prompt_id,
+            seed=seed,
+        )
+
+
+class _ProfileCaptureJudge:
+    judge_id = "profile-capture"
+
+    def __init__(self, seen: list[tuple[str, tuple[str, ...]]]):
+        self.seen = seen
+
+    def reproducibility_config(self):
+        return {}
+
+    def judge(self, prompt, profile, left, right, *, seed):
+        del left, right, seed
+        memory_ids = tuple(item.memory_id for item in profile.items)
+        self.seen.append((prompt.prompt_id, memory_ids))
+        return JudgeDecision(
+            ComparisonOutcome.TIE,
+            cited_memory_ids=memory_ids,
         )
 
 
@@ -290,6 +327,170 @@ class PairwiseAdversarialTests(unittest.TestCase):
         self.assertEqual(
             relevant.resolved_comparisons[0].outcome,
             ComparisonOutcome.LEFT,
+        )
+
+    def test_prompt_scope_is_also_generator_and_judge_disclosure_scope(self) -> None:
+        profile = HeldOutProfile(
+            "multi-prompt",
+            (
+                CitedProfileItem(
+                    "only-a",
+                    "Private evidence for prompt A.",
+                    source_url="cortex://memory/only-a",
+                ),
+                CitedProfileItem(
+                    "only-b",
+                    "Private evidence for prompt B.",
+                    source_url="cortex://memory/only-b",
+                ),
+            ),
+        )
+        prompts = (
+            EvaluationPrompt("prompt-a", "Answer A."),
+            EvaluationPrompt("prompt-b", "Answer B."),
+        )
+        policy = PromptScopedCitationPolicy(
+            {
+                "prompt-a": ("only-a",),
+                "prompt-b": ("only-b",),
+            }
+        )
+        generator_seen: list[tuple[str, tuple[str, ...]]] = []
+        judge_seen: list[tuple[str, tuple[str, ...]]] = []
+        runner = PairwiseEvaluationRunner(
+            (
+                _ProfileCaptureGenerator("a", generator_seen),
+                _ProfileCaptureGenerator("b", generator_seen),
+            ),
+            _ProfileCaptureJudge(judge_seen),
+            AllPairsStrategy(shuffle=False),
+            BradleyTerryRanker(),
+            citation_policy=policy,
+        )
+
+        report = runner.run(profile, prompts, seed=1)
+
+        self.assertEqual(
+            generator_seen,
+            [
+                ("prompt-a", ("only-a",)),
+                ("prompt-a", ("only-a",)),
+                ("prompt-b", ("only-b",)),
+                ("prompt-b", ("only-b",)),
+            ],
+        )
+        self.assertEqual(
+            judge_seen,
+            [
+                ("prompt-a", ("only-a",)),
+                ("prompt-b", ("only-b",)),
+            ],
+        )
+        self.assertEqual(
+            report.metadata["reproducibility_manifest"]["citation_policy"][
+                "config"
+            ]["profile_scope_mode"],
+            "exact_prompt_scope_v1",
+        )
+
+    def test_prompt_scope_fails_closed_before_provider_calls(self) -> None:
+        profile = HeldOutProfile(
+            "scoped",
+            (
+                CitedProfileItem("eligible", "Owner-authored evidence."),
+                CitedProfileItem(
+                    "agent",
+                    "Agent-authored evidence.",
+                    author_class="agent",
+                ),
+            ),
+        )
+        prompts = (EvaluationPrompt("prompt", "Write an update."),)
+        for name, policy, expected in (
+            (
+                "missing",
+                PromptScopedCitationPolicy({}),
+                "no eligible profile evidence",
+            ),
+            (
+                "unknown",
+                PromptScopedCitationPolicy({"prompt": ("unknown",)}),
+                "unknown memory IDs",
+            ),
+            (
+                "ineligible",
+                PromptScopedCitationPolicy({"prompt": ("agent",)}),
+                "ineligible memory IDs",
+            ),
+        ):
+            with self.subTest(name=name):
+                generator_seen: list[tuple[str, tuple[str, ...]]] = []
+                judge_seen: list[tuple[str, tuple[str, ...]]] = []
+                runner = PairwiseEvaluationRunner(
+                    (
+                        _ProfileCaptureGenerator("a", generator_seen),
+                        _ProfileCaptureGenerator("b", generator_seen),
+                    ),
+                    _ProfileCaptureJudge(judge_seen),
+                    AllPairsStrategy(shuffle=False),
+                    BradleyTerryRanker(),
+                    citation_policy=policy,
+                )
+                with self.assertRaisesRegex(ValueError, expected):
+                    runner.run(profile, prompts, seed=1)
+                self.assertEqual(generator_seen, [])
+                self.assertEqual(judge_seen, [])
+
+    def test_prompt_scope_survives_quote_policy_wrapping_and_changes_spec(self) -> None:
+        profile = HeldOutProfile(
+            "multi-prompt",
+            (
+                CitedProfileItem("only-a", "Private evidence for A."),
+                CitedProfileItem("only-b", "Private evidence for B."),
+            ),
+        )
+        prompts = (
+            EvaluationPrompt("prompt-a", "Answer A."),
+            EvaluationPrompt("prompt-b", "Answer B."),
+        )
+
+        def _run(scopes):
+            generator_seen: list[tuple[str, tuple[str, ...]]] = []
+            judge_seen: list[tuple[str, tuple[str, ...]]] = []
+            report = PairwiseEvaluationRunner(
+                (
+                    _ProfileCaptureGenerator("a", generator_seen),
+                    _ProfileCaptureGenerator("b", generator_seen),
+                ),
+                _ProfileCaptureJudge(judge_seen),
+                AllPairsStrategy(shuffle=False),
+                BradleyTerryRanker(),
+                citation_policy=QuotedEvidenceCitationPolicy(
+                    PromptScopedCitationPolicy(scopes)
+                ),
+            ).run(profile, prompts, seed=1)
+            return report, generator_seen, judge_seen
+
+        first, first_generators, first_judges = _run(
+            {
+                "prompt-a": ("only-a",),
+                "prompt-b": ("only-b",),
+            }
+        )
+        second, second_generators, second_judges = _run(
+            {
+                "prompt-a": ("only-b",),
+                "prompt-b": ("only-a",),
+            }
+        )
+
+        self.assertEqual(first_generators[0], ("prompt-a", ("only-a",)))
+        self.assertEqual(first_judges[0], ("prompt-a", ("only-a",)))
+        self.assertEqual(second_generators[0], ("prompt-a", ("only-b",)))
+        self.assertEqual(second_judges[0], ("prompt-a", ("only-b",)))
+        self.assertNotEqual(
+            first.metadata["spec_id"],
+            second.metadata["spec_id"],
         )
 
     def test_ineligible_hallucinated_missing_and_duplicate_citations_are_invalid(self) -> None:

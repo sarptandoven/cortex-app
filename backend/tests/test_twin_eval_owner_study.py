@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -9,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from backend.app.database import init_db
+from backend.app.keyring import LocalKekProvider, UserKeyring
 from backend.app.twin_eval import (
     ComparisonOutcome,
     OwnerLabel,
@@ -27,6 +30,7 @@ from backend.bench.pairwise_twin import build_offline_benchmark_report
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "pairwise_twin_owner_study.py"
+KEK_B64 = base64.b64encode(bytes(range(32))).decode("ascii")
 
 
 def _perfect_labels(report, key) -> tuple[OwnerLabel, ...]:
@@ -239,9 +243,19 @@ class OwnerStudyCliTests(unittest.TestCase):
             scalar_key_path = root / "scalar-key.json"
             scalar_scores_path = root / "scalar-scores.json"
             scalar_baseline_path = root / "scalar-baseline.json"
+            keyring_path = root / "keyring.sqlite"
+            env = {**os.environ, "CORTEX_KEK": KEK_B64}
             init_db(db_path)
             report = build_offline_benchmark_report(seed=7, repetitions=1)
-            TwinEvalRepository(db_path).save_report("owner", report)
+            TwinEvalRepository(
+                db_path,
+                artifact_cipher=UserKeyring(
+                    keyring_path,
+                    LocalKekProvider(
+                        env={"CORTEX_KEK": KEK_B64}
+                    ),
+                ),
+            ).save_report("owner", report)
 
             exported = subprocess.run(
                 [
@@ -262,11 +276,14 @@ class OwnerStudyCliTests(unittest.TestCase):
                     str(labels_path),
                     "--seed",
                     "5",
+                    "--keyring-db-path",
+                    str(keyring_path),
                 ],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
                 check=True,
+                env=env,
             )
             export_result = json.loads(exported.stdout)
             self.assertEqual(export_result["status"], "exported")
@@ -290,11 +307,14 @@ class OwnerStudyCliTests(unittest.TestCase):
                     str(scalar_key_path),
                     "--scores-out",
                     str(scalar_scores_path),
+                    "--keyring-db-path",
+                    str(keyring_path),
                 ],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
                 check=True,
+                env=env,
             )
             self.assertEqual(
                 json.loads(scalar_exported.stdout)["status"],
@@ -374,11 +394,14 @@ class OwnerStudyCliTests(unittest.TestCase):
                     str(scalar_baseline_path),
                     "--bootstrap-resamples",
                     "100",
+                    "--keyring-db-path",
+                    str(keyring_path),
                 ],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
                 check=True,
+                env=env,
             )
             result = json.loads(analyzed.stdout)
             self.assertEqual(result["cohort_id"], export_result["cohort_id"])

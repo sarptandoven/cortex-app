@@ -359,6 +359,17 @@ def benchmark_cases() -> tuple[BenchmarkCase, ...]:
     return tuple(cases)
 
 
+def benchmark_prompts() -> tuple[EvaluationPrompt, ...]:
+    return tuple(
+        EvaluationPrompt(
+            case.case_id,
+            case.task,
+            {"stratum": case.stratum},
+        )
+        for case in benchmark_cases()
+    )
+
+
 def _expected_outcome(case: BenchmarkCase, system_a: str, system_b: str) -> ComparisonOutcome:
     if case.expected_scores is None:
         return ComparisonOutcome.ABSTAIN
@@ -390,7 +401,7 @@ def build_offline_benchmark_report(
 ) -> EvaluationReport:
     cases = benchmark_cases()
     case_by_id = {case.case_id: case for case in cases}
-    prompts = tuple(EvaluationPrompt(case.case_id, case.task, {"stratum": case.stratum}) for case in cases)
+    prompts = benchmark_prompts()
     rubrics = {case.case_id: case.rubric for case in cases}
 
     generators = tuple(

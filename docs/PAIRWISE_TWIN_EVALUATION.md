@@ -45,9 +45,25 @@ The provider-free core lives in `backend/app/twin_eval/`.
 - `protocols.py` defines candidate-generator, judge, strategy, and ranker ports.
 - `strategies.py` provides all-pairs, anchor/challenger, and repeated-swapped
   schedules.
-- `runner.py` validates a run, derives stage-specific seeds, caches candidates,
-  executes comparisons, resolves structurally valid swapped presentations,
-  ranks normalized logical outcomes, and enforces count/size ceilings.
+- `scheduling.py` builds and validates the single deterministic schedule shared
+  by preflight and execution, including constant-time built-in schedule-size
+  rejection before plan allocation.
+- `preflight.py` forecasts exact call counts plus assumption-bounded tokens,
+  cost, and duration without invoking generators or judges.
+- `admission.py` applies operator-owned hard ceilings and conservative
+  assumption floors that API callers cannot weaken.
+- `application.py` strictly parses product/API requests and exposes a reusable
+  conservative budget gate for future execution workers.
+- `profile_adapter.py` converts valid-time-filtered Cortex context packs into a
+  minimized owner-authored profile, deterministic prompt scopes, safe coverage
+  counts, and a digest manifest while forcing best-effort export redaction and
+  rejecting authoritative context changes during a build.
+- `profile_artifacts.py` validates and serializes the exact redacted profile,
+  prompt scope, coverage, and builder manifest for CXE1-encrypted retention.
+- `runner.py` validates a run, derives stage-specific seeds, builds prompt-level
+  disclosure scopes, caches candidates, executes comparisons, resolves
+  structurally valid swapped presentations, ranks normalized logical outcomes,
+  and enforces count/size ceilings.
 - `ranking.py` provides Bradley–Terry and simple win-rate backends.
 - `metrics.py` computes order/repeat reliability and case-cluster bootstrap
   intervals.
@@ -93,8 +109,13 @@ contradiction resolution, and rule derivation remain responsibilities of the
 profile/rubric builder.
 
 `PromptScopedCitationPolicy` makes a preregistered relevance/precedence decision
-enforceable by limiting each prompt to an explicit memory-ID set. It still does
-not prove that a cited memory entails the judge rationale.
+enforceable by limiting each prompt to an explicit memory-ID set. The runner
+uses the same mapping before any provider call to construct a minimal
+prompt-specific profile for both generators and judges. This prevents one
+prompt's private evidence from influencing or being disclosed during another
+prompt. Missing, unknown, empty, or ineligible scopes fail closed before
+generation. It still does not prove that a cited memory entails the judge
+rationale.
 
 `QuotedEvidenceCitationPolicy` additionally requires every cited memory to have
 a bounded NFKC-normalized quote that occurs in that memory. This blocks
@@ -188,6 +209,90 @@ listwise observations, Bayesian Bradley–Terry for posterior uncertainty, and
 game-theoretic methods when preferences are materially non-transitive. New
 backends must preserve ignored-outcome and disconnected-graph semantics.
 
+## Zero-call preflight estimator
+
+Run the benchmark estimator before any provider-backed evaluation:
+
+```bash
+python3 scripts/pairwise_twin_eval.py --estimate-only
+```
+
+The JSON result reports exact prompt, candidate-generation, raw-judgment,
+logical-comparison, swap, and potential provider-call counts. It also reports
+lower, expected, and upper token and duration forecasts. The command sets
+`provider_calls_made` to zero and does not construct a generator or judge.
+
+Add provider prices in USD per million tokens and conservative budgets:
+
+```bash
+python3 scripts/pairwise_twin_eval.py \
+  --estimate-only \
+  --generator-input-price 1 \
+  --generator-output-price 3 \
+  --judge-input-price 2 \
+  --judge-output-price 4 \
+  --max-provider-calls 600 \
+  --max-total-tokens 5000000 \
+  --max-cost-usd 15 \
+  --max-duration-seconds 7200
+```
+
+Budget checks use the upper estimate, not the expected value. A violation is
+printed as structured JSON and exits with status 1. Invalid or incomplete
+assumptions exit as argument errors. `schedule_digest` can be compared with the
+completed report's `metadata.reproducibility_manifest.plan_digest`.
+
+Token, cost, and duration values are forecasts because candidate size, adapter
+prompt wrappers, provider latency, and billing vary. Call counts and the
+schedule digest are exact for deterministic strategies. Concurrency flags
+forecast a future worker configuration; they do not make the current
+synchronous runner parallel.
+
+The authenticated product endpoint is available on both Cortex server planes:
+
+```text
+POST /v1/twin/pairwise/preflight
+Authorization: Bearer <read-scoped token>
+```
+
+It accepts the frozen profile, prompts, system IDs, strategy, assumptions, and
+budgets as bounded JSON. It returns only counts, hashes, ranges, and violations;
+profile evidence and prompt content are not echoed. This is an estimator
+endpoint, not an execution endpoint.
+
+The REST boundary applies operator-owned defaults of 1,000 provider calls, 10M
+upper-bound tokens, 24 hours, and sequential execution. Clients may request
+stricter limits but cannot raise these ceilings. Size, token-output, request
+overhead, latency, tokenization, and concurrency assumptions are hardened
+against optimistic client values. The response includes a versioned
+`policy_digest` for future queue admission.
+
+When `CORTEX_PAIRWISE_ADMISSION_SIGNING_KEY` contains at least 32 bytes and
+the estimate is within budget, the response also includes a short-lived,
+HMAC-signed `admission_receipt`. Its signature binds the exact canonical
+request, authenticated `user_id`, schedule digest, estimate digest, policy
+digest, issue time, and expiry. The receipt contains no profile, prompt, or
+candidate text. A future execution endpoint must rerun preflight under the
+current policy and verify the receipt before making provider calls.
+
+The receipt is deliberately not an execution authorization: preflight remains
+read-scoped, while execution must require export scope, the
+`allow_agent_exports` trust control, explicit consent, and a server-owned spend
+limit. Receipts are stateless and therefore replayable by
+the same user until expiry; a future execution service must consume a
+one-time job id or nonce atomically.
+
+The existing generic `memory_jobs` queue is not used for pairwise requests.
+That queue stores `payload_json` in plaintext, returns payloads through generic
+job APIs, has no cancellation operation, and dispatches only existing memory
+job types. Private evaluation inputs require a dedicated encrypted,
+retention-aware job store with redacted status views.
+
+Provider cost is reported when pricing is supplied, but it is not yet a
+server-enforced ceiling. Trusted pricing must come from the future
+operator-selected execution configuration rather than from the requesting
+client.
+
 ## Offline benchmark
 
 Run:
@@ -202,8 +307,13 @@ Persist a completed run in a local Cortex database:
 python3 scripts/pairwise_twin_eval.py \
   --seed 7 \
   --db-path /path/to/cortex.sqlite \
-  --user-id local
+  --user-id local \
+  --keyring-db-path /path/to/keyring.sqlite
 ```
+
+Set `CORTEX_KEK` or `CORTEX_KEK_FILE` before using the encrypted CLI path. The
+`--allow-plaintext-report` escape hatch exists only for bundled synthetic test
+fixtures. Cortex/user reports must use the hosted keyring.
 
 Verify and replay a stored artifact as a redacted summary:
 
@@ -211,6 +321,7 @@ Verify and replay a stored artifact as a redacted summary:
 python3 scripts/pairwise_twin_eval.py \
   --db-path /path/to/cortex.sqlite \
   --user-id local \
+  --keyring-db-path /path/to/keyring.sqlite \
   --replay-run-id twin_eval_...
 ```
 
@@ -220,15 +331,45 @@ and cross-user lookups return no artifact. The replay command prints IDs,
 digests, counts, and diagnostics only—not profile evidence, candidate text, or
 judge rationales.
 
-Storage schema `pairwise-twin-artifact/v2` stores every candidate once in the
-compact report and stores comparison rows as candidate-ID references. The
-reader remains compatible with v1 expanded artifacts. Candidate audit rows are
-still duplicated once outside the compact report for independent verification.
+Storage schema `pairwise-twin-artifact/v2` is now sealed as one canonical CXE1
+report artifact under the dedicated `twin_eval_report` key purpose. The outer
+run and child rows contain only content-free markers, opaque hashed references,
+digests, counts, and numerical ranking summaries. Prompt text, caller metadata,
+candidate text, citations, and judge rationales exist only inside the
+authenticated ciphertext. Outer references use a per-report HMAC key that is
+itself sealed inside that ciphertext. The reader remains compatible with legacy v1/v2
+plaintext artifacts, but new writes fail closed unless a cipher is available
+or the caller explicitly enables local/test-only plaintext mode.
 
 `TwinEvalRepository.delete_report()` removes one exact user/run artifact
 atomically and can require the expected artifact digest. The bounded,
 user-scoped `purge_reports_before()` method supports retention jobs without
 cross-user deletion.
+
+When a report carries a Cortex profile manifest, persistence now fails closed
+unless the caller also supplies the exact server-built profile bundle, an
+explicit expiry, and an available Cortex keyring. The repository stores that
+bundle as one CXE1 AES-GCM ciphertext under the dedicated
+`twin_eval_evidence` purpose. The encrypted inner envelope binds the user, run,
+random artifact ID, profile fingerprint, prompt scope, builder manifest, and
+expiry. Reads reject plaintext, wrong-user/purpose blobs, corruption, expired
+artifacts, and any digest or report-link mismatch.
+
+Verbatim provider `evidence_quote` values exist only long enough for citation
+occurrence validation. Before a comparison enters a report, the runner removes
+the quotes, redacts exact repeats from the rationale, and retains only
+content-addressed quote digests.
+
+`list_expired_profile_artifacts()` and
+`purge_expired_profile_artifacts()` provide bounded preview/apply deletion for
+evidence ciphertext. Routine Cortex backups deliberately omit the entire
+pairwise run graph, preventing both decryptable history and broken marker-only
+restores. The current per-user key hierarchy still cannot crypto-shred
+one artifact in an out-of-band SQLite copy; destroying that copy or the user
+key is required. Account deletion now counts and removes every
+`twin_eval_*` row. Routine backups also remove encrypted full-report artifacts,
+so deleting a run cannot leave a decryptable historical report in a normal
+Cortex backup.
 
 Retention uses SQLite date parsing instead of textual timestamp comparison.
 Preview and apply use the same ordering, and apply atomically rejects a target
@@ -249,6 +390,75 @@ Set `CORTEX_TWIN_EVAL_RETENTION_DAYS` or pass `--retention-days` to change the
 policy. The command is intentionally schedule-agnostic: invoke it from the
 deployment's existing scheduler rather than creating a second in-process
 timer. Apply is bounded to 100 records by default and 1,000 maximum.
+
+### Legacy plaintext migration
+
+Legacy v1/v2 reports require an explicit maintenance workflow. It never runs
+at application startup.
+
+```bash
+# Preview one user-scoped, bounded batch.
+python3 scripts/pairwise_twin_migrate.py preview \
+  --db-path /path/to/cortex.sqlite \
+  --user-id USER_ID \
+  --limit 100
+
+# Apply exactly the returned IDs and selection digest.
+python3 scripts/pairwise_twin_migrate.py apply \
+  --db-path /path/to/cortex.sqlite \
+  --user-id USER_ID \
+  --keyring-db-path /path/to/keyring.sqlite \
+  --expected-run-id twin_eval_... \
+  --expected-selection-digest pairwise_legacy_selection_...
+
+# Require a clean logical audit.
+python3 scripts/pairwise_twin_migrate.py audit \
+  --db-path /path/to/cortex.sqlite \
+  --user-id USER_ID \
+  --keyring-db-path /path/to/keyring.sqlite \
+  --require-clean
+
+# Reject any managed backup without the verified sanitization receipt.
+python3 scripts/pairwise_twin_migrate.py backup-audit \
+  --db-path /path/to/cortex.sqlite \
+  --vault-root /path/to/cortex-vault \
+  --require-clean
+```
+
+Each run is replay-verified before mutation, encrypted and decrypted once for
+verification, then atomically converted with `secure_delete=ON`. After every
+user is clean, stop all Cortex processes and workers, close database handles,
+and run the physical scrub:
+
+```bash
+python3 scripts/pairwise_twin_migrate.py finalize \
+  --db-path /path/to/cortex.sqlite \
+  --keyring-db-path /path/to/keyring.sqlite \
+  --vault-root /path/to/cortex-vault \
+  --exclusive-maintenance
+```
+
+Finalization acquires an exclusive operating-system maintenance fence that all
+normal Cortex database connections and offline reranking reads honor. It fails
+closed if this process or another Cortex process still holds the shared fence.
+The operator must still stop all processes because an arbitrary SQLite client
+that bypasses Cortex cannot be forced to honor an advisory lock.
+
+While holding the fence and one SQLite connection, finalization requires zero
+legacy/inconsistent rows, two successful `wal_checkpoint(TRUNCATE)` operations
+around `VACUUM`, SQLite integrity and foreign-key checks, and replay of every
+encrypted report. SQLite documents a rare WAL-reset race in older runtimes and
+fixes in 3.51.3, 3.50.7, and 3.44.6
+([SQLite WAL documentation](https://www.sqlite.org/wal.html)).
+
+The command rejects any managed backup that lacks a verified
+`backup-security.json` receipt binding its standalone sanitized SQLite digest.
+It also binds `--vault-root` to the database path recorded in the vault
+manifest and rejects every unexpected backup-directory artifact, including old
+loose SQLite, WAL, journal, temporary, or directory entries.
+Delete or separately migrate those pre-cutover backups. External Time Machine,
+cloud, and volume snapshots remain an operator attestation and must be
+inventoried before declaring production readiness.
 
 The versioned `subjective-mechanical-v1` benchmark contains 24 cases, four in
 each stratum. The existing Phase 5 categorical suite is a separate non-regression
@@ -513,6 +723,36 @@ Product routing still requires authenticated ownership checks, provider
 allowlists, profile minimization/redaction, explicit consent, quotas and
 budgets, scheduler integration, semantic entailment calibration, and completed
 owner-labeled calibration. Those obligations are outside the local CLI.
+
+The content-free Cortex profile manifest is copied into persisted run metadata.
+The encrypted repository path retains the exact redacted evidence for citation
+audit and seals the complete report separately. No execution route invokes
+that path yet. `as_of` filters
+memory validity; it does not reconstruct historical active/supersession state.
+Export redaction covers known sensitive patterns but is defense in depth, not a
+proof that arbitrary free text contains no secret. Production provider calls
+therefore still require explicit consent. Existing legacy plaintext reports and
+backups require an explicit verified migration and secure cleanup before remote
+production execution can be enabled.
+
+The disabled execution foundation now includes a durable dispatch authority:
+an operational config epoch and each user's consent are revalidated under the
+same SQLite write lock used by revocation. Config changes invalidate old
+consent, exact expiry boundaries fail closed, backups omit consent rows, and
+account deletion removes them. A private candidate-only begin-call transaction
+now binds that authority to the live lease, exact prompt-scoped adapter input,
+trusted endpoint registry, reservation budget, and one encrypted checkpoint.
+An atomic second transaction now authenticates and consumes that checkpoint
+exactly once, burns the raw in-memory permit after commit, and marks an expired
+consumed handoff as `outcome_unknown` rather than retrying it. Content-free
+dispatch counters and an ambiguity tombstone survive encrypted checkpoint
+retention, and the state-table migration is crash-atomic. A strict offline
+OpenAI Responses candidate parser is bound by endpoint model, parser revision,
+text limits, and token ceilings; its normalized result is deliberately not
+trusted until a future recorder seals it to the authenticated call. The system
+has no public consent/enable route, provider transport,
+successful/provider-failed outcome recorder, judge checkpoint, worker loop, or
+network path.
 
 ## Research-informed opportunities
 

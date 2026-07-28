@@ -21,6 +21,12 @@ import sqlite3
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from backend.app.database_maintenance import shared_database_access  # noqa: E402
+
 FEATURES = ("sem", "rank", "ent")
 BASELINE_WEIGHTS = {"sem": 0.6, "rank": 0.25, "ent": 0.15}
 
@@ -80,28 +86,29 @@ def load_pairs_from_events(db_path: Path) -> list[tuple[dict, dict]]:
     """Best-effort: read retrieval feedback from memory_events. Returns [] if the feedback events
     have not been logged yet (live feature logging is a documented follow-up), so the script simply
     reports 'no data' rather than failing."""
-    try:
-        conn = sqlite3.connect(str(db_path))
-    except sqlite3.Error:
-        return []
     pairs: list[tuple[dict, dict]] = []
-    try:
-        cursor = conn.execute(
-            "SELECT metadata_json FROM memory_events WHERE event_type = 'retrieval_feedback' ORDER BY created_at DESC LIMIT 5000"
-        )
-        for (metadata_json,) in cursor.fetchall():
-            try:
-                meta = json.loads(metadata_json or "{}")
-            except (TypeError, json.JSONDecodeError):
-                continue
-            used = meta.get("used_features")
-            for skipped in meta.get("skipped_features") or []:
-                if isinstance(used, dict) and isinstance(skipped, dict):
-                    pairs.append((used, skipped))
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
+    with shared_database_access(db_path):
+        try:
+            conn = sqlite3.connect(str(db_path))
+        except sqlite3.Error:
+            return []
+        try:
+            cursor = conn.execute(
+                "SELECT metadata_json FROM memory_events WHERE event_type = 'retrieval_feedback' ORDER BY created_at DESC LIMIT 5000"
+            )
+            for (metadata_json,) in cursor.fetchall():
+                try:
+                    meta = json.loads(metadata_json or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                used = meta.get("used_features")
+                for skipped in meta.get("skipped_features") or []:
+                    if isinstance(used, dict) and isinstance(skipped, dict):
+                        pairs.append((used, skipped))
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
     return pairs
 
 

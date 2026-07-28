@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
@@ -18,8 +19,85 @@ from .domain import (
     canonical_json,
     derive_seed,
 )
-from .policies import CitationValidationPolicy, EligibleCitationPolicy
+from .policies import (
+    CitationValidationPolicy,
+    EligibleCitationPolicy,
+    normalize_evidence_text,
+)
 from .protocols import CandidateGenerator, ComparisonStrategy, PairwiseJudge, RankingBackend
+from .scheduling import build_evaluation_schedule
+
+
+_CORTEX_PROFILE_MANIFEST_KEYS = frozenset(
+    {
+        "schema_version",
+        "builder_id",
+        "as_of",
+        "config_digest",
+        "selection_digest",
+        "prompt_scope_digests",
+    }
+)
+_DIGEST_RE = re.compile(r"^[a-z0-9_]+_[0-9a-f]{64}$")
+_AS_OF_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def _validated_profile_manifest(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("profile_manifest must be a mapping")
+    if set(value) != _CORTEX_PROFILE_MANIFEST_KEYS:
+        raise ValueError(
+            "profile_manifest must use the exact Cortex digest-only schema"
+        )
+    if value.get("schema_version") != (
+        "cortex-pairwise-profile-manifest/v1"
+    ):
+        raise ValueError("profile_manifest schema_version is unsupported")
+    if value.get("builder_id") != "cortex_context_profile_v1":
+        raise ValueError("profile_manifest builder_id is unsupported")
+    as_of = value.get("as_of")
+    if not isinstance(as_of, str) or not _AS_OF_RE.fullmatch(as_of):
+        raise ValueError("profile_manifest as_of must be normalized UTC")
+    for name in ("config_digest", "selection_digest"):
+        digest = value.get(name)
+        if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
+            raise ValueError(f"profile_manifest {name} is invalid")
+    raw_scopes = value.get("prompt_scope_digests")
+    if not isinstance(raw_scopes, (list, tuple)):
+        raise ValueError(
+            "profile_manifest prompt_scope_digests must be an array"
+        )
+    scopes: list[list[str]] = []
+    seen_prompt_ids: set[str] = set()
+    for raw_scope in raw_scopes:
+        if not isinstance(raw_scope, (list, tuple)) or len(raw_scope) != 2:
+            raise ValueError("profile_manifest prompt scope is invalid")
+        prompt_id, digest = raw_scope
+        if (
+            not isinstance(prompt_id, str)
+            or not prompt_id
+            or len(prompt_id) > 200
+            or prompt_id in seen_prompt_ids
+        ):
+            raise ValueError("profile_manifest prompt_id is invalid")
+        if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
+            raise ValueError("profile_manifest prompt scope digest is invalid")
+        seen_prompt_ids.add(prompt_id)
+        scopes.append([prompt_id, digest])
+    if scopes != sorted(scopes, key=lambda item: item[0]):
+        raise ValueError(
+            "profile_manifest prompt scopes must be uniquely sorted"
+        )
+    return {
+        "schema_version": value["schema_version"],
+        "builder_id": value["builder_id"],
+        "as_of": as_of,
+        "config_digest": value["config_digest"],
+        "selection_digest": value["selection_digest"],
+        "prompt_scope_digests": scopes,
+    }
 
 
 def _reproducibility_config(component: Any) -> Mapping[str, Any]:
@@ -55,53 +133,6 @@ class PairwiseEvaluationRunner:
     max_systems: int = 100
     max_plans: int = 100_000
 
-    @staticmethod
-    def _validate_plan_groups(plans: Sequence[Any]) -> None:
-        """Reject schedules that could manufacture swap reliability."""
-        if not plans:
-            raise ValueError("comparison strategy emitted no plans")
-        grouped: dict[str, list[Any]] = {}
-        trial_ids: dict[tuple[str, tuple[str, str], int], str] = {}
-        for plan in plans:
-            grouped.setdefault(plan.logical_comparison_id, []).append(plan)
-            trial_key = (
-                plan.prompt_id,
-                tuple(sorted((plan.left_system_id, plan.right_system_id))),
-                plan.repetition,
-            )
-            existing_logical_id = trial_ids.setdefault(
-                trial_key, plan.logical_comparison_id
-            )
-            if existing_logical_id != plan.logical_comparison_id:
-                raise ValueError(
-                    "one prompt/system/repetition trial cannot use multiple "
-                    "logical_comparison_id values"
-                )
-        for logical_id, sources in grouped.items():
-            if len(sources) > 2:
-                raise ValueError(
-                    f"logical comparison {logical_id!r} has more than two presentations"
-                )
-            first = sources[0]
-            expected_pair = {first.left_system_id, first.right_system_id}
-            for plan in sources[1:]:
-                if plan.prompt_id != first.prompt_id or plan.repetition != first.repetition:
-                    raise ValueError("logical comparison grouped different prompt trials")
-                if {plan.left_system_id, plan.right_system_id} != expected_pair:
-                    raise ValueError("logical comparison grouped different system pairs")
-            if len(sources) == 2:
-                orientations = {
-                    (plan.left_system_id, plan.right_system_id) for plan in sources
-                }
-                if len(orientations) != 2:
-                    raise ValueError(
-                        "two-presentation logical comparisons must use opposite orientations"
-                    )
-                if len({plan.swapped for plan in sources}) != 2:
-                    raise ValueError(
-                        "opposite presentations must have complementary swapped flags"
-                    )
-
     def _validated_decision(
         self,
         decision: JudgeDecision,
@@ -125,6 +156,60 @@ class PairwiseEvaluationRunner:
         return JudgeDecision(
             outcome=ComparisonOutcome.INVALID,
             rationale=invalid_reason,
+            cited_memory_ids=decision.cited_memory_ids,
+            confidence=decision.confidence,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _retention_safe_decision(
+        decision: JudgeDecision,
+    ) -> JudgeDecision:
+        """Replace verbatim evidence quotes with content-addressed proofs.
+
+        Citation policies need the quotes briefly to verify occurrence against
+        the frozen profile. Reports need only the cited IDs and quote digests;
+        retaining the raw excerpts would duplicate private profile evidence in
+        plaintext comparison rows.
+        """
+
+        metadata = dict(decision.metadata)
+        raw_quotes = metadata.pop("evidence_quotes", None)
+        if raw_quotes is None:
+            return decision
+        rationale = decision.rationale
+        if isinstance(raw_quotes, Mapping):
+            quote_digests: dict[str, tuple[str, ...]] = {}
+            for memory_id, quotes in raw_quotes.items():
+                if not isinstance(memory_id, str) or not isinstance(
+                    quotes,
+                    (list, tuple),
+                ):
+                    continue
+                quote_digests[memory_id] = tuple(
+                    canonical_hash(
+                        {
+                            "memory_id": memory_id,
+                            "quote": quote,
+                        },
+                        prefix="evidence_quote_",
+                    )
+                    for quote in quotes
+                    if isinstance(quote, str) and quote
+                )
+                for quote in quotes:
+                    if isinstance(quote, str) and quote:
+                        normalized_quote = normalize_evidence_text(quote)
+                        if (
+                            normalized_quote
+                            and normalized_quote
+                            in normalize_evidence_text(rationale)
+                        ):
+                            rationale = "[EVIDENCE_QUOTE_REDACTED]"
+            metadata["evidence_quote_digests"] = quote_digests
+        return JudgeDecision(
+            outcome=decision.outcome,
+            rationale=rationale,
             cited_memory_ids=decision.cited_memory_ids,
             confidence=decision.confidence,
             metadata=metadata,
@@ -221,6 +306,9 @@ class PairwiseEvaluationRunner:
         if reserved_metadata:
             names = ", ".join(sorted(reserved_metadata))
             raise ValueError(f"runner metadata uses reserved keys: {names}")
+        profile_manifest_snapshot = _validated_profile_manifest(
+            profile.metadata.get("profile_manifest")
+        )
         strategy_config = json.loads(
             canonical_json(_reproducibility_config(self.strategy))
         )
@@ -262,35 +350,33 @@ class PairwiseEvaluationRunner:
         prompt_by_id = {prompt.prompt_id: prompt for prompt in prompt_tuple}
         if len(prompt_by_id) != len(prompt_tuple):
             raise ValueError("prompt_id values must be unique")
+        scope_profile = getattr(self.citation_policy, "scope_profile", None)
+        profile_by_prompt: dict[str, HeldOutProfile] = {}
+        for prompt in prompt_tuple:
+            scoped_profile = (
+                scope_profile(prompt, profile)
+                if callable(scope_profile)
+                else profile
+            )
+            if not isinstance(scoped_profile, HeldOutProfile):
+                raise TypeError("scope_profile() must return HeldOutProfile")
+            profile_by_prompt[prompt.prompt_id] = scoped_profile
         generator_by_id = {generator.system_id: generator for generator in self.generators}
         if len(generator_by_id) != len(self.generators) or len(generator_by_id) < 2:
             raise ValueError("evaluation requires at least two uniquely named generators")
         if len(generator_by_id) > self.max_systems:
             raise ValueError(f"evaluation exceeds max_systems={self.max_systems}")
-        systems = tuple(sorted(generator_by_id))
-        root_seed = derive_seed(seed, profile.fingerprint, tuple(prompt_by_id), systems)
-        plans = self.strategy.plan(prompt_tuple, systems, seed=root_seed)
-        if len(plans) > self.max_plans:
-            raise ValueError(f"evaluation exceeds max_plans={self.max_plans}")
-        self._validate_plan_groups(plans)
-        comparison_ids = [plan.comparison_id for plan in plans]
-        if len(comparison_ids) != len(set(comparison_ids)):
-            raise ValueError("strategy emitted duplicate comparison_id values")
-        for plan in plans:
-            if plan.prompt_id not in prompt_by_id:
-                raise ValueError(f"strategy emitted unknown prompt_id {plan.prompt_id!r}")
-            if plan.left_system_id not in generator_by_id or plan.right_system_id not in generator_by_id:
-                raise ValueError("strategy emitted an unknown system_id")
-        covered_prompts = {plan.prompt_id for plan in plans}
-        covered_systems = {
-            system_id
-            for plan in plans
-            for system_id in (plan.left_system_id, plan.right_system_id)
-        }
-        if covered_prompts != set(prompt_by_id):
-            raise ValueError("strategy did not schedule every evaluation prompt")
-        if covered_systems != set(systems):
-            raise ValueError("strategy did not schedule every evaluated system")
+        schedule = build_evaluation_schedule(
+            profile,
+            prompt_tuple,
+            tuple(generator_by_id),
+            self.strategy,
+            seed=seed,
+            max_plans=self.max_plans,
+        )
+        systems = schedule.systems
+        root_seed = schedule.root_seed
+        plans = schedule.plans
 
         candidates: dict[tuple[str, str], Candidate] = {}
         candidate_ids: set[str] = set()
@@ -300,7 +386,7 @@ class PairwiseEvaluationRunner:
                 candidate_seed = derive_seed(root_seed, "candidate", prompt.prompt_id, system_id)
                 candidate = generator_by_id[system_id].generate(
                     prompt,
-                    profile,
+                    profile_by_prompt[prompt.prompt_id],
                     seed=candidate_seed,
                 )
                 if candidate.system_id != system_id or candidate.prompt_id != prompt.prompt_id:
@@ -351,16 +437,17 @@ class PairwiseEvaluationRunner:
             decision = self._validated_decision(
                 self.judge.judge(
                     prompt_by_id[plan.prompt_id],
-                    profile,
+                    profile_by_prompt[plan.prompt_id],
                     judge_left,
                     judge_right,
                     seed=judge_seed,
                 ),
                 prompt_by_id[plan.prompt_id],
-                profile,
+                profile_by_prompt[plan.prompt_id],
                 left,
                 right,
             )
+            decision = self._retention_safe_decision(decision)
             if (
                 unicodedata.normalize("NFKC", left.text)
                 == unicodedata.normalize("NFKC", right.text)
@@ -475,7 +562,7 @@ class PairwiseEvaluationRunner:
         report_metadata["spec_id"] = spec_id
         if normalized_trial_id is not None:
             report_metadata["trial_id"] = normalized_trial_id
-        report_metadata["reproducibility_manifest"] = {
+        reproducibility_manifest = {
             "candidate_fingerprints": candidate_fingerprints,
             "plan_digest": canonical_hash(plan_manifest),
             "runner": spec_identity["runner"],
@@ -484,6 +571,16 @@ class PairwiseEvaluationRunner:
             "ranking": spec_identity["ranking"],
             "citation_policy": spec_identity["citation_policy"],
         }
+        if profile_manifest_snapshot is not None:
+            # Cortex-built profiles expose a digest-only audit manifest. Copy
+            # it automatically so repository persistence cannot depend on a
+            # future execution route remembering to thread optional metadata.
+            reproducibility_manifest["profile_manifest"] = (
+                profile_manifest_snapshot
+            )
+        report_metadata["reproducibility_manifest"] = (
+            reproducibility_manifest
+        )
         report = EvaluationReport(
             run_id=canonical_hash(run_identity, prefix="twin_eval_"),
             seed=seed,
