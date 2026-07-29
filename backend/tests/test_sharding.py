@@ -493,6 +493,97 @@ class ShardingTests(unittest.TestCase):
         self.assertEqual(registry.list_sync_cursors("alice")[0]["cursor_value"], "alice-cursor")
         self.assertEqual(registry.list_sync_cursors("bob"), [])
 
+    def _shared_bucket_registry(self):
+        """Bucket mode with a single shard routes EVERY user into the same sqlite file — the
+        hosted deployment shape in which a cross-tenant id collision is actually reachable."""
+        registry = StoreRegistry.from_settings(self.settings(mode="bucket", shard_count=1))
+        self.assertEqual(
+            registry.assignment_for("tenant-a").db_path,
+            registry.assignment_for("tenant-b").db_path,
+        )
+        return registry
+
+    @staticmethod
+    def _colliding_extraction(content: str) -> dict:
+        """Two tenants submitting the SAME explicit record/task id — the collision under test."""
+        return {
+            "_timestamp": "2026-06-29T12:00:00Z",
+            "summary": content,
+            "records": [
+                {
+                    "id": "collide_mem",
+                    "kind": "observation",
+                    "layer": "semantic",
+                    "content": content,
+                    "confidence": "confirmed",
+                    "importance": 3,
+                    "topics": [],
+                    "entity_ids": [],
+                }
+            ],
+            "tasks": [
+                {"id": "collide_task", "kind": "action", "content": f"{content} task", "topics": [], "entity_ids": []}
+            ],
+            "entities": [],
+        }
+
+    def _save_colliding(self, registry, user_id: str, content: str) -> None:
+        registry.save_capture(
+            user_id=user_id,
+            content=f"{user_id} capture",
+            source="unit-test",
+            source_url=None,
+            title=user_id,
+            extracted=self._colliding_extraction(content),
+            auto_approve=True,
+        )
+
+    def _rows(self, registry, table: str) -> list[tuple]:
+        import sqlite3
+
+        conn = sqlite3.connect(registry.assignment_for("tenant-a").db_path)
+        try:
+            return conn.execute(f"SELECT id, user_id, content FROM {table} ORDER BY user_id").fetchall()
+        finally:
+            conn.close()
+
+    def test_colliding_memory_and_task_ids_do_not_clobber_another_tenant(self) -> None:
+        """Regression: memories.id / tasks.id are the sole PRIMARY KEY, and on the ordinary
+        local/CLI path an id is content-derived or caller-supplied with no user salt. INSERT OR
+        REPLACE resolves conflicts purely on that key, so an unguarded write silently DELETES the
+        first tenant's row. Both tenants must survive, each still owning its own content."""
+        registry = self._shared_bucket_registry()
+        self._save_colliding(registry, "tenant-a", "Tenant A private content")
+        self._save_colliding(registry, "tenant-b", "Tenant B private content")
+
+        memories = self._rows(registry, "memories")
+        self.assertEqual(len(memories), 2, f"both tenants' memories must survive, got {memories}")
+        self.assertEqual([row[1] for row in memories], ["tenant-a", "tenant-b"])
+        self.assertEqual(memories[0][2], "Tenant A private content")
+        self.assertEqual(memories[1][2], "Tenant B private content")
+        # The colliding id was re-salted for exactly one tenant, so the rows are distinct.
+        self.assertNotEqual(memories[0][0], memories[1][0])
+
+        tasks = self._rows(registry, "tasks")
+        self.assertEqual(len(tasks), 2, f"both tenants' tasks must survive, got {tasks}")
+        self.assertEqual([row[1] for row in tasks], ["tenant-a", "tenant-b"])
+        self.assertNotEqual(tasks[0][0], tasks[1][0])
+
+    def test_colliding_ids_keep_each_tenants_retrieval_isolated(self) -> None:
+        """The clobber's real damage is retrieval: after a collision each tenant must still find
+        its own memory and must never surface the other tenant's."""
+        registry = self._shared_bucket_registry()
+        self._save_colliding(registry, "tenant-a", "The aardvark decision is confidential")
+        self._save_colliding(registry, "tenant-b", "The bobcat decision is confidential")
+
+        a_hits = " ".join(str(hit.get("content", "")) for hit in registry.search("tenant-a", "confidential decision"))
+        b_hits = " ".join(str(hit.get("content", "")) for hit in registry.search("tenant-b", "confidential decision"))
+
+        self.assertIn("aardvark", a_hits, "tenant-a must still retrieve its own memory")
+        self.assertNotIn("bobcat", a_hits, "tenant-a must never retrieve tenant-b's memory")
+        self.assertIn("bobcat", b_hits, "tenant-b must still retrieve its own memory")
+        self.assertNotIn("aardvark", b_hits, "tenant-b must never retrieve tenant-a's memory")
+
 
 if __name__ == "__main__":
     unittest.main()
