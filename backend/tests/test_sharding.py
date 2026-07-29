@@ -584,6 +584,34 @@ class ShardingTests(unittest.TestCase):
         self.assertIn("bobcat", b_hits, "tenant-b must still retrieve its own memory")
         self.assertNotIn("aardvark", b_hits, "tenant-b must never retrieve tenant-a's memory")
 
+    def test_cross_tenant_salt_does_not_resurrect_a_forgotten_memory(self) -> None:
+        """The collision salt must not defeat anti-resurrection. A memory is tombstoned under its
+        PLAIN derived id; if another tenant later takes that id, the re-derivation salts to a
+        different string, so checking only the post-salt id would miss the tombstone and silently
+        restore content the user explicitly forgot."""
+        registry = self._shared_bucket_registry()
+
+        self._save_colliding(registry, "tenant-a", "Tenant A forgotten content")
+        a_before = self._rows(registry, "memories")
+        self.assertEqual(len(a_before), 1)
+        self.assertEqual(a_before[0][0], "collide_mem")
+
+        # Tenant A explicitly forgets it (tombstone is recorded under the plain id).
+        self.assertTrue(registry.delete_memory("tenant-a", "collide_mem"))
+        self.assertEqual(self._rows(registry, "memories"), [])
+
+        # Tenant B now takes that literal id for its own unrelated memory.
+        self._save_colliding(registry, "tenant-b", "Tenant B unrelated content")
+
+        # Tenant A resyncs the same source: re-derives "collide_mem", which now collides with B's
+        # row and salts away from it. The forget must still be honored.
+        self._save_colliding(registry, "tenant-a", "Tenant A forgotten content")
+
+        rows = self._rows(registry, "memories")
+        owners = [row[1] for row in rows]
+        self.assertNotIn("tenant-a", owners, f"tenant-a's forgotten memory must not be resurrected, got {rows}")
+        self.assertEqual(owners, ["tenant-b"], "tenant-b's memory must be untouched")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28466,6 +28466,7 @@ class CortexStore:
         # here would silently delete and replace the other tenant's row. Re-salt with user_id
         # only in that collision case, so the ordinary (non-colliding) path keeps its id exactly
         # as derived/supplied, preserving explicit-id passthrough for existing callers.
+        pre_collision_salt_memory_id = memory_id
         if conn.execute(
             "SELECT 1 FROM memories WHERE id = ? AND user_id != ? LIMIT 1",
             (memory_id, user_id),
@@ -28477,7 +28478,19 @@ class CortexStore:
         # re-derivation entirely. The tombstone is per-(user,memory), so a genuinely new memory (new
         # capture or changed content -> different id) is never suppressed, and un-forgetting isn't a
         # feature. Returns None; the caller drops the record.
-        if self._is_tombstoned_in_conn(conn, user_id, "memory", memory_id):
+        #
+        # Checked against BOTH the pre- and post-cross-tenant-salt id: a memory tombstoned before
+        # any other tenant ever collided with its id was tombstoned under the plain derived id, but
+        # a re-derivation attempted *after* a different tenant's row has since taken that id salts
+        # to a different string above — checking only the post-salt id would miss the tombstone
+        # entirely and silently resurrect content the user explicitly forgot (tenant A forgets
+        # "m1", tenant B later saves its own unrelated memory under literal id "m1" in the same
+        # shared/bucket database, and tenant A's next resync of the same source re-derives "m1",
+        # salts away from B's row, and — without this second check — reinserts the forgotten memory).
+        if self._is_tombstoned_in_conn(conn, user_id, "memory", memory_id) or (
+            memory_id != pre_collision_salt_memory_id
+            and self._is_tombstoned_in_conn(conn, user_id, "memory", pre_collision_salt_memory_id)
+        ):
             return None
         kind = record.get("kind", "observation")
         # #17 deterministic layer: honor a valid explicit/kind layer, else classify by content via
