@@ -305,19 +305,27 @@ class CompareEngineTests(unittest.TestCase):
 class _EndpointHarness(unittest.TestCase):
     """Shared seed for the endpoint tests on both servers."""
 
-    def _seed(self, store: CortexStore, user_id: str) -> None:
+    def _seed(self, store: CortexStore, user_id: str, memory_id: str = "mem_python") -> None:
+        # `memory_id` is parameterized (not hardcoded) because ImportDiffFastAPIEndpointTests
+        # shares ONE process-wide `main_module.store` across all its test methods (see that
+        # class's setUpClass), and unittest runs methods alphabetically within a class — so two
+        # tests both seeding the literal id "mem_python" under two different user_ids would
+        # otherwise contend for the same primary-key row on a store that isn't per-test isolated.
+        # Before the cross-tenant id-collision guard existed the second write silently overwrote
+        # the first tenant's row (masking the bug); the guard now correctly refuses that overwrite
+        # and re-salts instead, so a caller seeding a second, distinct user must pass its own id.
         store.update_settings(user_id, {"review_new_captures": False, "allow_pending_in_context": True})
         store.save_capture(
             user_id=user_id,
             content="Prefers Python for backend work and TypeScript on the frontend.",
             source="obsidian",
-            source_url="local-file://mem_python",
-            title="mem_python",
+            source_url=f"local-file://{memory_id}",
+            title=memory_id,
             extracted={
                 "_timestamp": "2026-01-01T00:00:00Z",
                 "summary": "Prefers Python for backend work and TypeScript on the frontend.",
                 "records": [
-                    {"id": "mem_python", "kind": "fact", "layer": "preference",
+                    {"id": memory_id, "kind": "fact", "layer": "preference",
                      "content": "Prefers Python for backend work and TypeScript on the frontend.",
                      "confidence": "confirmed", "importance": 4, "occurred_at": "2026-01-01T00:00:00Z",
                      "topics": [], "entity_ids": []}
@@ -443,7 +451,10 @@ class ImportDiffFastAPIEndpointTests(_EndpointHarness):
 
     def test_import_diff_pre_parsed_facts(self) -> None:
         user_id = "import-diff-fastapi-user2"
-        self._seed(self.main_module.store, user_id)
+        # Distinct memory_id: this class's main_module.store is shared across every test method
+        # (see the _seed docstring) — reusing "mem_python" here would contend with
+        # test_import_diff_route's own seed under a different user_id.
+        self._seed(self.main_module.store, user_id, memory_id="mem_python_2")
         response = self.client.post(
             "/v1/import-diff",
             json={"facts": [{"text": "Prefers Python for backend work and TypeScript on the frontend.", "vendor": "claude"}]},
