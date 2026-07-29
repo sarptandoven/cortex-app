@@ -56,10 +56,13 @@ For backend development without opening the app:
 ./scripts/dev_backend.sh
 ```
 
-Run the main verification set:
+Run the main verification set. Use `pytest` rather than `unittest discover`: the tests are
+`unittest.TestCase` classes, but `backend/tests/conftest.py` pins the vault/DB to a throwaway
+temp directory at import time, and only pytest loads it. Under `unittest discover` the suite
+binds to the default `backend/data/Cortex.vault` and writes into the working tree.
 
 ```bash
-python3 -W error::ResourceWarning -m unittest discover backend/tests
+python3 -m pytest backend/tests -q
 python3 scripts/retrieval_eval.py
 python3 scripts/adaptation_eval.py
 ./macos/build.sh
