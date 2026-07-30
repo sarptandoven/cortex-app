@@ -32,6 +32,9 @@ When documents disagree, use this order of authority:
 | MCP and external tools | [MCP_INTEGRATIONS.md](MCP_INTEGRATIONS.md) · [EXTERNAL_INTEGRATIONS.md](EXTERNAL_INTEGRATIONS.md) |
 | Connector readiness | [CONNECTOR_COVERAGE_READINESS.md](CONNECTOR_COVERAGE_READINESS.md) |
 | Trust and privacy | [TRUST_CONTROLS.md](TRUST_CONTROLS.md) · [SECURITY_REVIEW.md](SECURITY_REVIEW.md) |
+| Benchmarks | [BENCHMARKS.md](BENCHMARKS.md) |
+| Open-source readiness | [OPEN_SOURCE_READINESS.md](OPEN_SOURCE_READINESS.md) |
+| FAQ and troubleshooting | [FAQ.md](FAQ.md) · [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Optional encrypted sync | [E2EE_SYNC_DESIGN.md](E2EE_SYNC_DESIGN.md) · [CXE1_WIRE_FORMAT.md](CXE1_WIRE_FORMAT.md) |
 
 ## Release and Operations

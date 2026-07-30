@@ -1,6 +1,48 @@
 # Cortex Architecture
 
-## Current Prototype
+## Runtime Boundaries
+
+Cortex has two runtimes around one storage and retrieval core. The packaged
+macOS app starts a loopback-only standard-library server. The optional hosted
+plane uses FastAPI, account authentication, and per-user sharded stores.
+
+```mermaid
+flowchart LR
+    subgraph Desktop["Local desktop runtime"]
+        UI["SwiftUI app"]
+        LocalAPI["standalone_server.py<br/>127.0.0.1 only"]
+        MCP["Scoped MCP proxy"]
+    end
+    subgraph Core["Shared Python core"]
+        Review["Capture + Review"]
+        Retrieval["Hybrid retrieval<br/>cite or abstain"]
+        Store["CortexStore"]
+    end
+    subgraph Data["User-owned local data"]
+        Vault["Markdown / JSON vault"]
+        Index["SQLite FTS5 + sqlite-vec"]
+    end
+    subgraph Hosted["Optional hosted account + sync plane"]
+        FastAPI["FastAPI"]
+        Registry["StoreRegistry<br/>per-user shards"]
+        Workers["Scheduled sync workers"]
+    end
+    UI --> LocalAPI
+    MCP --> LocalAPI
+    LocalAPI --> Review --> Store
+    LocalAPI --> Retrieval --> Store
+    Store <--> Vault
+    Store <--> Index
+    FastAPI --> Registry --> Store
+    Workers --> Registry
+```
+
+The desktop app and hosted plane are separate trust boundaries. A path supplied
+to the hosted API names a file on the server—not on the user's Mac—so
+filesystem connectors and path-based imports are local-only. Credential-bearing
+hosted connectors are restricted to their official service origins.
+
+## Legacy Prototype (Reference Only)
 
 The original prototype has these pieces:
 
@@ -11,9 +53,14 @@ The original prototype has these pieces:
 - `mcp_server.py`: legacy prototype local stdio MCP server; packaged builds use the app-bundled `scripts/cortex_mcp_stdio.py` proxy instead
 - `ui.py`: Streamlit memory chat
 
-## Productized MVP
+These root-level modules are retained for reference and are not used by the
+packaged app. New product work belongs in `backend/app/`, `macos/`, the SDKs, or
+the integration packages.
 
-The MVP adds a backend service and a native macOS client while preserving the extraction schema.
+## Current Product
+
+The current product adds a backend service and native macOS client while
+preserving the extraction schema.
 
 ```
 macOS app
@@ -115,20 +162,49 @@ Release pipeline
     downloadable release artifacts
 ```
 
-## Hosted Backend Migration
+## Request Lifecycle
 
-The local SQLite storage is intentionally swappable.
+```mermaid
+sequenceDiagram
+    participant Source as Connected source
+    participant API as Local or hosted API
+    participant Review as Review policy
+    participant Store as Vault + index
+    participant Tool as AI tool / MCP client
 
-| Local Beta | Hosted Beta |
-|---|---|
-| User-owned local vault + SQLite index | FastAPI service with Postgres |
-| FTS5 keyword search | Postgres full-text search + pgvector |
-| local review status | hosted review workflow |
-| local install tokens | OAuth/login + scoped API tokens |
-| local vault files | durable object storage exports/backups plus relational memory rows |
-| localhost API and local MCP | HTTPS API and hosted MCP |
+    Source->>API: Capture or sync records
+    API->>Review: Extract typed candidate memories
+    alt review required
+        Review-->>API: Pending until user approves
+    else trusted explicit import
+        Review-->>API: Auto-approved by policy
+    end
+    API->>Store: Persist source, memory, provenance, audit event
+    Tool->>API: Search / context / Ask with scoped token
+    API->>Store: Hybrid retrieval + policy filters
+    alt cited evidence is sufficient
+        API-->>Tool: Bounded context with memory IDs and citations
+    else evidence is missing
+        API-->>Tool: Explicit abstention
+    end
+```
 
-Local beta remains SQLite/vault-first. For the 10k-user hosted path, FastAPI plus Postgres/pgvector is the default unless benchmarks prove a separate vector store is needed.
+## Hosted Backend and Scale Path
+
+The current hosted beta uses the same `CortexStore` behind `StoreRegistry`,
+which assigns isolated SQLite/vault shards per user. Postgres/pgvector is a
+future scale target, not the current hosted implementation.
+
+| Local desktop | Current hosted beta | Future scale target |
+|---|---|---|
+| User-owned vault + SQLite index | Per-user vault/SQLite shards | Relational memory store + durable object storage |
+| FTS5 + sqlite-vec | FTS5 + sqlite-vec per shard | Postgres full-text + pgvector, if benchmarks justify it |
+| Loopback server + local MCP | FastAPI HTTPS + scoped account tokens | Same public contracts behind horizontally scaled services |
+| Local review state | User-isolated hosted review state | Durable queues and multi-region operations |
+
+Local mode remains vault/SQLite-first. The migration seam is the store registry
+and public API contract; a future database change should not alter connector,
+review, citation, or client behavior.
 
 See `docs/MEMORY_BACKEND_BLUEPRINT.md` for the layered memory model and scale path across SQLite, sqlite-vec, libSQL/Turso, Postgres/pgvector, Qdrant, and LanceDB.
 

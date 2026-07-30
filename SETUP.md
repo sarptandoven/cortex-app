@@ -1,6 +1,14 @@
 # Cortex Setup Guide
 
-Cortex is a local-first macOS beta. You do not need Redis, a GitHub token, Docker, or a hosted account to run the current app.
+Cortex is a local-first macOS beta. You do not need Redis, Docker, or an
+external vector database. The current direct-download build requires account
+sign-in; retrieval and the user-owned vault remain local.
+
+## Requirements
+
+- Apple Silicon Mac running macOS 13 or later
+- Xcode command line tools
+- Python 3.12 (the repository includes `.python-version` for version managers)
 
 ## Build And Open
 
@@ -53,19 +61,30 @@ Open Connections & Privacy to manage:
 For backend development without opening the app:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r backend/requirements.txt pytest
-./scripts/dev_backend.sh
+make setup
+make run
 ```
 
-Run the main verification set:
+`make setup` refuses to continue with the system Python when it is not 3.12,
+creates `.venv`, and installs the exact backend/test versions in
+`requirements-dev.lock`. To use an explicit interpreter:
 
 ```bash
-python3 -W error::ResourceWarning -m pytest backend/tests -q
-python3 scripts/retrieval_eval.py
-python3 scripts/adaptation_eval.py
+make setup PYTHON=/opt/homebrew/bin/python3.12
+```
+
+Run the fast local pre-PR set:
+
+```bash
+make check
+```
+
+Run the broader verification set:
+
+```bash
+make test
+make connector-check
 ./macos/build.sh
 codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app
-python3 scripts/ops_readiness_check.py
+.venv/bin/python scripts/ops_readiness_check.py
 ```

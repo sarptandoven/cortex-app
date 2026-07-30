@@ -33,17 +33,17 @@
         lawyer-reviewed policy.
       </p>
       <p>
-        Cortex has two ways to run, and your data is handled differently in each. The
-        <strong>local-first macOS app</strong> keeps your memory on your own Mac and needs no
-        account. <strong>Cortex Cloud</strong> is an optional hosted tier you sign in to; it
-        exists to sync and serve your memory to AI tools, and is described honestly below.
+        Cortex has two data paths, and your data is handled differently in each. The
+        shipped <strong>local-first macOS app</strong> requires account sign-in, while keeping
+        its memory vault and retrieval engine on your Mac. <strong>Cortex Cloud</strong> is the
+        optional hosted sync and retrieval tier described below.
       </p>
 
       <section>
         <h2>Local app — the default</h2>
         <ul>
           <li>Memory lives on your Mac at <code>~/Library/Application Support/Cortex/Cortex.vault/</code> (or a folder you choose).</li>
-          <li>The local app requires no account and no cloud service. It works with the network off.</li>
+          <li>The shipped beta requires a one-time account sign-in. After sign-in, local ingestion and retrieval work with the network off; sign-in and optional sync require the network.</li>
           <li>Cortex reads clipboard content only when you trigger a capture, and a local notes folder only after you choose it.</li>
           <li>It does not record your screen, listen through the microphone, or capture ambient activity.</li>
           <li>Stored: memories you approve, plus extracted tasks, entities, topics, graph edges, settings, audit events, and local backups — all as readable files plus a rebuildable index.</li>

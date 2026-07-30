@@ -14,7 +14,8 @@ any router ports** via Cloudflare Tunnel.
   genuinely fine; for a big public launch, weigh the uptime risk.
 - **Backups MUST go off the machine.** The mini is the whole system now — if it
   dies or is stolen, local backups die with it. Ship backups to R2/B2 (below).
-- **Escrow the KEK OFF the mini.** Same reason. (deploy/macmini/setup.sh prints it.)
+- **Escrow the KEK OFF the mini.** Same reason. The setup script stores it in a
+  protected file and deliberately does not print it.
 - **ISP terms.** Cloudflare Tunnel is outbound-only (no inbound ports), which
   sidesteps port-blocking, but some residential ISP ToS still discourage
   "servers." Low-traffic betas are rarely an issue; know your ISP's rules.
@@ -24,8 +25,8 @@ From the repo on the mini:
 ```
 bash deploy/macmini/setup.sh
 ```
-This installs deps, generates your admin token + encryption KEK (printed once —
-save them), writes `~/CortexServer/cortex.env`, and loads two launchd services
+This installs deps, generates your admin token + encryption KEK in protected
+files (they are deliberately not printed), writes `~/CortexServer/cortex.env`, and loads two launchd services
 (`com.cortex.api`, `com.cortex.worker`) that start at login and restart on crash.
 The API listens only on `127.0.0.1:8766` (never exposed directly).
 
@@ -71,10 +72,18 @@ Quick test without a domain/account: `cloudflared tunnel --url http://127.0.0.1:
 prints a temporary `https://<random>.trycloudflare.com` URL (ephemeral).
 
 ## Step 4 — Off-machine backups (do not skip)
-The bundled backup job keeps local copies; add an offsite target so a dead mini
-doesn't take the data with it. Easiest: a Backblaze B2 / Cloudflare R2 bucket +
-`rclone`, then a nightly launchd job running the same WAL-safe snapshot logic as
-`deploy/backup.sh` (adapt paths to `~/CortexServer`). Escrow the KEK separately.
+Install `age` (`brew install age`) and generate a recovery identity:
+
+```bash
+age-keygen -o ~/CortexServer/backup-age.key
+age-keygen -y ~/CortexServer/backup-age.key
+```
+
+Put the printed public recipient in the backup job as `BACKUP_AGE_RECIPIENT`; escrow
+the private identity and the Cortex KEK separately from the backup bucket. Add an
+offsite Backblaze B2 / Cloudflare R2 target with `rclone`, then run the WAL-safe
+`deploy/backup.sh` logic nightly (adapt paths to `~/CortexServer`). The script refuses
+to create plaintext archives.
 
 ## Step 5 — Point the app + web at it
 Same as any hosted deployment: users open `https://api.signindoppl.com/account/signup`

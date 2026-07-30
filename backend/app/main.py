@@ -30,6 +30,11 @@ from .authn import (
     token_verify_hash,
 )
 from .config import APP_BRAND, load_settings
+from .connector_policy import (
+    is_atlassian_cloud_origin,
+    is_official_connector_origin,
+    is_official_oauth_token_endpoint,
+)
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
 from .mcp_tools import (
@@ -383,6 +388,52 @@ def _hosted_readiness_contract() -> dict[str, Any]:
         runtime["control_plane"] = store.control_plane_status()
         runtime["worker_queue"] = store.hosted_job_health()
     return hosted_readiness_contract(settings, runtime=runtime)
+
+
+def _require_local_filesystem_access(operation: str) -> None:
+    """Keep client-supplied paths on the machine that actually owns them.
+
+    Local mode is the desktop/self-hosted trust boundary. In a sharded hosted
+    deployment, accepting a path would read from the API server rather than the
+    authenticated user's computer and could cross tenant boundaries.
+    """
+    if settings.shard_mode != "local":
+        raise HTTPException(
+            status_code=403,
+            detail=f"{operation} is available only in local mode; upload content to hosted {APP_BRAND} instead",
+        )
+
+
+def _require_hosted_connector_origin(source: str, value: str | None) -> None:
+    """Reject credential-bearing requests to user-controlled origins in hosted mode."""
+    if settings.shard_mode == "local" or not str(value or "").strip():
+        return
+    if not is_official_connector_origin(source, value):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Custom {source} API origins are disabled in hosted mode",
+        )
+
+
+def _require_hosted_oauth_token_endpoint(source: str, value: str | None) -> None:
+    if settings.shard_mode == "local" or not str(value or "").strip():
+        return
+    if not is_official_oauth_token_endpoint(source, str(value)):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Custom {source} OAuth token endpoints are disabled in hosted mode",
+        )
+
+
+def _require_hosted_jira_cloud_origin(value: str) -> None:
+    """Hosted Jira currently supports Atlassian Cloud, not arbitrary intranet URLs."""
+    if settings.shard_mode == "local":
+        return
+    if not is_atlassian_cloud_origin(value):
+        raise HTTPException(
+            status_code=422,
+            detail="Hosted Jira connections require an HTTPS *.atlassian.net site URL",
+        )
 
 
 def _enforce_rate_limit(user_id: str) -> None:
@@ -810,6 +861,11 @@ def capture_page(
     url: str = "",
     source: str = "browser-capture",
 ) -> HTMLResponse:
+    if settings.shard_mode != "local" and (token or text or content):
+        raise HTTPException(
+            status_code=405,
+            detail="Query-string capture is disabled in hosted mode; use POST /capture",
+        )
     payload = content or text
     if payload.strip():
         try:
@@ -1009,6 +1065,7 @@ def sync_source_account(account_id: str, request: SourceAccountSyncRequest, user
 
 @app.post("/v1/connectors/obsidian/sync", response_model=ObsidianVaultSyncResponse)
 def sync_obsidian_vault(request: ObsidianVaultSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_local_filesystem_access("Obsidian vault sync")
     try:
         result = store.sync_obsidian_vault(
             user_id,
@@ -1032,6 +1089,7 @@ def sync_obsidian_vault(request: ObsidianVaultSyncRequest, user_id: str = Depend
 def sync_agent_sessions(request: AgentSessionsSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     """Harvest the user's own messages from local coding-agent session logs (Claude Code, Codex,
     Cursor) into the review queue. Write-scoped like the other connector syncs; user words only."""
+    _require_local_filesystem_access("Coding-agent session sync")
     try:
         result = store.sync_agent_sessions(
             user_id,
@@ -1055,6 +1113,7 @@ def sync_agent_sessions(request: AgentSessionsSyncRequest, user_id: str = Depend
 def write_obsidian_pages(body: dict[str, Any] | None = None, user_id: str = Depends(auth)) -> Any:
     """Obsidian write-back: refresh the distilled, cited Cortex/ pages inside the user's vault.
     Export-scoped (memory egress into user-owned files), parity with the MCP tool."""
+    _require_local_filesystem_access("Obsidian write-back")
     payload = body or {}
     try:
         people_limit = int(payload.get("people_limit") or 10)
@@ -1077,6 +1136,7 @@ def write_obsidian_pages(body: dict[str, Any] | None = None, user_id: str = Depe
 
 @app.post("/v1/connectors/github/sync", response_model=GitHubSyncResponse)
 def sync_github_account(request: GitHubSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_connector_origin("github", request.api_base_url)
     try:
         result = store.sync_github_account(
             user_id,
@@ -1102,6 +1162,7 @@ def sync_github_account(request: GitHubSyncRequest, user_id: str = Depends(auth)
 @app.post("/v1/connectors/github/discover", response_model=GitHubRepositoryDiscoveryResponse)
 def discover_github_account_repositories(request: GitHubRepositoryDiscoveryRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     del user_id
+    _require_hosted_connector_origin("github", request.api_base_url)
     try:
         from .connectors.github import discover_github_repositories
 
@@ -1117,6 +1178,7 @@ def discover_github_account_repositories(request: GitHubRepositoryDiscoveryReque
 
 @app.post("/v1/connectors/google/oauth/start", response_model=GoogleOAuthStartResponse)
 def start_google_oauth(request: GoogleOAuthStartRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_oauth_token_endpoint(request.source, request.token_endpoint)
     try:
         target_store = store.store_for_user(user_id) if hasattr(store, "store_for_user") else store
         started = target_store.start_google_oauth(
@@ -1204,6 +1266,7 @@ def google_oauth_callback(
 
 @app.post("/v1/connectors/google/oauth/complete", response_model=GoogleOAuthCompleteResponse)
 def complete_google_oauth(request: GoogleOAuthCompleteRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_oauth_token_endpoint(request.source, request.token_endpoint)
     try:
         return store.public_payload(
             user_id,
@@ -1234,6 +1297,8 @@ def complete_google_oauth(request: GoogleOAuthCompleteRequest, user_id: str = De
 
 @app.post("/v1/connectors/oauth/start", response_model=ManagedOAuthStartResponse)
 def start_managed_oauth(request: ManagedOAuthStartRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_connector_origin(request.source, request.api_base_url)
+    _require_hosted_oauth_token_endpoint(request.source, request.token_endpoint)
     try:
         target_store = store.store_for_user(user_id) if hasattr(store, "store_for_user") else store
         started = target_store.start_managed_oauth(
@@ -1312,6 +1377,8 @@ def managed_oauth_callback(
 
 @app.post("/v1/connectors/oauth/complete", response_model=ManagedOAuthCompleteResponse)
 def complete_managed_oauth(request: ManagedOAuthCompleteRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_connector_origin(request.source, request.api_base_url)
+    _require_hosted_oauth_token_endpoint(request.source, request.token_endpoint)
     try:
         return store.public_payload(
             user_id,
@@ -1339,6 +1406,7 @@ def complete_managed_oauth(request: ManagedOAuthCompleteRequest, user_id: str = 
 
 @app.post("/v1/connectors/gmail/sync", response_model=GmailSyncResponse)
 def sync_gmail_account(request: GmailSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_connector_origin("gmail", request.api_base_url)
     try:
         result = store.sync_gmail_account(
             user_id,
@@ -1364,6 +1432,7 @@ def sync_gmail_account(request: GmailSyncRequest, user_id: str = Depends(auth)) 
 
 @app.post("/v1/connectors/google-drive/sync", response_model=GoogleDriveSyncResponse)
 def sync_google_drive_account(request: GoogleDriveSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_connector_origin("google-drive", request.api_base_url)
     try:
         result = store.sync_google_drive_account(
             user_id,
@@ -1389,6 +1458,7 @@ def sync_google_drive_account(request: GoogleDriveSyncRequest, user_id: str = De
 
 @app.post("/v1/connectors/outlook/sync", response_model=OutlookSyncResponse)
 def sync_outlook_account(request: OutlookSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_connector_origin("outlook", request.api_base_url)
     try:
         result = store.sync_outlook_account(
             user_id,
@@ -1413,6 +1483,7 @@ def sync_outlook_account(request: OutlookSyncRequest, user_id: str = Depends(aut
 
 @app.post("/v1/connectors/slack/sync", response_model=SlackSyncResponse)
 def sync_slack_account(request: SlackSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_connector_origin("slack", request.api_base_url)
     try:
         result = store.sync_slack_account(
             user_id,
@@ -1437,6 +1508,7 @@ def sync_slack_account(request: SlackSyncRequest, user_id: str = Depends(auth)) 
 @app.post("/v1/connectors/slack/discover", response_model=SlackChannelDiscoveryResponse)
 def discover_slack_account_channels(request: SlackChannelDiscoveryRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     del user_id
+    _require_hosted_connector_origin("slack", request.api_base_url)
     try:
         from .connectors.slack import discover_slack_channels
 
@@ -1453,6 +1525,7 @@ def discover_slack_account_channels(request: SlackChannelDiscoveryRequest, user_
 
 @app.post("/v1/connectors/readwise/sync", response_model=ReadwiseSyncResponse)
 def sync_readwise_account(request: ReadwiseSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_connector_origin("readwise", request.api_base_url)
     try:
         result = store.sync_readwise_account(
             user_id,
@@ -1475,6 +1548,13 @@ def sync_readwise_account(request: ReadwiseSyncRequest, user_id: str = Depends(a
 
 @app.post("/v1/connectors/calendar/sync", response_model=CalendarSyncResponse)
 def sync_calendar_account(request: CalendarSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    if request.ics_path:
+        _require_local_filesystem_access("Calendar file sync")
+    if settings.shard_mode != "local" and request.feed_url:
+        raise HTTPException(
+            status_code=422,
+            detail="Calendar feed URLs are disabled in hosted mode until outbound URL policy is configured",
+        )
     try:
         result = store.sync_calendar_account(
             user_id,
@@ -1496,6 +1576,7 @@ def sync_calendar_account(request: CalendarSyncRequest, user_id: str = Depends(a
 
 @app.post("/v1/connectors/raindrop/sync", response_model=RaindropSyncResponse)
 def sync_raindrop_account(request: RaindropSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_connector_origin("raindrop", request.api_base_url)
     try:
         result = store.sync_raindrop_account(
             user_id,
@@ -1520,6 +1601,7 @@ def sync_raindrop_account(request: RaindropSyncRequest, user_id: str = Depends(a
 
 @app.post("/v1/connectors/zotero/sync", response_model=ZoteroSyncResponse)
 def sync_zotero_account(request: ZoteroSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_local_filesystem_access("Zotero local API sync")
     try:
         result = store.sync_zotero_account(
             user_id,
@@ -1545,6 +1627,7 @@ def sync_zotero_account(request: ZoteroSyncRequest, user_id: str = Depends(auth)
 
 @app.post("/v1/connectors/linear/sync", response_model=LinearSyncResponse)
 def sync_linear_account(request: LinearSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_connector_origin("linear", request.api_url)
     try:
         result = store.sync_linear_account(
             user_id,
@@ -1567,6 +1650,7 @@ def sync_linear_account(request: LinearSyncRequest, user_id: str = Depends(auth)
 
 @app.post("/v1/connectors/jira/sync", response_model=JiraSyncResponse)
 def sync_jira_account(request: JiraSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_jira_cloud_origin(request.site_url)
     try:
         result = store.sync_jira_account(
             user_id,
@@ -1591,6 +1675,7 @@ def sync_jira_account(request: JiraSyncRequest, user_id: str = Depends(auth)) ->
 
 @app.post("/v1/connectors/notion/sync", response_model=NotionSyncResponse)
 def sync_notion_account(request: NotionSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_hosted_connector_origin("notion", request.api_base_url)
     try:
         result = store.sync_notion_account(
             user_id,
@@ -1693,6 +1778,7 @@ def list_imports(limit: int = Query(default=50, ge=1, le=100), include_deleted: 
 
 @app.post("/v1/imports/analyze", response_model=SourceAnalyzeResponse)
 def analyze_import_sources(request: SourceAnalyzeRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_local_filesystem_access("Path-based import analysis")
     return store.analyze_import_sources(
         request.paths,
         source_hint=request.source_hint,
@@ -1702,6 +1788,7 @@ def analyze_import_sources(request: SourceAnalyzeRequest, user_id: str = Depends
 
 @app.post("/v1/imports", response_model=SourceImportResponse)
 def import_sources(request: SourceImportRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    _require_local_filesystem_access("Path-based import")
     return store.import_sources(
         user_id=user_id or request.user_id,
         paths=request.paths,

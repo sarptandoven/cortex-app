@@ -246,7 +246,8 @@ USER_OPERATOR_DOC_FORBIDDEN_PHRASES: tuple[str, ...] = (
 REQUIRED_SNIPPETS: dict[str, tuple[str, ...]] = {
     "README.md": (
         "docs/README.md",
-        "backend/requirements.txt pytest",
+        "make setup",
+        "examples/README.md",
         "feat/pairwise-twin-eval/docs/PAIRWISE_TWIN_EVALUATION.md",
     ),
     "backend/README.md": (

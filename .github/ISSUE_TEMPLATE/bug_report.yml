@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible problem in Cortex.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Cortex. Do not include private memory, vaults, exports, credentials, or tokens.
+        Security issues belong in the private process described in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Cortex version or commit
+      placeholder: "0.2.0 build 51, or commit SHA"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: macOS version, architecture, and installation method.
+      placeholder: "macOS 15.5, Apple Silicon, downloaded DMG"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Use synthetic data and the smallest deterministic reproduction.
+      placeholder: |
+        1. Start Cortex…
+        2. Connect…
+        3. Observe…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Paste only content-free logs or support-bundle excerpts you reviewed.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checklist
+      options:
+        - label: I removed private memory, credentials, tokens, and personal identifiers.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

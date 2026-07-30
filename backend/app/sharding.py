@@ -742,6 +742,7 @@ class StoreRegistry:
         hosted mode, CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS makes plaintext writes
         refuse — even if the cipher is (mis)configured absent, the vault then
         raises rather than silently writing plaintext (design doc §4)."""
+        store.hosted_mode = self.router.mode != "local"
         if self.router.mode == "local":
             return
         vault = getattr(store, "vault", None)

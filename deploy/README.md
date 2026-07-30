@@ -27,27 +27,39 @@ hundreds of beta users fit comfortably here and the upgrade is a snapshot-restor
 
    That uploads the current tree and runs `bootstrap.sh` on the box: OS hardening +
    firewall, Caddy with automatic HTTPS, Python venv, secret generation (admin token,
-   KEK, signing key — printed ONCE at the end; store them in a password manager),
-   systemd services for the API + background worker, nightly WAL-safe backups, done.
+   KEK, signing key — stored in root-readable files and deliberately not printed),
+   systemd services for the API + background worker, nightly WAL-safe encrypted backups,
+   done.
 
 4. **Verify:** `curl https://api.signindoppl.com/health` → `{"status":"ok",...}` and open
    `https://api.signindoppl.com/ready`.
 
-5. **Escrow the KEK** (printed by bootstrap): copy `/etc/cortex/kek` into your password
-   manager AND one offline place. If the box dies and the KEK is lost, every user's
-   encrypted credentials are unrecoverable — that is the point of the design.
+5. **Escrow both recovery secrets** from an interactive, non-logged root session:
+   - `/etc/cortex/kek` decrypts stored connector credentials.
+   - `/etc/cortex/backup-age.key` decrypts backup archives.
+
+   Keep both in a password manager and offline recovery location, separately from the
+   backup bucket. Do not paste them into deployment logs or shell history. Losing either
+   can make a full restore impossible.
 
 ## What this beta configuration deliberately does
 
-- `CORTEX_AUTH_AUTOVERIFY=1`: accounts activate at signup with **no email server**.
-  Flip it off (and set up Postmark + `CORTEX_AUTH_EMAIL_MODE=smtp`) before public launch —
-  unverified emails mean no password-recovery channel.
+- `CORTEX_AUTH_AUTOVERIFY=0`: accounts stay pending until email verification. Configure
+  Postmark/SES (or another SMTP provider) before accepting public signups.
 - GitHub login works the moment you create a (2-minute, no-review) GitHub OAuth app and
   set the two env vars in `/etc/cortex/cortex.env`; Google login needs the consent-screen
   publishing review (1–2 weeks) so leave it for later.
 - Free tier only; no billing.
-- Backups are nightly, WAL-safe, kept 7 days **on the box** plus whatever Hetzner's
-  VM backup snapshots. Add true offsite (rclone target in `backup.sh`) in week one.
+- Backups are nightly, WAL-safe, age-encrypted, and kept 7 days **on the box** plus
+  Hetzner VM snapshots. Set `BACKUP_RCLONE_REMOTE` for an offsite encrypted copy.
+
+To inspect a recovery archive on a clean machine:
+
+```bash
+mkdir restore
+age --decrypt -i backup-age.key cortex-YYYYMMDD-HHMMSS.tar.gz.age \
+  | tar -xz -C restore
+```
 
 ## Updating the running backend
 

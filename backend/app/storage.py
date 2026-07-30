@@ -20,6 +20,11 @@ from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsp
 from urllib.request import Request, urlopen
 
 from .config import APP_BRAND
+from .connector_policy import (
+    is_atlassian_cloud_origin,
+    is_official_connector_origin,
+    is_official_oauth_token_endpoint,
+)
 from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status, warmup_embedding_provider
@@ -3169,6 +3174,9 @@ def _path_event_summary(path: str) -> dict[str, Any]:
 class CortexStore:
     def __init__(self, db_path, vault_path: str | Path | None = None):
         self.db_path = Path(db_path)
+        # StoreRegistry sets this on sharded stores. Direct CortexStore instances
+        # are local by default, preserving the standalone/test contract.
+        self.hosted_mode = False
         resolved_vault_path = Path(vault_path).expanduser() if vault_path else self.db_path.parent
         self.vault = CortexVault(resolved_vault_path, self.db_path)
         self.vault.ensure()
@@ -3215,6 +3223,40 @@ class CortexStore:
         # behind the current one — re-deriving its memories from stored raw text (mirrors how an
         # embedding-model change re-embeds via _ensure_vector_index/_enqueue_reembed_all).
         self._reprocess_captures_on_extractor_change()
+
+    def _require_local_runtime(self, operation: str, *, test_adapter: bool = False) -> None:
+        if self.hosted_mode and not test_adapter:
+            raise ValueError(f"{operation} is available only in local mode")
+
+    def _require_hosted_connector_origin(
+        self,
+        source: str,
+        value: str | None,
+        *,
+        test_adapter: bool = False,
+    ) -> None:
+        if not self.hosted_mode or test_adapter:
+            return
+        if not is_official_connector_origin(source, str(value or "")):
+            raise ValueError(f"Custom {source} API origins are disabled in hosted mode")
+
+    def _require_hosted_jira_cloud_origin(self, value: str, *, test_adapter: bool = False) -> None:
+        if not self.hosted_mode or test_adapter:
+            return
+        if not is_atlassian_cloud_origin(value):
+            raise ValueError("Hosted Jira connections require an HTTPS *.atlassian.net site URL")
+
+    def _require_hosted_oauth_token_endpoint(
+        self,
+        source: str,
+        value: str,
+        *,
+        test_adapter: bool = False,
+    ) -> None:
+        if not self.hosted_mode or test_adapter:
+            return
+        if not is_official_oauth_token_endpoint(source, value):
+            raise ValueError(f"Custom {source} OAuth token endpoints are disabled in hosted mode")
 
     def _ensure_memory_occurrences_column(self) -> None:
         with connect(self.db_path) as conn:
@@ -5183,6 +5225,11 @@ class CortexStore:
         resolved_client_secret = _google_oauth_config_value(normalized_source, "CLIENT_SECRET", client_secret)
         resolved_redirect_uri = _google_oauth_redirect_uri(normalized_source, redirect_uri)
         resolved_token_endpoint = str(token_endpoint or "").strip() or _google_oauth_config_value(normalized_source, "TOKEN_ENDPOINT") or GOOGLE_OAUTH_TOKEN_ENDPOINT
+        self._require_hosted_oauth_token_endpoint(
+            normalized_source,
+            resolved_token_endpoint,
+            test_adapter=request_token is not None,
+        )
         if not resolved_client_id:
             raise ValueError("Google OAuth client ID is not configured")
         normalized_code_verifier = str(code_verifier or "").strip()
@@ -5407,6 +5454,11 @@ class CortexStore:
         resolved_client_secret = _managed_oauth_config_value(normalized_source, "CLIENT_SECRET", client_secret)
         resolved_redirect_uri = _managed_oauth_redirect_uri(normalized_source, redirect_uri)
         resolved_token_endpoint = str(token_endpoint or "").strip() or _managed_oauth_config_value(normalized_source, "TOKEN_ENDPOINT") or MANAGED_OAUTH_TOKEN_ENDPOINTS[normalized_source]
+        self._require_hosted_oauth_token_endpoint(
+            normalized_source,
+            resolved_token_endpoint,
+            test_adapter=request_token is not None,
+        )
         if not resolved_client_id:
             raise ValueError(f"{provider.title()} OAuth client ID is not configured")
         normalized_code_verifier = str(code_verifier or "").strip()
@@ -5700,6 +5752,7 @@ class CortexStore:
             raise ValueError(f"{source} access token expired and refresh configuration is missing")
         if source == "notion" and not client_secret:
             raise ValueError(f"{source} access token expired and refresh configuration is missing")
+        self._require_hosted_oauth_token_endpoint(source, token_endpoint)
 
         scope = str(payload.get("scope") or "").strip()
         secrets_to_redact = [
@@ -6274,6 +6327,7 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.obsidian import OBSIDIAN_SOURCE, scan_vault, vault_identity
 
+        self._require_local_runtime("Obsidian vault sync")
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         identity = vault_identity(vault_path)
@@ -6521,6 +6575,7 @@ class CortexStore:
         """
         from .connectors.agent_sessions import AGENT_SESSIONS_SOURCE, scan_agent_sessions
 
+        self._require_local_runtime("Coding-agent session sync")
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{AGENT_SESSIONS_SOURCE}:local")
@@ -6680,6 +6735,7 @@ class CortexStore:
             render_readme,
         )
 
+        self._require_local_runtime("Obsidian write-back")
         resolved_path = str(vault_path or "").strip()
         if not resolved_path:
             for account in self.list_source_accounts(user_id):
@@ -6886,6 +6942,9 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.github import GITHUB_SOURCE, fetch_github_records
 
+        self._require_hosted_connector_origin(
+            "github", api_base_url or "https://api.github.com", test_adapter=request_json is not None
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -7084,6 +7143,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.gmail import GMAIL_SOURCE, fetch_gmail_records
 
+        self._require_hosted_connector_origin(
+            "gmail",
+            api_base_url or "https://gmail.googleapis.com/gmail/v1",
+            test_adapter=request_json is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -7273,6 +7337,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.google_drive import GOOGLE_DRIVE_SOURCE, fetch_google_drive_records
 
+        self._require_hosted_connector_origin(
+            "google-drive",
+            api_base_url or "https://www.googleapis.com/drive/v3",
+            test_adapter=request_value is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -7464,6 +7533,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.outlook import OUTLOOK_SOURCE, fetch_outlook_records
 
+        self._require_hosted_connector_origin(
+            "outlook",
+            api_base_url or "https://graph.microsoft.com/v1.0",
+            test_adapter=request_json is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -7648,6 +7722,9 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.slack import SLACK_SOURCE, fetch_slack_records
 
+        self._require_hosted_connector_origin(
+            "slack", api_base_url or "https://slack.com/api", test_adapter=request_json is not None
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -7837,6 +7914,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.readwise import READWISE_SOURCE, fetch_readwise_records
 
+        self._require_hosted_connector_origin(
+            "readwise",
+            api_base_url or "https://readwise.io/api/v2",
+            test_adapter=request_json is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -8006,6 +8088,10 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.calendar import CALENDAR_SOURCE, fetch_calendar_records
 
+        self._require_local_runtime(
+            "Calendar file/feed sync",
+            test_adapter=read_text is not None or request_text is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -8185,6 +8271,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.raindrop import RAINDROP_SOURCE, fetch_raindrop_records
 
+        self._require_hosted_connector_origin(
+            "raindrop",
+            api_base_url or "https://api.raindrop.io/rest/v1",
+            test_adapter=request_json is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -8367,6 +8458,7 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.zotero import ZOTERO_SOURCE, fetch_zotero_records
 
+        self._require_local_runtime("Zotero local API sync", test_adapter=request_json is not None)
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -8553,6 +8645,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.linear import LINEAR_SOURCE, fetch_linear_records
 
+        self._require_hosted_connector_origin(
+            "linear",
+            api_url or "https://api.linear.app/graphql",
+            test_adapter=request_json is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -8723,6 +8820,7 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.jira import JIRA_SOURCE, fetch_jira_records
 
+        self._require_hosted_jira_cloud_origin(site_url, test_adapter=request_json is not None)
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -8901,6 +8999,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.notion import NOTION_SOURCE, fetch_notion_records
 
+        self._require_hosted_connector_origin(
+            "notion",
+            api_base_url or "https://api.notion.com/v1",
+            test_adapter=request_json is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:

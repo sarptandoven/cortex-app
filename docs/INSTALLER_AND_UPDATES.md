@@ -311,9 +311,9 @@ manual QA.
 
 ## Why Manual Updates First
 
-Manual updates are acceptable for early local beta because:
+Manual updates are acceptable for the current beta because:
 
-- there is no hosted account service yet
+- the shipped account service does not need control of the app bundle
 - internal QA builds may still be ad-hoc signed
 - background installation requires a dedicated update framework and separate
   update-signing policy

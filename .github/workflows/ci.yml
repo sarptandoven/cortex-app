@@ -31,13 +31,13 @@ jobs:
       - name: Install backend test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r backend/requirements.txt
-          python -m pip install pytest
+          python -m pip install -r requirements-dev.lock
 
       - name: Compile Python sources
         run: |
           python -m compileall -q \
             backend \
+            examples \
             scripts \
             capture.py \
             github_store.py \
@@ -52,6 +52,9 @@ jobs:
         # isolation that `unittest discover` bypasses, and some tests/subtests only
         # behave correctly under pytest.
         run: python -m pytest backend/tests -q
+
+      - name: Run Python SDK tests
+        run: python -m pytest sdk/python/tests -q
 
       - name: Run retrieval quality regression gate
         run: python scripts/retrieval_eval.py
@@ -133,7 +136,7 @@ jobs:
         run: bandit -c .bandit.yaml -r backend scripts -ll
 
       - name: Audit backend dependencies for known vulnerabilities
-        run: pip-audit --strict -r backend/requirements.txt
+        run: pip-audit --strict -r requirements-dev.lock
 
       - name: Audit top-level dependencies for known vulnerabilities
         run: pip-audit --strict -r requirements.txt
@@ -176,6 +179,59 @@ jobs:
 
       - name: Typecheck and build Obsidian plugin
         run: scripts/check_obsidian_plugin.sh
+
+  javascript-clients:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: TypeScript SDK
+            directory: sdk/typescript
+            lockfile: sdk/typescript/package-lock.json
+            release_gate: npm pack --dry-run
+          - name: OpenClaw context plugin
+            directory: packages/openclaw-cortex-context
+            lockfile: packages/openclaw-cortex-context/package-lock.json
+            release_gate: npm run release:gate
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ${{ matrix.lockfile }}
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.directory }}
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: ${{ matrix.directory }}
+        run: npm run typecheck
+
+      - name: Test
+        working-directory: ${{ matrix.directory }}
+        run: npm test
+
+      - name: Build
+        working-directory: ${{ matrix.directory }}
+        run: npm run build
+
+      - name: Validate release package
+        working-directory: ${{ matrix.directory }}
+        run: ${{ matrix.release_gate }}
 
   macos-app:
     name: macOS app build

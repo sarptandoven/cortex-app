@@ -8,7 +8,7 @@ a packaging script.
 |---|---|---|
 | Packager | `macos/package_app_store.sh` | `macos/package_release.sh` |
 | Sandbox | Yes (App Sandbox entitlement) | No |
-| Account / sync | No account | Sign-in required; sync optional |
+| Account / sync | Sign-in required; memory sync over Swift `URLSession` | Sign-in required; sync optional |
 | Outbound HTTPS connectors | No — TLS stripped from the bundle | Yes |
 | MCP setup | Guided **manual** (no config writes) | **Automatic** config install |
 | Distribution | App Store Connect review | Signed + notarized + stapled DMG/ZIP |
@@ -16,10 +16,11 @@ a packaging script.
 
 ## Hybrid strategy
 
-The Mac App Store build is **LOCAL-FIRST ONLY**. It is the sandbox-compliant,
-review-safe build:
+The Mac App Store build is **local-first and account-gated**. It is the
+sandbox-compliant, review-safe build:
 
-- No cloud account and no sign-in.
+- Required account sign-in and memory sync use the native Swift networking
+  layer. Local ingestion and retrieval still run inside the sandbox.
 - No outbound HTTPS connectors. In `app-store` mode `macos/build.sh` strips
   `_ssl*.so` and `ssl.py` from the bundled Python. `urllib`/`http.client` guard
   `import ssl`, so the backend degrades cleanly to loopback/HTTP only. The local
@@ -185,7 +186,8 @@ communication):
 
 - **No auto-MCP-connect** — MCP is set up via guided **manual** steps; the app
   never writes into other apps' config files.
-- **No cloud** — no account, no sign-in.
+- **Account required** — sign-in and memory sync use native Swift networking;
+  connector networking in the bundled Python runtime remains disabled.
 - **No HTTPS connectors** — the TLS stack (`_ssl`, `ssl.py`) is removed from the
   bundle, so outbound HTTPS connectors are disabled.
 - Persistent access to external, user-selected vault folders is disabled until

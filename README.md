@@ -196,21 +196,50 @@ Approved memory goes in; a calibrated model of how you operate comes out.
 Cortex checks the HTTPS release feed for new builds and links you to the current DMG. Installing an
 update still uses the normal macOS app-replacement flow.
 
+## Five-minute developer quickstart
+
+Requires Python 3.12. This starts a loopback-only development server and uses
+synthetic data, so it does not touch your packaged Cortex vault.
+
+```bash
+make setup
+CORTEX_AUTO_APPROVE_CAPTURES=1 make run
+```
+
+In a second terminal:
+
+```bash
+curl -sS http://127.0.0.1:8766/v1/captures \
+  -H 'Authorization: Bearer dev-local-key' \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"Project Atlas ships Thursday after the rollback drill.","source":"quickstart"}'
+
+curl -sS -G http://127.0.0.1:8766/v1/ask \
+  -H 'Authorization: Bearer dev-local-key' \
+  --data-urlencode 'query=When does Project Atlas ship?'
+```
+
+The second response either includes the cited quickstart memory or explicitly
+abstains. Next, try the runnable [Python examples](examples/README.md), the
+[Python SDK](sdk/python/README.md), or the
+[TypeScript SDK](sdk/typescript/README.md). `dev-local-key` is accepted only by
+the explicit local development configuration.
+
 ## Build from source
 
 Requires **Python 3.12** and Xcode command line tools. CI and the packaged runtime both use Python 3.12.
 
 ```bash
+# Reproducible contributor environment
+make setup
+make check
+make test
+
 # macOS app (SwiftUI) — writes macos/build/Cortex.app
 ./macos/build.sh
 
-# Backend engine + test suite
-python3.12 -m venv .venv && source .venv/bin/activate
-python3 -m pip install -r backend/requirements.txt pytest
-python3 -m pytest backend/tests
-
 # Run the hosted-plane API (FastAPI + uvicorn) at 127.0.0.1:8766
-./scripts/dev_backend.sh
+make run
 
 # Or run the stdlib engine the packaged app actually ships
 cd backend && python3 -m app.standalone_server --host 127.0.0.1 --port 8766
@@ -235,7 +264,7 @@ for the authoritative command list. [`SETUP.md`](SETUP.md) covers the app-side d
 |---|---|
 | `macos/` | The SwiftUI/AppKit app and its build and packaging scripts |
 | `backend/app/` | Storage core, retrieval, connectors, MCP tools, and both HTTP servers |
-| `backend/tests/` | The test suite (2,400+ tests) |
+| `backend/tests/` | The test suite (2,000+ pytest cases, plus parameterized subtests) |
 | `scripts/` | Dev helpers plus the deterministic CI quality gates |
 | `packages/`, `sdk/`, `extension/` | Plugins, client SDKs, and the browser extension |
 | `docs/` | Architecture, protocol, and release documentation |
@@ -253,10 +282,23 @@ for the authoritative command list. [`SETUP.md`](SETUP.md) covers the app-side d
 | Connecting AI tools | [`docs/EXTERNAL_INTEGRATIONS.md`](docs/EXTERNAL_INTEGRATIONS.md) · [`docs/MCP_INTEGRATIONS.md`](docs/MCP_INTEGRATIONS.md) |
 | Importing your sources | [`docs/SOURCE_IMPORTS.md`](docs/SOURCE_IMPORTS.md) |
 | Trust & privacy controls | [`docs/TRUST_CONTROLS.md`](docs/TRUST_CONTROLS.md) |
+| Reproducible benchmark results | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) |
+| Open-source readiness review | [`docs/OPEN_SOURCE_READINESS.md`](docs/OPEN_SOURCE_READINESS.md) |
+| Examples | [`examples/README.md`](examples/README.md) |
+| FAQ and troubleshooting | [`docs/FAQ.md`](docs/FAQ.md) · [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) |
 | Sync & encryption | [`docs/E2EE_SYNC_DESIGN.md`](docs/E2EE_SYNC_DESIGN.md) · [`docs/CXE1_WIRE_FORMAT.md`](docs/CXE1_WIRE_FORMAT.md) |
 | Install & update checks | [`docs/INSTALLER_AND_UPDATES.md`](docs/INSTALLER_AND_UPDATES.md) |
 | Release & distribution | [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md) · [`docs/APPLE_RELEASE.md`](docs/APPLE_RELEASE.md) |
 | Experimental pairwise twin evaluation | [Overview](https://github.com/trace-cortex/cortex-app/blob/feat/pairwise-twin-eval/docs/PAIRWISE_TWIN_EVALUATION.md) · [Integration guide](https://github.com/trace-cortex/cortex-app/blob/feat/pairwise-twin-eval/docs/PAIRWISE_TWIN_INTEGRATION_GUIDE.md) |
+
+## Contributing and support
+
+Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), then use the issue forms for a
+reproducible bug or a scoped feature proposal. Security reports belong in the
+private channel described by [`SECURITY.md`](SECURITY.md), not a public issue.
+Project direction and release history live in [`ROADMAP.md`](ROADMAP.md) and
+[`CHANGELOG.md`](CHANGELOG.md); support boundaries are in
+[`SUPPORT.md`](SUPPORT.md).
 
 ## Privacy
 

@@ -61,10 +61,10 @@ CORTEX_HOSTED_RUNTIME_TIER=sharded_sqlite
 CORTEX_WORKER_MODE=external
 CORTEX_SYNC_SIGNING_KEY=$SIGNING_KEY
 
-# accounts (BETA: signup works with no email server; set 0 + SMTP for public)
+# accounts (public-safe: configure SMTP before accepting signups)
 CORTEX_AUTH_ENABLED=1
-CORTEX_AUTH_AUTOVERIFY=1
-CORTEX_AUTH_EMAIL_MODE=log
+CORTEX_AUTH_AUTOVERIFY=0
+CORTEX_AUTH_EMAIL_MODE=smtp
 
 # BETA ergonomics: captures are immediately retrievable (skip the Review inbox) so a new
 # user's first capture -> ask returns a cited answer without a manual approval step.
@@ -170,9 +170,9 @@ done
 
 echo "=============================================================="
 if [ "${FIRST:-0}" = "1" ]; then
-  echo " SAVE THESE NOW (shown once):"
-  echo "   Admin token : $(grep '^CORTEX_API_KEY=' "$ENV_FILE" | cut -d= -f2)"
-  echo "   KEK (escrow OFFLINE, NOT with backups): $(cat "$KEK_FILE")"
+  echo " New admin token: stored in $ENV_FILE (not printed)"
+  echo " New KEK        : stored in $KEK_FILE (not printed)"
+  echo " Escrow the KEK offline from an interactive, non-logged session."
 fi
 echo " Services : launchctl list | grep com.cortex"
 echo " Logs     : $LOG_DIR/"
