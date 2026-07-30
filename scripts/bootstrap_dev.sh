@@ -43,16 +43,16 @@ if [[ "$CHECK_ONLY" == "1" ]]; then
 fi
 
 "$PYTHON_BIN" -m venv "$VENV_PATH"
-"$VENV_PATH/bin/python" -m pip install --upgrade pip
 "$VENV_PATH/bin/python" -m pip install -r "$ROOT/requirements-dev.lock"
 "$VENV_PATH/bin/python" -m pip install -e "$ROOT/sdk/python"
 
 cat <<EOF
 
 Cortex development environment is ready.
+Virtual environment: $VENV_PATH
 
 Next:
-  make run      # start the local FastAPI server
-  make test     # run backend tests
-  make check    # run fast pre-PR checks
+  make VENV="$VENV_PATH" run      # start the local FastAPI server
+  make VENV="$VENV_PATH" test     # run backend tests
+  make VENV="$VENV_PATH" check    # run fast pre-PR checks
 EOF

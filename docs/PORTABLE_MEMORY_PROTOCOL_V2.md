@@ -4,7 +4,7 @@ Status: **published implementation specification**
 Protocol name: `cortex-portable-memory`  
 Protocol version: `2`  
 Outer bundle version: `v3`  
-Reference implementations: Cortex Python backend and `@cortex/openclaw-context` TypeScript verifier
+Reference implementations: Cortex Python backend and `@doppl-tech/openclaw-context` TypeScript verifier
 
 ## 1. Purpose
 

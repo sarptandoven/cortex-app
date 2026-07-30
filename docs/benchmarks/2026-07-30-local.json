@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-07-30",
+  "purpose": "deterministic regression snapshot; not a production latency or quality claim",
+  "source": {
+    "baseline_commit": "8eedd5ceab5c1410c714a0c1ee19f7b1a25864e5",
+    "working_tree_dirty": true,
+    "branch": "docs/repo-refresh"
+  },
+  "environment": {
+    "python": "3.12.13",
+    "os": "Darwin 25.5.0 arm64",
+    "hardware": "Apple M1 Pro, 10 cores, 16 GB RAM",
+    "network_used": false,
+    "model_api_calls": false
+  },
+  "method": {
+    "repetitions": 1,
+    "timing_captured": false,
+    "cache_state": "not controlled",
+    "configuration": "repository defaults and checked-in synthetic fixtures"
+  },
+  "harness_sha256": {
+    "scripts/retrieval_eval.py": "142fe72f413e6512cd0438ec64871012ecbeeb8e4c7a8aceef43faed5fe2636c",
+    "scripts/context_pack_eval.py": "5afda9a70d77264778b13a504f7d2668543031c0a0d2d7e53bc01cef6b6146fd",
+    "scripts/adaptation_eval.py": "35f5ebf44d01cfd5adf49b557b2ea1c1791ddc97182f901928490457cc7c53b9",
+    "scripts/token_calibration_eval.py": "ff7952abcdae2f99cdd7aed0d3dbca7ee5fd3752d152b4361ff74a60b09e1f0d",
+    "scripts/token_calibration_fixture.json": "138b82a0c45fb667cee00c11f91fcc2c067676a16522b571605621035a57838e"
+  },
+  "results": {
+    "retrieval": {
+      "status": "ok",
+      "cases": 163,
+      "top1_accuracy": 1.0,
+      "recall_at_3": 1.0,
+      "precision_at_3": 0.947
+    },
+    "relevance_monotonicity": {
+      "status": "ok",
+      "cases": 160,
+      "pairs": 41,
+      "pairwise_concordance": 1.0,
+      "reordered_top1": 1.0
+    },
+    "context_packing": {
+      "status": "ok",
+      "tasks": 10,
+      "checks": 30,
+      "citation_coverage": 1.0,
+      "mrr": 1.0,
+      "ndcg_at_k": 0.888,
+      "no_leak": 1.0,
+      "budget_adherence": 1.0
+    },
+    "session_replay": {
+      "status": "ok",
+      "sessions": 2,
+      "turns": 9,
+      "recall_at_3": 1.0,
+      "prefetch_hit_rate": 0.75,
+      "delta_token_savings": 0.285,
+      "no_resend_or_leak": 1.0
+    },
+    "adaptation": {
+      "status": "ok",
+      "seeded_memories": 7,
+      "derived_rules": 10,
+      "readiness_score": 100
+    },
+    "token_calibration": {
+      "status": "ok",
+      "mean_profile_mape": 0.015815,
+      "flat_estimator_mape": 0.074255,
+      "relative_improvement": 0.787018
+    }
+  },
+  "limitations": [
+    "The run predates the final review commit and records a dirty-tree delta from the baseline.",
+    "Only one repetition was run, so variance and confidence intervals are unavailable.",
+    "Wall-clock timing and controlled cold/warm cache state were not captured.",
+    "The fixtures are synthetic and do not establish real-user answer quality."
+  ]
+}

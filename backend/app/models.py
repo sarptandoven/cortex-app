@@ -1105,6 +1105,20 @@ class ContextReuseResponse(BaseModel):
     product_loop: dict[str, Any]
 
 
+class ContextRequest(BaseModel):
+    task: str = Field(default="", max_length=500)
+    surface: str = Field(default="agent", max_length=40)
+    token_budget: int = Field(default=2000, ge=1, le=100_000)
+    intent: str | None = Field(default=None, max_length=16)
+    sector: str | None = Field(default=None, max_length=120)
+    project: str | None = Field(default=None, max_length=160)
+    as_of: str | None = Field(default=None, max_length=40)
+    format: Literal["json", "markdown", "smp"] = "json"
+    model: str | None = Field(default=None, max_length=80)
+    session_id: str | None = Field(default=None, max_length=120)
+    pin: bool = False
+
+
 class SettingsResponse(BaseModel):
     review_new_captures: bool
     allow_pending_in_context: bool

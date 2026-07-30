@@ -18,7 +18,7 @@ ROLES = {
 
 
 def main() -> None:
-    task = " ".join(sys.argv[1:]).strip() or "Prepare the next Cortex beta announcement"
+    task = " ".join(sys.argv[1:]).strip() or "Prepare the Project Atlas release update"
     client = CortexClient(
         base_url=os.environ.get("CORTEX_BASE_URL", "http://127.0.0.1:8766"),
         token=os.environ.get("CORTEX_API_KEY", ""),

@@ -549,6 +549,17 @@ class FakeStore:
             "record_counts": {"captures": 3, "memories": 2, "tasks": 0, "entities": 0, "edges": 0, "imports": 0},
         }
 
+    def export_json(self, user_id: str) -> dict:
+        return {
+            "user_id": user_id,
+            "captures": [],
+            "memories": [],
+            "tasks": [],
+            "entities": [],
+            "edges": [],
+            "imports": [],
+        }
+
     def export_portable_bundle(self, user_id: str) -> dict:
         self.export_portable_bundle_calls.append(user_id)
         return {
@@ -2860,6 +2871,19 @@ class StandaloneServerTests(unittest.TestCase):
                 request.urlopen(req, timeout=5)
         self.assertEqual(ctx.exception.code, 413)
 
+    def test_oversized_synchronous_export_returns_413_not_500(self) -> None:
+        headers = {"Authorization": "Bearer test-token"}
+        with mock.patch.object(
+            self.fake_store,
+            "export_json",
+            side_effect=standalone_server.ExportSizeLimitError("export is too large"),
+        ):
+            req = request.Request(self.base_url + "/v1/export.json", headers=headers)
+            with self.assertRaises(error.HTTPError) as ctx:
+                request.urlopen(req, timeout=5)
+        self.assertEqual(ctx.exception.code, 413)
+        self.assertIn("export is too large", ctx.exception.read().decode("utf-8"))
+
     def test_standalone_worker_enabled_only_for_local_inline_mode(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             standalone_server.settings = Settings(
@@ -2886,6 +2910,18 @@ class StandaloneServerTests(unittest.TestCase):
             self.assertFalse(standalone_server._standalone_worker_enabled())
         with mock.patch.dict(os.environ, {"CORTEX_STANDALONE_WORKER_ENABLED": "1"}):
             self.assertTrue(standalone_server._standalone_worker_enabled())
+
+    def test_standalone_server_refuses_non_loopback_bind_by_default(self):
+        for host in ("0.0.0.0", "::", "192.0.2.10", "public.example"):
+            with self.subTest(host=host), mock.patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(ValueError, "local-only"):
+                    standalone_server.serve(host, 9876)
+
+    def test_standalone_loopback_detection_handles_ipv4_ipv6_and_mapped_addresses(self):
+        for host in ("localhost", "127.0.0.1", "127.9.8.7", "::1", "::ffff:127.0.0.1"):
+            with self.subTest(host=host):
+                self.assertTrue(standalone_server._standalone_host_is_loopback(host))
+        self.assertFalse(standalone_server._standalone_host_is_loopback("0.0.0.0"))
 
     def test_standalone_worker_tick_drains_memory_jobs_without_source_scheduling(self):
         result = standalone_server._run_standalone_worker_tick(limit=7)
@@ -4597,6 +4633,47 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["content"], "Layer-aware result")
         self.assertEqual(self.fake_store.search_calls[-1]["user_id"], "alice")
 
+        api_headers = {
+            "Authorization": "Bearer cxa-standalone-token",
+            "X-Cortex-User": "alice",
+        }
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/tools/schema",
+                headers=api_headers,
+            ),
+            timeout=5,
+        ) as response:
+            self.assertEqual(response.status, 200)
+            self.assertTrue(json.loads(response.read().decode("utf-8"))["schema"])
+
+        tool_request = request.Request(
+            self.base_url + "/v1/tools/call",
+            data=json.dumps(
+                {"name": "search_memory", "arguments": {"query": "voice"}}
+            ).encode("utf-8"),
+            headers={**api_headers, "Content-Type": "application/json"},
+            method="POST",
+        )
+        with request.urlopen(tool_request, timeout=5) as response:
+            tool_payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(tool_payload["tool"], "search_memory")
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/mcp",
+                    data=json.dumps(
+                        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+                    ).encode("utf-8"),
+                    headers={**api_headers, "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 401)
+
         # A token without export scope is still denied the raw bulk dump (distilled reads like
         # context-pack are now allowed with read scope).
         with self.assertRaises(error.HTTPError) as context:
@@ -4817,7 +4894,34 @@ class StandaloneServerTests(unittest.TestCase):
         # Admin bearer sees the identity layer.
         self.assertIs(call["include_identity"], True)
 
-        # POST parity + markdown content type.
+        # A read-scoped token gets the same identity policy over GET and POST.
+        scoped_headers = {
+            "Authorization": "Bearer cxa-standalone-token",
+            "X-Cortex-User": "alice",
+        }
+        with request.urlopen(
+            request.Request(self.base_url + "/v1/context?task=scoped+get", headers=scoped_headers),
+            timeout=5,
+        ) as response:
+            self.assertEqual(response.status, 200)
+        scoped_get = self.fake_store.assemble_context_calls[-1]
+        self.assertIs(scoped_get["include_identity"], True)
+
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/context",
+                data=json.dumps({"task": "scoped post"}).encode("utf-8"),
+                headers={**scoped_headers, "Content-Type": "application/json"},
+                method="POST",
+            ),
+            timeout=5,
+        ) as response:
+            self.assertEqual(response.status, 200)
+        scoped_post = self.fake_store.assemble_context_calls[-1]
+        self.assertIs(scoped_post["include_identity"], True)
+        self.assertIn(("alice", "read"), self.fake_store.require_agent_access_calls)
+
+        # Admin POST parity + markdown content type.
         with request.urlopen(
             request.Request(
                 self.base_url + "/v1/context",
@@ -4834,6 +4938,20 @@ class StandaloneServerTests(unittest.TestCase):
         with self.assertRaises(error.HTTPError) as context:
             self.post_json("/v1/context", {"task": "x", "format": "yaml"})
         self.assertEqual(context.exception.code, 422)
+
+        for invalid in (
+            {"task": {"nested": "object"}},
+            {"task": "x", "token_budget": 0},
+            {"task": "x", "pin": {"truthy": True}},
+            {"task": "x", "format": {"not": "text"}},
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(error.HTTPError) as context:
+                self.post_json("/v1/context", invalid)
+            self.assertEqual(context.exception.code, 422)
+
+        with self.post_json("/v1/context", {"task": "x", "pin": "false"}) as response:
+            self.assertEqual(response.status, 200)
+        self.assertIs(self.fake_store.assemble_context_calls[-1]["pin"], False)
 
     def test_context_pack_verify_route_on_shipping_server(self) -> None:
         # Phase 2b: POST /v1/context/packs/{sha}/verify reaches store.verify_context_pack,

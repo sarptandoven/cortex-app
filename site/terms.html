@@ -94,7 +94,7 @@
       <section>
         <h2>6. How your data is processed (AI processing disclosure)</h2>
         <ul>
-          <li>When you use Cortex Cloud, your content is processed on our servers to build embeddings, run retrieval, and assemble cited context. This means <strong>Cortex servers can read your memory in order to serve you.</strong> Your data is encrypted at rest with a per-user key; this is <strong>not</strong> end-to-end or "zero-knowledge" encryption. The <a href="privacy.html">Privacy page</a> states this plainly.</li>
+          <li>When you use Cortex Cloud, your content is processed on our servers to build embeddings, run retrieval, and assemble cited context. This means <strong>Cortex servers can read your memory in order to serve you.</strong> Connector credentials are encrypted at rest with a per-user key; broader encryption of hosted memory content is still rolling out. This is <strong>not</strong> end-to-end or "zero-knowledge" encryption. The <a href="privacy.html">Privacy page</a> states this plainly.</li>
           <li>By default the hosted deployment generates embeddings with an on-device model and uses no third-party AI processor. If the operator enables a cloud AI model, that provider is disclosed on the <a href="subprocessors.html">Subprocessors page</a>.</li>
           <li>Context is shared with an AI tool only when you connect it, and only within the permissions you grant.</li>
         </ul>
@@ -112,7 +112,7 @@
         <h2>8. Availability</h2>
         <ul>
           <li>Cortex Cloud is provided on an "as is" and "as available" basis. The free tier carries <strong>no uptime commitment or service-level agreement</strong>. We may change, suspend, or discontinue features, and we perform maintenance that can cause downtime.</li>
-          <li>The local app keeps working regardless of the hosted service's availability.</li>
+          <li>After setup and a successful sign-in, the installed app can continue local ingestion and retrieval over data already stored on your Mac during a hosted-service outage. Account creation, first sign-in, token renewal, managed connector authorization, optional sync, update checks, and other network-backed features may be unavailable until the relevant service recovers.</li>
         </ul>
       </section>
 

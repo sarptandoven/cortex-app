@@ -67,6 +67,8 @@ export interface CortexClientOptions {
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8766";
 const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_SAME_ORIGIN_REDIRECTS = 3;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 /**
  * Raised when the Cortex server returns a non-2xx response or is unreachable.
@@ -103,7 +105,7 @@ function stringifyDetail(detail: unknown): string {
  *
  * @example
  * ```ts
- * const cortex = new CortexClient({ token: "ctx_..." });
+ * const cortex = new CortexClient({ token: "cxa_..." });
  * const answer = await cortex.ask("What database do we use?");
  * const hits = await cortex.search("release checklist", 5);
  * ```
@@ -116,7 +118,26 @@ export class CortexClient {
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: CortexClientOptions = {}) {
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    const candidateBaseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
+    let parsedBaseUrl: URL;
+    try {
+      parsedBaseUrl = new URL(candidateBaseUrl);
+    } catch {
+      throw new CortexError(0, "Cortex baseUrl must be an absolute HTTP(S) URL");
+    }
+    if (
+      !["http:", "https:"].includes(parsedBaseUrl.protocol) ||
+      parsedBaseUrl.username ||
+      parsedBaseUrl.password ||
+      parsedBaseUrl.search ||
+      parsedBaseUrl.hash
+    ) {
+      throw new CortexError(
+        0,
+        "Cortex baseUrl must be an absolute HTTP(S) URL without credentials, query, or fragment",
+      );
+    }
+    this.baseUrl = parsedBaseUrl.toString().replace(/\/+$/, "");
     this.token = options.token ?? "";
     this.user = options.user ?? null;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -166,27 +187,63 @@ export class CortexClient {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
     let response: Response;
+    let currentUrl = url;
+    let redirectCount = 0;
     try {
-      response = await this.fetchImpl(url, {
-        method,
-        headers: this.headers(hasBody),
-        body: hasBody ? JSON.stringify(options.body) : undefined,
-        signal: controller.signal,
-      });
+      for (;;) {
+        response = await this.fetchImpl(currentUrl, {
+          method,
+          headers: this.headers(hasBody),
+          body: hasBody ? JSON.stringify(options.body) : undefined,
+          // Keep redirect handling inside this client. That lets us prove that a
+          // bearer token is only replayed to the same origin.
+          redirect: "manual",
+          signal: controller.signal,
+        });
+        if (!REDIRECT_STATUSES.has(response.status)) break;
+
+        if (method !== "GET" && method !== "HEAD") {
+          throw new CortexError(
+            response.status,
+            `Redirect blocked for credential-bearing ${method} request`,
+          );
+        }
+        const location = response.headers.get("location");
+        if (!location) {
+          throw new CortexError(response.status, "Redirect response did not include a Location header");
+        }
+        if (redirectCount >= MAX_SAME_ORIGIN_REDIRECTS) {
+          throw new CortexError(response.status, "Too many Cortex API redirects (maximum 3)");
+        }
+
+        let redirectedUrl: URL;
+        try {
+          redirectedUrl = new URL(location, currentUrl);
+        } catch {
+          throw new CortexError(response.status, "Redirect response included an invalid Location URL");
+        }
+        if (redirectedUrl.origin !== new URL(currentUrl).origin) {
+          throw new CortexError(
+            response.status,
+            "Cross-origin redirect blocked for credential-bearing request",
+          );
+        }
+        currentUrl = redirectedUrl.toString();
+        redirectCount += 1;
+      }
+      const text = await response.text();
+      const parsed = parseMaybeJson(text);
+      if (!response.ok) {
+        throw new CortexError(response.status, errorDetail(parsed, text, response.statusText));
+      }
+      return parsed as T;
     } catch (err) {
+      if (err instanceof CortexError) throw err;
       const reason = err instanceof Error ? err.message : String(err);
       throw new CortexError(0, `Could not reach Cortex at ${this.baseUrl}: ${reason}`);
     } finally {
       clearTimeout(timer);
     }
-
-    const text = await response.text();
-    const parsed = parseMaybeJson(text);
-
-    if (!response.ok) {
-      throw new CortexError(response.status, errorDetail(parsed, text, response.statusText));
-    }
-    return parsed as T;
   }
 
   // -- tool catalog --------------------------------------------------------------------

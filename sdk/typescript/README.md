@@ -9,7 +9,8 @@ function-calling app (OpenAI, Anthropic, or a custom agent loop) can drive it fr
 tool definition. This client wraps that HTTP surface.
 
 - Default base URL: `http://127.0.0.1:8766` (local loopback — Cortex is local-first).
-- Auth: `Authorization: Bearer <token>`, optional `X-Cortex-User` header.
+- Auth: `Authorization: Bearer <cxa_ REST token>`, optional `X-Cortex-User`
+  header. `cxm_` tokens are only for `/mcp`, not this SDK.
 - Same routes work against the hosted plane — set `baseUrl: "https://api.signindoppl.com"`
   and use a token minted there. The hosted server (`backend/app/main.py`) mirrors the local
   server's `/v1/tools/schema` and `/v1/tools/call` request/response shapes exactly, including
@@ -42,7 +43,7 @@ import { CortexClient, CortexError } from "@doppl-tech/cortex-client";
 
 const cortex = new CortexClient({
   baseUrl: "http://127.0.0.1:8766",
-  token: "ctx_your_token",
+  token: "cxa_your_token",
 });
 
 // Cited answer to a specific question (never an uncited guess).
@@ -81,6 +82,9 @@ try {
 Every method is `async`. Any non-2xx response rejects with `CortexError` carrying
 `.status` and `.detail` (the server's `{"detail": ...}` payload — a string or an
 object). Transport failures / timeouts reject with `CortexError` and `.status === 0`.
+Credential-bearing redirects are handled manually: GET/HEAD follows at most
+three same-origin redirects, while cross-origin redirects and redirects for
+body-bearing requests are rejected before the token can be replayed.
 
 All methods accept a generic type parameter for the expected response shape, e.g.
 `await cortex.search<{ results: Memory[] }>("q")`.
@@ -94,7 +98,7 @@ back through `cortex.callTool`:
 import OpenAI from "openai";
 import { CortexClient } from "@doppl-tech/cortex-client";
 
-const cortex = new CortexClient({ token: "ctx_your_token" });
+const cortex = new CortexClient({ token: "cxa_your_token" });
 const oai = new OpenAI();
 
 const tools = await cortex.openaiTools(); // Cortex catalog as OpenAI function schemas
@@ -126,7 +130,7 @@ input_schema }` shape. Route `tool_use` blocks back through `callTool` and reply
 import Anthropic from "@anthropic-ai/sdk";
 import { CortexClient } from "@doppl-tech/cortex-client";
 
-const cortex = new CortexClient({ token: "ctx_your_token" });
+const cortex = new CortexClient({ token: "cxa_your_token" });
 const client = new Anthropic();
 
 const tools = await cortex.anthropicTools();

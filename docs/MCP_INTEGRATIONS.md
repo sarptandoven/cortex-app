@@ -28,8 +28,8 @@ catalog, so agents pick the right tool on the first try:
 - `get_context` — the context assembly engine: a token-budgeted, cited pack of constraints,
   decisions, facts, entity context, procedures, identity, open loops, and recency, shaped by
   task intent (`answer`/`act`/`draft`/`plan`/`recall`). Call this first before doing work.
-  Also available over REST as `GET`/`POST /v1/context` (read scope; the identity layer alone
-  requires export scope and degrades to a visible omission record without it).
+  Also available over REST as `GET`/`POST /v1/context`; the complete pack, including its
+  distilled identity layer, requires read scope.
 - `ask_memory` — cite-or-abstain answer to a specific question (never an uncited guess).
 - `search_memory` — keyword/semantic search with retrieval diagnostics.
 - `get_entity_context` — everything known about one person/project/org/topic + its graph

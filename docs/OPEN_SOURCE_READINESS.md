@@ -2,89 +2,113 @@
 
 Last reviewed: 2026-07-30
 
-This is an engineering self-assessment of the repository, not a security
-certification. The review used only the checked-out source tree and local
-tooling. It did not depend on repository-administrator access, hosted secrets,
-or live connector accounts.
+Review posture: independent, reject by default
 
-## Outcome
+Review baseline: source commit `8eedd5c` on the local
+`docs/repo-refresh` branch. The corrections described below are the review
+delta from that baseline; this document must be updated with a new baseline
+before it is reused as evidence for a later release.
 
-The source tree is substantially easier to understand, run, test, and
-contribute to. It is ready for public code review and community development.
-The hosted service and signed release process remain **conditionally ready**:
-the code now enforces important trust boundaries, but the external release
-configuration and operational drills listed below still need owner evidence.
+This is an evidence-based engineering review of the checked-out source tree,
+not a security certification. It used local source and local test tooling only;
+it did not require repository administration, hosted secrets, or live
+connector accounts.
 
-## Scorecard
+## Verdict
 
-Scores are a directional rubric from 0 (absent) to 100 (excellent), based on
-repository evidence.
+**Accept for open-source development and external code review. Reject for an
+unqualified production-hosted launch.**
 
-| Area | Before | Current | Evidence |
-|---|---:|---:|---|
-| Documentation accuracy | 72 | 91 | Status-labelled docs, corrected account/offline/release claims, FAQ, troubleshooting |
-| First-run developer experience | 35 | 89 | Python 3.12 bootstrap, lock file, root `make` workflow, actionable failures |
-| Contribution experience | 15 | 88 | Contributing, conduct, support, security policy, issue forms, PR template |
-| Examples and evaluation | 28 | 85 | Four runnable examples and reproducible benchmark report |
-| CI coverage | 67 | 86 | Backend, SDK, OpenClaw, plugin, docs, distribution, security, and quality gates |
-| Security defaults | 58 | 82 | Hosted path/origin boundaries, encrypted backups, safer public auth defaults |
-| Project discoverability | 45 | 63 | Clear README navigation and project status; hosted repository metadata remains external |
+The repository now has credible local setup, tests, examples, security
+boundaries, and operator documentation. Production approval is still blocked
+by unverified external controls and by architectural work that should not be
+hidden behind documentation claims.
 
-## Material Improvements
+## What Was Corrected
 
-- Made Python 3.12 setup reproducible through `make setup` and
-  `requirements-dev.lock`.
-- Added a concise public contribution path, community standards, issue forms,
-  support boundaries, roadmap, and changelog.
-- Added runnable Python examples for search, memory workflows, multi-agent
-  context, and tool discovery.
-- Published deterministic benchmark results with exact reproduction commands
-  and limitations.
-- Added CI coverage for both SDKs and the OpenClaw context plugin.
-- Corrected public documentation that overstated offline, account-free, update,
-  and hosted behavior.
-- Blocked hosted tenants from local filesystem connectors and arbitrary
-  connector origins at both HTTP and storage execution boundaries.
-- Changed deployment backups to fail-closed `age` encryption and removed
-  environment secrets from backup archives.
+- Cross-origin redirects can no longer carry first-party connector, OAuth,
+  model-provider, delivery, OIDC, or SDK bearer credentials to another origin.
+- Webhook delivery connects to the exact public address that passed validation,
+  retaining the original hostname for HTTP and TLS verification.
+- All vault mutations now participate in the same inter-process freeze used by
+  backup, restore, and account deletion. Regression tests cover aggregate
+  multi-process writes, ordinary record writes, and direct Markdown pruning.
+- ZIP imports enforce both member-count and aggregate uncompressed-byte
+  budgets, including nested archives.
+- Password hashing concurrency and in-process rate-limiter cardinality are
+  bounded.
+- Hosted readiness fails closed when credential encryption enforcement or its
+  runtime keyring is absent, the complete credential scan is truncated or
+  unreadable, or any plaintext credential remains.
+- Large synchronous exports use a conservative Unicode-aware storage preflight,
+  default to a 25 MB source-data cap, and fail with a bounded `413` response
+  instead of materializing an unbounded corpus.
+- Backup snapshots coordinate with vault writers and publish atomically.
+- Public signup fails closed until the operator records legal approval; password
+  and OAuth signup consent is explicit and OAuth consent is bound into the
+  single-use state.
+- `cxa_` HTTP API tokens work on the REST-style `/v1/tools/*` surface while
+  `/mcp` remains restricted to `cxm_` MCP tokens.
+- `POST /v1/context` is typed and bounded. OpenAPI operation IDs are stable
+  method/path identifiers, unique in tests, and protected routes publish a
+  bearer security scheme.
+- Mac mini setup uses a dedicated Python 3.12 virtual environment.
+- Examples include an idempotent, loopback-only synthetic seed.
+- Privacy and terms copy no longer says all memory content is encrypted when
+  the implementation currently guarantees encryption only for hosted
+  connector credentials.
+- SDK/plugin licenses and token examples now agree with repository policy.
 
-## Local Verification
+## Priority Findings
 
-The fast contributor gate, documentation checks, deterministic benchmarks,
-Python SDK tests, dependency consistency check, shell syntax checks, Python
-compilation, CI YAML parsing, and focused hosted-security regressions pass.
+| Priority | Finding | Current disposition |
+|---|---|---|
+| P0 | Multi-process vault read-modify-write lost data | Fixed and regression-tested |
+| P0 | Public privacy copy overstated encryption scope | Corrected; legal approval still required |
+| P1 | Credential headers could cross origins on redirects | Fixed across backend and SDK transports |
+| P1 | Hosted credential encryption could fail open | Readiness now requires complete runtime scan evidence and zero remaining plaintext records |
+| P1 | ZIP and export paths could exhaust memory | ZIP fixed; synchronous export bounded; streaming/background export remains future work |
+| P1 | Argon2 bursts could exhaust process memory | Per-process concurrency bounded; deployment worker count still needs capacity planning |
+| P1 | Backup could race with vault writes | Fixed with coordinated locks and atomic archive publication |
+| P1 | OAuth could create an account without explicit current legal consent | Fixed with signup gating and consent-bound single-use state |
+| P1 | Webhook DNS could change after SSRF validation | Fixed by pinning the validated address through the connection |
+| P1 | Existing memory-count quota is check-before-write, raceable, and batch/queue blind; stored bytes are unbounded | Open production blocker; move reservation/enforcement into the storage transaction |
+| P1 | Export preflight and serialization do not share one database snapshot; portable proof re-exports | Open consistency and memory-safety blocker |
+| P1 | Signup consent is not stored with policy version/hash and acceptance time | Open legal-audit blocker |
+| P1 | `backend/app/storage.py` is an oversized subsystem with broad responsibilities | Open maintainability risk; split only with characterization tests |
+| P2 | Python runtime dependencies allow version ranges | Open reproducibility risk; audit now covers the runtime manifest |
+| P2 | Several GitHub Actions use mutable major-version tags | Open supply-chain hardening item; pin reviewed commit SHAs |
 
-The complete backend suite was also attempted in the restricted review
-environment. A clean run excluding only the real-localhost-server modules
-passed 1,877 cases and all 407 parameterized subtests (7 skipped); a focused
-scheduled-connector and hosted-boundary pass added 134 passing cases and 34
-subtests. Modules that start real localhost servers cannot bind sockets in that
-environment, so those modules require a normal local shell or CI runner for
-final confirmation. This is an environment restriction, not a request for
-broader repository permissions.
+## Evidence Required Before Production Approval
 
-## Remaining Release Blockers
+1. Replace route-level memory quota checks with atomic storage-transaction
+   reservation/enforcement based on actual new active IDs; cover concurrent
+   captures, multi-memory extraction, sync batches, idempotent upserts, and
+   queued jobs. Add an enforced stored-byte quota as part of the same control.
+2. Run the credential migration and retain release evidence that hosted
+   readiness observed a complete, readable scan with zero plaintext records.
+3. Put export estimate, filtering, imports, stats, payload, and portable proof
+   on one database snapshot; derive the proof from the already-built payload,
+   then replace large in-memory exports with streaming or background jobs.
+4. Persist the accepted Terms/Privacy version, policy hash, age assertion, and
+   acceptance timestamp on the account and in the audit event.
+5. Characterize and split the storage/API god modules without changing their
+   contracts.
+6. Lock packaged runtime dependencies and pin third-party CI actions to reviewed
+   commit SHAs.
+7. Have counsel approve legal entity, jurisdiction, terms, and privacy copy.
+8. Exercise OAuth, email delivery, domains, and every supported connector with
+   release-owned accounts.
+9. Complete an encrypted backup/restore drill with separately escrowed keys.
+10. Verify signed artifacts, notarization, update metadata, and rollback on the
+   actual release channel.
+11. Run load/soak tests using the intended worker count, storage topology, and
+    realistic corpus sizes.
 
-1. Have counsel replace the legal-entity and jurisdiction placeholders and
-   approve the privacy policy and terms.
-2. Validate managed OAuth, email delivery, domain configuration, and connector
-   contracts with release-owned accounts.
-3. Run an encrypted backup restore drill, including separately escrowed
-   database and `age` recovery keys.
-4. Run the complete socket-enabled backend suite and JavaScript package gates
-   in CI or a normal development shell.
-5. Exercise signed artifact download, signature, notarization, and update
-   handoff against the actual release artifacts.
-6. Replace synthetic-only quality claims with consented human judgments,
-   repeated trials, confidence intervals, and scale/latency curves.
-7. Configure repository topics, description, homepage, ownership rules, and
-   newcomer issues through the hosting service.
-8. Capture current-product screenshots and a short demo after the next signed
-   build so visual documentation reflects the actual shipped UI.
+## Review Standard
 
-## Recommendation
-
-**Approve for an open-source development branch and external review. Do not
-represent the hosted service as fully production-approved yet.** Production
-approval should follow once the legal, credentialed integration, disaster
-recovery, socket-enabled CI, and signed-release evidence above is recorded.
+Production approval requires evidence, not configuration-shaped objects or
+optimistic prose. A test that simulates a keyring is useful for contract
+coverage but is not proof that a deployment holds the right key. Likewise,
+synthetic retrieval benchmarks guard regressions but do not establish product
+quality for a diverse user population.

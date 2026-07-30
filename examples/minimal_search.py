@@ -11,7 +11,7 @@ from cortex_client import CortexClient
 
 
 def main() -> None:
-    query = " ".join(sys.argv[1:]).strip() or "release checklist"
+    query = " ".join(sys.argv[1:]).strip() or "When does Project Atlas ship?"
     client = CortexClient(
         base_url=os.environ.get("CORTEX_BASE_URL", "http://127.0.0.1:8766"),
         token=os.environ.get("CORTEX_API_KEY", ""),

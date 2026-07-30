@@ -5,8 +5,9 @@ import json
 import re
 from typing import Any, Callable
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
+from ..http_security import open_same_origin
 from ._redaction import connector_error_payload
 
 
@@ -160,7 +161,7 @@ def fetch_notion_records(
 def _request_json(url: str, headers: dict[str, str], body: dict[str, Any] | None, method: str) -> Any:
     data = json.dumps(body or {}).encode("utf-8") if body is not None else None
     request = Request(url, data=data, headers=headers, method=method)
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - trusted Notion API URL by default.
+    with open_same_origin(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

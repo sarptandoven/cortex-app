@@ -1908,7 +1908,7 @@ def tools_for_scopes(token_scopes: list[str] | None = None, *, surface: str = "c
 def _require_tool_access(store: CortexStore, user_id: str, name: str, token_scopes: list[str] | None = None) -> None:
     for capability in tool_required_capabilities(name, scoped=token_scopes is not None):
         if token_scopes is not None and capability not in token_scopes:
-            raise PermissionError(f"MCP token is not scoped for {capability} actions.")
+            raise PermissionError(f"Token is not scoped for {capability} actions.")
         store.require_agent_access(user_id, capability)
 
 

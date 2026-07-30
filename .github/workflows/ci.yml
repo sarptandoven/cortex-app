@@ -17,7 +17,9 @@ jobs:
   python:
     name: Python checks and backend tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The backend suite alone approaches ten minutes on some runners; this job
+    # also runs SDK, examples, and evaluation gates. Preserve failure headroom.
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -55,6 +57,9 @@ jobs:
 
       - name: Run Python SDK tests
         run: python -m pytest sdk/python/tests -q
+
+      - name: Run public examples against an isolated server
+        run: python scripts/examples_smoke.py
 
       - name: Run retrieval quality regression gate
         run: python scripts/retrieval_eval.py
@@ -140,6 +145,9 @@ jobs:
 
       - name: Audit top-level dependencies for known vulnerabilities
         run: pip-audit --strict -r requirements.txt
+
+      - name: Audit packaged backend runtime dependencies
+        run: pip-audit --strict -r backend/runtime-requirements.txt
 
   distribution:
     name: Distribution site and update manifest

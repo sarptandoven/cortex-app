@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .http_security import open_same_origin
+
 
 VECTOR_DIMENSIONS = 384
 VECTOR_MODEL = "cortex-hash-v1"
@@ -298,7 +300,7 @@ def _openai_embedding(text: str, dimensions: int) -> EmbeddingResult:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=_openai_timeout_seconds()) as response:
+        with open_same_origin(request, timeout=_openai_timeout_seconds()) as response:
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")

@@ -2,7 +2,9 @@
 
 This index separates the current product contract from operator runbooks,
 forward-looking designs, and experimental feature branches. It was last audited
-against `main` on 2026-07-30.
+against source commit `8eedd5c` plus the local `docs/repo-refresh` review delta
+on 2026-07-30. It does not claim that unmerged branch content is already in
+`main`.
 
 ## Status Rules
 
@@ -25,6 +27,7 @@ When documents disagree, use this order of authority:
 | Area | Documentation |
 |---|---|
 | Architecture | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| API lifecycle and naming | [API_LIFECYCLE.md](API_LIFECYCLE.md) · [NAMING_AND_OWNERSHIP.md](NAMING_AND_OWNERSHIP.md) |
 | Product loop and onboarding | [SIMPLE_PRODUCT_LOOP.md](SIMPLE_PRODUCT_LOOP.md) · [FIRST_RUN_ONBOARDING.md](FIRST_RUN_ONBOARDING.md) |
 | Local vault | [LOCAL_VAULT_FORMAT.md](LOCAL_VAULT_FORMAT.md) |
 | Context protocol | [CMP_PROTOCOL.md](CMP_PROTOCOL.md) · [PORTABLE_MEMORY_PROTOCOL_V2.md](PORTABLE_MEMORY_PROTOCOL_V2.md) |

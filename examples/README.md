@@ -10,20 +10,31 @@ Terminal 1:
 
 ```bash
 make setup
-make run
+CORTEX_AUTO_APPROVE_CAPTURES=1 make run
 ```
 
 Terminal 2:
 
 ```bash
 export CORTEX_API_KEY=dev-local-key
-.venv/bin/python examples/minimal_search.py "release checklist"
+
+.venv/bin/python examples/seed_demo.py
+.venv/bin/python examples/minimal_search.py "When does Project Atlas ship?"
 ```
 
 `dev-local-key` is accepted only because `make run` starts a loopback-only
-development server with the explicit insecure-development flag. For the
-packaged app, copy a scoped token from Connections & Privacy and never commit
-it.
+development server with the explicit insecure-development flag.
+`seed_demo.py` refuses to write anywhere except a loopback origin and
+refuses non-development tokens. Automated isolated test harnesses that
+deliberately use a different token must opt in with
+`CORTEX_ALLOW_DEMO_SEED=1`. The seeder idempotently loads three synthetic
+records from
+[`fixtures/demo_captures.json`](fixtures/demo_captures.json). For the
+packaged app, copy a scoped `cxa_` REST token from Connections & Privacy for
+the read-only examples and never commit it; do not run the demo seeder against
+a packaged or personal vault. The fixture includes a release decision, a
+storage decision, and an explicit
+writing preference, all about or usable with the Project Atlas example task.
 
 ## Examples
 
@@ -35,7 +46,9 @@ it.
 | [`tool_catalog.py`](tool_catalog.py) | Fetch the OpenAI-compatible tool catalog without calling a model |
 
 Every script accepts `CORTEX_BASE_URL` and `CORTEX_API_KEY`. The default base
-URL is `http://127.0.0.1:8766`.
+URL is `http://127.0.0.1:8766`; the query/task examples consistently default
+to Project Atlas so the checked-in fixture produces deterministic, cited
+output without extra arguments.
 
 ## Integration Pattern
 

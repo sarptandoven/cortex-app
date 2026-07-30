@@ -28,10 +28,13 @@ Cortex runs **on the user's machine**. Both clients default to `http://127.0.0.1
 (loopback) — the address the macOS app serves on. Nothing leaves the device unless you
 point `base_url` / `baseUrl` elsewhere.
 
-Authentication is a bearer token (`Authorization: Bearer <token>`) with an optional
-`X-Cortex-User` header to select a user in multi-user deployments. The token's scopes
-determine which tools are allowed; the server enforces scopes on every call regardless
-of what the schema advertises, so a read-only token gets a read-only surface.
+Authentication uses a scoped `cxa_` REST bearer token
+(`Authorization: Bearer <token>`) with an optional `X-Cortex-User` header to
+select a user in multi-user deployments. The token's scopes determine which
+tools are allowed; the server enforces scopes on every call regardless of what
+the schema advertises, so a read-only token gets a read-only surface. `cxm_`
+tokens are reserved for the `/mcp` transport and must not be used with these
+SDKs.
 
 ## Relationship to MCP
 
@@ -39,9 +42,9 @@ Cortex exposes its tools two ways over the **same catalog and the same scope
 enforcement**:
 
 - **MCP** (`POST /mcp`) — JSON-RPC (`initialize` / `tools/list` / `tools/call`), for MCP
-  clients like Claude Desktop and Cursor.
+  clients like Claude Desktop and Cursor; authenticates with a `cxm_` token.
 - **Universal HTTP** (`/v1/tools/*`) — plain HTTP for any function-calling app. This is
-  what these SDKs use.
+  what these SDKs use; authenticates with a `cxa_` token.
 
 So the two transports are interchangeable: a tool called over MCP and the same tool
 called via `call_tool` / `callTool` run identical server-side logic and honor the same

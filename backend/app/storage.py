@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, NamedTuple
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from .config import APP_BRAND
 from .connector_policy import (
@@ -28,6 +28,7 @@ from .connector_policy import (
 from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status, warmup_embedding_provider
+from .http_security import open_same_origin
 from .query_plan import (
     build_query_plan,
     context_hop_deadline_ms,
@@ -64,6 +65,19 @@ from .vault import CortexVault
 
 BACKEND_VERSION = "0.1.0"
 HEALTH_CONTRACT = 3
+try:
+    MAX_SYNCHRONOUS_EXPORT_BYTES = max(
+        1_000_000,
+        int(os.environ.get("CORTEX_MAX_SYNC_EXPORT_BYTES", "25000000") or "25000000"),
+    )
+except ValueError:
+    MAX_SYNCHRONOUS_EXPORT_BYTES = 25_000_000
+
+
+class ExportSizeLimitError(ValueError):
+    """The corpus is too large for an in-memory synchronous export."""
+
+
 BACKEND_FEATURES = (
     "local-vault",
     "capture-surfaces",
@@ -1696,7 +1710,7 @@ def _request_oauth_token(token_endpoint: str, form: dict[str, str]) -> dict[str,
         headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - caller supplies trusted OAuth token endpoint.
+    with open_same_origin(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -1742,7 +1756,7 @@ def _request_oauth_broker_exchange(
         headers={"Accept": "application/json", "Content-Type": "application/json"},
         method="POST",
     )
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - app-configured broker endpoint.
+    with open_same_origin(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -1767,7 +1781,7 @@ def _request_basic_json_oauth_token(
         headers=request_headers,
         method="POST",
     )
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - caller supplies trusted OAuth token endpoint.
+    with open_same_origin(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -18588,8 +18602,8 @@ class CortexStore:
         (search, decision_history, entity_neighborhood, open_tasks, recent) under a
         per-intent budget allocator. Every included item is citation-backed
         (`_has_source_citation`); superseded facts are never served; drops are counted
-        and visible, never silent. `include_identity=False` (read-only tokens) replaces
-        the identity layer with an explicit omission record instead of erroring.
+        and visible, never silent. Callers that deliberately set `include_identity=False`
+        replace the identity layer with an explicit omission record instead of erroring.
 
         With `pin=True` (Phase 2) the assembled pack is also persisted as an immutable,
         content-addressed artifact: canonical JSON bytes hashed with sha256, written
@@ -20117,9 +20131,48 @@ class CortexStore:
             redact_sensitive=bool(user_settings["redact_sensitive_context"]),
         )
 
+    def _estimated_export_bytes(self, conn: Any, user_id: str) -> int:
+        """Conservative preflight before materializing several full corpus copies.
+
+        SQLite ``length(TEXT)`` counts Unicode code points, not serialized
+        bytes. Canonical portable JSON uses ``ensure_ascii=True``; a non-BMP
+        code point can therefore expand to a 12-byte surrogate pair. The
+        12x multiplier is the real worst case, and the per-row allowance covers
+        keys, separators, nulls and envelope metadata. The 25 MB default leaves
+        headroom for the portable bundle's canonical and base64 copies.
+        """
+        raw_bytes = 0
+        row_count = 0
+        for table in ("captures", "memories", "tasks", "entities", "graph_edges"):
+            columns = [
+                str(row["name"])
+                for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+            ]
+            length_terms = " + ".join(
+                f'COALESCE(length("{column}"), 0)' for column in columns
+            )
+            row = conn.execute(
+                f'SELECT COUNT(*) AS row_count, '
+                f'COALESCE(SUM({length_terms}), 0) AS raw_bytes '
+                f'FROM "{table}" WHERE user_id = ?',
+                (user_id,),
+            ).fetchone()
+            row_count += int(row["row_count"] or 0)
+            raw_bytes += int(row["raw_bytes"] or 0)
+        return raw_bytes * 12 + row_count * 1024
+
+    def _enforce_synchronous_export_limit(self, conn: Any, user_id: str) -> None:
+        estimated = self._estimated_export_bytes(conn, user_id)
+        if estimated > MAX_SYNCHRONOUS_EXPORT_BYTES:
+            raise ExportSizeLimitError(
+                "Export is too large for the synchronous API "
+                f"(estimated {estimated} bytes; limit {MAX_SYNCHRONOUS_EXPORT_BYTES})."
+            )
+
     def export_json(self, user_id: str) -> dict[str, Any]:
         user_settings = self.settings(user_id)
         with connect(self.db_path) as conn:
+            self._enforce_synchronous_export_limit(conn, user_id)
             captures = [self._capture_from_row(row) for row in conn.execute("SELECT * FROM captures WHERE user_id = ? ORDER BY captured_at DESC", (user_id,)).fetchall()]
             imports = self.list_imports(user_id, limit=100)
             memories = [self._memory_from_row(row) for row in conn.execute("SELECT * FROM memories WHERE user_id = ? ORDER BY captured_at DESC", (user_id,)).fetchall()]
@@ -21119,6 +21172,10 @@ class CortexStore:
         divergence and reconcile the SQLite index to match the current Markdown state, re-running
         the vault rebuild only when something actually changed (so idle watcher fires are cheap).
         """
+        with self.vault.read_snapshot():
+            return self._reconcile_vault_edits_locked(user_id)
+
+    def _reconcile_vault_edits_locked(self, user_id: str) -> dict[str, Any]:
         markdown_records = self.vault.iter_memory_markdown_records(user_id)
         markdown_sig: dict[str, str] = {}
         for record in markdown_records:
@@ -21270,6 +21327,10 @@ class CortexStore:
         return written
 
     def rebuild_index_from_vault(self, user_id: str) -> dict[str, Any]:
+        with self.vault.read_snapshot():
+            return self._rebuild_index_from_vault_locked(user_id)
+
+    def _rebuild_index_from_vault_locked(self, user_id: str) -> dict[str, Any]:
         tombstone_counts = self.vault.apply_tombstones(user_id)
         imports = list(self.vault.iter_records("imports", user_id))
         source_accounts = list(self.vault.iter_records("source_accounts", user_id))

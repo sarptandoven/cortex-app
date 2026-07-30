@@ -2,7 +2,7 @@ PYTHON ?= python3.12
 VENV ?= .venv
 VENV_PYTHON := $(VENV)/bin/python
 
-.PHONY: help setup run test check docs-check connector-check clean
+.PHONY: help setup run test check docs-check connector-check examples-check clean
 
 help:
 	@printf '%s\n' \
@@ -12,10 +12,11 @@ help:
 		'  make test            Run the backend test suite' \
 		'  make check           Run the fast local pre-PR checks' \
 		'  make connector-check Validate all 13 connector contracts' \
+		'  make examples-check  Run every public Python example against an isolated server' \
 		'  make clean           Remove local Python caches (keeps .venv)'
 
 setup:
-	PYTHON_BIN="$(PYTHON)" ./scripts/bootstrap_dev.sh
+	PYTHON_BIN="$(PYTHON)" CORTEX_VENV="$(abspath $(VENV))" ./scripts/bootstrap_dev.sh
 
 run:
 	@test -x "$(VENV_PYTHON)" || { echo "Missing $(VENV_PYTHON). Run 'make setup' first." >&2; exit 1; }
@@ -35,10 +36,15 @@ connector-check:
 	@test -x "$(VENV_PYTHON)" || { echo "Missing $(VENV_PYTHON). Run 'make setup' first." >&2; exit 1; }
 	"$(VENV_PYTHON)" scripts/check_connector_baseline.py
 
+examples-check:
+	@test -x "$(VENV_PYTHON)" || { echo "Missing $(VENV_PYTHON). Run 'make setup' first." >&2; exit 1; }
+	"$(VENV_PYTHON)" scripts/examples_smoke.py
+
 check: docs-check
 	"$(VENV_PYTHON)" scripts/retrieval_eval.py
 	"$(VENV_PYTHON)" scripts/adaptation_eval.py
 	"$(VENV_PYTHON)" -m pytest sdk/python/tests -q
+	"$(VENV_PYTHON)" scripts/examples_smoke.py
 
 clean:
 	find backend scripts sdk -type d -name __pycache__ -prune -exec rm -r {} +

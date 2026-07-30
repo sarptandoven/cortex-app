@@ -6,10 +6,16 @@ context packing, adaptation, token calibration, routing, and end-to-end agent
 tasks. They run on synthetic fixtures with known answers so regressions fail in
 CI without sending personal data to an external model.
 
-## Latest reproducible run
+## Latest deterministic regression snapshot
 
 Run on 2026-07-30 with Python 3.12 on Apple Silicon. All commands used the
 repository's checked-in fixtures and made no model API calls.
+
+Machine-readable provenance and limitations are committed in
+[`benchmarks/2026-07-30-local.json`](benchmarks/2026-07-30-local.json). This was
+one run from a dirty review tree based on commit `8eedd5c`; timing and controlled
+cache state were not captured, so it is reproducible input/result evidence, not
+a latency benchmark or a release artifact.
 
 | Gate | Cases / checks | Result | Selected metrics |
 |---|---:|---|---|

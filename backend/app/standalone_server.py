@@ -5,6 +5,7 @@ import base64
 import binascii
 import html
 import hmac
+import ipaddress
 import secrets
 import json
 import os
@@ -41,7 +42,7 @@ from .mcp_tools import (
     tools_for_scopes,
 )
 from .sharding import StoreRegistry
-from .storage import BACKEND_VERSION
+from .storage import BACKEND_VERSION, ExportSizeLimitError
 
 
 settings = load_settings()
@@ -1000,12 +1001,12 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
 
             # Universal adapter surface: the same tool catalog, reachable by any function-calling
-            # app over plain HTTP. Authed like /mcp (Bearer → scoped context) and enforced per-tool
-            # by call_tool, so a read-only token gets a read-only surface. GET /v1/tools/schema
+            # app over plain HTTP. The REST adapter accepts API or MCP scoped tokens while /mcp
+            # remains MCP-only; call_tool still enforces each tool's scope. GET /v1/tools/schema
             # projects the catalog to openai/anthropic/openapi/mcp; POST /v1/tools/call (generic)
             # and POST /v1/tools/{name} (per-tool, matches the OpenAPI operationIds) dispatch tools.
             if path == "/v1/tools/schema" and method == "GET":
-                context = self._auth_mcp()
+                context = self._auth_mcp(allow_api=True)
                 if not context:
                     return
                 token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
@@ -1018,7 +1019,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
             if path.startswith("/v1/tools/") and method == "POST":
-                context = self._auth_mcp()
+                context = self._auth_mcp(allow_api=True)
                 if not context:
                     return
                 tool_user = context["user_id"]
@@ -2590,20 +2591,93 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if path == "/v1/context" and method in {"GET", "POST"}:
                 if method == "POST":
                     body = self._json_body()
-                    task = str(body.get("task") or "")
-                    surface = str(body.get("surface") or "agent")
-                    intent = str(body.get("intent") or "") or None
-                    sector = str(body.get("sector") or "") or None
-                    project = str(body.get("project") or "") or None
-                    as_of = str(body.get("as_of") or "") or None
+                    required_text = (("task", ""), ("surface", "agent"), ("format", "json"))
+                    optional_text = ("intent", "sector", "project", "as_of", "model", "session_id")
+                    invalid_text = next(
+                        (
+                            name
+                            for name, default in required_text
+                            if not isinstance(body.get(name, default), str)
+                        ),
+                        None,
+                    )
+                    if invalid_text is None:
+                        invalid_text = next(
+                            (
+                                name
+                                for name in optional_text
+                                if body.get(name) is not None and not isinstance(body.get(name), str)
+                            ),
+                            None,
+                        )
+                    if invalid_text is not None:
+                        self._send_json(
+                            {"detail": f"{invalid_text} must be a string"},
+                            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        )
+                        return
+                    task = body.get("task", "")
+                    surface = body.get("surface", "agent")
+                    intent = body.get("intent") or None
+                    sector = body.get("sector") or None
+                    project = body.get("project") or None
+                    as_of = body.get("as_of") or None
                     output_format = str(body.get("format") or "json").strip().lower()
-                    model = str(body.get("model") or "") or None
-                    pin = bool(body.get("pin"))
-                    pin_session_id = str(body.get("session_id") or "") or None
+                    model = body.get("model") or None
+                    pin_session_id = body.get("session_id") or None
+                    raw_pin = body.get("pin", False)
+                    if isinstance(raw_pin, bool):
+                        pin = raw_pin
+                    elif raw_pin in (0, 1):
+                        pin = bool(raw_pin)
+                    elif isinstance(raw_pin, str) and raw_pin.strip().lower() in {
+                        "0", "1", "false", "true", "off", "on", "no", "yes",
+                    }:
+                        pin = raw_pin.strip().lower() in {"1", "true", "on", "yes"}
+                    else:
+                        self._send_json(
+                            {"detail": "pin must be a boolean"},
+                            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        )
+                        return
                     try:
-                        token_budget = int(body.get("token_budget") or 2000)
+                        raw_budget = body.get("token_budget", 2000)
+                        if isinstance(raw_budget, bool):
+                            raise ValueError
+                        token_budget = int(raw_budget)
                     except (TypeError, ValueError):
                         self._send_json({"detail": "token_budget must be an integer"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                        return
+                    bounded_text = (
+                        ("task", task, 500),
+                        ("surface", surface, 40),
+                        ("intent", intent, 16),
+                        ("sector", sector, 120),
+                        ("project", project, 160),
+                        ("as_of", as_of, 40),
+                        ("model", model, 80),
+                        ("session_id", pin_session_id, 120),
+                    )
+                    oversized = next(
+                        (
+                            (name, limit)
+                            for name, value, limit in bounded_text
+                            if value is not None and len(str(value)) > limit
+                        ),
+                        None,
+                    )
+                    if oversized is not None:
+                        name, limit = oversized
+                        self._send_json(
+                            {"detail": f"{name} must be at most {limit} characters"},
+                            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        )
+                        return
+                    if token_budget < 1 or token_budget > 100000:
+                        self._send_json(
+                            {"detail": "token_budget must be between 1 and 100000"},
+                            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        )
                         return
                 else:
                     task = (params.get("task") or [""])[0]
@@ -3268,6 +3342,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             # Malformed body escaped a per-endpoint handler (many read the body before their own
             # try): return 422 like the framework server, not a 500.
             self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+        except ExportSizeLimitError as exc:
+            self._send_json({"detail": str(exc)}, status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
         except Exception as exc:
             self._send_json({"detail": self._safe_error_message(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -3344,22 +3420,6 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": -32000, "message": self._safe_error_message(exc)}})
 
-    def _bearer_has_export_scope(self) -> bool:
-        """Whether the (already-authenticated) bearer may see the identity/persona layer of a
-        context pack. The admin app token always may; scoped API tokens need the export scope.
-        Read-only callers still get a pack — identity degrades to a visible omission record."""
-        authorization = self.headers.get("Authorization", "")
-        if not authorization.lower().startswith("bearer "):
-            return False
-        token = authorization.split(" ", 1)[1].strip()
-        if settings.api_key and hmac.compare_digest(token, settings.api_key):
-            return True
-        try:
-            scoped = store.authenticate_api_token(token)
-        except TypeError:
-            scoped = None
-        return bool(scoped and "export" in set(scoped.get("scopes") or []))
-
     def _auth_user(self, method: str, path: str) -> str | None:
         authorization = self.headers.get("Authorization", "")
         if not authorization.lower().startswith("bearer "):
@@ -3398,7 +3458,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"detail": f"Missing or invalid {APP_BRAND} API token"}, status=HTTPStatus.UNAUTHORIZED)
         return None
 
-    def _auth_mcp(self) -> dict | None:
+    def _auth_mcp(self, *, allow_api: bool = False) -> dict | None:
         authorization = self.headers.get("Authorization", "")
         if not authorization.lower().startswith("bearer "):
             self._send_json({"detail": f"Missing or invalid {APP_BRAND} MCP token"}, status=HTTPStatus.UNAUTHORIZED)
@@ -3424,9 +3484,28 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             scoped = store.authenticate_mcp_token(token, user_id=self.headers.get("X-Cortex-User"))
         except TypeError:
             scoped = store.authenticate_mcp_token(token)
+        if scoped is None and allow_api:
+            try:
+                scoped = store.authenticate_api_token(
+                    token,
+                    user_id=self.headers.get("X-Cortex-User"),
+                )
+            except TypeError:
+                scoped = store.authenticate_api_token(token)
         if scoped:
+            requested_user = self.headers.get("X-Cortex-User")
+            if requested_user and scoped["user_id"] != requested_user:
+                self._send_json(
+                    {"detail": f"{APP_BRAND} token does not match requested user"},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+                return None
             return scoped
-        self._send_json({"detail": f"Missing or invalid {APP_BRAND} MCP token"}, status=HTTPStatus.UNAUTHORIZED)
+        audience = "API or MCP" if allow_api else "MCP"
+        self._send_json(
+            {"detail": f"Missing or invalid {APP_BRAND} {audience} token"},
+            status=HTTPStatus.UNAUTHORIZED,
+        )
         return None
 
     def _auth_token(self, token: str | None, *, required_scope: str = "write") -> str | None:
@@ -3521,6 +3600,14 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
 
 
 def serve(host: str = "127.0.0.1", port: int | None = None) -> None:
+    if not _standalone_host_is_loopback(host) and os.environ.get(
+        "CORTEX_ALLOW_NONLOCAL_STANDALONE", ""
+    ).strip().lower() not in {"1", "true", "yes", "on"}:
+        raise ValueError(
+            "The dependency-light standalone server is local-only. Bind to a "
+            "loopback address or explicitly set CORTEX_ALLOW_NONLOCAL_STANDALONE=1 "
+            "after reviewing its local trust model."
+        )
     resolved_port = port or int(os.environ.get("CORTEX_PORT", "8766"))
     server = ThreadingHTTPServer((host, resolved_port), CortexRequestHandler)
     worker_thread = _start_standalone_worker()
@@ -3528,6 +3615,19 @@ def serve(host: str = "127.0.0.1", port: int | None = None) -> None:
         print(f"{APP_BRAND} standalone worker running for queued memory jobs", flush=True)
     print(f"{APP_BRAND} standalone backend running on http://{host}:{resolved_port}", flush=True)
     server.serve_forever()
+
+
+def _standalone_host_is_loopback(host: str) -> bool:
+    normalized = str(host or "").strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
 
 
 def main() -> None:

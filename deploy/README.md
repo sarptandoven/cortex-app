@@ -46,6 +46,9 @@ hundreds of beta users fit comfortably here and the upgrade is a snapshot-restor
 
 - `CORTEX_AUTH_AUTOVERIFY=0`: accounts stay pending until email verification. Configure
   Postmark/SES (or another SMTP provider) before accepting public signups.
+- `CORTEX_LEGAL_TERMS_APPROVED=0`: public account creation and hosted readiness stay
+  blocked. Change this only after approved Terms and Privacy text is deployed; both
+  password and OAuth signup require explicit terms and age consent.
 - GitHub login works the moment you create a (2-minute, no-review) GitHub OAuth app and
   set the two env vars in `/etc/cortex/cortex.env`; Google login needs the consent-screen
   publishing review (1–2 weeks) so leave it for later.

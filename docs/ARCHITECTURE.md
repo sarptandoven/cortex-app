@@ -319,9 +319,14 @@ Default packaged app path:
 ~/Library/Application Support/Cortex/Cortex.vault/
 ```
 
-The vault contains human-readable JSON records for imports, source accounts, sync cursors, captures, memories, tasks, entities, and graph edges, plus `settings.json`, `events.jsonl`, attachments, exports, backups, and `index.sqlite`.
+The vault contains human-readable JSON records for imports, source accounts,
+sync cursors, captures, memories, tasks, entities, and graph edges. Memories
+also have editable Markdown notes; rebuild merges Markdown memories with the
+other durable JSON/JSONL records under the precedence rules in
+`LOCAL_VAULT_FORMAT.md`. SQLite is a rebuildable index, not the sole authority.
 
-`POST /v1/maintenance/rebuild-index-from-vault` clears the current user's index rows and rebuilds them from the vault records. This is the recovery path if the local index is corrupted or if a future sync process materializes records before rebuilding search.
+`POST /v1/maintenance/rebuild-index-from-vault` clears the current user's index
+rows and rebuilds them from that merged durable representation.
 
 See `docs/LOCAL_VAULT_FORMAT.md`.
 

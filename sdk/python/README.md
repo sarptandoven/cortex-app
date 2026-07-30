@@ -9,7 +9,8 @@ function-calling app (OpenAI, Anthropic, or a custom agent loop) can drive it fr
 tool definition. This client wraps that HTTP surface.
 
 - Default base URL: `http://127.0.0.1:8766` (local loopback — Cortex is local-first).
-- Auth: `Authorization: Bearer <token>`, optional `X-Cortex-User` header.
+- Auth: `Authorization: Bearer <cxa_ REST token>`, optional `X-Cortex-User`
+  header. `cxm_` tokens are only for `/mcp`, not this SDK.
 - Same routes work against the hosted plane — pass `base_url="https://api.signindoppl.com"`
   and a token minted there. The hosted server (`backend/app/main.py`) mirrors the local
   server's `/v1/tools/schema` and `/v1/tools/call` request/response shapes exactly, including
@@ -34,7 +35,7 @@ dependencies.
 ```python
 from cortex_client import CortexClient, CortexError
 
-client = CortexClient(base_url="http://127.0.0.1:8766", token="ctx_your_token")
+client = CortexClient(base_url="http://127.0.0.1:8766", token="cxa_your_token")
 
 # Cited answer to a specific question (never an uncited guess).
 print(client.ask("What database do we use?"))
@@ -68,7 +69,10 @@ except CortexError as exc:
 
 Any non-2xx response raises `CortexError(status, detail)`, where `detail` is the
 server's `{"detail": ...}` payload (a string or an object). Transport failures (server
-unreachable) raise `CortexError` with `status == 0`.
+unreachable) and invalid base URLs raise `CortexError` with `status == 0`. Base URLs
+must be absolute `http://` or `https://` URLs without embedded user information.
+Queries and fragments are rejected as well; put request parameters on SDK
+methods instead of the base URL.
 
 ## OpenAI function-calling
 
@@ -80,7 +84,7 @@ import json
 from openai import OpenAI
 from cortex_client import CortexClient
 
-cortex = CortexClient(token="ctx_your_token")
+cortex = CortexClient(token="cxa_your_token")
 oai = OpenAI()
 
 tools = cortex.openai_tools()  # Cortex tool catalog as OpenAI function schemas
@@ -115,7 +119,7 @@ a `tool_result` block:
 import anthropic
 from cortex_client import CortexClient
 
-cortex = CortexClient(token="ctx_your_token")
+cortex = CortexClient(token="cxa_your_token")
 client = anthropic.Anthropic()
 
 tools = cortex.anthropic_tools()

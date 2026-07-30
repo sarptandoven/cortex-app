@@ -153,7 +153,7 @@ Approved memory goes in; a calibrated model of how you operate comes out.
   `consolidate_memory` tool) and requires the maintenance permission, which is off by default.
 - **It compounds as an asset you own.** Pin a pack and it becomes **sha256-addressed and replayable**,
   byte-verified on every read, so an agent can prove exactly what it acted on. Your model lives as plain
-  Markdown plus an index rebuildable from those files alone — vendor-portable, inspectable, exportable as
+  Markdown memories plus durable JSON/JSONL records, with an index rebuildable from that vault — vendor-portable, inspectable, exportable as
   a signed bundle, and erasable in one act. Switch assistants and it comes with you.
 
 ## Also inside
@@ -255,7 +255,7 @@ build needs `CORTEX_BUNDLE_PYTHON=1` and a python.org framework install at
 `/Library/Frameworks/Python.framework/Versions/3.12`; release packaging lives in
 `macos/package_release.sh`.
 
-CI runs the full gate set on every push — see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+CI runs the full gate set for pull requests and pushes to `main` — see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 for the authoritative command list. [`SETUP.md`](SETUP.md) covers the app-side development loop.
 
 ## Repository layout

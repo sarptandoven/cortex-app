@@ -80,6 +80,8 @@ class Settings:
     auth_access_ttl_seconds: int = 0  # 0 = authn.py default (1h)
     auth_refresh_idle_ttl_seconds: int = 0  # 0 = authn.py default (30d sliding)
     auth_refresh_absolute_ttl_seconds: int = 0  # 0 = authn.py default (90d absolute)
+    # Fail closed for hosted account creation until approved legal text is live.
+    legal_terms_approved: bool = False
     auth_email_mode: str = "log"  # "log" (console sink) | "smtp"
     # SMTP delivery (used only when auth_email_mode == "smtp"). Read from
     # CORTEX_SMTP_*. If mode is "smtp" but no host is configured, AuthRuntime
@@ -277,6 +279,7 @@ def load_settings() -> Settings:
         auth_access_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_ACCESS_TTL_SECONDS", "0") or "0")),
         auth_refresh_idle_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_REFRESH_IDLE_TTL_SECONDS", "0") or "0")),
         auth_refresh_absolute_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_REFRESH_ABSOLUTE_TTL_SECONDS", "0") or "0")),
+        legal_terms_approved=_truthy_env("CORTEX_LEGAL_TERMS_APPROVED"),
         auth_email_mode=(os.environ.get("CORTEX_AUTH_EMAIL_MODE", "log").strip().lower() or "log"),
         smtp_host=os.environ.get("CORTEX_SMTP_HOST", "").strip(),
         smtp_port=max(1, int(os.environ.get("CORTEX_SMTP_PORT", "587") or "587")),

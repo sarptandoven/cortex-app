@@ -295,8 +295,13 @@ def _page(title: str, body: str, script: str, *, head_extra: str = "") -> str:
     )
 
 
-def _html_response(document: str, *, csp: str = _ACCOUNT_CSP) -> HTMLResponse:
-    response = HTMLResponse(content=document)
+def _html_response(
+    document: str,
+    *,
+    csp: str = _ACCOUNT_CSP,
+    status_code: int = 200,
+) -> HTMLResponse:
+    response = HTMLResponse(content=document, status_code=status_code)
     response.headers["Content-Security-Policy"] = csp
     response.headers["Referrer-Policy"] = "same-origin"
     return response
@@ -357,12 +362,17 @@ def render_public_page(title: str, body_html: str) -> str:
 # page's provider buttons, which are rendered from GET /v1/auth/providers and
 # escaped below.
 
-def _login_body(provider_buttons_html: str) -> str:
+def _login_body(provider_buttons_html: str, *, signup_enabled: bool = True) -> str:
     divider = (
         '    <div class="divider">or</div>\n'
         f'    <div class="provider-buttons">{provider_buttons_html}</div>\n'
         if provider_buttons_html
         else ""
+    )
+    signup_link = (
+        '      <p class="meta-links">New to Doppl? <a href="/account/signup">Create an account</a></p>\n'
+        if signup_enabled
+        else '      <p class="meta-links">Account creation is temporarily unavailable.</p>\n'
     )
     return (
         ' class="login">\n'
@@ -381,13 +391,13 @@ def _login_body(provider_buttons_html: str) -> str:
         "      </form>\n"
         f"{divider}"
         '      <p class="meta-links"><a href="/account/reset">Forgot your password?</a></p>\n'
-        '      <p class="meta-links">New to Doppl? <a href="/account/signup">Create an account</a></p>\n'
+        f"{signup_link}"
         "    </div>\n"
         "  </main>"
     )
 
 
-def _signup_body(turnstile_site_key: str = "") -> str:
+def _signup_body(turnstile_site_key: str = "", provider_buttons: str = "") -> str:
     """Signup page body. When ``turnstile_site_key`` is set, embeds the
     Cloudflare Turnstile widget div (the widget writes its token into a
     ``cf-turnstile-response`` field the JS reads and forwards to the API);
@@ -398,6 +408,11 @@ def _signup_body(turnstile_site_key: str = "") -> str:
         turnstile_widget = (
             f'        <div class="cf-turnstile" data-sitekey="{safe_key}"></div>\n'
         )
+    provider_section = (
+        '      <div class="divider"><span>or</span></div>\n' + provider_buttons
+        if provider_buttons
+        else ""
+    )
     return (
         ' class="signup">\n'
         '    <div class="card">\n'
@@ -421,6 +436,7 @@ def _signup_body(turnstile_site_key: str = "") -> str:
         "        </div>\n"
         '        <div id="status" class="status-msg" role="status" aria-live="polite"></div>\n'
         "      </form>\n"
+        f"{provider_section}"
         '      <p class="meta-links">Already have an account? <a href="/account/login">Sign in</a></p>\n'
         "    </div>\n"
         "  </main>"
@@ -521,7 +537,7 @@ _HOME_BODY = (
     "      </div>\n"
     '      <div class="card">\n'
     "        <h2>Delete account</h2>\n"
-    '        <p>This permanently crypto-shreds your keys and deletes your data. Type '
+    '        <p>This destroys your connector-credential encryption keys and deletes your hosted data. Type '
     "<strong>DELETE</strong> to confirm.</p>\n"
     '        <label for="delete-confirm">Type DELETE to confirm</label>\n'
     '        <input id="delete-confirm" type="text" autocomplete="off">\n'
@@ -535,14 +551,25 @@ _HOME_BODY = (
 )
 
 
-def _provider_buttons_html(providers: list[dict[str, Any]], app_flow: str = "") -> str:
+def _provider_buttons_html(
+    providers: list[dict[str, Any]],
+    app_flow: str = "",
+    *,
+    signup: bool = False,
+) -> str:
     """Render a 'Continue with X' button per configured provider. Only the
     provider name/display_name are interpolated, both escaped. When an app-login
     flow id is present (the desktop 'Continue with <provider>' handoff opened
     /account/login?app_flow=...), it is threaded into each OAuth start URL so the
     callback can complete that flow server-side and the app polls the tokens out.
     ``app_flow`` is pre-sanitized by the caller to [A-Za-z0-9_] so it is URL-safe."""
-    suffix = f"?app_flow={app_flow}" if app_flow else ""
+    query = []
+    if app_flow:
+        query.append(f"app_flow={app_flow}")
+    if signup:
+        query.append("signup=1")
+    suffix = f"?{'&'.join(query)}" if query else ""
+    css_class = "button secondary oauth-signup" if signup else "button secondary"
     parts: list[str] = []
     for row in providers:
         name = str(row.get("provider") or "")
@@ -552,7 +579,7 @@ def _provider_buttons_html(providers: list[dict[str, Any]], app_flow: str = "") 
         safe_name = html.escape(name, quote=True)
         safe_display = html.escape(display)
         parts.append(
-            f'<a class="button secondary" href="/v1/auth/oauth/{safe_name}/start{suffix}">'
+            f'<a class="{css_class}" href="/v1/auth/oauth/{safe_name}/start{suffix}">'
             f"Continue with {safe_display}</a>"
         )
     return "".join(parts)
@@ -635,6 +662,19 @@ _APP_JS = r"""
     var form = document.getElementById('signup-form');
     if (!form) return;
     var status = document.getElementById('status');
+    Array.prototype.forEach.call(document.querySelectorAll('.oauth-signup'), function (link) {
+      link.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        if (!document.getElementById('tos').checked) {
+          setStatus(status, 'You must agree to the Terms to continue.', 'error');
+          return;
+        }
+        var target = new URL(link.href, window.location.origin);
+        target.searchParams.set('terms_accepted', 'true');
+        target.searchParams.set('age_confirmed', 'true');
+        window.location.href = target.toString();
+      });
+    });
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
       var email = document.getElementById('email').value;
@@ -651,7 +691,12 @@ _APP_JS = r"""
       // widget writes its token into a hidden 'cf-turnstile-response' field.
       // Forward it so the server can verify before doing any argon2 work. When
       // Turnstile is off there is no such field and this is a no-op.
-      var body = { email: email, password: password };
+      var body = {
+        email: email,
+        password: password,
+        terms_accepted: true,
+        age_confirmed: true
+      };
       var tsField = form.querySelector('[name="cf-turnstile-response"]');
       if (tsField) {
         if (!tsField.value) {
@@ -962,6 +1007,7 @@ def register_web_account_routes(
     list_providers: Callable[[], list[dict[str, Any]]],
     turnstile_site_key: Callable[[], str] | None = None,
     app_flow_cookie: Callable[[str], str] | None = None,
+    signup_enabled: Callable[[], bool] | None = None,
 ) -> None:
     """Register the /account* browser pages on ``app``.
 
@@ -986,6 +1032,14 @@ def register_web_account_routes(
             return (turnstile_site_key() or "").strip()
         except Exception:
             return ""
+
+    def _signup_enabled() -> bool:
+        if signup_enabled is None:
+            return True
+        try:
+            return bool(signup_enabled())
+        except Exception:
+            return False
 
     @app.get("/account", response_class=HTMLResponse)
     @app.get("/account/login", response_class=HTMLResponse)
@@ -1019,7 +1073,13 @@ def register_web_account_routes(
                 )
             return redirect
         buttons = _provider_buttons_html(providers, app_flow=app_flow)
-        resp = _html_response(_page("Sign in · Doppl", _login_body(buttons), "app.js"))
+        resp = _html_response(
+            _page(
+                "Sign in · Doppl",
+                _login_body(buttons, signup_enabled=_signup_enabled()),
+                "app.js",
+            )
+        )
         # Bind THIS browser to the desktop app-login poll flow: set a signed cookie that the OAuth
         # start requires before it will attach an authenticated account to app_flow (main.py
         # _app_flow_cookie / auth_oauth_start). Prevents a login-CSRF / flow-fixation takeover where a
@@ -1034,18 +1094,45 @@ def register_web_account_routes(
 
     @app.get("/account/signup", response_class=HTMLResponse)
     def account_signup() -> Response:
-        runtime_or_404()
+        runtime = runtime_or_404()
+        if not _signup_enabled():
+            return _html_response(
+                _page(
+                    "Account creation unavailable · Doppl",
+                    ' class="signup">\n'
+                    '    <div class="card">\n'
+                    "      <h1>Account creation is unavailable</h1>\n"
+                    "      <p>The service operator has not yet published approved Terms and "
+                    "Privacy text. Existing users can still sign in.</p>\n"
+                    '      <p class="meta-links"><a href="/account/login">Back to sign in</a></p>\n'
+                    "    </div>\n"
+                    "  </main>",
+                    "app.js",
+                ),
+                status_code=503,
+            )
+        try:
+            providers = runtime.oidc.enabled_providers()
+        except Exception:
+            providers = []
+        provider_buttons = _provider_buttons_html(providers, signup=True)
         site_key = _turnstile_key()
         if site_key:
             head_extra = f'  <script src="{_TURNSTILE_API_JS}" async defer></script>\n'
             document = _page(
                 "Create your account · Doppl",
-                _signup_body(site_key),
+                _signup_body(site_key, provider_buttons),
                 "app.js",
                 head_extra=head_extra,
             )
             return _html_response(document, csp=_SIGNUP_CSP_TURNSTILE)
-        return _html_response(_page("Create your account · Doppl", _signup_body(), "app.js"))
+        return _html_response(
+            _page(
+                "Create your account · Doppl",
+                _signup_body(provider_buttons=provider_buttons),
+                "app.js",
+            )
+        )
 
     @app.get("/account/verify", response_class=HTMLResponse)
     def account_verify() -> Response:

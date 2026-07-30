@@ -17,6 +17,7 @@ os.environ["CORTEX_API_KEY"] = "test-token"
 from fastapi.testclient import TestClient
 
 from backend.app import main as main_module
+from backend.app.keyring import LocalKekProvider, UserKeyring
 from backend.app.provenance import sign_shared_write
 from backend.tests.test_decision_history import CURRENT_DECISION_ID, CURRENT_SOURCE_URL, seed_decision_history_fixture
 
@@ -81,6 +82,62 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertTrue(citation["source_url"].startswith(source_url_prefix))
         self.assertIn("line=", citation["source_url"])
         self.assertIn("excerpt=", citation["source_url"])
+
+    def test_openapi_schema_generates_with_unique_operation_ids(self) -> None:
+        schema = app.openapi()
+        self.assertEqual(schema["openapi"], "3.1.0")
+        self.assertIn("/v1/context", schema["paths"])
+        self.assertIn("/oauth/broker/exchange", schema["paths"])
+
+        operation_ids = [
+            operation["operationId"]
+            for path_item in schema["paths"].values()
+            for operation in path_item.values()
+            if isinstance(operation, dict) and "operationId" in operation
+        ]
+        self.assertTrue(operation_ids)
+        self.assertEqual(len(operation_ids), len(set(operation_ids)))
+        self.assertEqual(
+            schema["paths"]["/v1/context"]["post"]["operationId"],
+            "post_v1_context",
+        )
+        bearer = schema["components"]["securitySchemes"]["BearerAuth"]
+        self.assertEqual(bearer["type"], "http")
+        self.assertEqual(bearer["scheme"], "bearer")
+        self.assertIn(
+            {"BearerAuth": []},
+            schema["paths"]["/v1/context"]["post"]["security"],
+        )
+        request_schema = schema["paths"]["/v1/context"]["post"]["requestBody"][
+            "content"
+        ]["application/json"]["schema"]
+        self.assertEqual(
+            request_schema["$ref"],
+            "#/components/schemas/ContextRequest",
+        )
+
+    def test_context_post_rejects_unbounded_or_invalid_request_data(self) -> None:
+        headers = {"Authorization": "Bearer test-token"}
+        too_large = self.client.post(
+            "/v1/context",
+            json={"task": "x" * 501},
+            headers=headers,
+        )
+        self.assertEqual(too_large.status_code, 422)
+
+        invalid_budget = self.client.post(
+            "/v1/context",
+            json={"task": "bounded", "token_budget": 100_001},
+            headers=headers,
+        )
+        self.assertEqual(invalid_budget.status_code, 422)
+
+        invalid_format = self.client.post(
+            "/v1/context",
+            json={"task": "bounded", "format": "xml"},
+            headers=headers,
+        )
+        self.assertEqual(invalid_format.status_code, 422)
 
     def test_capture_get_invalid_token_returns_unauthorized_page(self) -> None:
         response = self.client.get("/capture", params={"token": "wrong-token", "content": "Remember this."})
@@ -187,6 +244,21 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertFalse(hosted_readiness["require_scoped_api_tokens"])
         self.assertEqual(hosted_readiness["global_token_user_switching"], "allowed_local_compatibility")
         self.assertEqual(hosted_readiness["checks"][0]["name"], "scoped_api_tokens_required")
+
+    def test_hosted_health_defers_tenant_wide_readiness_scan(self) -> None:
+        original_settings = main_module.settings
+        main_module.settings = replace(original_settings, shard_mode="bucket")
+        try:
+            with patch(
+                "backend.app.main._cached_credential_encryption_evidence",
+                side_effect=AssertionError("liveness must not scan tenant credentials"),
+            ):
+                response = self.client.get("/health")
+        finally:
+            main_module.settings = original_settings
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["hosted_readiness"]["status"], "deferred")
 
     def test_ready_requires_scoped_api_tokens_for_hosted_shard_modes(self) -> None:
         original_settings = main_module.settings
@@ -413,6 +485,8 @@ class FastAPIContractTests(unittest.TestCase):
                 default_user_id="hosted-default",
                 shard_mode="bucket",
                 require_scoped_api_tokens=True,
+                require_encrypted_credentials=True,
+                legal_terms_approved=True,
                 public_base_url="https://api.cortex-hq.com",
                 sync_signing_key="sync-signing-key",
                 hosted_database_url="postgresql://cortex:secret@db.cortex.internal/cortex",
@@ -426,6 +500,14 @@ class FastAPIContractTests(unittest.TestCase):
             )
             main_module.settings = hosted_settings
             main_module.store = main_module.StoreRegistry.from_settings(hosted_settings)
+            main_module.store.keyring = UserKeyring(
+                root / "keyring.sqlite",
+                LocalKekProvider(
+                    env={
+                        "CORTEX_KEK": base64.b64encode(bytes(range(32))).decode("ascii"),
+                    }
+                ),
+            )
             user = "hosted-ready-contract"
 
             response = self.client.get("/ready")
@@ -1044,8 +1126,23 @@ class FastAPIContractTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
         )
         self.assertEqual(scoped.status_code, 200)
-        scoped_identity = next(layer for layer in scoped.json()["layers"] if layer["layer"] == "identity")
+        scoped_payload = scoped.json()
+        scoped_identity = next(layer for layer in scoped_payload["layers"] if layer["layer"] == "identity")
         self.assertIsNone(scoped_identity.get("omitted"))
+        scoped_post = self.client.post(
+            "/v1/context",
+            json={"task": "Atlas database decision"},
+            headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(scoped_post.status_code, 200)
+        scoped_post_payload = scoped_post.json()
+        scoped_post_identity = next(
+            layer for layer in scoped_post_payload["layers"] if layer["layer"] == "identity"
+        )
+        self.assertIsNone(scoped_post_identity.get("omitted"))
+        scoped_payload.pop("generated_at", None)
+        scoped_post_payload.pop("generated_at", None)
+        self.assertEqual(scoped_payload, scoped_post_payload)
 
         # The MCP core tool round-trips through /mcp with the same engine.
         mcp_token = "cxm-context-tool-token"
@@ -2030,6 +2127,32 @@ class FastAPIContractTests(unittest.TestCase):
                 headers={"Authorization": f"Bearer {scoped_token}", "X-Cortex-User": "alice"},
             )
             self.assertEqual(scoped.status_code, 200)
+
+            tool_headers = {
+                "Authorization": f"Bearer {scoped_token}",
+                "X-Cortex-User": "alice",
+            }
+            tool_schema = self.client.get(
+                "/v1/tools/schema",
+                headers=tool_headers,
+            )
+            self.assertEqual(tool_schema.status_code, 200, tool_schema.text)
+            self.assertTrue(tool_schema.json()["schema"])
+            tool_call = self.client.post(
+                "/v1/tools/call",
+                json={"name": "search_memory", "arguments": {"query": "nothing"}},
+                headers=tool_headers,
+            )
+            self.assertEqual(tool_call.status_code, 200, tool_call.text)
+            self.assertEqual(tool_call.json()["tool"], "search_memory")
+
+            # The REST token remains invalid on the MCP transport.
+            mcp_rejected = self.client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                headers=tool_headers,
+            )
+            self.assertEqual(mcp_rejected.status_code, 401)
 
             # A read/write token still cannot pull the raw bulk dump (distilled reads are allowed).
             export_blocked = self.client.get(
