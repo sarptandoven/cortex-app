@@ -8,7 +8,7 @@ a packaging script.
 |---|---|---|
 | Packager | `macos/package_app_store.sh` | `macos/package_release.sh` |
 | Sandbox | Yes (App Sandbox entitlement) | No |
-| Cloud account | No | Optional |
+| Account / sync | No account | Sign-in required; sync optional |
 | Outbound HTTPS connectors | No — TLS stripped from the bundle | Yes |
 | MCP setup | Guided **manual** (no config writes) | **Automatic** config install |
 | Distribution | App Store Connect review | Signed + notarized + stapled DMG/ZIP |
@@ -31,9 +31,9 @@ review-safe build:
 - All memory stays inside the app's sandbox container.
 
 The notarized **Developer-ID DMG** is the full-featured power-user path: no
-sandbox, optional cloud, outbound HTTPS connectors available, and automatic MCP
-config install. It keeps `_ssl` and is built by `package_release.sh` — that path
-is byte-identical to before and is documented in the second half of this file.
+sandbox, required account sign-in, optional cloud sync, outbound HTTPS
+connectors, and automatic MCP config install. It keeps `_ssl` and is built by
+`package_release.sh` — that path is documented in the second half of this file.
 
 Every App Store behavior difference is gated behind `DistributionMode.isAppStore`
 (Swift, reads `CortexDistributionMode == "app-store"` from Info.plist) or the

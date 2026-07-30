@@ -41,7 +41,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/doppl-tech/cortex-app.git",
+    "url": "https://github.com/trace-cortex/cortex-app.git",
     "directory": "packages/openclaw-cortex-context"
   },
   "peerDependencies": {

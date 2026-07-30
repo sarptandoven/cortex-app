@@ -53,13 +53,16 @@ Open Connections & Privacy to manage:
 For backend development without opening the app:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r backend/requirements.txt pytest
 ./scripts/dev_backend.sh
 ```
 
 Run the main verification set:
 
 ```bash
-python3 -W error::ResourceWarning -m unittest discover backend/tests
+python3 -W error::ResourceWarning -m pytest backend/tests -q
 python3 scripts/retrieval_eval.py
 python3 scripts/adaptation_eval.py
 ./macos/build.sh

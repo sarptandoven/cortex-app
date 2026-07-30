@@ -1,38 +1,42 @@
 # Cortex Installer and Updates
 
-Cortex is currently a local-first macOS beta. The release system should make it easy to create a repeatable app package today while leaving a clean path to signed, notarized, automatic updates later.
+Cortex is currently a local-first macOS beta. The current direct-download build
+referenced by `site/downloads/latest.json` is Developer ID signed and notarized
+by Apple. It requires account sign-in, while memory retrieval remains local and
+cloud capture sync is optional. The release system also retains an ad-hoc
+`local-beta` track for internal QA.
 
-The first-100 release track is explicitly the unnotarized `local-beta`
-track unless a specific build completes the Apple Developer ID flow in
-`docs/APPLE_RELEASE.md`. Treat it as a controlled direct beta for named testers,
-not as a public macOS distribution.
+Signing and notarization are complete for the current public beta artifact.
+Cortex checks the release feed for newer builds, but installing or rolling back
+still uses normal app replacement rather than a background self-updater.
 
-## Current First-100 Track
+## Current Direct Beta Track
 
-Use the current local-beta path for the first 100 testers only when the invite
-copy, operator handoff, and support runbook all say the same thing:
+Use the direct beta path only when the landing page, release manifest, operator
+handoff, and support runbook all describe the exact artifact consistently:
 
 - The app is packaged as a DMG and ZIP by `macos/package_release.sh`.
-- The app is ad-hoc signed for local verification, not Developer ID signed.
-- The app and DMG are not notarized or stapled.
-- macOS Gatekeeper may block first launch until the user uses Control-click >
-  Open.
-- Updates and rollback are manual app replacement flows.
+- Production direct builds are Developer ID signed and notarized by Apple.
+- GitHub Releases hosts the binaries referenced by the HTTPS update feed.
+- Cortex can detect a newer build; installation and rollback remain app
+  replacement flows.
 - The local memory folder is outside `Cortex.app` and must not be deleted during
   install, update, or rollback.
-- The static site and `latest.json` are release metadata and download plumbing,
-  not automatic update infrastructure.
+- The static site and `latest.json` provide release metadata and download
+  discovery, not automatic background installation.
 
-If any operator, invite, landing page, or handoff copy describes the current
-local-beta build as notarized, auto-updating, production-ready, or broadly
-public, the build is a no-go for first-100 invites.
+If any operator, invite, landing page, or handoff copy disagrees with the
+manifest about signing, notarization, version, build, or artifact URLs, the
+release is a no-go. An internal ad-hoc build must explicitly document the
+Control-click > Open path and must never reuse the public notarized-build copy.
 
 ## Ready And Not Ready
 
-Ready for the first-100 local-beta track:
+Ready for the current direct beta track:
 
 - repeatable DMG, ZIP, checksum file, `latest.json`, and `BETA_HANDOFF.md`
   generation
+- Developer ID signing, Apple notarization, and GitHub Release hosting
 - checksum and manifest validation for generated artifacts
 - manual install from DMG on macOS 13 or newer
 - manual update by replacing `Cortex.app`
@@ -42,15 +46,12 @@ Ready for the first-100 local-beta track:
 - live packaged-app smoke testing after launch
 - content-free support bundle generation
 
-Not ready for the current first-100 local-beta track:
+Not included in the current direct beta:
 
-- Gatekeeper-ready public distribution
-- Developer ID notarization or stapling, unless the exact build completed
-  `docs/APPLE_RELEASE.md`
 - automatic background updates or in-app rollback
 - Sparkle appcast or signed update-feed rollout
-- hosted accounts, cloud sync, cloud backup, billing, teams, or production
-  telemetry
+- cloud backup, billing, teams, production telemetry, or production-grade
+  hosted operations
 - production incident response for broad external launch
 
 ## Current Release Artifacts
@@ -147,8 +148,8 @@ will receive.
    - Invite copy says the build is an unnotarized local beta when Developer ID
      notarization has not completed.
    - `BETA_HANDOFF.md`, landing-page copy, and support copy do not promise
-     automatic updates, hosted accounts, cloud backup, broad OAuth sync, or
-     production support.
+     automatic background updates, cloud backup, preconfigured broad OAuth
+     sync, or production support.
 2. Generate or verify the package:
 
    ```bash
@@ -313,19 +314,23 @@ manual QA.
 Manual updates are acceptable for early local beta because:
 
 - there is no hosted account service yet
-- the app is ad-hoc signed in local builds
-- automatic updates require a signing/notarization/key-management decision
+- internal QA builds may still be ad-hoc signed
+- background installation requires a dedicated update framework and separate
+  update-signing policy
 - users must retain confidence that their local memory folder is not touched by app replacement
 
 ## Production Upgrade Path
 
-Before public distribution:
+Completed for the current direct beta:
 
 - create an Apple Developer ID Application certificate
 - sign the app with hardened runtime
 - notarize the app and DMG
 - staple notarization tickets
 - host `latest.json` and artifacts over HTTPS
+
+Remaining before automatic background updates:
+
 - rotate update feed keys separately from backend API keys
 - add release rollback policy
 - decide whether to adopt Sparkle for automatic updates
@@ -335,7 +340,7 @@ Sparkle is the likely production path for background update download/install. Th
 ## Release Checklist
 
 - Increment `CFBundleShortVersionString` or `CFBundleVersion`.
-- Run `python3 -m unittest discover backend/tests`.
+- Run `python3 -m pytest backend/tests -q`.
 - Run `python3 scripts/retrieval_eval.py`.
 - Run `python3 scripts/adaptation_eval.py`.
 - Run `./macos/build.sh`.
@@ -376,12 +381,12 @@ or newer user profile:
 
 This system does not yet:
 
-- notarize the app
 - install privileged helpers
 - perform automatic replacement of the running app
 - run delta updates
 - verify update signatures beyond SHA-256 in the feed
 - provide rollback from inside the app
-- provide hosted accounts, cloud backup, live OAuth/API sync, remote MCP/OAuth, billing, teams, or production telemetry
+- provide cloud backup, preconfigured managed Google/Microsoft/Notion OAuth,
+  remote MCP/OAuth, billing, teams, or production telemetry
 
 Those are appropriate for the public-beta release track, not the local-first beta package.

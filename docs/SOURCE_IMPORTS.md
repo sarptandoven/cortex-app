@@ -1,5 +1,16 @@
 # Source Ingestion
 
+> **Current connector note (audited 2026-07-30):** In addition to the export
+> parsers below, the backend now has read-only live connectors for GitHub,
+> Gmail, Google Drive, Outlook, Slack, Readwise, Calendar, Raindrop, Zotero,
+> Linear, Jira, Notion, and Obsidian. GitHub supports device-flow sign-in.
+> Google, Microsoft, and Notion managed OAuth flows exist in code, but the
+> direct build currently ships their client IDs empty; those connectors
+> therefore use a user-supplied token/key unless a release configures OAuth.
+> Where older rollout notes below say those connectors still need to be built,
+> this note and the executable `CONNECTOR_SETUP_BLUEPRINTS` contract in
+> `backend/app/storage.py` are authoritative.
+
 Cortex source ingestion turns connected services, local app connectors, MCP bridges, and support fallback imports into normalized memory candidates. The first-100-user product should lead with connected paths that can register a source account, stream records through `/v1/source-accounts/{account_id}/sync`, preserve citations, and route new records through Review.
 
 Local export/file import still exists as backend infrastructure for tests, migrations, unsupported services, and support recovery. It should not be the normal first-run product path.
@@ -122,7 +133,14 @@ Repeated fallback imports are idempotent by content hash and source. If a fallba
 
 ## Source Account Registry
 
-Cortex keeps durable local connector state for connected-source sync. The macOS app now includes a first native local connector for Obsidian vaults: the user grants a vault folder once, Cortex scans Markdown/text notes, registers a source account, streams cited records through `/v1/source-accounts/{account_id}/sync`, advances a cursor, and lets Review decide what becomes trusted memory. Other source-specific OAuth/sign-in UI is still implemented connector by connector, but the shared backend contract is in place for local app integrations, MCP bridges, and connector processes.
+Cortex keeps durable local connector state for connected-source sync. Obsidian
+is the native local-folder path: the user grants a vault folder once, Cortex
+scans Markdown/text notes, registers a source account, streams cited records
+through `/v1/source-accounts/{account_id}/sync`, advances a cursor, and lets
+Review decide what becomes trusted memory. The same contract now backs the
+read-only token/API connectors listed in the note above. GitHub device flow is
+configured; managed Google, Microsoft, and Notion OAuth needs release-provided
+client IDs.
 
 Connector capability catalog:
 
@@ -222,7 +240,11 @@ Future source rows should follow the same pattern: connect or authorize the sour
 
 ## Current Limits
 
-- The generic source-account sync ingestion endpoint is implemented; branded OAuth/API sign-in flows still need to be built source by source for Gmail, Notion, Slack, Google Chat, Google Drive, Microsoft 365, Teams, Linear, Jira, GitHub, LinkedIn, Twitter/X, Zoom, and browser history.
+- The generic source-account sync ingestion endpoint and thirteen read-only
+  connector modules are implemented. Remaining gaps include configured
+  Google/Microsoft/Notion OAuth clients, managed OAuth for the other token
+  connectors, and direct connectors for Google Chat, Teams, LinkedIn,
+  Twitter/X, Zoom, and browser history.
 - Advanced/Fallback import remains available for services that cannot connect directly yet.
 - PDF extraction depends on optional `pypdf`; otherwise the macOS fallback can extract PDFs selected through the app.
 - Very large exports are capped by record count and per-record character limits, then chunking/reranking should be improved in the next ingestion pass.

@@ -1,6 +1,7 @@
 # Cortex Operational Readiness
 
-This document defines how Cortex should be operated for the local-first macOS beta before a hosted backend exists.
+This document defines how Cortex should be operated for the local-first macOS
+beta and its supporting hosted account/sync plane.
 
 ## Operating Model
 
@@ -11,7 +12,8 @@ Cortex beta operations are local-first:
 - releases are packaged as DMG and ZIP artifacts
 - the update feed is a static `latest.json`
 - support triage starts from a sanitized support bundle
-- public incident response is manual until hosted accounts and telemetry exist
+- public incident response is manual until production telemetry, alerting, and
+  formal ownership exist
 
 The goal is not to pretend we have production cloud operations. The goal is to make the local beta repeatable, supportable, and recoverable.
 
@@ -201,7 +203,7 @@ Examples:
 Immediate response:
 
 1. Run `python3 scripts/check_distribution_site.py`.
-2. Run `python3 scripts/validate_update_manifest.py site/downloads/latest.json`.
+2. Run `python3 scripts/validate_update_manifest.py --allow-remote-artifacts site/downloads/latest.json`.
 3. Re-run `python3 scripts/prepare_distribution_site.py`.
 4. Re-test the static site locally.
 5. Replace hosted files atomically: manifest after artifacts.

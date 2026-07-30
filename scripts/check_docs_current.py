@@ -27,6 +27,9 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
     "README.md": (
         "Five-tab product flow",
         "Model, Sources, Review, Ask, Trust",
+        "pip install -r backend/runtime-requirements.txt",
+        "new releases arrive automatically",
+        "checks the signed release feed",
     ),
     "docs/CAPTURE_SURFACES.md": (
         "Save tab",
@@ -53,6 +56,9 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
         "Local-first Cortex beta with installer, update manifest, capture, MCP, and trust controls.",
         "Connect MCP or an Obsidian/local notes vault",
         "Those are appropriate for the public-beta release track, not the local-first MVP package.",
+        "The app and DMG are not notarized or stapled.",
+        "first-100 release track is explicitly the unnotarized",
+        "binaries referenced by the signed update feed",
     ),
     "docs/OPERATIONAL_READINESS.md": (
         "context pack contains stale content",
@@ -61,6 +67,12 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
     "docs/DISTRIBUTION.md": (
         "Cortex gives ChatGPT, Claude, Cursor, and MCP agents your memory",
         "personal operating model for agents",
+        "current path is an unnotarized direct",
+        "first notarized Release has not been published yet",
+        "checks the signed update feed",
+    ),
+    "docs/PRODUCTION_READINESS.md": (
+        "Add app notarization and signed installer",
     ),
     "docs/APPLE_RELEASE.md": (
         "local-first MCP/vault beta",
@@ -73,6 +85,10 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
     "site/downloads/latest.json": (
         "Complete first-run setup with a local vault, MCP or Obsidian connection",
         "Local-first Cortex beta with bundled backend, capture, MCP, and trust controls.",
+    ),
+    "site/index.html": (
+        "ad-hoc signed for local beta testing",
+        "not yet notarized for broad public distribution",
     ),
     "macos/Sources/CortexApp.swift": (
         "Review Source Import",
@@ -227,6 +243,29 @@ USER_OPERATOR_DOC_FORBIDDEN_PHRASES: tuple[str, ...] = (
     "Capture, Review, Reuse, Return",
 )
 
+REQUIRED_SNIPPETS: dict[str, tuple[str, ...]] = {
+    "README.md": (
+        "docs/README.md",
+        "backend/requirements.txt pytest",
+        "feat/pairwise-twin-eval/docs/PAIRWISE_TWIN_EVALUATION.md",
+    ),
+    "backend/README.md": (
+        "bundled on-device Model2Vec",
+        "cortex-hash-v1",
+    ),
+    "docs/ARCHITECTURE.md": (
+        "bundled Model2Vec embeddings when available",
+    ),
+    "docs/README.md": (
+        "trace-cortex/cortex-app",
+        "site/downloads/latest.json",
+        "feat/pairwise-twin-eval",
+    ),
+    "site/index.html": (
+        "Developer ID signed, notarized by Apple",
+    ),
+}
+
 
 def run_command(command: list[str]) -> dict[str, object]:
     completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
@@ -252,6 +291,21 @@ def phrase_errors() -> list[str]:
                 errors.append(f"{relative_path}: stale phrase still present: {phrase!r}")
     errors.extend(primary_ui_errors())
     errors.extend(scoped_stale_copy_errors())
+    errors.extend(required_snippet_errors())
+    return errors
+
+
+def required_snippet_errors() -> list[str]:
+    errors: list[str] = []
+    for relative_path, snippets in REQUIRED_SNIPPETS.items():
+        path = ROOT / relative_path
+        if not path.exists():
+            errors.append(f"{relative_path}: missing")
+            continue
+        text = path.read_text(encoding="utf-8")
+        for snippet in snippets:
+            if snippet not in text:
+                errors.append(f"{relative_path}: required current-doc reference missing: {snippet!r}")
     return errors
 
 
@@ -440,6 +494,7 @@ def main() -> None:
             "site-visible-trust-step",
             "generated-beta-metadata-language",
             "user-operator-loop-language",
+            "required-doc-index",
             "direct-release-manifest",
             "mcp-config",
         ],

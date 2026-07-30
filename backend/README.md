@@ -14,7 +14,8 @@ It provides:
 - user-owned local vault persistence
 - SQLite/FTS rebuildable local index
 - full-text search
-- optional `sqlite-vec` vector search with offline hash embeddings by default and opt-in OpenAI embeddings
+- optional `sqlite-vec` vector search with bundled on-device Model2Vec
+  embeddings, a deterministic hash fallback, and opt-in OpenAI embeddings
 - review inbox
 - capture approve/archive/delete lifecycle
 - daily review with recommended actions
@@ -57,7 +58,15 @@ OPENAI_API_KEY=optional
 
 If `ANTHROPIC_API_KEY` is missing, the backend uses a deterministic local extractor so capture/search still work.
 
-If `CORTEX_EMBEDDING_PROVIDER=openai`, Cortex calls OpenAI's embeddings endpoint with the configured model and stores the resulting vectors in the rebuildable SQLite index. Leave the provider as `hash` for fully offline local search. Non-strict OpenAI mode falls back to hash embeddings when the provider is unavailable; set `CORTEX_EMBEDDING_STRICT=1` when indexing should fail instead. Keep `CORTEX_EMBEDDING_DIMENSIONS=384` for the current local sqlite-vec schema.
+With no explicit provider override, Cortex uses the bundled on-device Model2Vec
+model when it is present and falls back to `cortex-hash-v1` when it is not.
+`minishlab/potion-base-8M` produces native 256-dimensional vectors; the
+rebuildable sqlite-vec index reconciles its dimensions to the active provider.
+Set `CORTEX_EMBEDDING_PROVIDER=hash` for the deterministic development/CI
+fallback. If `CORTEX_EMBEDDING_PROVIDER=openai`, Cortex calls OpenAI's embeddings
+endpoint with the configured model. Non-strict provider failures fall back to
+hash retrieval; set `CORTEX_EMBEDDING_STRICT=1` when failures should stop
+indexing instead.
 
 ## Core Endpoints
 
@@ -147,7 +156,7 @@ See `docs/LOCAL_VAULT_FORMAT.md` for the full disk layout and recovery contract.
 ## Battle Tests
 
 ```bash
-python3 -m unittest discover backend/tests
+python3 -m pytest backend/tests -q
 python3 scripts/backend_beta_smoke.py
 ```
 
@@ -162,7 +171,10 @@ python3 scripts/ops_readiness_check.py --require-live
 
 ## Hosted Development Notes
 
-These notes are experimental. The first-100 beta does not include hosted accounts, cloud sync, remote recovery, or a 10k-user hosted platform.
+These notes cover the hosted plane as well as local development. The current direct build requires
+account sign-in and includes optional capture sync; zero-access client encryption is opt-in. That does
+not make the service a production-ready 10k-user platform: remote recovery, managed multi-tenant
+operations, formal support, and broad observability remain incomplete.
 
 The same FastAPI service can be deployed to Render, Fly.io, Railway, or a small VPS for development. For hosted experiments, keep SQLite WAL plus `sqlite-vec` as the primary memory store, add login/API-token auth, encrypted backups, and eventually per-user or per-shard database files.
 

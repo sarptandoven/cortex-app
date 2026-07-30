@@ -98,7 +98,8 @@ Local vault
 Rebuildable SQLite index
   FTS5
   sqlite-vec when available
-  hash or opt-in OpenAI embeddings
+  bundled Model2Vec embeddings when available
+  deterministic hash fallback or opt-in OpenAI embeddings
   normalized joins
 
 Release pipeline
