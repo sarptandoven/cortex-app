@@ -21568,13 +21568,10 @@ class CortexStore:
                 # frontmatter id is not trust-boundary-checked before rebuild. Re-salt with
                 # user_id only if the id already belongs to a different user, so an ordinary
                 # single-tenant rebuild round-trips ids unchanged.
-                memory_id = str(memory.get("id") or "")
-                if conn.execute(
-                    "SELECT 1 FROM memories WHERE id = ? AND user_id != ? LIMIT 1",
-                    (memory_id, user_id),
-                ).fetchone():
-                    memory_id = stable_id("mem_", f"{user_id}:{memory_id}")
-                    memory["id"] = memory_id
+                memory_id = self._tenant_unique_id(
+                    conn, "memories", user_id, str(memory.get("id") or "")
+                )
+                memory["id"] = memory_id
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO memories
@@ -21652,13 +21649,8 @@ class CortexStore:
                 captured_at = task.get("captured_at") or timestamp
                 # Cross-tenant collision guard (same as _save_task); see the matching comment
                 # on the memories rebuild above.
-                task_id = str(task.get("id") or "")
-                if conn.execute(
-                    "SELECT 1 FROM tasks WHERE id = ? AND user_id != ? LIMIT 1",
-                    (task_id, user_id),
-                ).fetchone():
-                    task_id = stable_id("task_", f"{user_id}:{task_id}")
-                    task["id"] = task_id
+                task_id = self._tenant_unique_id(conn, "tasks", user_id, str(task.get("id") or ""))
+                task["id"] = task_id
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO tasks
@@ -28414,6 +28406,42 @@ class CortexStore:
             "age_seconds": _age_seconds(job.get("updated_at"), now=now),
         }
 
+    _TENANT_UNIQUE_TABLES = {"memories": "mem_", "tasks": "task_"}
+
+    def _tenant_unique_id(
+        self, conn, table: str, user_id: str, candidate: str, *, max_attempts: int = 8
+    ) -> str:
+        """Return an id for `user_id` that no OTHER tenant already owns in `table`.
+
+        `memories.id` / `tasks.id` are single-column primary keys (see the comment on the table
+        definitions in database.py for why they must stay globally unique), and INSERT OR REPLACE
+        resolves conflicts purely on that key — so writing an id another tenant owns silently
+        deletes their row. Re-salting once is NOT enough: the salted id can itself be owned by a
+        third tenant, which would clobber *them* instead (verified: tenant C holding
+        stable_id("mem_", "tenant-b:collide_mem") was erased when tenant B salted into it). So
+        chain deterministically until the id is free.
+
+        Deterministic and idempotent: the chain depends only on user_id and DB state, and the
+        `user_id != ?` predicate ignores this user's OWN row, so re-saving the same content
+        re-derives the same id instead of accumulating duplicates. The first hop is unchanged from
+        the original single-salt form, so ids already written stay stable.
+        """
+        prefix = self._TENANT_UNIQUE_TABLES[table]  # KeyError = caller bug, never user input
+        for _ in range(max_attempts):
+            taken = conn.execute(
+                f"SELECT 1 FROM {table} WHERE id = ? AND user_id != ? LIMIT 1",
+                (candidate, user_id),
+            ).fetchone()
+            if taken is None:
+                return candidate
+            candidate = stable_id(prefix, f"{user_id}:{candidate}")
+        # Unreachable short of an engineered pile-up of chained hash collisions each owned by a
+        # different tenant. Fail loudly rather than fall through and clobber someone's data.
+        raise ValueError(
+            f"could not derive a tenant-unique {table} id for user {user_id!r} "
+            f"after {max_attempts} attempts"
+        )
+
     def _token_hash(self, token: str, salt: str) -> str:
         return hashlib.sha256(f"{salt}:{token}".encode("utf-8")).hexdigest()
 
@@ -28467,11 +28495,7 @@ class CortexStore:
         # only in that collision case, so the ordinary (non-colliding) path keeps its id exactly
         # as derived/supplied, preserving explicit-id passthrough for existing callers.
         pre_collision_salt_memory_id = memory_id
-        if conn.execute(
-            "SELECT 1 FROM memories WHERE id = ? AND user_id != ? LIMIT 1",
-            (memory_id, user_id),
-        ).fetchone():
-            memory_id = stable_id("mem_", f"{user_id}:{memory_id}")
+        memory_id = self._tenant_unique_id(conn, "memories", user_id, memory_id)
         # Anti-resurrection: the memory id is deterministic (derived from user+capture+content), so
         # re-processing a capture whose child memory the user explicitly FORGOT would recompute the
         # same id and re-insert it. If that memory was tombstoned, honor the forget — skip the
@@ -32081,11 +32105,7 @@ class CortexStore:
         # OR REPLACE resolves conflicts purely on the primary key, so an unguarded write would
         # silently delete and replace the other tenant's row. Re-salt only in that collision
         # case; see the matching guard in _save_memory for the same pattern.
-        if conn.execute(
-            "SELECT 1 FROM tasks WHERE id = ? AND user_id != ? LIMIT 1",
-            (task_id, user_id),
-        ).fetchone():
-            task_id = stable_id("task_", f"{user_id}:{task_id}")
+        task_id = self._tenant_unique_id(conn, "tasks", user_id, task_id)
         topics = task.get("topics", [])
         entity_ids = task.get("entity_ids", [])
         conn.execute(
