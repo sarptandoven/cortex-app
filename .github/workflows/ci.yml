@@ -48,9 +48,13 @@ jobs:
             ui.py
 
       - name: Run backend unit tests
-        # pytest is the canonical runner: conftest.py provides fixtures + temp-dir
-        # isolation that `unittest discover` bypasses, and some tests/subtests only
-        # behave correctly under pytest.
+        # pytest is the canonical runner. The tests are all unittest.TestCase (no file
+        # imports pytest), but conftest.py — which only pytest loads — pins
+        # CORTEX_DB_PATH/CORTEX_VAULT_PATH to a throwaway temp dir at import time. It
+        # declares no fixtures; that env isolation is the whole job, and it matters
+        # because backend.app.main builds a process-singleton store on first import.
+        # `unittest discover` bypasses it and the suite then binds to the default
+        # backend/data/Cortex.vault, persisting across runs and writing into the tree.
         run: python -m pytest backend/tests -q
 
       - name: Run retrieval quality regression gate

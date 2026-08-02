@@ -258,50 +258,48 @@ Operational readiness adds a sanitized support bundle that omits captured text, 
 
 ## MCP Tools
 
-The backend exposes an MCP-style JSON-RPC endpoint with these tools:
+The backend exposes an MCP-style JSON-RPC endpoint at `POST /mcp`. The tool registry is
+`TOOLS` in `backend/app/mcp_tools.py` and is the source of truth — it currently holds 110
+tools, so this document deliberately does not mirror the full list (a hand-copied list here
+drifted to 42 stale entries before).
 
-- `remember_this`
+Clients cap how many tools they will accept (Cursor 40, ChatGPT 128), so tools are advertised
+by *surface* — `MCP_TOOL_SURFACES` in the same module, with presets `core`, `coding`,
+`chatgpt`, and `full`. The surface rides on the token's label. It is advertisement only and
+never authorization: scopes (`read`, `write`, `export`, `maintenance`, `destructive`) plus the
+user's Trust policy decide what a call is allowed to do, whatever the surface advertises.
+
+The `core` surface is the default ten:
+
+- `use_cortex`
+- `get_context`
+- `ask_memory`
+- `query_memory`
+- `expand`
 - `search_memory`
-- `get_recent_context`
-- `get_memory_graph`
-- `get_decisions`
-- `get_open_questions`
-- `get_daily_review`
-- `get_product_loop`
-- `get_style_profile`
-- `get_project_context`
-- `get_procedure`
-- `list_supported_import_sources`
-- `list_source_connectors`
-- `build_context_pack`
-- `get_about_person`
-- `get_about_entity`
-- `list_memory_topics`
-- `list_memory_entities`
-- `get_memory_stats`
-- `get_memory_inbox`
-- `get_memory_diagnostics`
-- `get_reliability_report`
-- `get_support_bundle`
-- `get_trust_summary`
-- `get_audit_log`
-- `get_personal_profile`
-- `get_agent_adaptation`
-- `connect_source_account`
-- `sync_source_records`
-- `sync_connected_sources`
-- `approve_memory_capture`
-- `archive_memory_capture`
-- `create_memory_backup`
-- `restore_latest_memory_backup`
-- `delete_memory_backups`
-- `delete_all_user_data`
-- `repair_memory_storage`
-- `rebuild_memory_search`
-- `forget_memory`
-- `delete_memory_capture`
-- `rebuild_index_from_vault`
-- `export_memory`
+- `get_entity_context`
+- `get_person_map`
+- `remember_this`
+- `list_capabilities`
+
+Beyond core, the registry groups roughly into: review/write (`propose_memory`,
+`approve_memory_capture`, `archive_memory_capture`, `forget_memory`), profile and adaptation
+(`get_personal_profile`, `get_agent_adaptation`, `get_style_profile`, `get_project_context`),
+connectors (`list_source_connectors`, `connect_source_account`, `sync_connected_sources` plus
+one `sync_*` per connector), sessions and context packs (`start_agent_session`,
+`build_context_pack`, `verify_context_pack`), provenance and audit (`get_decision_history`,
+`get_belief_timeline`, `verify_belief_proof`, `get_audit_log`, `get_trust_summary`), shared
+memory, and portability (`export_memory_bundle`, `verify_memory_bundle`,
+`create_memory_backup`).
+
+Two tools are named `search` and `fetch` purely because the ChatGPT deep-research connector
+requires those exact names; they are kept out of `core` so the default Claude/Cursor surface
+is unchanged.
+
+Desktop clients do not speak to `/mcp` directly. They launch the bundled stdio proxy
+`scripts/cortex_mcp_stdio.py`, which pipes stdio JSON-RPC to `http://127.0.0.1:8766/mcp` with
+a `cxm_` bearer token. Root `mcp_server.py` is the legacy prototype and is not used by
+packaged builds.
 
 The local source-account sync endpoint is enough for beta local app integrations, MCP bridges, and connector processes. Production ChatGPT/Claude and cloud-service connectors should add full remote MCP/OAuth flows on top of the same account, cursor, citation, and review contracts.
 
