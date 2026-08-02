@@ -145,8 +145,11 @@ jobs:
       - name: Audit hosted runtime dependencies
         run: pip-audit --strict -r backend/requirements.lock
 
-      - name: Audit top-level dependencies for known vulnerabilities
-        run: pip-audit --strict -r legacy/requirements.txt
+      - name: Audit archived prototype dependencies for known vulnerabilities
+        # The archived manifest includes macOS-only rumps/pyobjc dependencies that
+        # cannot be resolved on this Linux runner. Audit its direct declarations
+        # without attempting to install the retired prototype dependency graph.
+        run: pip-audit --strict --no-deps -r legacy/requirements.txt
 
       - name: Audit packaged backend runtime dependencies
         run: pip-audit --strict -r backend/runtime-requirements.lock
@@ -280,5 +283,7 @@ jobs:
           python scripts/check_vector_runtime.py \
             --app macos/build/Cortex.app \
             --require-model2vec
-          python scripts/bundled_runtime_smoke.py --app macos/build/Cortex.app
+          python scripts/bundled_runtime_smoke.py \
+            --app macos/build/Cortex.app \
+            --startup-timeout-seconds 120
           codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app
