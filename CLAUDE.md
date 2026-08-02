@@ -18,26 +18,29 @@ extension) retrieve approved memory over **MCP**.
 # Dev server (FastAPI + uvicorn, reload, dev token)
 ./scripts/dev_backend.sh                     # 127.0.0.1:8766, CORTEX_ALLOW_INSECURE_DEV_TOKEN=1
 
-# Test suite — pytest is the CANONICAL runner, but the tests are all unittest.TestCase
-# (0 of 165 files import pytest). conftest.py has NO fixtures: it is import-time env
-# isolation only, because backend.app.main builds a process-singleton store on first
-# import. `unittest discover` bypasses that and tests then write a real default vault.
+# Test suite — pytest is the canonical runner. conftest.py applies import-time
+# environment isolation because backend.app.main builds a process-singleton store
+# on first import. `unittest discover` bypasses that isolation and can write a real
+# default vault.
 python -m pytest backend/tests -q
 python -m pytest backend/tests/test_context_engine.py -q            # one file
 python -m pytest backend/tests/test_context_engine.py::ClassName::test_name -q   # one test
 python -m pytest backend/tests -q -k "retrieval and not scale"      # by expression
 ```
 
-Install deps: `pip install -r backend/requirements.txt` (dev/hosted plane) — `backend/runtime-requirements.txt`
-is the *packaged-app* runtime set (`pysqlite3`, `sqlite-vec`, `model2vec`). Root `requirements.txt` belongs to
-the legacy prototype scripts only.
+Run `make setup` to install the hash-locked contributor environment.
+`backend/requirements.txt` defines the hosted-plane dependencies, while
+`backend/runtime-requirements.txt` defines the packaged-app runtime
+(`pysqlite3`, `sqlite-vec`, `model2vec`). `legacy/requirements.txt` belongs to
+the archived prototype only.
 
-There is **no linter, formatter, or type checker** in this repo — no ruff/black/eslint/prettier/mypy. CI's only
-static Python check is `python -m compileall -q backend scripts capture.py github_store.py ingest.py
-instrumentation.py mcp_server.py redis_store.py ui.py`. Match surrounding style by hand.
+There is no repository-wide formatter or Python type checker. CI compiles
+`backend`, `examples`, `legacy`, and `scripts`, runs Bandit and dependency
+audits, and type-checks the TypeScript packages. Match surrounding Python style
+by hand.
 
-`SETUP.md` still documents `python3 -m unittest discover backend/tests`; CI deliberately overrides that with
-pytest because `unittest discover` bypasses `conftest.py`'s temp-dir isolation. **Use pytest.**
+`SETUP.md` uses `make test`, which invokes pytest and preserves the temporary
+vault/database isolation. **Do not substitute `unittest discover`.**
 
 ### Quality gates (all of these block CI — run before claiming done)
 
@@ -57,9 +60,12 @@ python scripts/backend_beta_smoke.py
 python scripts/ops_readiness_check.py --skip-tests --skip-build
 python scripts/appstore_compliance_lint.py   # App Store 2.5.1/2.5.2/4.8 + privacy/entitlements
 python scripts/check_distribution_site.py
-python scripts/validate_update_manifest.py site/downloads/latest.json
+python scripts/validate_update_manifest.py --allow-remote-artifacts site/downloads/latest.json
 bandit -c .bandit.yaml -r backend scripts -ll # fails on MEDIUM+
-pip-audit --strict -r backend/requirements.txt
+pip-audit --strict -r requirements-dev.lock
+pip-audit --strict -r backend/requirements.lock
+pip-audit --strict -r backend/runtime-requirements.lock
+pip-audit --strict -r legacy/requirements.txt
 ```
 
 ### macOS app
@@ -90,12 +96,12 @@ This is the single most important structural fact in the repo.
 
 - **`backend/app/standalone_server.py`** — a pure-stdlib `http.server`/`ThreadingHTTPServer` implementation.
   **This is what ships.** The macOS app launches `python3 -S -s -m app.standalone_server --host 127.0.0.1
-  --port 8766` (`macos/Sources/CortexApp.swift:2802`) against a bundled interpreter that has **no
+  --port 8766` from `macos/Sources/CortexApp.swift` against a bundled interpreter that has **no
   FastAPI/uvicorn/pydantic**. The smoke/verify/bench scripts boot this one too (`verify_full_pipeline.py`,
   `verify_pipeline_live.py`, `live_product_smoke.py`, `e2e_external_connections.py`, `cmp_demo.py`,
   `demo_seed.py`, `bundle_bench.py`, `cmp_scale_bench.py`). The `*_eval.py` gates do **not** — they exercise
   `CortexStore` in-process, so they will not catch a route wired into only one server.
-- **`backend/app/main.py`** — the FastAPI app (~209 `@app.*` routes). This is the dev server
+- **`backend/app/main.py`** — the FastAPI app. This is the dev server
   (`scripts/dev_backend.sh`) and the hosted/multi-tenant plane (`scripts/load_test_10k.py` runs it under
   uvicorn in sharded mode).
 
@@ -132,17 +138,15 @@ Captures have a lifecycle `pending → approved | archived` (plus hard delete). 
 state** — archive is the reject. **Nothing reaches AI tools until the user approves it in the Review inbox**;
 this gate is a product invariant, and `CORTEX_AUTO_APPROVE_CAPTURES` is deliberately **overridden by a
 connected source's own review policy**, so connector trust can't be bypassed by a global flag.
-`backend/app/models.py:8-9`
-is the authoritative taxonomy: `MemoryKind` = claim, decision, event, preference, observation, action, question,
+`backend/app/models.py` is the authoritative taxonomy: `MemoryKind` = claim, decision, event, preference, observation, action, question,
 summary, style, negative, procedure; `MemoryLayer` = semantic, episodic, style, decision, preference, negative,
-procedural. (The README's "seven layers — voice, preferences, decisions, facts, episodic, entities, topics" is
-marketing vocabulary, not these identifiers; entities/topics are join tables, not layers.) Entities
+procedural. Entities and topics are separate join tables, not memory layers. Entities
 (person/project/org/topic) plus edges form the knowledge graph used by `graph_analysis.py` — bounded
 strongest-path walk, plus a `personalized_pagerank` mode.
 
 `docs/ARCHITECTURE.md` maps the endpoint surface and vault layout; `docs/CMP_PROTOCOL.md` is the CMP spec
-and names its own source-of-truth files. Note that `ARCHITECTURE.md`'s MCP tool list is already stale —
-`query_memory` and `expand` exist in `mcp_tools.py:1037,1069` but are absent from it. Trust the code.
+and names its own source-of-truth files. The `TOOLS` registry in `backend/app/mcp_tools.py` remains the
+authoritative MCP surface; update the architecture inventory whenever that registry changes.
 
 ### Ingestion and connectors
 
@@ -178,15 +182,17 @@ pre-warms hot context packs and verifies each one round-trips before counting it
 `backend/app/mcp_tools.py` is a **hand-written JSON-RPC handler, not the `mcp` SDK**. `TOOLS` holds **110**
 tools, exposed at `POST /mcp` (streamable-HTTP compatible: `Accept: text/event-stream` gets SSE +
 `Mcp-Session-Id`; JSON clients get byte-identical `application/json`). Desktop clients connect through the
-bundled stdio proxy `scripts/cortex_mcp_stdio.py`. Root `mcp_server.py` is the **legacy prototype**.
+bundled stdio proxy `scripts/cortex_mcp_stdio.py`. `legacy/mcp_server.py` is the **archived prototype**.
 
-Clients cap tool counts (Cursor 40, ChatGPT 128), so `MCP_TOOL_SURFACES` (`mcp_tools.py:1428`) advertises
+Clients cap tool counts (Cursor 40, ChatGPT 128), so `MCP_TOOL_SURFACES` in `mcp_tools.py` advertises
 subsets — `core` (10), `coding`, `chatgpt`, `full` — selected by the token's label. **Surface is advertisement
 only, never authorization**; scopes do the enforcing. The oddly-named `search` / `fetch` tools exist solely
 because the ChatGPT deep-research connector requires those exact names.
 
-Legacy prototype files kept for reference only: `capture.py`, `ingest.py`, `github_store.py`, `redis_store.py`,
-`ui.py`. They still must compile (CI runs `compileall` over them).
+Legacy prototype files are kept under `legacy/` for reference only, including
+`capture.py`, `ingest.py`, `github_store.py`, `redis_store.py`, `mcp_server.py`,
+and `ui.py`. They still must compile because CI runs `compileall` over the
+directory.
 
 ### The universal adapter surface
 

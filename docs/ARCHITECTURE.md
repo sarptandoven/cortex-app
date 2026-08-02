@@ -383,7 +383,7 @@ is unchanged.
 
 Desktop clients do not speak to `/mcp` directly. They launch the bundled stdio proxy
 `scripts/cortex_mcp_stdio.py`, which pipes stdio JSON-RPC to `http://127.0.0.1:8766/mcp` with
-a `cxm_` bearer token. Root `mcp_server.py` is the legacy prototype and is not used by
+a `cxm_` bearer token. `legacy/mcp_server.py` is the archived prototype and is not used by
 packaged builds.
 
 The local source-account sync endpoint is enough for beta local app integrations, MCP bridges, and connector processes. Production ChatGPT/Claude and cloud-service connectors should add full remote MCP/OAuth flows on top of the same account, cursor, citation, and review contracts.

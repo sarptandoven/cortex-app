@@ -23,8 +23,9 @@ documents indexed in [docs/README.md](docs/README.md).
 - Validate retrieval, context packing, latency, and answerability against
   consented real-user tasks in addition to deterministic synthetic fixtures.
 
-Pairwise evaluation remains experimental on `feat/pairwise-twin-eval`; see its
-[overview](https://github.com/trace-cortex/cortex-app/blob/feat/pairwise-twin-eval/docs/PAIRWISE_TWIN_EVALUATION.md).
+Pairwise evaluation is implemented but remains admission-gated until its owner
+study and production-readiness criteria pass; see the
+[overview](docs/PAIRWISE_TWIN_EVALUATION.md).
 
 ## Later — Scale Without Losing Ownership
 
