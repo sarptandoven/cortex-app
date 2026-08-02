@@ -17,7 +17,9 @@ jobs:
   python:
     name: Python checks and backend tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The pairwise suite brings this job close to ten minutes on current
+    # runners. Keep enough headroom for dependency installation and variance.
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
