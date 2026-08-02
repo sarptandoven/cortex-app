@@ -70,11 +70,11 @@ already enabled:
 
 ## Experimental Work
 
-Pairwise digital-twin evaluation is implemented and documented on
-`feat/pairwise-twin-eval`; it is not part of the current `main` release:
+Pairwise digital-twin evaluation is implemented and documented in this
+repository, but remains an experimental, admission-gated subsystem:
 
-- [Pairwise evaluation overview](https://github.com/trace-cortex/cortex-app/blob/feat/pairwise-twin-eval/docs/PAIRWISE_TWIN_EVALUATION.md)
-- [Pairwise integration guide](https://github.com/trace-cortex/cortex-app/blob/feat/pairwise-twin-eval/docs/PAIRWISE_TWIN_INTEGRATION_GUIDE.md)
+- [Pairwise evaluation overview](PAIRWISE_TWIN_EVALUATION.md)
+- [Pairwise integration guide](PAIRWISE_TWIN_INTEGRATION_GUIDE.md)
 
 The feature remains experimental until its owner study and production-admission
 criteria are satisfied.

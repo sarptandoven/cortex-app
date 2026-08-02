@@ -248,7 +248,7 @@ REQUIRED_SNIPPETS: dict[str, tuple[str, ...]] = {
         "docs/README.md",
         "make setup",
         "examples/README.md",
-        "feat/pairwise-twin-eval/docs/PAIRWISE_TWIN_EVALUATION.md",
+        "docs/PAIRWISE_TWIN_EVALUATION.md",
     ),
     "backend/README.md": (
         "bundled on-device Model2Vec",
@@ -260,7 +260,7 @@ REQUIRED_SNIPPETS: dict[str, tuple[str, ...]] = {
     "docs/README.md": (
         "trace-cortex/cortex-app",
         "site/downloads/latest.json",
-        "feat/pairwise-twin-eval",
+        "PAIRWISE_TWIN_EVALUATION.md",
     ),
     "site/index.html": (
         "Developer ID signed, notarized by Apple",

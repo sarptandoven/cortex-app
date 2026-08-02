@@ -1322,9 +1322,19 @@ class CortexVault:
     ) -> Path:
         self.ensure()
         with self._lock:
-            return self._create_zip_backup_locked(timestamp, sqlite_backup_path)
+            return self._create_zip_backup_locked(
+                timestamp,
+                sqlite_backup_path,
+                security_manifest=security_manifest,
+            )
 
-    def _create_zip_backup_locked(self, timestamp: str, sqlite_backup_path: Path) -> Path:
+    def _create_zip_backup_locked(
+        self,
+        timestamp: str,
+        sqlite_backup_path: Path,
+        *,
+        security_manifest: dict[str, Any] | None = None,
+    ) -> Path:
         backup_path = self.backups_dir / f"cortex-vault-{timestamp}.zip"
         descriptor, temp_name = tempfile.mkstemp(
             prefix=".cortex-vault-",

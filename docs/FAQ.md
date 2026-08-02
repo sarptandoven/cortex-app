@@ -68,8 +68,11 @@ registry release is available.
 ## What is pairwise digital-twin evaluation?
 
 It is an experimental evaluation mode that compares two candidate responses
-against cited evidence about the user. It lives on
-`feat/pairwise-twin-eval` and is not part of the current `main` release.
+against cited evidence about the user. The implementation is included in the
+repository, but production execution remains admission-gated until the owner
+study and production-readiness criteria are satisfied. See the
+[evaluation overview](PAIRWISE_TWIN_EVALUATION.md) and
+[integration guide](PAIRWISE_TWIN_INTEGRATION_GUIDE.md).
 
 ## How do I report a bug or security problem?
 
