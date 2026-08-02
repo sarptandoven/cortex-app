@@ -192,48 +192,6 @@ gates.
 All examples are provider-neutral and run against the same local API. Start
 with the [example guide and synthetic fixture](examples/README.md).
 
-## What Cortex does today
-
-Cortex is a **macOS beta**. It runs a local engine on your Mac that ingests your notes and AI-chat
-exports, turns them into typed and cited memory you review, and serves that memory to AI tools over
-MCP.
-
-Concretely, today you can:
-
-- **Bring in your history.** Drop in a ChatGPT, Claude, Gemini, Notion, Slack, Discord, or Telegram
-  export — or mbox/eml, `.ics`, `.vcf`, DOCX, Zoom transcripts, browser bookmarks, an X or LinkedIn
-  archive, and more. See [`docs/SOURCE_IMPORTS.md`](docs/SOURCE_IMPORTS.md).
-- **Sync live sources with a key you paste.** GitHub (secretless device-flow sign-in), Slack, Linear,
-  Jira, Readwise, Raindrop, Zotero, Calendar, Notion, and Obsidian.
-- **Review before you remember.** Captures from connected sources land in a Review inbox, grouped into at
-  most fifteen decisions, where you approve, edit, or archive. Approving records the memory and its audit
-  event in SQLite, then mirrors it to your Markdown vault. Files you import yourself are treated as trusted
-  and are usable right away; pass `auto_approve=false` to route them through Review too.
-- **Ask and get citations or nothing.** Retrieval fuses BM25, `sqlite-vec` vector KNN, and temporal
-  signals, reranks on-device, and passes through a cite-or-abstain gate. With no cited evidence it tells
-  you so rather than guessing.
-- **Connect your tools in one click.** Claude Desktop, Cursor, Windsurf, Zed, Cline, Roo Code, VS Code
-  Copilot, and Claude Code get a Cortex MCP server written into their config.
-- **Keep control.** Per-tool tokens are scoped and revocable, secret/email redaction is on by default,
-  and export, maintenance, and destructive capabilities are **off** until you enable them.
-
-Ask composes its answers deterministically from cited excerpts — no generative language model is
-bundled or called to write prose. Retrieval embeddings run entirely on-device.
-
-### Current limitations, plainly
-
-- **Apple Silicon, macOS 13+.** The Swift target is `arm64-apple-macosx13.0`; there is no Intel or
-  universal build.
-- **This beta requires a one-time account sign-in.** The shipped build sets `CortexRequireAccount`, so
-  first launch shows a sign-in wall. Your memory still lives and is queried locally — the account is
-  identity plus an optional sync target. There is an "Explore with sample notes" path, but it is not
-  remembered between launches.
-- **Cloud sync is not end-to-end encrypted by default.** Client-side E2EE exists but is opt-in and off,
-  so anything you sync is readable server-side. See [`docs/E2EE_SYNC_DESIGN.md`](docs/E2EE_SYNC_DESIGN.md).
-- **Managed Google / Microsoft / Notion OAuth is implemented but not configured** in this build; those
-  client IDs ship empty. Use file import or a pasted token instead.
-- **PDF text extraction is inactive** in the shipped app — `pypdf` is not bundled.
-
 ## How it works
 
 ```mermaid
