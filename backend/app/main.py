@@ -72,7 +72,7 @@ from .oauth_broker import register_oauth_broker_routes
 from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
 from .sharding import StoreRegistry
-from .storage import BACKEND_VERSION, ExportSizeLimitError
+from .storage import BACKEND_VERSION, ExportSizeLimitError, UnknownAgentSessionError
 from .webauth import (
     FAVICON_SVG,
     PUBLIC_PAGE_CSP,
@@ -116,7 +116,7 @@ def _stable_operation_id(route: APIRoute) -> str:
 
 app = FastAPI(
     title=f"{APP_BRAND} API",
-    version="0.1.0",
+    version=BACKEND_VERSION,
     generate_unique_id_function=_stable_operation_id,
 )
 _bearer_scheme = HTTPBearer(
@@ -1029,17 +1029,9 @@ _PRIVACY_BODY = (
 @app.get("/health")
 def health() -> dict[str, Any]:
     payload = store.health_payload(mode="fastapi", auth=bool(settings.api_key))
-    if settings.shard_mode == "local":
-        payload["hosted_readiness"] = _hosted_readiness_contract()
-    else:
-        # Liveness must be constant-time. The full tenant-wide credential audit
-        # belongs to /ready, where its result is bounded by a short cache.
-        payload["hosted_readiness"] = {
-            "status": "deferred",
-            "hosted_mode": True,
-            "shard_mode": settings.shard_mode,
-            "detail": "Full hosted release checks are available from /ready.",
-        }
+    # Public liveness must be constant-time and must not expose storage paths,
+    # tenant counts, or configuration details. Authenticated diagnostics carry
+    # the operator-facing detail.
     return payload
 
 
@@ -1059,15 +1051,15 @@ def ready() -> dict[str, Any]:
     if hosted_readiness["status"] != "ok":
         raise HTTPException(
             status_code=503,
-            detail={
-                "status": "needs_configuration",
-                "hosted_readiness": hosted_readiness,
-            },
+            detail={"status": "not_ready", "check": "hosted_configuration"},
         )
     diagnostics = store.diagnostics(settings.default_user_id)
     if diagnostics["status"] != "ok":
-        raise HTTPException(status_code=503, detail=diagnostics)
-    return {"status": "ok", "diagnostics": diagnostics, "hosted_readiness": hosted_readiness}
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "not_ready", "check": "storage"},
+        )
+    return {"status": "ok", "backend_version": BACKEND_VERSION}
 
 
 @app.get("/capture", response_class=HTMLResponse)
@@ -2519,8 +2511,16 @@ def get_context(
     surface: str = Query(default="agent", max_length=40),
     token_budget: int = Query(default=2000, ge=1, le=100000),
     intent: str | None = Query(default=None, max_length=16),
-    sector: str | None = Query(default=None, max_length=120),
-    project: str | None = Query(default=None, max_length=160),
+    sector: str | None = Query(
+        default=None,
+        max_length=120,
+        description="Hard memory-sector filter; use for corpus isolation.",
+    ),
+    project: str | None = Query(
+        default=None,
+        max_length=160,
+        description="Entity-ranking hint only; not an isolation boundary. Use sector for isolation.",
+    ),
     as_of: str | None = Query(default=None, max_length=40),
     format: str = Query(default="json", pattern="^(json|markdown|smp)$"),
     model: str | None = Query(default=None, max_length=80),
@@ -2532,26 +2532,29 @@ def get_context(
     # internal render format falls back to json in that path. model=None + text = byte-identical.
     response_format = "smp" if format == "smp" else "text"
     internal_format = "json" if format == "smp" else format
-    pack = store.assemble_context(
-        user_id,
-        task,
-        surface=surface,
-        token_budget=token_budget,
-        sector=sector,
-        project=project,
-        as_of=as_of,
-        intent=intent,
-        # Reaching this endpoint already required the read scope, and the identity layer is a read
-        # of distilled context — so it is always included here (parity with the local server's GET).
-        include_identity=True,
-        format=internal_format,
-        # Transport parity with POST /v1/context and the local server: a session_id turns on the
-        # per-session working-set delta channel (pay once per fact), and pin content-addresses the
-        # pack for later verification. Absent both, behavior is byte-identical to before.
-        pin=pin,
-        session_id=str(session_id or "") or None,
-        **_assemble_context_ext_kwargs(response_format, model),
-    )
+    try:
+        pack = store.assemble_context(
+            user_id,
+            task,
+            surface=surface,
+            token_budget=token_budget,
+            sector=sector,
+            project=project,
+            as_of=as_of,
+            intent=intent,
+            # Reaching this endpoint already required the read scope, and the identity layer is a read
+            # of distilled context — so it is always included here (parity with the local server's GET).
+            include_identity=True,
+            format=internal_format,
+            # Transport parity with POST /v1/context and the local server: a session_id turns on the
+            # per-session working-set delta channel (pay once per fact), and pin content-addresses the
+            # pack for later verification. Absent both, behavior is byte-identical to before.
+            pin=pin,
+            session_id=str(session_id or "") or None,
+            **_assemble_context_ext_kwargs(response_format, model),
+        )
+    except UnknownAgentSessionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _context_response(pack, internal_format)
 
 
@@ -2560,23 +2563,26 @@ def post_context(body: ContextRequest, user_id: str = Depends(auth)) -> Any:
     format = body.format
     response_format = "smp" if format == "smp" else "text"
     internal_format = "json" if format == "smp" else format
-    pack = store.assemble_context(
-        user_id,
-        body.task,
-        surface=body.surface,
-        token_budget=body.token_budget,
-        sector=body.sector,
-        project=body.project,
-        as_of=body.as_of,
-        intent=body.intent,
-        # Identity/persona is distilled memory and follows the same read-scope policy as GET,
-        # standalone, MCP, and both SDKs (which use this POST transport).
-        include_identity=True,
-        format=internal_format,
-        pin=body.pin,
-        session_id=body.session_id,
-        **_assemble_context_ext_kwargs(response_format, body.model),
-    )
+    try:
+        pack = store.assemble_context(
+            user_id,
+            body.task,
+            surface=body.surface,
+            token_budget=body.token_budget,
+            sector=body.sector,
+            project=body.project,
+            as_of=body.as_of,
+            intent=body.intent,
+            # Identity/persona is distilled memory and follows the same read-scope policy as GET,
+            # standalone, MCP, and both SDKs (which use this POST transport).
+            include_identity=True,
+            format=internal_format,
+            pin=body.pin,
+            session_id=body.session_id,
+            **_assemble_context_ext_kwargs(response_format, body.model),
+        )
+    except UnknownAgentSessionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _context_response(pack, internal_format)
 
 

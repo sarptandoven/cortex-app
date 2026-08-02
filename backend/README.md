@@ -1,6 +1,25 @@
 # Cortex Backend
 
-FastAPI backend for the Cortex MVP.
+The maintained Python core and FastAPI development/hosted runtime. New
+contributors should use the repository-root commands; they pin Python and
+dependencies consistently with CI.
+
+## Start here
+
+From the repository root:
+
+```bash
+make demo          # isolated synthetic data; starts and stops automatically
+make run           # persistent FastAPI server at http://127.0.0.1:8766
+make test          # complete backend suite (roughly ten minutes on a laptop)
+```
+
+Interactive API documentation is available at
+`http://127.0.0.1:8766/docs` while `make run` is active. The stdlib server
+shipped inside the macOS app can be exercised with `make run-standalone`.
+
+Do not create a second virtual environment under `backend/`; `make setup`
+creates the canonical root `.venv`.
 
 It provides:
 
@@ -27,18 +46,6 @@ It provides:
 - graph/node mapping
 - diagnostics, reliability reports, support bundles, backups, repair, and search maintenance
 - MCP-style JSON-RPC tools
-
-## Local Run
-
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8766
-```
-
-The macOS app defaults to `http://127.0.0.1:8766`.
 
 ## Environment
 

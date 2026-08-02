@@ -3,16 +3,20 @@
 ## `make setup` says Python 3.12 is missing
 
 The macOS system `python3` may be 3.9 and is not supported by this repository.
-Install Python 3.12 and point setup at it:
+On a Homebrew-based Mac:
 
 ```bash
-make setup PYTHON=/absolute/path/to/python3.12
+brew install python@3.12
+make doctor
+make demo
 ```
 
-Verify without creating a virtual environment:
+On another platform, install Python 3.12 with your system or Python version
+manager, then point Cortex at it:
 
 ```bash
-PYTHON_BIN=/absolute/path/to/python3.12 ./scripts/bootstrap_dev.sh --check
+make doctor PYTHON=/absolute/path/to/python3.12
+make demo PYTHON=/absolute/path/to/python3.12
 ```
 
 ## `make run` cannot import FastAPI or uvicorn
@@ -26,10 +30,12 @@ The packaged app may already be running. Either quit Cortex or use a different
 development port:
 
 ```bash
-CORTEX_PORT=8877 make run
+make run
 ```
 
-Keep clients pointed at the same base URL.
+On a collision, `make run` prints an actually available port and the exact
+`CORTEX_BASE_URL` export for clients. Re-run the suggested command instead of
+relying on a fixed fallback port, which may also be occupied.
 
 ## The app opens but the full local engine is unavailable
 

@@ -10,6 +10,11 @@ catalog.
 | [Python](./python/) | `doppl-cortex-client` | stdlib `urllib` | none (Python 3.9+) |
 | [TypeScript](./typescript/) | `@doppl-tech/cortex-client` | `fetch` | none (Node 18+ / browser) |
 
+> **Distribution status:** both clients are tested source packages in this
+> repository. Registry names are reserved/planned; use the editable/source
+> instructions in each SDK README until a published release is explicitly
+> documented.
+
 Both mirror the same method surface:
 
 | Method (py / ts) | Endpoint | Purpose |
@@ -18,7 +23,7 @@ Both mirror the same method surface:
 | `openai_tools` / `openaiTools` | `GET /v1/tools/schema?format=openai` | OpenAI function-calling `tools` array. |
 | `anthropic_tools` / `anthropicTools` | `GET /v1/tools/schema?format=anthropic` | Anthropic `tools` array. |
 | `call_tool` / `callTool` | `POST /v1/tools/call` | Invoke any tool by name; returns its `result`. |
-| `context` | `POST /v1/context` | Token-budgeted, cited working-context pack. |
+| `context` | `POST /v1/context` | Token-budgeted, cited working-context pack; `sector` isolates while `project` is a ranking hint. |
 | `search` | `GET /v1/search` | Search memory (`top_k` → server `limit`). |
 | `ask` | `GET /v1/ask` | Cited answer or explicit abstention. |
 

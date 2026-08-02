@@ -2,8 +2,10 @@
 
 ## Choose the Right Channel
 
-- **Reproducible bug or installation problem:** open a GitHub issue using the
-  bug-report template.
+- **Installation problem:** open a GitHub issue using the installation-help
+  template.
+- **Reproducible product bug:** open a GitHub issue using the bug-report
+  template.
 - **Feature or design proposal:** open a feature request after checking
   [ROADMAP.md](ROADMAP.md).
 - **Security or private-data concern:** follow [SECURITY.md](SECURITY.md); do
@@ -14,11 +16,16 @@
 
 1. Confirm you are testing the latest release or current `main`.
 2. Check [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
-3. Run the relevant health check:
+3. For source/setup problems, run the read-only prerequisite check and isolated
+   demo:
 
    ```bash
-   make check
+   make doctor
+   make demo
    ```
+
+   `make doctor` changes nothing. `make demo` uses only disposable synthetic
+   data and removes its temporary vault.
 
 4. For a running app, create a sanitized support bundle from Connections &
    Privacy or:

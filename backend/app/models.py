@@ -1110,8 +1110,19 @@ class ContextRequest(BaseModel):
     surface: str = Field(default="agent", max_length=40)
     token_budget: int = Field(default=2000, ge=1, le=100_000)
     intent: str | None = Field(default=None, max_length=16)
-    sector: str | None = Field(default=None, max_length=120)
-    project: str | None = Field(default=None, max_length=160)
+    sector: str | None = Field(
+        default=None,
+        max_length=120,
+        description="Hard memory-sector filter. Use this field for corpus isolation.",
+    )
+    project: str | None = Field(
+        default=None,
+        max_length=160,
+        description=(
+            "Entity-ranking hint used to enrich project context. This is not an access-control "
+            "or corpus-isolation boundary; use sector for isolation."
+        ),
+    )
     as_of: str | None = Field(default=None, max_length=40)
     format: Literal["json", "markdown", "smp"] = "json"
     model: str | None = Field(default=None, max_length=80)

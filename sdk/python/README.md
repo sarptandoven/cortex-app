@@ -20,22 +20,33 @@ tool definition. This client wraps that HTTP surface.
 
 Requires Python 3.9+.
 
+The SDK is currently supported from this repository; the PyPI name is reserved
+but not yet the installation path:
+
 ```bash
-pip install doppl-cortex-client   # once published (see sdk/PUBLISHING.md)
-# or, for local development against this repo:
-cd sdk/python && pip install -e .
+# From the Cortex repository root:
+python -m pip install -e sdk/python
 ```
 
-The importable module is `cortex_client` regardless of the PyPI package name (`doppl-cortex-client`)
-— see the Quickstart below. Or just copy the `cortex_client/` folder into your project — it has no
-dependencies.
+`make setup` already performs this editable install for contributors. Once a
+registry release is documented, the command will be
+`pip install doppl-cortex-client`; do not assume that command works before then.
+The importable module is `cortex_client` regardless of the distribution name.
+You can also vendor the `cortex_client/` folder because it has no dependencies.
 
 ## Quickstart
+
+First start Cortex (`make run` from the repository root) or open the installed
+macOS app. The development server uses `dev-local-key`; an installed app exposes
+a scoped `cxa_` REST token under Connections & Privacy.
 
 ```python
 from cortex_client import CortexClient, CortexError
 
-client = CortexClient(base_url="http://127.0.0.1:8766", token="cxa_your_token")
+client = CortexClient(
+    base_url="http://127.0.0.1:8766",
+    token="dev-local-key",  # use a scoped cxa_ token with the installed app
+)
 
 # Cited answer to a specific question (never an uncited guess).
 print(client.ask("What database do we use?"))
@@ -46,6 +57,15 @@ print(client.search("release checklist", top_k=5))
 # Token-budgeted working-context pack — call this before doing a task.
 print(client.context("draft the release notes", intent="draft", token_budget=1500))
 
+# Portable SMP projection with multi-turn delta context and a project hint.
+print(client.context(
+    "plan the Project Atlas launch",
+    format="smp",
+    model="claude",
+    session_id="atlas-planning",
+    project="Atlas",
+))
+
 # Any tool in the catalog, by name.
 print(client.call_tool("get_person_map", {}))
 
@@ -55,6 +75,12 @@ except CortexError as exc:
     print(exc.status, exc.detail)  # e.g. 403 "Cortex API token requires destructive scope"
 ```
 
+`sector` is the hard corpus filter to use when memories must be isolated.
+`project` only helps Cortex rank and enrich entity context; it is **not** an
+authorization or isolation boundary. If `pin=True` is combined with
+`session_id`, that ID must come from the `start_agent_session` MCP tool. Pinning
+without a session ID is valid.
+
 ## Methods
 
 | Method | Endpoint | Purpose |
@@ -63,7 +89,7 @@ except CortexError as exc:
 | `openai_tools()` | `GET /v1/tools/schema?format=openai` | Convenience → OpenAI function-calling `tools` array. |
 | `anthropic_tools()` | `GET /v1/tools/schema?format=anthropic` | Convenience → Anthropic `tools` array. |
 | `call_tool(name, arguments=None)` | `POST /v1/tools/call` | Invoke any tool; returns its `result`. |
-| `context(task, intent=None, token_budget=2000, surface="agent")` | `POST /v1/context` | Cited working-context pack. |
+| `context(task, ..., format=None, model=None, session_id=None, pin=None, sector=None, project=None, as_of=None)` | `POST /v1/context` | Cited pack, SMP/Markdown projection, sector filter, project hint, and session deltas. |
 | `search(query, top_k=8)` | `GET /v1/search` | Search memory. |
 | `ask(query, top_k=8)` | `GET /v1/ask` | Cited answer / explicit abstention. |
 
@@ -154,5 +180,5 @@ print(resp.content)
 The test suite stubs the SDK's one `urllib` call — it never touches the network:
 
 ```bash
-python3 -m pytest sdk/python/tests/test_client.py
+.venv/bin/python -m pytest sdk/python/tests/test_client.py
 ```

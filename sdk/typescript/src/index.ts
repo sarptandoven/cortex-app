@@ -49,6 +49,26 @@ export interface ContextOptions {
   tokenBudget?: number;
   /** Which tool/agent you are (e.g. "cursor", "claude", "agent"). Default "agent". */
   surface?: string;
+  /** Response projection. The SMP form is designed for portable agent memory. */
+  format?: "json" | "markdown" | "smp";
+  /** Optional target-model profile used for pack adaptation. */
+  model?: string;
+  /**
+   * Multi-turn session id used for delta context packs. With `pin: true`, this
+   * must be an `asess_...` id returned by the `start_agent_session` MCP tool.
+   */
+  sessionId?: string;
+  /** Persist an immutable, content-addressed copy of the assembled pack. */
+  pin?: boolean;
+  /** Optional hard memory-sector filter; use this for corpus isolation. */
+  sector?: string;
+  /**
+   * Optional entity-ranking hint. This is not an access-control or isolation
+   * boundary; use `sector` for isolation.
+   */
+  project?: string;
+  /** Optional ISO 8601 historical cutoff. */
+  asOf?: string;
 }
 
 /** Constructor options for {@link CortexClient}. */
@@ -306,13 +326,21 @@ export class CortexClient {
    * Call this first before doing work for the user.
    */
   async context<T = unknown>(task: string, options: ContextOptions = {}): Promise<T> {
+    const body: Record<string, unknown> = {
+      task,
+      intent: options.intent ?? null,
+      token_budget: options.tokenBudget ?? 2000,
+      surface: options.surface ?? "agent",
+    };
+    if (options.format !== undefined) body.format = options.format;
+    if (options.model !== undefined) body.model = options.model;
+    if (options.sessionId !== undefined) body.session_id = options.sessionId;
+    if (options.pin !== undefined) body.pin = options.pin;
+    if (options.sector !== undefined) body.sector = options.sector;
+    if (options.project !== undefined) body.project = options.project;
+    if (options.asOf !== undefined) body.as_of = options.asOf;
     return this.request<T>("POST", "/v1/context", {
-      body: {
-        task,
-        intent: options.intent ?? null,
-        token_budget: options.tokenBudget ?? 2000,
-        surface: options.surface ?? "agent",
-      },
+      body,
     });
   }
 

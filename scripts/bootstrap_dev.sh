@@ -18,10 +18,12 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 Cortex development requires Python 3.12, but '$PYTHON_BIN' was not found.
 
 Install Python 3.12, then rerun:
-  make setup
+  make doctor
+  make demo
 
 Or point Cortex at an existing interpreter:
-  make setup PYTHON=/absolute/path/to/python3.12
+  make doctor PYTHON=/absolute/path/to/python3.12
+  make demo PYTHON=/absolute/path/to/python3.12
 EOF
   exit 1
 fi
@@ -32,7 +34,8 @@ if [[ "$VERSION" != "3.12" ]]; then
 Cortex development requires Python 3.12; '$PYTHON_BIN' reports Python $VERSION.
 
 Use:
-  make setup PYTHON=/absolute/path/to/python3.12
+  make doctor PYTHON=/absolute/path/to/python3.12
+  make demo PYTHON=/absolute/path/to/python3.12
 EOF
   exit 1
 fi
@@ -43,8 +46,12 @@ if [[ "$CHECK_ONLY" == "1" ]]; then
 fi
 
 "$PYTHON_BIN" -m venv "$VENV_PATH"
-"$VENV_PATH/bin/python" -m pip install -r "$ROOT/requirements-dev.lock"
-"$VENV_PATH/bin/python" -m pip install -e "$ROOT/sdk/python"
+echo "Installing the pinned Cortex development environment..."
+"$VENV_PATH/bin/python" -m pip install --disable-pip-version-check --quiet \
+  --require-hashes \
+  -r "$ROOT/requirements-dev.lock"
+"$VENV_PATH/bin/python" -m pip install --disable-pip-version-check --quiet \
+  -e "$ROOT/sdk/python"
 
 cat <<EOF
 

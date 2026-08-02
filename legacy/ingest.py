@@ -1,5 +1,5 @@
 """
-cortex/ingest.py
+legacy/ingest.py
 ----------------
 Core extraction pipeline. Takes raw text from any source,
 calls Claude to extract structured context, returns a dict.

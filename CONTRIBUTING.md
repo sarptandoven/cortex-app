@@ -17,31 +17,39 @@ request.
 
 Requirements:
 
+- Git and Make
 - Python 3.12
-- Xcode command line tools for the macOS app
-- Node.js 22 for the Obsidian and OpenClaw packages
+- Node.js 18+ only for TypeScript SDK work; Node.js 22 for Obsidian/OpenClaw
+- Xcode command line tools only for macOS app work
 
 ```bash
 git clone https://github.com/trace-cortex/cortex-app.git
 cd cortex-app
-make setup
-make check
+make doctor
+make demo
 ```
 
+`make demo` runs `make setup` automatically when `.venv` is missing, then
+proves capture → retrieval → cited Ask against disposable synthetic data.
 `make setup` creates `.venv` and fails with an actionable message if the chosen
 interpreter is not Python 3.12. It installs the exact versions in
-`requirements-dev.lock`; dependency updates should refresh that file
+`requirements-dev.lock` and verifies every downloaded artifact hash;
+dependency updates should refresh that file
 intentionally. Use an explicit interpreter when necessary:
 
 ```bash
 make setup PYTHON=/absolute/path/to/python3.12
 ```
 
-Start the hosted-plane development API:
+Start the local FastAPI development API:
 
 ```bash
 make run
 ```
+
+This uses `backend/data/Cortex.vault/`, not the installed application's
+personal vault. If port 8766 is occupied, the command prints an available port
+and the matching `CORTEX_BASE_URL` export.
 
 For the macOS app:
 
@@ -54,19 +62,53 @@ The default app build is a development bundle without the release interpreter
 or embedding model. See [SETUP.md](SETUP.md) and
 [docs/APPLE_RELEASE.md](docs/APPLE_RELEASE.md) for release-like builds.
 
+## Good First Contributions
+
+You can contribute without an account or a personal Cortex vault. Useful,
+contained starting points include:
+
+- reproduce an installation failure and improve the diagnostic or
+  troubleshooting step;
+- add a synthetic import fixture and a parser regression test;
+- make one runnable example easier to understand without tying it to a model
+  provider;
+- add an adversarial retrieval or privacy case to an existing evaluation
+  harness; or
+- fix a broken, ambiguous, or stale documentation path.
+
+If your change adds a source, follow [Adding a Cortex
+Connector](docs/ADDING_A_CONNECTOR.md). For unfamiliar areas, the
+[contributor code map](docs/CODE_MAP.md) links product surfaces to their first
+implementation file and focused test.
+
+For documentation-only work, `make docs-check` is the relevant local gate.
+For code changes, open or reference an issue first when public behavior,
+storage, security, or an API contract would change. If you are unsure whether
+an idea fits, a focused feature request with a concrete use case is welcome.
+
 ## What to Test
 
-Run the smallest relevant set while developing, then the pre-PR gate:
+Run the smallest relevant set while developing, then the pre-PR gate. The full
+backend suite currently takes roughly ten minutes on a laptop; it is not the
+first command a new contributor needs to run.
 
 ```bash
-make test
-make connector-check
 make check
+make test
 ```
 
-Additional surfaces:
+Choose additional checks by the files you changed:
 
 ```bash
+# Documentation only
+make docs-check
+
+# Connectors
+make connector-check
+
+# Packaged standalone runtime
+make runtime-check
+
 # Python SDK
 .venv/bin/python -m pytest sdk/python/tests -q
 
@@ -84,8 +126,40 @@ codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app
 CI is authoritative. If a check is too expensive or platform-specific to run
 locally, say exactly what you did run in the pull request.
 
+`make check` is the required fast pre-PR gate and includes the public examples
+against both FastAPI and the packaged standalone runtime. Run `make test` for a
+broad backend change; an SDK-only change may use its focused suite plus
+`make check`.
+
+### Refreshing the Python lock
+
+`backend/requirements.txt` contains the direct runtime requirements.
+`requirements-dev.lock` freezes their complete Python 3.12 dependency graph
+plus pytest for reproducible contributor and CI installs.
+`backend/requirements.lock` freezes the hosted/API runtime, while
+`backend/runtime-requirements.lock` freezes the dependency-light runtime
+bundled into the macOS app. All three locks include PyPI artifact hashes.
+
+Regenerate both locks in an isolated temporary environment, then review every
+version and hash change:
+
+```bash
+make lock-python
+make setup
+make check
+```
+
+`make lock-python` pins its temporary lock compiler too, so generated output is
+stable across contributor machines. Do not refresh locks as an unrelated side
+effect of another change.
+
 ## Engineering Expectations
 
+- Follow `.editorconfig`: UTF-8, LF endings, final newlines, four-space Python
+  and Swift indentation, and two-space JSON/YAML/TypeScript indentation.
+- Use type hints on new Python public boundaries and descriptive names over
+  abbreviations. Cortex does not yet impose a repository-wide autoformatter;
+  avoid unrelated mechanical reformatting.
 - Preserve local-first defaults and cite-or-abstain behavior.
 - Treat the vault as authoritative and SQLite/vector indexes as rebuildable.
 - Keep local and hosted HTTP surfaces behaviorally aligned.

@@ -6,10 +6,15 @@ context packing, adaptation, token calibration, routing, and end-to-end agent
 tasks. They run on synthetic fixtures with known answers so regressions fail in
 CI without sending personal data to an external model.
 
-## Latest deterministic regression snapshot
+## Recorded deterministic hash/FTS regression snapshot
 
 Run on 2026-07-30 with Python 3.12 on Apple Silicon. All commands used the
 repository's checked-in fixtures and made no model API calls.
+
+This checkout did not contain the packaged Model2Vec dependency and weights.
+The retrieval row below therefore measures the deterministic hash/FTS
+regression path, not semantic retrieval, hybrid lift, or the shipped model
+asset. The distinction is part of the result, not an implementation detail.
 
 Machine-readable provenance and limitations are committed in
 [`benchmarks/2026-07-30-local.json`](benchmarks/2026-07-30-local.json). This was
@@ -19,7 +24,8 @@ a latency benchmark or a release artifact.
 
 | Gate | Cases / checks | Result | Selected metrics |
 |---|---:|---|---|
-| Retrieval | 163 labeled queries | Pass | top-1 accuracy 1.000; recall@3 1.000; precision@3 0.947 |
+| Deterministic hash/FTS retrieval | 163 labeled queries | Pass | top-1 accuracy 1.000; recall@3 1.000; precision@3 0.947 |
+| Model2Vec semantic/rerank lift | Not executed in this snapshot | Not measured | Release/model-provisioned environments must run the non-skipping command below |
 | Relevance monotonicity | 160 reordered cases / 41 pairs | Pass | pairwise concordance 1.000; reordered top-1 1.000 |
 | Context packing | 10 tasks / 30 checks | Pass | citation coverage 1.000; MRR 1.000; nDCG@k 0.888; no-leak 1.000; budget adherence 1.000 |
 | Session replay | 2 sessions / 9 turns | Pass | recall@3 1.000; prefetch hit rate 0.750; delta token savings 28.5%; no resend/leak 1.000 |
@@ -36,20 +42,33 @@ make setup
 .venv/bin/python scripts/token_calibration_eval.py
 ```
 
+To verify the real semantic path, provision the local Model2Vec package and
+model asset, then require a non-skipping run:
+
+```bash
+CORTEX_EMBEDDING_PROVIDER=model2vec \
+  .venv/bin/python scripts/rerank_eval.py --forbid-skip
+```
+
+Without the package/model, `rerank_eval.py` reports `status: skipped`;
+`--forbid-skip` converts that missing evidence into a failing gate. Release
+validation also uses `scripts/check_vector_runtime.py --require-model2vec`.
+
 `make check` runs the fast pre-PR subset. The full CI workflow adds routing,
 adapter, delivery, agent-task, connector, docs, security, and packaging gates.
 
 ## What these numbers mean
 
-- **Top-1 accuracy / recall** measure whether the known relevant fixture is
-  returned at the expected rank.
+- **Top-1 accuracy / recall** measure whether the known relevant synthetic
+  fixture is returned at the expected rank on the named retrieval path.
 - **Citation coverage** requires packed evidence to retain provenance.
 - **No-leak** fails when a deliberately disallowed cross-project memory appears.
 - **Budget adherence** checks the serialized context against its token budget.
 - **Session token savings** compares delta delivery with naively resending a
   full context pack every turn.
 - **Calibration MAPE** measures the error between a profile's estimate and the
-  harness token count.
+  harness's simulated reference count. It is not validation against a live
+  vendor tokenizer.
 
 ## Limitations
 
@@ -58,6 +77,12 @@ quality. The fixtures are synthetic, comparatively small, and shaped around
 known Cortex behaviors. The token-calibration harness uses simulated reference
 counts rather than live vendor tokenizers. Runtime varies by hardware and warm
 cache state, so this page does not claim a production latency percentile.
+
+The committed snapshot is also a one-run record from a dirty review tree. It
+does not include a complete dirty diff, raw per-case artifacts, repetitions,
+or controlled cache timings; it cannot reconstruct the exact executable state
+as a scientific artifact. Re-run the current checkout before relying on the
+numbers for engineering decisions.
 
 Before making broad quality claims, Cortex still needs:
 

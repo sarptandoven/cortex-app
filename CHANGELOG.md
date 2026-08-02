@@ -19,11 +19,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - CI gates for the Python and TypeScript SDKs and the OpenClaw context plugin.
 - A generated OpenAPI contract test and explicit public API lifecycle policy.
 - Deterministic local example data for validating the first-run search flow.
+- A one-command disposable `make demo` path and read-only `make doctor`
+  prerequisite check.
+- A packaged-standalone runtime smoke gate, connector authoring guide, and
+  contributor code map.
+- Full CMP context options in both SDKs, including SMP/Markdown projections,
+  model profiles, session deltas, pinning, project/sector scopes, and `as_of`.
 
 ### Changed
 
 - Repository documentation now distinguishes implemented capabilities from
   release-configured capabilities.
+- The archived Redis/Voyage/Streamlit prototype now lives under `legacy/`
+  instead of competing with current entry points at repository root.
 - SDK and plugin metadata points to `trace-cortex/cortex-app`.
 - Hosted deployment, Apple release, account, offline, update, and legal
   documentation now matches the behavior in code.
@@ -31,6 +39,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   read-scoped `GET` request; exporting identity remains a separate permission.
 - Mac mini installation uses a dedicated Python 3.12 virtual environment and
   the current public API hostname.
+- Evaluation commands print concise summaries by default and expose full
+  per-case diagnostics through `--json`.
+- Dependency-free retrieval recognizes bounded owner/DRI and
+  launch/release/rollout paraphrases and demotes explicit non-answer templates.
+- Vector-index compatibility now fingerprints provider, model/revision, native
+  dimensions, local asset identity, and embedding text recipe; same-dimension
+  model swaps rebuild and re-embed instead of mixing vector spaces.
 
 ### Security
 

@@ -4,20 +4,53 @@ Cortex is a local-first macOS beta. You do not need Redis, Docker, or an
 external vector database. The current direct-download build requires account
 sign-in; retrieval and the user-owned vault remain local.
 
+## Choose a setup path
+
+### Evaluate the engine
+
+This is the safest first source run: it uses synthetic data and deletes its
+temporary vault.
+
+```bash
+make doctor
+make demo
+```
+
+### Use the desktop app
+
+Download the current notarized DMG from the
+[release page](https://github.com/doppl-tech/releases/releases/latest). Building
+from source is a contributor workflow, not the shortest installation path.
+
+### Develop the backend or SDKs
+
+```bash
+make setup
+make run
+```
+
+Open `http://127.0.0.1:8766/docs` for the interactive API.
+
 ## Requirements
 
-- Apple Silicon Mac running macOS 13 or later
-- Xcode command line tools
-- Python 3.12 (the repository includes `.python-version` for version managers)
+- Backend/demo: Python 3.12 on macOS or Linux
+- TypeScript SDK: Node.js 18+; Obsidian/OpenClaw plugins: Node.js 22
+- Desktop app: Apple Silicon Mac running macOS 13+ and Xcode command line tools
 
-## Build And Open
+## Build the macOS UI from source
 
 ```bash
 ./macos/build.sh
 open macos/build/Cortex.app
 ```
 
-The release package starts its bundled local service on `127.0.0.1:8766` and stores user-owned memory files in:
+The default source build is an ad-hoc-signed UI development bundle without the
+release Python runtime or embedding model. It is useful for SwiftUI work but is
+not a full replacement for the downloadable app. See
+[docs/APPLE_RELEASE.md](docs/APPLE_RELEASE.md) for a release-like bundle.
+
+The release package starts its bundled local service on `127.0.0.1:8766` and
+stores user-owned memory files in:
 
 ```text
 ~/Library/Application Support/Cortex/Cortex.vault/
@@ -56,18 +89,10 @@ Open Connections & Privacy to manage:
 - source/audit trail
 - advanced diagnostics and setup reset
 
-## Local Backend Development
-
-For backend development without opening the app:
-
-```bash
-make setup
-make run
-```
-
 `make setup` refuses to continue with the system Python when it is not 3.12,
 creates `.venv`, and installs the exact backend/test versions in
-`requirements-dev.lock`. To use an explicit interpreter:
+`requirements-dev.lock`, verifying every downloaded artifact hash. To use an
+explicit interpreter:
 
 ```bash
 make setup PYTHON=/opt/homebrew/bin/python3.12

@@ -1,5 +1,21 @@
 # Cortex AI Integrations
 
+## Fastest path
+
+For the installed macOS app:
+
+1. Open **Connections & Privacy → AI tools**.
+2. Choose Claude Desktop, Cursor, Windsurf, Cline, or Roo Code.
+3. Select **Install**. Cortex backs up and merges the client's existing config.
+4. Restart the AI client.
+5. Ask it to call `ask_memory` or `search_memory`.
+
+Use **Repair** in the same screen if the app moved or the token changed. Do not
+copy the app's admin token into a client; the installer creates a scoped `cxm_`
+MCP token. Client-specific paths and the manual fallback are documented below.
+For connection failures, jump to
+[Troubleshooting](TROUBLESHOOTING.md#an-mcp-client-cannot-connect).
+
 ## Local Transport
 
 Cortex exposes two MCP-compatible paths:

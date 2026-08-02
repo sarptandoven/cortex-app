@@ -26,4 +26,43 @@ if [[ "$VERSION" != "3.12" ]]; then
   exit 1
 fi
 
+if FREE_PORT="$("$PYTHON_BIN" - "$CORTEX_PORT" <<'PY'
+import socket
+import sys
+
+try:
+    requested = int(sys.argv[1])
+    if not 1 <= requested <= 65535:
+        raise ValueError
+except ValueError:
+    print(f"CORTEX_PORT must be an integer from 1 to 65535; received {sys.argv[1]!r}.", file=sys.stderr)
+    raise SystemExit(2)
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    try:
+        probe.bind(("127.0.0.1", requested))
+    except OSError:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as fallback:
+            fallback.bind(("127.0.0.1", 0))
+            print(fallback.getsockname()[1])
+        raise SystemExit(1)
+PY
+)"; then
+  :
+else
+  STATUS=$?
+  if [[ "$STATUS" -eq 1 ]]; then
+    cat >&2 <<EOF
+Port $CORTEX_PORT is already in use on 127.0.0.1.
+
+The installed Cortex app may already own this port. For an isolated development server, run:
+  CORTEX_PORT=$FREE_PORT make run
+
+Point examples and SDKs at the same server:
+  export CORTEX_BASE_URL=http://127.0.0.1:$FREE_PORT
+EOF
+  fi
+  exit "$STATUS"
+fi
+
 "$PYTHON_BIN" -m uvicorn app.main:app --reload --host 127.0.0.1 --port "$CORTEX_PORT"

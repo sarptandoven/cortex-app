@@ -1,43 +1,156 @@
 <div align="center">
 
-<img src="macos/Assets/AppIcon.iconset/icon_256x256.png" alt="Cortex" width="128" height="128" />
+<img src="macos/Assets/AppIcon.iconset/icon_256x256.png" alt="Cortex" width="112" height="112" />
 
 # Cortex
 
-### Your personal operating model for AI: a local, cited model of how you work.
+### The local memory layer for the AI tools you already use.
 
-Every AI tool starts from a foundation model of the world and knows nothing about you. Cortex builds a
-**model of you** on your own Mac — your voice, preferences, decisions, and the people and projects
-around them — and serves it to Claude, ChatGPT, Cursor, and other MCP clients. Your memory is plain
-Markdown plus a rebuildable index that you own, and every answer it gives is **cited or withheld**.
+**Review what it learns · Retrieve with citations · Keep a vault you own**
 
-<br/>
+[![CI](https://github.com/trace-cortex/cortex-app/actions/workflows/ci.yml/badge.svg)](https://github.com/trace-cortex/cortex-app/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/doppl-tech/releases?sort=semver&display_name=tag&label=macOS)](https://github.com/doppl-tech/releases/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB.svg)](.python-version)
 
-<!-- Affiliation, sponsor & license — individual buttons: each bordered, rounded, spaced -->
-[<img src=".github/badges/waterloo.png" alt="University of Waterloo" height="30" />](https://uwaterloo.ca)
-[<img src=".github/badges/engineering.png" alt="Faculty of Engineering" height="30" />](https://uwaterloo.ca/engineering)
-[<img src=".github/badges/research.png" alt="Academic Research" height="30" />](https://uwaterloo.ca/research)
-[<img src=".github/badges/composio.png" alt="Sponsored by Composio" height="30" />](https://composio.dev)
-[<img src=".github/badges/mit.png" alt="MIT License" height="30" />](LICENSE)
-
-<br/>
-
-[![Download for macOS](https://img.shields.io/github/v/release/doppl-tech/releases?sort=semver&display_name=tag&label=Download%20for%20macOS&color=E4B429&labelColor=000000&logo=apple&logoColor=FDD54F&style=for-the-badge)](https://github.com/doppl-tech/releases/releases/latest)
-
-<br/>
-
-![macOS 13+](https://img.shields.io/badge/macOS-13%2B%20(Apple%20Silicon)-000000?logo=apple&logoColor=white)
-![Notarized](https://img.shields.io/badge/Apple-Notarized-555555?logo=apple&logoColor=white)
-![SwiftUI](https://img.shields.io/badge/App-SwiftUI-F05138?logo=swift&logoColor=white)
-![Python engine](https://img.shields.io/badge/Engine-Python%203.12-3776AB?logo=python&logoColor=white)
-![SQLite + sqlite-vec](https://img.shields.io/badge/Storage-SQLite%20%2B%20sqlite--vec-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/Protocol-MCP-6E56CF?logo=modelcontextprotocol&logoColor=white)
-![Works with Claude](https://img.shields.io/badge/Works%20with-Claude-D97757?logo=claude&logoColor=white)
-![On-device retrieval](https://img.shields.io/badge/Retrieval-on--device-2E7D32?logo=ghostery&logoColor=white)
+<p>
+  <a href="https://github.com/doppl-tech/releases/releases/latest"><b>Download for macOS</b></a>
+  · <a href="#one-command-local-demo">One-command demo</a>
+  · <a href="docs/README.md">Docs</a>
+  · <a href="docs/ARCHITECTURE.md">Architecture</a>
+  · <a href="ROADMAP.md">Roadmap</a>
+</p>
 
 </div>
 
----
+<img src=".github/assets/social-preview.png" alt="Cortex: the local memory layer for your AI tools" width="100%" />
+
+Cortex gives Claude, Cursor, ChatGPT, and other AI tools one user-owned memory.
+Bring in notes and chat history, approve what is worth remembering, then
+retrieve only the context a task needs over MCP or HTTP. The local engine
+returns source citations—or explicitly abstains when the evidence is not there.
+
+> If local, portable AI memory is a problem you want solved, **star Cortex to
+> follow the beta**. If something breaks, tell us—the project is built in the
+> open and the rough edges are documented.
+
+## Why Cortex exists
+
+| Stop repeating yourself | Keep memory trustworthy | Switch tools freely | Inspect everything |
+|---|---|---|---|
+| Reuse approved project decisions, preferences, and context across sessions. | New memories wait in Review; edit, approve, or archive them. | Serve the same cited memory to MCP clients instead of rebuilding a profile in every app. | The vault stays readable as Markdown/JSON, with SQLite as a rebuildable index. |
+
+## One-command local demo
+
+The demo uses three synthetic Project Atlas records. The source workflow needs
+Git, Make, and Python 3.12, but no API key, Docker, Redis, model provider, or
+personal Cortex vault.
+
+```bash
+git clone https://github.com/trace-cortex/cortex-app.git
+cd cortex-app
+make demo
+```
+
+<p align="center">
+  <img src=".github/assets/cortex-demo.gif" alt="Terminal recording of make demo starting Cortex, loading synthetic captures, and returning a cited answer" width="900" />
+</p>
+
+`make demo` checks prerequisites, creates `.venv` when needed, runs an isolated
+loopback server on a free port, prints a cited answer, then removes the
+temporary vault. If Python 3.12 is not discoverable, `make doctor` prints the
+exact fix for an existing interpreter. A fresh clone downloads the pinned
+development dependencies and may take a few minutes; subsequent runs complete
+in seconds.
+
+<details>
+<summary>See the exact expected output</summary>
+
+```text
+Cortex is working.
+  [ok] isolated loopback server started
+  [ok] 3 synthetic Project Atlas captures loaded
+  [ok] Ask returned cited evidence
+
+Question: When does Project Atlas ship?
+Answer:   Cortex returned a cited answer for this question: …
+Citation: https://example.invalid/cortex-demo/project-atlas
+```
+
+</details>
+
+### Pick your path
+
+| I want to… | Fastest path |
+|---|---|
+| Use Cortex | **[Download the signed and notarized macOS beta](https://github.com/doppl-tech/releases/releases/latest)** |
+| Evaluate the engine safely | Run `make demo` with synthetic data |
+| Build an agent integration | Use the [Python SDK](sdk/python/README.md), [TypeScript SDK](sdk/typescript/README.md), or [MCP guide](docs/MCP_INTEGRATIONS.md) |
+| Contribute | Run `make doctor`, then open the [contributor guide](CONTRIBUTING.md) |
+| Understand the internals | Read [Architecture](docs/ARCHITECTURE.md), [CMP](docs/CMP_PROTOCOL.md), and the [vault format](docs/LOCAL_VAULT_FORMAT.md) |
+
+> [!NOTE]
+> The desktop beta currently requires Apple Silicon, macOS 13+, and a one-time
+> account sign-in. Backend development and the demo run on macOS or Linux.
+> Read the [limitations](#current-limitations-plainly) before installing.
+
+The source of truth is this `trace-cortex` repository. Signed installers are
+published by the project maintainer in `doppl-tech/releases`; the committed
+[release manifest](site/downloads/latest.json) records the build, source
+commit, artifacts, and checksums.
+
+## The product loop
+
+| ① Connect | ② Review | ③ Ask | ④ Control |
+|---|---|---|---|
+| Bring in notes, chat exports, files, or a live source. | Approve what is useful; edit or archive the noise. | Get cited evidence in Cortex or retrieve it from an MCP client. | See and revoke every tool, scope, read, save, and export permission. |
+
+<img src=".github/assets/cortex-review.png" alt="Cortex Review showing synthetic, cited sample memories ready for approval" width="100%" />
+
+<p align="center"><sub>Published macOS beta · Review screen · synthetic sample notes, not personal data</sub></p>
+
+## A different default for AI memory
+
+| Design choice | Cortex default | Why it matters |
+|---|---|---|
+| Storage | Local readable vault; rebuildable index | Your memory survives an app or model change |
+| Admission | Explicit review for connected sources | Noisy inputs do not silently become personal facts |
+| Retrieval | Cited evidence or abstention | Agents can preserve provenance instead of inventing confidence |
+| Delivery | Bounded, model-calibrated context over MCP and HTTP | Tools receive task-relevant context, not a vault dump |
+| Providers | On-device embeddings; deterministic Ask | The core loop does not need a model API key |
+
+## Reproducible proof, not a leaderboard claim
+
+The checked-in offline gates use synthetic fixtures with known answers and no
+model API calls. The recorded source-checkout run passed 163 labeled
+**hash/FTS retrieval** queries, 30 context-packing checks, and every no-leak and
+budget check. It does not measure the bundled Model2Vec semantic path.
+
+| Gate | Recorded result |
+|---|---:|
+| Deterministic hash/FTS retrieval top-1 / recall@3 | 1.000 / 1.000 |
+| Packed-context citation coverage | 1.000 |
+| Session delta token savings | 28.5% |
+| Token-estimator MAPE vs simulated references | 1.58% |
+
+These are deterministic regression results—not proof of real-world answer
+quality or latency. Read the [method, machine-readable snapshot, commands, and
+limitations](docs/BENCHMARKS.md), then reproduce them locally. CI also runs
+2,000+ backend tests plus SDK, plugin, security, packaging, and documentation
+gates.
+
+## What you can build
+
+| Starting point | Outcome |
+|---|---|
+| [`minimal_search.py`](examples/minimal_search.py) | Add cited local-memory search to a script in a few lines |
+| [`memory_workflow.py`](examples/memory_workflow.py) | Search and Ask a factual query, then assemble bounded context for a work-shaped task |
+| [`multi_agent_context.py`](examples/multi_agent_context.py) | Give planner, researcher, and writer agents different views of the same approved memory |
+| [`tool_catalog.py`](examples/tool_catalog.py) | Expose Cortex through an OpenAI-compatible tool catalog without calling a model |
+| [Connector guide](docs/ADDING_A_CONNECTOR.md) | Send records through the generic source contract or ship a first-party connector |
+
+All examples are provider-neutral and run against the same local API. Start
+with the [example guide and synthetic fixture](examples/README.md).
 
 ## What Cortex does today
 
@@ -80,16 +193,6 @@ bundled or called to write prose. Retrieval embeddings run entirely on-device.
 - **Managed Google / Microsoft / Notion OAuth is implemented but not configured** in this build; those
   client IDs ship empty. Use file import or a pasted token instead.
 - **PDF text extraction is inactive** in the shipped app — `pypdf` is not bundled.
-
-## The loop
-
-<div align="center">
-
-| ① Connect | ② Review | ③ Ask | ④ Control |
-|:--:|:--:|:--:|:--:|
-| Bring in notes, an AI-chat export, or connect a live source | Approve what's useful, archive the noise — memory stays trustworthy | Ask with cited answers, or let a connected AI tool retrieve what you approved | Keep reads, saves, exports, and every connection visible and revocable |
-
-</div>
 
 ## How it works
 
@@ -196,15 +299,26 @@ Approved memory goes in; a calibrated model of how you operate comes out.
 Cortex checks the HTTPS release feed for new builds and links you to the current DMG. Installing an
 update still uses the normal macOS app-replacement flow.
 
-## Five-minute developer quickstart
+## Run a persistent development server
 
-Requires Python 3.12. This starts a loopback-only development server and uses
-synthetic data, so it does not touch your packaged Cortex vault.
+Use `make demo` first if you only want to evaluate the engine. It creates the
+development environment, so you do not need to run setup again. If you skipped
+the demo, run `make setup` once.
+
+For API and SDK development, start the FastAPI development runtime locally:
 
 ```bash
-make setup
 CORTEX_AUTO_APPROVE_CAPTURES=1 make run
 ```
+
+This is local development—not Cortex Cloud. It writes disposable development
+state under `backend/data/Cortex.vault/` and does not read the installed app's
+vault under `~/Library/Application Support/Cortex/`. Auto-approval is enabled
+here so the synthetic examples are immediately searchable; normal product
+sources remain review-first.
+
+If the installed app or another process already owns port 8766, `make run`
+prints a free-port command and the matching `CORTEX_BASE_URL` export.
 
 In a second terminal:
 
@@ -222,12 +336,15 @@ curl -sS -G http://127.0.0.1:8766/v1/ask \
 The second response either includes the cited quickstart memory or explicitly
 abstains. Next, try the runnable [Python examples](examples/README.md), the
 [Python SDK](sdk/python/README.md), or the
-[TypeScript SDK](sdk/typescript/README.md). `dev-local-key` is accepted only by
-the explicit local development configuration.
+[TypeScript SDK](sdk/typescript/README.md). Interactive API documentation is at
+`http://127.0.0.1:8766/docs`. `dev-local-key` is accepted only by the explicit
+local development configuration.
 
 ## Build from source
 
-Requires **Python 3.12** and Xcode command line tools. CI and the packaged runtime both use Python 3.12.
+Backend/API development requires **Git, Make, and Python 3.12**. Xcode command
+line tools are required only to build the macOS app. CI and the packaged
+runtime both use Python 3.12.
 
 ```bash
 # Reproducible contributor environment
@@ -238,22 +355,25 @@ make test
 # macOS app (SwiftUI) — writes macos/build/Cortex.app
 ./macos/build.sh
 
-# Run the hosted-plane API (FastAPI + uvicorn) at 127.0.0.1:8766
+# Run the local FastAPI development API at 127.0.0.1:8766
 make run
 
 # Or run the stdlib engine the packaged app actually ships
-cd backend && python3 -m app.standalone_server --host 127.0.0.1 --port 8766
+make run-standalone
 
-# Deterministic, offline quality gates (no dependencies needed)
-python3 scripts/retrieval_eval.py
-python3 scripts/adaptation_eval.py
+# Deterministic, offline quality gates (use the pinned contributor environment)
+.venv/bin/python scripts/retrieval_eval.py
+.venv/bin/python scripts/adaptation_eval.py
 ```
 
 By default `./macos/build.sh` produces an ad-hoc-signed app with **no** bundled interpreter or
 embedding model, and prints an embeddings-fallback warning — good enough to launch and inspect. A full
 build needs `CORTEX_BUNDLE_PYTHON=1` and a python.org framework install at
-`/Library/Frameworks/Python.framework/Versions/3.12`; release packaging lives in
-`macos/package_release.sh`.
+`/Library/Frameworks/Python.framework/Versions/3.12`, or set
+`CORTEX_PYTHON_FRAMEWORK_SOURCE` to another complete Python 3.12 framework
+(including Homebrew's framework). Release packaging lives in
+`macos/package_release.sh`; CI boots and exercises the bundled interpreter,
+native vector runtime, offline embedding model, capture path, and cited Ask.
 
 CI runs the full gate set for pull requests and pushes to `main` — see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 for the authoritative command list. [`SETUP.md`](SETUP.md) covers the app-side development loop.
@@ -269,18 +389,21 @@ for the authoritative command list. [`SETUP.md`](SETUP.md) covers the app-side d
 | `packages/`, `sdk/`, `extension/` | Plugins, client SDKs, and the browser extension |
 | `docs/` | Architecture, protocol, and release documentation |
 | `deploy/`, `site/` | Hosted-plane ops and the static distribution site |
-| `capture.py`, `ingest.py`, `mcp_server.py`, `redis_store.py`, `github_store.py`, `ui.py` | **Legacy prototype** at the repo root, kept for reference. Not used by the app; the root `requirements.txt` (Redis, Voyage AI, rumps) belongs to it, not to `backend/`. |
+| `legacy/` | Archived Redis/Voyage/Streamlit prototype; not used by or installed with the current product |
+
+Use the [contributor code map](docs/CODE_MAP.md) to find the first implementation
+file and focused test for a change.
 
 ## Documentation
 
 | Area | Doc |
 |---|---|
 | Documentation index and status | [`docs/README.md`](docs/README.md) |
-| System architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| System architecture and contributor code map | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/CODE_MAP.md`](docs/CODE_MAP.md) |
 | Contextual Memory Protocol | [`docs/CMP_PROTOCOL.md`](docs/CMP_PROTOCOL.md) · [`docs/PORTABLE_MEMORY_PROTOCOL_V2.md`](docs/PORTABLE_MEMORY_PROTOCOL_V2.md) |
 | The vault format you own | [`docs/LOCAL_VAULT_FORMAT.md`](docs/LOCAL_VAULT_FORMAT.md) |
 | Connecting AI tools | [`docs/EXTERNAL_INTEGRATIONS.md`](docs/EXTERNAL_INTEGRATIONS.md) · [`docs/MCP_INTEGRATIONS.md`](docs/MCP_INTEGRATIONS.md) |
-| Importing your sources | [`docs/SOURCE_IMPORTS.md`](docs/SOURCE_IMPORTS.md) |
+| Importing sources and adding connectors | [`docs/SOURCE_IMPORTS.md`](docs/SOURCE_IMPORTS.md) · [`docs/ADDING_A_CONNECTOR.md`](docs/ADDING_A_CONNECTOR.md) |
 | Trust & privacy controls | [`docs/TRUST_CONTROLS.md`](docs/TRUST_CONTROLS.md) |
 | Reproducible benchmark results | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) |
 | Open-source readiness review | [`docs/OPEN_SOURCE_READINESS.md`](docs/OPEN_SOURCE_READINESS.md) |
@@ -291,14 +414,25 @@ for the authoritative command list. [`SETUP.md`](SETUP.md) covers the app-side d
 | Release & distribution | [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md) · [`docs/APPLE_RELEASE.md`](docs/APPLE_RELEASE.md) |
 | Experimental pairwise twin evaluation | [Overview](https://github.com/trace-cortex/cortex-app/blob/feat/pairwise-twin-eval/docs/PAIRWISE_TWIN_EVALUATION.md) · [Integration guide](https://github.com/trace-cortex/cortex-app/blob/feat/pairwise-twin-eval/docs/PAIRWISE_TWIN_INTEGRATION_GUIDE.md) |
 
-## Contributing and support
+## Build with us
 
-Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), then use the issue forms for a
-reproducible bug or a scoped feature proposal. Security reports belong in the
-private channel described by [`SECURITY.md`](SECURITY.md), not a public issue.
-Project direction and release history live in [`ROADMAP.md`](ROADMAP.md) and
-[`CHANGELOG.md`](CHANGELOG.md); support boundaries are in
-[`SUPPORT.md`](SUPPORT.md).
+Cortex is an early open-source beta, and small, evidence-backed contributions
+are welcome. You do not need a personal vault to help: the demo, examples, and
+evaluation fixtures all use synthetic data.
+
+| Bring… | Start here |
+|---|---|
+| A reproducible bug | [Open a bug report](https://github.com/trace-cortex/cortex-app/issues/new?template=bug_report.yml) |
+| Installation friction | [Ask for setup help](https://github.com/trace-cortex/cortex-app/issues/new?template=installation_help.yml) |
+| A focused product idea | [Propose a feature](https://github.com/trace-cortex/cortex-app/issues/new?template=feature_request.yml) |
+| An integration you built | [Share it with the community](https://github.com/trace-cortex/cortex-app/issues/new?template=showcase.yml) |
+| A code or docs contribution | Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and run `make check` |
+
+Please keep real memories, exports, tokens, and vaults out of issues. Report
+vulnerabilities privately through [`SECURITY.md`](SECURITY.md). Project
+direction, support boundaries, and releases live in
+[`ROADMAP.md`](ROADMAP.md), [`SUPPORT.md`](SUPPORT.md), and
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ## Privacy
 
@@ -341,7 +475,11 @@ Cortex is released under the **[MIT License](LICENSE)**, free to use, modify, an
 <div align="center">
 <br/>
 
-**Cortex is your personal operating model for AI:** the cited, local, portable model of how you work.
+**One memory you can inspect. Cited context your tools can use.**
 
-<sub>The more you bring in, the more your tools act the way you would.</sub>
+<br/>
+
+[⭐ Star Cortex](https://github.com/trace-cortex/cortex-app)
+· [Download the beta](https://github.com/doppl-tech/releases/releases/latest)
+· [Build an integration](examples/README.md)
 </div>

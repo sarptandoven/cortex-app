@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .config import APP_BRAND, load_settings
+from .config import APP_BRAND, INSECURE_DEV_API_KEY, load_settings
 from .context_file import (
     DEFAULT_STYLE as CONTEXT_FILE_DEFAULT_STYLE,
     SUPPORTED_STYLES as CONTEXT_FILE_SUPPORTED_STYLES,
@@ -42,7 +42,7 @@ from .mcp_tools import (
     tools_for_scopes,
 )
 from .sharding import StoreRegistry
-from .storage import BACKEND_VERSION, ExportSizeLimitError
+from .storage import BACKEND_VERSION, ExportSizeLimitError, UnknownAgentSessionError
 
 
 settings = load_settings()
@@ -638,7 +638,8 @@ def _capture_confirmation(saved: dict) -> tuple[str, str]:
 
 
 class CortexRequestHandler(BaseHTTPRequestHandler):
-    server_version = f"{APP_BRAND}Standalone/0.1"
+    server_version = f"{APP_BRAND}Standalone"
+    sys_version = ""
     # Socket read timeout (seconds). Without it a client that declares a Content-Length but sends
     # fewer bytes would block the handler thread forever in rfile.read() while holding one of the
     # (default 8) concurrency-gate slots — 8 such stalls wedge the whole server. 30s sits safely
@@ -752,28 +753,24 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 self._send_text(ROOT_HTML, media_type="text/html")
                 return
             if method == "GET" and path == "/health":
-                payload = store.health_payload(mode="standalone", auth=bool(settings.api_key))
-                payload["hosted_readiness"] = _hosted_readiness_contract()
-                self._send_json(payload)
+                self._send_json(store.health_payload(mode="standalone", auth=bool(settings.api_key)))
                 return
             if method == "GET" and path == "/ready":
                 hosted_readiness = _hosted_readiness_contract()
                 if hosted_readiness["status"] != "ok":
                     self._send_json(
-                        {
-                            "detail": {
-                                "status": "needs_configuration",
-                                "hosted_readiness": hosted_readiness,
-                            }
-                        },
+                        {"detail": {"status": "not_ready", "check": "hosted_configuration"}},
                         status=HTTPStatus.SERVICE_UNAVAILABLE,
                     )
                     return
                 diagnostics = store.diagnostics(settings.default_user_id)
                 if diagnostics["status"] != "ok":
-                    self._send_json({"detail": diagnostics}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                    self._send_json(
+                        {"detail": {"status": "not_ready", "check": "storage"}},
+                        status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    )
                 else:
-                    self._send_json({"status": "ok", "diagnostics": diagnostics, "hosted_readiness": hosted_readiness})
+                    self._send_json({"status": "ok", "backend_version": BACKEND_VERSION})
                 return
             if method == "GET" and path == "/.well-known/cortex.json":
                 self._send_json({
@@ -2699,23 +2696,30 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 # byte-identical to the prior behavior.
                 response_format = "smp" if output_format == "smp" else "text"
                 internal_format = "json" if output_format == "smp" else output_format
-                pack = store.assemble_context(
-                    user_id,
-                    task,
-                    surface=surface,
-                    token_budget=token_budget,
-                    sector=sector,
-                    project=project,
-                    as_of=as_of,
-                    intent=intent,
-                    # Reaching /v1/context already required read scope; the identity layer is a read
-                    # of distilled context, so it is always included.
-                    include_identity=True,
-                    format=internal_format,
-                    pin=pin,
-                    session_id=pin_session_id,
-                    **_assemble_context_ext_kwargs(response_format, model),
-                )
+                try:
+                    pack = store.assemble_context(
+                        user_id,
+                        task,
+                        surface=surface,
+                        token_budget=token_budget,
+                        sector=sector,
+                        project=project,
+                        as_of=as_of,
+                        intent=intent,
+                        # Reaching /v1/context already required read scope; the identity layer is a read
+                        # of distilled context, so it is always included.
+                        include_identity=True,
+                        format=internal_format,
+                        pin=pin,
+                        session_id=pin_session_id,
+                        **_assemble_context_ext_kwargs(response_format, model),
+                    )
+                except UnknownAgentSessionError as exc:
+                    self._send_json(
+                        {"detail": str(exc)},
+                        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                    )
+                    return
                 if internal_format == "markdown":
                     self._send_text(pack, media_type="text/markdown")
                 else:
@@ -3600,21 +3604,33 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
 
 
 def serve(host: str = "127.0.0.1", port: int | None = None) -> None:
-    if not _standalone_host_is_loopback(host) and os.environ.get(
-        "CORTEX_ALLOW_NONLOCAL_STANDALONE", ""
-    ).strip().lower() not in {"1", "true", "yes", "on"}:
-        raise ValueError(
-            "The dependency-light standalone server is local-only. Bind to a "
-            "loopback address or explicitly set CORTEX_ALLOW_NONLOCAL_STANDALONE=1 "
-            "after reviewing its local trust model."
-        )
+    loopback = _standalone_host_is_loopback(host)
+    if not loopback:
+        if settings.api_key == INSECURE_DEV_API_KEY:
+            raise ValueError(
+                "The sample token 'dev-local-key' cannot be used on a non-loopback bind. "
+                "Set a long random CORTEX_API_KEY."
+            )
+        if os.environ.get(
+            "CORTEX_ALLOW_NONLOCAL_STANDALONE", ""
+        ).strip().lower() not in {"1", "true", "yes", "on"}:
+            raise ValueError(
+                "The dependency-light standalone server is local-only. Bind to a "
+                "loopback address or explicitly set CORTEX_ALLOW_NONLOCAL_STANDALONE=1 "
+                "after reviewing its local trust model."
+            )
     resolved_port = port or int(os.environ.get("CORTEX_PORT", "8766"))
     server = ThreadingHTTPServer((host, resolved_port), CortexRequestHandler)
     worker_thread = _start_standalone_worker()
     if worker_thread is not None:
         print(f"{APP_BRAND} standalone worker running for queued memory jobs", flush=True)
     print(f"{APP_BRAND} standalone backend running on http://{host}:{resolved_port}", flush=True)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print(f"\n{APP_BRAND} standalone backend stopped", flush=True)
+    finally:
+        server.server_close()
 
 
 def _standalone_host_is_loopback(host: str) -> bool:

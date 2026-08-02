@@ -180,6 +180,35 @@ def test_context_defaults(recorder):
     assert body["surface"] == "agent"
 
 
+def test_context_forwards_cmp_session_and_scope_options(recorder):
+    client = CortexClient(token="t")
+    client.context(
+        "plan the Project Atlas launch",
+        intent="plan",
+        format="smp",
+        model="claude",
+        session_id="session-atlas",
+        pin=True,
+        sector="Project Atlas",
+        project="Atlas",
+        as_of="2026-07-30T00:00:00Z",
+    )
+    body = json.loads(recorder.request.data.decode("utf-8"))
+    assert body == {
+        "task": "plan the Project Atlas launch",
+        "intent": "plan",
+        "token_budget": 2000,
+        "surface": "agent",
+        "format": "smp",
+        "model": "claude",
+        "session_id": "session-atlas",
+        "pin": True,
+        "sector": "Project Atlas",
+        "project": "Atlas",
+        "as_of": "2026-07-30T00:00:00Z",
+    }
+
+
 # -- call_tool -------------------------------------------------------------------------
 
 def test_call_tool_body_and_unwrap(monkeypatch):

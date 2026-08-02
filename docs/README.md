@@ -1,10 +1,9 @@
 # Cortex Documentation
 
 This index separates the current product contract from operator runbooks,
-forward-looking designs, and experimental feature branches. It was last audited
-against source commit `8eedd5c` plus the local `docs/repo-refresh` review delta
-on 2026-07-30. It does not claim that unmerged branch content is already in
-`main`.
+forward-looking designs, and experimental feature branches. It was last
+audited against the checked-out source on 2026-07-30. It does not claim that
+unmerged branch content is already in `main`.
 
 ## Status Rules
 
@@ -26,12 +25,12 @@ When documents disagree, use this order of authority:
 
 | Area | Documentation |
 |---|---|
-| Architecture | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| Architecture and code map | [ARCHITECTURE.md](ARCHITECTURE.md) · [CODE_MAP.md](CODE_MAP.md) |
 | API lifecycle and naming | [API_LIFECYCLE.md](API_LIFECYCLE.md) · [NAMING_AND_OWNERSHIP.md](NAMING_AND_OWNERSHIP.md) |
 | Product loop and onboarding | [SIMPLE_PRODUCT_LOOP.md](SIMPLE_PRODUCT_LOOP.md) · [FIRST_RUN_ONBOARDING.md](FIRST_RUN_ONBOARDING.md) |
 | Local vault | [LOCAL_VAULT_FORMAT.md](LOCAL_VAULT_FORMAT.md) |
 | Context protocol | [CMP_PROTOCOL.md](CMP_PROTOCOL.md) · [PORTABLE_MEMORY_PROTOCOL_V2.md](PORTABLE_MEMORY_PROTOCOL_V2.md) |
-| Source ingestion | [SOURCE_IMPORTS.md](SOURCE_IMPORTS.md) · [CAPTURE_SURFACES.md](CAPTURE_SURFACES.md) |
+| Source ingestion and extension | [SOURCE_IMPORTS.md](SOURCE_IMPORTS.md) · [ADDING_A_CONNECTOR.md](ADDING_A_CONNECTOR.md) · [CAPTURE_SURFACES.md](CAPTURE_SURFACES.md) |
 | MCP and external tools | [MCP_INTEGRATIONS.md](MCP_INTEGRATIONS.md) · [EXTERNAL_INTEGRATIONS.md](EXTERNAL_INTEGRATIONS.md) |
 | Connector readiness | [CONNECTOR_COVERAGE_READINESS.md](CONNECTOR_COVERAGE_READINESS.md) |
 | Trust and privacy | [TRUST_CONTROLS.md](TRUST_CONTROLS.md) · [SECURITY_REVIEW.md](SECURITY_REVIEW.md) |

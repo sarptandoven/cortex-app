@@ -273,6 +273,14 @@ class CortexClient:
         intent: Optional[str] = None,
         token_budget: int = 2000,
         surface: str = "agent",
+        *,
+        format: Optional[str] = None,
+        model: Optional[str] = None,
+        session_id: Optional[str] = None,
+        pin: Optional[bool] = None,
+        sector: Optional[str] = None,
+        project: Optional[str] = None,
+        as_of: Optional[str] = None,
     ) -> Any:
         """Build a token-budgeted, cited working-context pack for a task.
 
@@ -284,20 +292,37 @@ class CortexClient:
                 ``recall``).
             token_budget: Approximate token budget for the assembled pack.
             surface: Which tool/agent you are (e.g. ``cursor``, ``claude``, ``agent``).
+            format: Optional response projection: ``json``, ``markdown``, or ``smp``.
+            model: Optional target-model profile used for pack adaptation.
+            session_id: Optional multi-turn session identifier for delta packs. When
+                combined with ``pin=True``, this must be an ``asess_...`` id returned
+                by the ``start_agent_session`` MCP tool.
+            pin: Whether to persist an immutable, content-addressed copy of the pack.
+            sector: Optional hard memory-sector filter; use this for corpus isolation.
+            project: Optional entity-ranking hint. This is not an access-control or
+                isolation boundary; use ``sector`` for isolation.
+            as_of: Optional ISO 8601 historical cutoff.
 
         Returns:
             The assembled context pack (JSON object).
         """
-        return self._request(
-            "POST",
-            "/v1/context",
-            body={
-                "task": task,
-                "intent": intent,
-                "token_budget": token_budget,
-                "surface": surface,
-            },
-        )
+        body: dict[str, Any] = {
+            "task": task,
+            "intent": intent,
+            "token_budget": token_budget,
+            "surface": surface,
+        }
+        optional_fields = {
+            "format": format,
+            "model": model,
+            "session_id": session_id,
+            "pin": pin,
+            "sector": sector,
+            "project": project,
+            "as_of": as_of,
+        }
+        body.update({key: value for key, value in optional_fields.items() if value is not None})
+        return self._request("POST", "/v1/context", body=body)
 
     def search(self, query: str, top_k: int = 8) -> Any:
         """Search Cortex memory and return results with retrieval diagnostics.

@@ -12,7 +12,9 @@
     "os": "Darwin 25.5.0 arm64",
     "hardware": "Apple M1 Pro, 10 cores, 16 GB RAM",
     "network_used": false,
-    "model_api_calls": false
+    "model_api_calls": false,
+    "retrieval_provider": "hash",
+    "semantic_model_asset_present": false
   },
   "method": {
     "repetitions": 1,
@@ -30,6 +32,7 @@
   "results": {
     "retrieval": {
       "status": "ok",
+      "path": "deterministic_hash_fts",
       "cases": 163,
       "top1_accuracy": 1.0,
       "recall_at_3": 1.0,
@@ -41,6 +44,10 @@
       "pairs": 41,
       "pairwise_concordance": 1.0,
       "reordered_top1": 1.0
+    },
+    "semantic_rerank": {
+      "status": "not_measured",
+      "reason": "model2vec package/model asset was not provisioned for this snapshot"
     },
     "context_packing": {
       "status": "ok",
@@ -79,5 +86,8 @@
     "Only one repetition was run, so variance and confidence intervals are unavailable.",
     "Wall-clock timing and controlled cold/warm cache state were not captured.",
     "The fixtures are synthetic and do not establish real-user answer quality."
+    ,"The retrieval result measures the deterministic hash/FTS path, not Model2Vec semantic or hybrid retrieval."
+    ,"The token-calibration references are simulated rather than live vendor tokenizer counts."
+    ,"Raw per-case artifacts and the dirty working-tree diff were not retained."
   ]
 }

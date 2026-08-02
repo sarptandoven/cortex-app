@@ -168,6 +168,36 @@ test("context forwards intent/tokenBudget/surface overrides", async () => {
   });
 });
 
+test("context forwards CMP session, model, projection, and scope options", async () => {
+  const { fetchStub, calls } = makeFetchStub([{ status: 200, body: {} }]);
+  const client = new CortexClient({ token: "t", fetch: fetchStub });
+
+  await client.context("plan the Project Atlas launch", {
+    intent: "plan",
+    format: "smp",
+    model: "claude",
+    sessionId: "session-atlas",
+    pin: true,
+    sector: "Project Atlas",
+    project: "Atlas",
+    asOf: "2026-07-30T00:00:00Z",
+  });
+
+  assert.deepEqual(JSON.parse(calls[0].body ?? "{}"), {
+    task: "plan the Project Atlas launch",
+    intent: "plan",
+    token_budget: 2000,
+    surface: "agent",
+    format: "smp",
+    model: "claude",
+    session_id: "session-atlas",
+    pin: true,
+    sector: "Project Atlas",
+    project: "Atlas",
+    as_of: "2026-07-30T00:00:00Z",
+  });
+});
+
 test("search issues GET /v1/search with query + limit params", async () => {
   const { fetchStub, calls } = makeFetchStub([{ status: 200, body: { results: [] } }]);
   const client = new CortexClient({ token: "t", fetch: fetchStub });

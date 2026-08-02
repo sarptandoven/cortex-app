@@ -1,0 +1,6 @@
+# Direct dependencies for the Python 3.12 contributor and CI environment.
+#
+# Regenerate requirements-dev.lock with:
+#   make lock-python
+-r backend/requirements.txt
+pytest>=7.0

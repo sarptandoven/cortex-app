@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import time
 from urllib.error import URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -69,7 +71,51 @@ def _workflow_sections(output: str) -> dict[str, object]:
     return sections
 
 
-def main() -> int:
+def _print_quickstart_result(base_url: str, token: str) -> None:
+    query = "When does Project Atlas ship?"
+    answer = _get_json(
+        f"{base_url}/v1/ask?{urlencode({'query': query, 'limit': 5})}",
+        token,
+    )
+    if answer.get("status") != "cited" or not answer.get("citations"):
+        raise AssertionError(f"quickstart Ask did not return a cited answer: {answer}")
+    citation = answer["citations"][0]
+    print()
+    print("Cortex is working.")
+    print("  [ok] isolated loopback server started")
+    print("  [ok] 3 synthetic Project Atlas captures loaded")
+    print("  [ok] Ask returned cited evidence")
+    print()
+    print(f"Question: {query}")
+    print(f"Answer:   {answer.get('answer', '').strip()}")
+    print(
+        "Citation: "
+        f"{citation.get('source_url') or citation.get('source') or citation.get('memory_id')}"
+    )
+    print()
+    print("The temporary vault has been removed; no personal Cortex data was read.")
+    print(
+        "Next: CORTEX_AUTO_APPROVE_CAPTURES=1 make run"
+        "  # persistent dev server + http://127.0.0.1:8766/docs"
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Exercise public Cortex examples against an isolated local server."
+    )
+    parser.add_argument(
+        "--quickstart",
+        action="store_true",
+        help="Run only the synthetic seed + cited-answer path and print human-readable output.",
+    )
+    parser.add_argument(
+        "--runtime",
+        choices=("fastapi", "standalone"),
+        default="fastapi",
+        help="Server implementation to test. 'standalone' is the runtime shipped in the macOS app.",
+    )
+    args = parser.parse_args(argv)
     port = _available_loopback_port()
     base_url = f"http://127.0.0.1:{port}"
     with tempfile.TemporaryDirectory(prefix="cortex-examples-") as temp:
@@ -92,8 +138,18 @@ def main() -> int:
                 ),
             }
         )
-        server = subprocess.Popen(
-            [
+        if args.runtime == "standalone":
+            server_command = [
+                sys.executable,
+                "-m",
+                "backend.app.standalone_server",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+            ]
+        else:
+            server_command = [
                 sys.executable,
                 "-m",
                 "uvicorn",
@@ -104,7 +160,9 @@ def main() -> int:
                 str(port),
                 "--log-level",
                 "warning",
-            ],
+            ]
+        server = subprocess.Popen(
+            server_command,
             cwd=ROOT,
             env=env,
             stdout=subprocess.DEVNULL,
@@ -140,6 +198,9 @@ def main() -> int:
             seed = _run_example("examples/seed_demo.py", env)
             if "done: 3 deterministic synthetic captures are ready" not in seed:
                 raise AssertionError("seed_demo.py did not report all fixture captures")
+            if args.quickstart:
+                _print_quickstart_result(base_url, "dev-local-key")
+                return 0
             first_stats = _get_json(f"{base_url}/v1/stats", "dev-local-key")
             second_seed = _run_example("examples/seed_demo.py", env)
             if "done: 3 deterministic synthetic captures are ready" not in second_seed:
@@ -152,7 +213,7 @@ def main() -> int:
                     f"{first_stats} -> {second_stats}"
                 )
 
-            search = json.loads(_run_example("examples/minimal_search.py", env))
+            search = json.loads(_run_example("examples/minimal_search.py", env, "--json"))
             results = search.get("results", [])
             if not results or not _contains_demo_source(search):
                 raise AssertionError("minimal_search.py did not return the cited demo memory")
@@ -198,7 +259,7 @@ def main() -> int:
                 server.kill()
                 server.wait(timeout=5)
 
-    print("examples smoke: all public Python examples passed")
+    print(f"examples smoke: all public Python examples passed ({args.runtime} runtime)")
     return 0
 
 

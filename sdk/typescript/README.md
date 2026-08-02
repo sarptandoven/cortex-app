@@ -21,29 +21,34 @@ tool definition. This client wraps that HTTP surface.
 
 Requires Node 18+ (for global `fetch` / `AbortController`).
 
-```bash
-npm install @doppl-tech/cortex-client   # once published (see sdk/PUBLISHING.md)
-```
-
-### Build from source
+The npm scope is planned but not yet the supported installation path. Build and
+test the source package from this repository:
 
 ```bash
 cd sdk/typescript
-npm install      # dev-only: typescript, @types/node
+npm ci           # dev-only: typescript, @types/node
 npm run build    # emits dist/index.js + dist/index.d.ts via tsc
 npm test         # compiles test/ + src/ and runs against a stubbed fetch (node:test)
 ```
 
-Or drop `src/index.ts` straight into your project.
+Until a registry release is documented, import `dist/index.js` from the checkout
+or vendor `src/index.ts`. Do not assume
+`npm install @doppl-tech/cortex-client` works before then.
 
 ## Quickstart
 
+First start Cortex (`make run` from the repository root) or open the installed
+macOS app. The development server uses `dev-local-key`; an installed app exposes
+a scoped `cxa_` REST token under Connections & Privacy.
+
 ```ts
-import { CortexClient, CortexError } from "@doppl-tech/cortex-client";
+// Registry release: import from "@doppl-tech/cortex-client".
+// Source checkout: import from "./sdk/typescript/dist/index.js".
+import { CortexClient, CortexError } from "./sdk/typescript/dist/index.js";
 
 const cortex = new CortexClient({
   baseUrl: "http://127.0.0.1:8766",
-  token: "cxa_your_token",
+  token: "dev-local-key", // use a scoped cxa_ token with the installed app
 });
 
 // Cited answer to a specific question (never an uncited guess).
@@ -54,6 +59,14 @@ console.log(await cortex.search("release checklist", 5));
 
 // Token-budgeted working-context pack — call this before doing a task.
 console.log(await cortex.context("draft the release notes", { intent: "draft", tokenBudget: 1500 }));
+
+// Portable SMP projection with multi-turn delta context and a project hint.
+console.log(await cortex.context("plan the Project Atlas launch", {
+  format: "smp",
+  model: "claude",
+  sessionId: "atlas-planning",
+  project: "Atlas",
+}));
 
 // Any tool in the catalog, by name.
 console.log(await cortex.callTool("get_person_map", {}));
@@ -67,6 +80,12 @@ try {
 }
 ```
 
+`sector` is the hard corpus filter to use when memories must be isolated.
+`project` only helps Cortex rank and enrich entity context; it is **not** an
+authorization or isolation boundary. If `pin: true` is combined with
+`sessionId`, that ID must come from the `start_agent_session` MCP tool. Pinning
+without a session ID is valid.
+
 ## Methods
 
 | Method | Endpoint | Purpose |
@@ -75,7 +94,7 @@ try {
 | `openaiTools()` | `GET /v1/tools/schema?format=openai` | Convenience → `OpenAITool[]`. |
 | `anthropicTools()` | `GET /v1/tools/schema?format=anthropic` | Convenience → `AnthropicTool[]`. |
 | `callTool(name, args = {})` | `POST /v1/tools/call` | Invoke any tool; returns its `result`. |
-| `context(task, options?)` | `POST /v1/context` | Cited working-context pack. |
+| `context(task, options?)` | `POST /v1/context` | Cited pack, SMP/Markdown projection, sector filter, project hint, and session deltas. |
 | `search(query, topK = 8)` | `GET /v1/search` | Search memory. |
 | `ask(query, topK = 8)` | `GET /v1/ask` | Cited answer / explicit abstention. |
 

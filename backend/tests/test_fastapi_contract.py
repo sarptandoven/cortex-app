@@ -228,22 +228,17 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("trust_score", payload["ai_access"])
         self.assertIn("events", payload["audit"])
 
-    def test_health_exposes_sharding_contract(self) -> None:
+    def test_health_exposes_only_safe_sharding_status(self) -> None:
         response = self.client.get("/health")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         sharding = payload["sharding"]
         self.assertEqual(sharding["mode"], "local")
-        self.assertEqual(sharding["default"]["shard_id"], "local")
-        self.assertIn("db_path", sharding["default"])
-        hosted_readiness = payload["hosted_readiness"]
-        self.assertEqual(hosted_readiness["status"], "ok")
-        self.assertFalse(hosted_readiness["hosted_mode"])
-        self.assertEqual(hosted_readiness["shard_mode"], "local")
-        self.assertFalse(hosted_readiness["require_scoped_api_tokens"])
-        self.assertEqual(hosted_readiness["global_token_user_switching"], "allowed_local_compatibility")
-        self.assertEqual(hosted_readiness["checks"][0]["name"], "scoped_api_tokens_required")
+        self.assertEqual(sharding["default_shard_id"], "local")
+        self.assertNotIn("db_path", json.dumps(payload))
+        self.assertNotIn("vault_path", json.dumps(payload))
+        self.assertNotIn("hosted_readiness", payload)
 
     def test_hosted_health_defers_tenant_wide_readiness_scan(self) -> None:
         original_settings = main_module.settings
@@ -258,7 +253,7 @@ class FastAPIContractTests(unittest.TestCase):
             main_module.settings = original_settings
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["hosted_readiness"]["status"], "deferred")
+        self.assertNotIn("hosted_readiness", response.json())
 
     def test_ready_requires_scoped_api_tokens_for_hosted_shard_modes(self) -> None:
         original_settings = main_module.settings
@@ -268,15 +263,10 @@ class FastAPIContractTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 503)
             detail = response.json()["detail"]
-            self.assertEqual(detail["status"], "needs_configuration")
-            hosted_readiness = detail["hosted_readiness"]
-            self.assertEqual(hosted_readiness["status"], "blocked")
-            self.assertTrue(hosted_readiness["hosted_mode"])
-            self.assertEqual(hosted_readiness["shard_mode"], "bucket")
-            self.assertFalse(hosted_readiness["require_scoped_api_tokens"])
-            self.assertEqual(hosted_readiness["global_token_user_switching"], "blocked")
-            self.assertEqual(hosted_readiness["checks"][0]["status"], "blocked")
-            self.assertIn("CORTEX_REQUIRE_SCOPED_API_TOKENS=1", hosted_readiness["checks"][0]["detail"])
+            self.assertEqual(
+                detail,
+                {"status": "not_ready", "check": "hosted_configuration"},
+            )
         finally:
             main_module.settings = original_settings
 
@@ -512,9 +502,14 @@ class FastAPIContractTests(unittest.TestCase):
 
             response = self.client.get("/ready")
             self.assertEqual(response.status_code, 503)
+            self.assertEqual(
+                response.json()["detail"],
+                {"status": "not_ready", "check": "hosted_configuration"},
+            )
+            hosted_readiness = main_module._hosted_readiness_contract()
             blocked = {
                 check["name"]
-                for check in response.json()["detail"]["hosted_readiness"]["checks"]
+                for check in hosted_readiness["checks"]
                 if check["status"] == "blocked"
             }
             self.assertEqual(blocked, {"runtime_hosted_storage", "background_worker_queue", "control_plane_scoped_tokens"})
@@ -524,9 +519,10 @@ class FastAPIContractTests(unittest.TestCase):
             main_module.store.ensure_mcp_token(split_user, "cxm_hosted_ready_split_mcp_token_123456789", label="Hosted MCP", scopes=["read"])
             split_ready = self.client.get("/ready")
             self.assertEqual(split_ready.status_code, 503)
+            hosted_readiness = main_module._hosted_readiness_contract()
             split_blocked = {
                 check["name"]
-                for check in split_ready.json()["detail"]["hosted_readiness"]["checks"]
+                for check in hosted_readiness["checks"]
                 if check["status"] == "blocked"
             }
             self.assertEqual(split_blocked, {"runtime_hosted_storage", "background_worker_queue", "control_plane_scoped_tokens"})
@@ -535,7 +531,7 @@ class FastAPIContractTests(unittest.TestCase):
 
             ready = self.client.get("/ready")
             self.assertEqual(ready.status_code, 503)
-            hosted_readiness = ready.json()["detail"]["hosted_readiness"]
+            hosted_readiness = main_module._hosted_readiness_contract()
             runtime_blocked = {
                 check["name"]
                 for check in hosted_readiness["checks"]
@@ -1110,6 +1106,23 @@ class FastAPIContractTests(unittest.TestCase):
 
         bad_format = self.client.post("/v1/context", json={"task": "x", "format": "yaml"}, headers=headers)
         self.assertEqual(bad_format.status_code, 422)
+
+        for method in ("get", "post"):
+            with self.subTest(method=method):
+                if method == "get":
+                    invalid_session = self.client.get(
+                        "/v1/context",
+                        params={"task": "Atlas database decision", "pin": True, "session_id": "asess_missing"},
+                        headers=headers,
+                    )
+                else:
+                    invalid_session = self.client.post(
+                        "/v1/context",
+                        json={"task": "Atlas database decision", "pin": True, "session_id": "asess_missing"},
+                        headers=headers,
+                    )
+                self.assertEqual(invalid_session.status_code, 422)
+                self.assertIn("Unknown agent session", invalid_session.json()["detail"])
 
         # A READ-scoped API token can use the engine AND receives the identity layer — the
         # distilled picture of the user is a read, which is the whole point of the product.

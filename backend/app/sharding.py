@@ -784,12 +784,11 @@ class StoreRegistry:
     def health_payload(self, *, mode: str, auth: bool) -> dict[str, Any]:
         payload = self.default_store.health_payload(mode=mode, auth=auth)
         payload["sharding"] = {
-            **self.router.payload(),
+            "mode": self.router.mode,
+            "shard_count": self.router.shard_count if self.router.mode == "bucket" else 1,
             "active_store_count": len(self._stores),
-            "default": self.assignment_for(self.default_user_id).as_dict(),
+            "default_shard_id": self.assignment_for(self.default_user_id).shard_id,
         }
-        if self.router.mode != "local":
-            payload["sharding"]["control_plane"] = self.control_plane_status()
         return payload
 
     def runtime_storage_status(self) -> dict[str, Any]:

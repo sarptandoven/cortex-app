@@ -1,5 +1,5 @@
 """
-cortex/mcp_server.py
+legacy/mcp_server.py
 --------------------
 Cortex MCP server — exposes your second brain to Claude and any MCP-compatible AI.
 

@@ -27,6 +27,12 @@ Cortex is currently beta. Additive response fields, new endpoints, new optional
 request fields, and new enum values may ship in a minor release. Consumers must
 ignore response fields they do not recognize.
 
+The API/SDK compatibility version is currently `0.1.0`; it is independent from
+the desktop application release version (`0.2.0`, build 51 at the time of this
+review). OpenAPI, MCP server metadata, and backend diagnostics all read the
+shared `BACKEND_VERSION` constant. Do not infer API compatibility from a DMG or
+Sparkle build number.
+
 A change is breaking when an existing valid request stops working, a field is
 removed or changes meaning/type, an authentication scope becomes insufficient,
 or an SDK method changes incompatibly. Breaking changes require one of:

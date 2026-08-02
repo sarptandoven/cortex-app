@@ -5,6 +5,7 @@ import os
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 from unittest import mock
 from pathlib import Path
 from urllib import error, request
@@ -250,6 +251,10 @@ class FakeStore:
     def assemble_context(self, user_id: str, task: str = "", **kwargs) -> dict | str:
         call = {"user_id": user_id, "task": task, **kwargs}
         self.assemble_context_calls.append(call)
+        if kwargs.get("pin") and kwargs.get("session_id") == "asess_missing":
+            raise standalone_server.UnknownAgentSessionError(
+                "Unknown agent session; call start_agent_session first (ids look like asess_...)."
+            )
         if kwargs.get("format") == "markdown":
             return "# Cortex Context Pack\n\nassembled"
         return {
@@ -649,7 +654,9 @@ class FakeStore:
             "auth": auth,
             "sharding": {
                 "mode": "local",
-                "default": {"shard_id": "local", "db_path": "/tmp/index.sqlite", "vault_path": "/tmp/Cortex.vault"},
+                "shard_count": 1,
+                "active_store_count": 1,
+                "default_shard_id": "local",
             },
         }
 
@@ -2912,16 +2919,37 @@ class StandaloneServerTests(unittest.TestCase):
             self.assertTrue(standalone_server._standalone_worker_enabled())
 
     def test_standalone_server_refuses_non_loopback_bind_by_default(self):
-        for host in ("0.0.0.0", "::", "192.0.2.10", "public.example"):
+        # Wildcard and public hosts are literal rejection cases, never bind targets.
+        wildcard_host = "0.0.0.0"  # nosec B104
+        for host in (wildcard_host, "::", "192.0.2.10", "public.example"):
             with self.subTest(host=host), mock.patch.dict(os.environ, {}, clear=True):
                 with self.assertRaisesRegex(ValueError, "local-only"):
                     standalone_server.serve(host, 9876)
+
+    def test_standalone_server_refuses_sample_token_on_non_loopback_bind(self):
+        original_settings = standalone_server.settings
+        standalone_server.settings = replace(
+            original_settings,
+            api_key=standalone_server.INSECURE_DEV_API_KEY,
+        )
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {"CORTEX_ALLOW_NONLOCAL_STANDALONE": "1"},
+                clear=True,
+            ):
+                with self.assertRaisesRegex(ValueError, "sample token"):
+                    standalone_server.serve("0.0.0.0", 9876)  # nosec B104
+        finally:
+            standalone_server.settings = original_settings
 
     def test_standalone_loopback_detection_handles_ipv4_ipv6_and_mapped_addresses(self):
         for host in ("localhost", "127.0.0.1", "127.9.8.7", "::1", "::ffff:127.0.0.1"):
             with self.subTest(host=host):
                 self.assertTrue(standalone_server._standalone_host_is_loopback(host))
-        self.assertFalse(standalone_server._standalone_host_is_loopback("0.0.0.0"))
+        # This literal validates that wildcard binding is not classified as loopback.
+        wildcard_host = "0.0.0.0"  # nosec B104
+        self.assertFalse(standalone_server._standalone_host_is_loopback(wildcard_host))
 
     def test_standalone_worker_tick_drains_memory_jobs_without_source_scheduling(self):
         result = standalone_server._run_standalone_worker_tick(limit=7)
@@ -3128,27 +3156,23 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(headers.get("Access-Control-Allow-Origin"), "http://localhost:8766")
         self.assertEqual(headers.get("Vary"), "Origin")
 
-    def test_health_and_ready_expose_hosted_readiness_contract(self) -> None:
+    def test_health_and_ready_expose_only_public_probe_status(self) -> None:
         with self.get("/health") as response:
             health = json.loads(response.read().decode("utf-8"))
 
         self.assertEqual(response.status, 200)
         self.assertEqual(health["mode"], "standalone")
-        hosted_readiness = health["hosted_readiness"]
-        self.assertEqual(hosted_readiness["status"], "ok")
-        self.assertFalse(hosted_readiness["hosted_mode"])
-        self.assertEqual(hosted_readiness["shard_mode"], "local")
-        self.assertFalse(hosted_readiness["require_scoped_api_tokens"])
-        self.assertEqual(hosted_readiness["global_token_user_switching"], "allowed_local_compatibility")
-        self.assertEqual(hosted_readiness["checks"][0]["name"], "scoped_api_tokens_required")
+        self.assertNotIn("db_path", json.dumps(health))
+        self.assertNotIn("vault_path", json.dumps(health))
+        self.assertNotIn("hosted_readiness", health)
 
         with self.get("/ready") as response:
             ready = json.loads(response.read().decode("utf-8"))
 
         self.assertEqual(response.status, 200)
         self.assertEqual(ready["status"], "ok")
-        self.assertEqual(ready["hosted_readiness"]["status"], "ok")
-        self.assertEqual(ready["diagnostics"]["status"], "ok")
+        self.assertEqual(ready["backend_version"], standalone_server.BACKEND_VERSION)
+        self.assertNotIn("diagnostics", ready)
 
     def test_ready_requires_scoped_api_tokens_for_hosted_shard_modes(self) -> None:
         standalone_server.settings = Settings(
@@ -3164,22 +3188,16 @@ class StandaloneServerTests(unittest.TestCase):
             health = json.loads(response.read().decode("utf-8"))
 
         self.assertEqual(response.status, 200)
-        hosted_readiness = health["hosted_readiness"]
-        self.assertEqual(hosted_readiness["status"], "blocked")
-        self.assertTrue(hosted_readiness["hosted_mode"])
-        self.assertEqual(hosted_readiness["shard_mode"], "bucket")
-        self.assertFalse(hosted_readiness["require_scoped_api_tokens"])
-        self.assertEqual(hosted_readiness["global_token_user_switching"], "blocked")
+        self.assertNotIn("hosted_readiness", health)
 
         with self.assertRaises(error.HTTPError) as context:
             self.get("/ready")
         self.assertEqual(context.exception.code, 503)
         detail = json.loads(context.exception.read().decode("utf-8"))["detail"]
-        self.assertEqual(detail["status"], "needs_configuration")
-        hosted_readiness = detail["hosted_readiness"]
-        self.assertEqual(hosted_readiness["status"], "blocked")
-        self.assertEqual(hosted_readiness["checks"][0]["status"], "blocked")
-        self.assertIn("CORTEX_REQUIRE_SCOPED_API_TOKENS=1", hosted_readiness["checks"][0]["detail"])
+        self.assertEqual(
+            detail,
+            {"status": "not_ready", "check": "hosted_configuration"},
+        )
 
     def test_delete_capture_forwards_to_store(self) -> None:
         with self.delete("/v1/captures/capture-1") as response:
@@ -4952,6 +4970,24 @@ class StandaloneServerTests(unittest.TestCase):
         with self.post_json("/v1/context", {"task": "x", "pin": "false"}) as response:
             self.assertEqual(response.status, 200)
         self.assertIs(self.fake_store.assemble_context_calls[-1]["pin"], False)
+
+        for request_factory in (
+            lambda: request.Request(
+                self.base_url + "/v1/context?task=x&pin=true&session_id=asess_missing",
+                headers={"Authorization": "Bearer test-token"},
+            ),
+            lambda: request.Request(
+                self.base_url + "/v1/context",
+                data=json.dumps({"task": "x", "pin": True, "session_id": "asess_missing"}).encode("utf-8"),
+                headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                method="POST",
+            ),
+        ):
+            request_value = request_factory()
+            with self.subTest(method=request_value.get_method()), self.assertRaises(error.HTTPError) as context:
+                request.urlopen(request_value, timeout=5)
+            self.assertEqual(context.exception.code, 422)
+            self.assertIn("Unknown agent session", context.exception.read().decode("utf-8"))
 
     def test_context_pack_verify_route_on_shipping_server(self) -> None:
         # Phase 2b: POST /v1/context/packs/{sha}/verify reaches store.verify_context_pack,

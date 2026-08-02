@@ -4,10 +4,8 @@ Last reviewed: 2026-07-30
 
 Review posture: independent, reject by default
 
-Review baseline: source commit `8eedd5c` on the local
-`docs/repo-refresh` branch. The corrections described below are the review
-delta from that baseline; this document must be updated with a new baseline
-before it is reused as evidence for a later release.
+Review scope: the checked-out source tree through the date above. This document
+must be reviewed again before it is reused as evidence for a later release.
 
 This is an evidence-based engineering review of the checked-out source tree,
 not a security certification. It used local source and local test tooling only;

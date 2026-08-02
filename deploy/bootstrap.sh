@@ -89,7 +89,10 @@ fi
 # --- 4. Python env + release switch -------------------------------------------
 python3 -m venv /srv/cortex/venv 2>/dev/null || true
 /srv/cortex/venv/bin/pip install --quiet --upgrade pip
-/srv/cortex/venv/bin/pip install --quiet -r "$RELEASE_DIR/backend/requirements.txt" -r "$RELEASE_DIR/backend/runtime-requirements.txt" uvicorn
+/srv/cortex/venv/bin/pip install --quiet --require-hashes \
+  -r "$RELEASE_DIR/backend/requirements.lock"
+/srv/cortex/venv/bin/pip install --quiet --require-hashes \
+  -r "$RELEASE_DIR/backend/runtime-requirements.lock"
 ln -sfn "$RELEASE_DIR" /srv/cortex/current
 chown -R cortex:cortex /srv/cortex/releases
 

@@ -46,16 +46,16 @@ hosted connectors are restricted to their official service origins.
 
 The original prototype has these pieces:
 
-- `capture.py`: macOS menu bar capture using Python
-- `ingest.py`: Claude-based extraction into records, tasks, and entities
-- `github_store.py`: markdown persistence in GitHub
-- `redis_store.py`: Voyage embeddings plus Redis vector search
-- `mcp_server.py`: legacy prototype local stdio MCP server; packaged builds use the app-bundled `scripts/cortex_mcp_stdio.py` proxy instead
-- `ui.py`: Streamlit memory chat
+- `legacy/capture.py`: macOS menu bar capture using Python
+- `legacy/ingest.py`: Claude-based extraction into records, tasks, and entities
+- `legacy/github_store.py`: markdown persistence in GitHub
+- `legacy/redis_store.py`: Voyage embeddings plus Redis vector search
+- `legacy/mcp_server.py`: legacy prototype local stdio MCP server; packaged builds use the app-bundled `scripts/cortex_mcp_stdio.py` proxy instead
+- `legacy/ui.py`: Streamlit memory chat
 
-These root-level modules are retained for reference and are not used by the
-packaged app. New product work belongs in `backend/app/`, `macos/`, the SDKs, or
-the integration packages.
+These modules are isolated under `legacy/`, retained for reference, and not
+used by the packaged app. New product work belongs in `backend/app/`, `macos/`,
+the SDKs, or the integration packages.
 
 ## Current Product
 
@@ -72,7 +72,9 @@ macOS app
   Obsidian/local notes sync
       |
       v
-FastAPI backend
+Shared API surface
+  FastAPI: development and optional hosted plane
+  standalone_server.py: packaged local subset
   /v1/captures
   /v1/captures/queue
   /v1/captures/{id}/status
@@ -266,6 +268,7 @@ Each memory also has a retrieval layer:
 - decision
 - preference
 - negative
+- procedural
 
 ### Entity
 

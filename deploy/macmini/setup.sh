@@ -147,7 +147,11 @@ chmod +x "$REPO_DIR/deploy/macmini/run-api.sh" "$REPO_DIR/deploy/macmini/run-wor
 
 # --- Python deps ---
 echo "==> Installing backend dependencies into $VENV_DIR"
-"$PYTHON" -m pip install --quiet -r "$REPO_DIR/backend/requirements.txt" -r "$REPO_DIR/backend/runtime-requirements.txt" uvicorn || {
+"$PYTHON" -m pip install --quiet --require-hashes \
+  -r "$REPO_DIR/backend/requirements.lock" || {
+  echo "!! hosted dependency install failed; check $PYTHON"; exit 1; }
+"$PYTHON" -m pip install --quiet --require-hashes \
+  -r "$REPO_DIR/backend/runtime-requirements.lock" || {
   echo "!! pip install failed; check $PYTHON"; exit 1; }
 
 # --- launchd plists ---

@@ -1,3 +1,4 @@
+# Archived prototype dependencies; not used by the current product.
 anthropic>=0.40.0
 mcp>=1.0.0
 redis[hiredis]>=5.0.0

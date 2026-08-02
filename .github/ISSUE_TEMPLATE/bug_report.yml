@@ -56,6 +56,8 @@ body:
     attributes:
       label: Safety checklist
       options:
+        - label: I searched existing issues and checked the troubleshooting guide.
+          required: true
         - label: I removed private memory, credentials, tokens, and personal identifiers.
           required: true
         - label: This is not a security vulnerability.

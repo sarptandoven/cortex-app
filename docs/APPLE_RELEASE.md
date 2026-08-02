@@ -305,12 +305,14 @@ or Obsidian/local notes and complete one sync, approve one memory, ask Cortex an
 verify a cited memory appears, create one backup, export one support bundle,
 quit + relaunch, and verify the memory folder remains intact.
 
-## Current public release blockers (DMG path)
+## Current public release status (DMG path)
 
-- Developer ID signing
-- notarization
-- hosted HTTPS download domain
-- public privacy policy URL and support email
-- clean rollback archive for the previous DMG
-- final app icon and final landing/privacy copy review
-- test on a clean Mac that has never run the dev build
+The canonical public manifest, `site/downloads/latest.json`, records Cortex
+0.2.0 build 51 as Developer ID signed, notarized, and hosted on GitHub Releases.
+That statement applies only to the exact artifacts and SHA-256 values in the
+manifest.
+
+Cutting a later release still requires the signing identity, notary profile,
+clean-profile install test, rollback archive, checksum verification, and
+publication order described above. If any of those checks is unavailable, keep
+the candidate internal and do not replace the public manifest.

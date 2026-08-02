@@ -13,7 +13,10 @@ echo "==> Pre-deploy safety snapshot"
 /usr/local/bin/cortex-backup || echo "!! backup failed (continuing; investigate after)"
 
 echo "==> Installing requirements"
-/srv/cortex/venv/bin/pip install --quiet -r "$NEW_RELEASE/backend/requirements.txt" -r "$NEW_RELEASE/backend/runtime-requirements.txt" uvicorn
+/srv/cortex/venv/bin/pip install --quiet --require-hashes \
+  -r "$NEW_RELEASE/backend/requirements.lock"
+/srv/cortex/venv/bin/pip install --quiet --require-hashes \
+  -r "$NEW_RELEASE/backend/runtime-requirements.lock"
 
 echo "==> Switching current -> $NEW_RELEASE"
 ln -sfn "$NEW_RELEASE" /srv/cortex/current
