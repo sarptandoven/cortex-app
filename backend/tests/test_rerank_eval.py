@@ -11,8 +11,12 @@ class RerankEvalGateTests(unittest.TestCase):
         prev = os.environ.get("CORTEX_EMBEDDING_PROVIDER")
         os.environ["CORTEX_EMBEDDING_PROVIDER"] = "model2vec"
         try:
-            from backend.app.embeddings import embedding_status
+            from backend.app.embeddings import embedding_status, warmup_embedding_provider
 
+            # Probe the configured provider before deciding whether this environment
+            # can run the semantic floor. Without warmup, status may still report the
+            # requested provider even though the optional package/model cannot load.
+            warmup_embedding_provider()
             if embedding_status().get("provider") != "model2vec":
                 self.skipTest("model2vec embedder unavailable in this environment")
             from scripts.rerank_eval import run_rerank_eval

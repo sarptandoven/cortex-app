@@ -1609,7 +1609,10 @@ class CortexVault:
             return
         if top in RESTORE_DIRECTORIES:
             return
-        if len(path.parts) == 1 and path.name == "index.sqlite":
+        if len(path.parts) == 1 and path.name in {
+            "index.sqlite",
+            "backup-security.json",
+        }:
             return
         raise ValueError(f"unsupported backup member path: {name}")
 

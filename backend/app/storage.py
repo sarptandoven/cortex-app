@@ -21249,7 +21249,7 @@ class CortexStore:
         }
         if require_clean and not result["managed_backups_clean"]:
             raise RuntimeError(
-                "managed Cortex vault/backups require correct identity, "
+                f"managed {APP_BRAND} vault/backups require correct identity, "
                 "removal, or verified replacement before pairwise "
                 "migration finalization"
             )

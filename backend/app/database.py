@@ -1626,9 +1626,37 @@ def sqlite_vec_status(conn: sqlite3.Connection) -> dict[str, str | bool | None]:
 
 
 def _apply_lightweight_migrations(conn: sqlite3.Connection) -> None:
+    known_columns: dict[str, set[str]] = {}
     for statement in MIGRATIONS:
+        # Every migration above is an ADD COLUMN statement. Check the current
+        # schema before executing it instead of relying on SQLite's duplicate-
+        # column error: newer SQLite versions can fail while rolling back a
+        # duplicate constrained column when another CHECK references it.
+        parts = statement.split()
+        migration_target: tuple[str, str] | None = None
+        if (
+            len(parts) >= 6
+            and parts[0:2] == ["ALTER", "TABLE"]
+            and parts[3:5] == ["ADD", "COLUMN"]
+        ):
+            table_name = parts[2]
+            column_name = parts[5]
+            migration_target = (table_name, column_name)
+            columns = known_columns.setdefault(
+                table_name,
+                {
+                    str(row[1])
+                    for row in conn.execute(
+                        f'PRAGMA table_info("{table_name}")'
+                    ).fetchall()
+                },
+            )
+            if column_name in columns:
+                continue
         try:
             conn.execute(statement)
+            if migration_target is not None:
+                known_columns[table_name].add(column_name)
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
