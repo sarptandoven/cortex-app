@@ -136,9 +136,9 @@ jobs:
         run: pip-audit --strict -r backend/requirements.txt
 
       - name: Audit archived prototype dependencies for known vulnerabilities
-        # The top-level manifest belongs to the archived prototype and includes
-        # macOS-only rumps/pyobjc dependencies that cannot resolve on Linux.
-        run: pip-audit --strict --no-deps -r requirements.txt
+        # rumps is correctly Darwin-marked in the manifest, so this Linux job
+        # resolves and audits the applicable archived dependency graph only.
+        run: pip-audit --strict -r requirements.txt
 
   distribution:
     name: Distribution site and update manifest
