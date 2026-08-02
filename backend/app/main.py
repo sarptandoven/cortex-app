@@ -17,7 +17,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,6 +73,10 @@ from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION, ExportSizeLimitError, UnknownAgentSessionError
+from .twin_eval import (
+    build_pairwise_preflight_response,
+    pairwise_admission_policy_from_settings,
+)
 from .webauth import (
     FAVICON_SVG,
     PUBLIC_PAGE_CSP,
@@ -319,6 +323,7 @@ def _required_api_scope(method: str, path: str) -> str:
         "/v1/integrity/verify",
         "/v1/export/manifest",
         "/v1/export/verify",
+        "/v1/twin/pairwise/preflight",
     }:
         return "read"
     if normalized_method == "POST" and (
@@ -2274,6 +2279,26 @@ def grade_answer(payload: GradeAnswerRequest, user_id: str = Depends(auth)) -> d
 @app.post("/v1/twin/would-i")
 def twin_would_i(payload: WouldIRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.would_i(user_id, payload.question, limit=payload.limit)
+
+
+@app.post("/v1/twin/pairwise/preflight")
+def twin_pairwise_preflight(
+    payload: Any = Body(...),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    try:
+        policy = pairwise_admission_policy_from_settings(settings)
+        return build_pairwise_preflight_response(
+            payload,
+            policy=policy,
+            subject=user_id,
+            signing_key=settings.pairwise_admission_signing_key,
+            receipt_ttl_seconds=(
+                settings.pairwise_admission_receipt_ttl_seconds
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/v1/twin/draft-as-me")

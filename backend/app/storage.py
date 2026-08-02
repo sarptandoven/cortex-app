@@ -10,9 +10,12 @@ import os
 import platform
 import re
 import secrets
+import shutil
 import sys
+import tempfile
 import time
 import uuid
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, NamedTuple
@@ -27,7 +30,8 @@ from .connector_policy import (
 )
 from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
-from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_index_fingerprint, embedding_json, embedding_source_text, embedding_status, warmup_embedding_provider
+from .database_maintenance import shared_database_access
+from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_index_fingerprint, embedding_json, embedding_source_text, embedding_status, warmup_embedding_provider
 from .http_security import open_same_origin
 from .query_plan import (
     build_query_plan,
@@ -111,6 +115,35 @@ BACKEND_FEATURES = (
     "sleep-consolidation",
     "verified-hot-context",
 )
+
+
+def _verified_wal_truncate(
+    conn: sqlite3.Connection,
+    *,
+    phase: str,
+) -> tuple[int, int, int]:
+    checkpoint = tuple(
+        int(value)
+        for value in conn.execute(
+            "PRAGMA wal_checkpoint(TRUNCATE)"
+        ).fetchone()
+    )
+    if len(checkpoint) != 3 or checkpoint[0] != 0 or (
+        checkpoint[1] >= 0
+        and checkpoint[1] != checkpoint[2]
+    ):
+        raise RuntimeError(
+            f"sanitized backup {phase} WAL checkpoint failed"
+        )
+    return checkpoint
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 # M7 associative recall is deliberately bounded. It only fills slots that the
 # existing include_related path already reserved, so direct hybrid-search hits
@@ -1303,6 +1336,47 @@ SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "[REDACTED_EMAIL]"),
     (re.compile(r"\b(?:\d[ -]*?){13,16}\b"), "[REDACTED_NUMBER]"),
+)
+EXPORT_ONLY_SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"-----BEGIN (?P<kind>[A-Z0-9 ]*PRIVATE KEY)-----.*?"
+            r"-----END (?P=kind)-----",
+            re.DOTALL,
+        ),
+        "[REDACTED_PRIVATE_KEY]",
+    ),
+    (
+        re.compile(
+            r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*\Z",
+            re.DOTALL,
+        ),
+        "[REDACTED_PRIVATE_KEY]",
+    ),
+    (
+        re.compile(
+            r"(?i)\baws[_-]?secret[_-]?access[_-]?key\s*[:=]\s*"
+            r"['\"]?[A-Za-z0-9/+=]{20,}"
+        ),
+        "aws_secret_access_key=[REDACTED_SECRET]",
+    ),
+    (
+        re.compile(
+            r"\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA)[A-Z0-9]{16}\b"
+        ),
+        "[REDACTED_AWS_ACCESS_KEY]",
+    ),
+    (
+        re.compile(
+            r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"
+            r"\.[A-Za-z0-9_-]{5,}\b"
+        ),
+        "[REDACTED_JWT]",
+    ),
+    (
+        re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}\b"),
+        "Bearer [REDACTED_TOKEN]",
+    ),
 )
 SENSITIVE_KEY_PATTERN = re.compile(
     r"(?i)^(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?id|client[_-]?secret|secret|password|passwd|pwd)$"
@@ -3249,14 +3323,21 @@ def _path_event_summary(path: str) -> dict[str, Any]:
 
 
 class CortexStore:
-    def __init__(self, db_path, vault_path: str | Path | None = None):
+    def __init__(
+        self,
+        db_path,
+        vault_path: str | Path | None = None,
+        *,
+        ensure_vault: bool = True,
+    ):
         self.db_path = Path(db_path)
         # StoreRegistry sets this on sharded stores. Direct CortexStore instances
         # are local by default, preserving the standalone/test contract.
         self.hosted_mode = False
         resolved_vault_path = Path(vault_path).expanduser() if vault_path else self.db_path.parent
         self.vault = CortexVault(resolved_vault_path, self.db_path)
-        self.vault.ensure()
+        if ensure_vault:
+            self.vault.ensure()
         # Cache of the vector-index identity we've reconciled to (see _ensure_vector_index). None
         # until reconciled; lets us detect an embedding-model/revision/dimension change and rebuild the
         # (rebuildable) vec table + re-embed rather than silently mismatching.
@@ -13126,7 +13207,13 @@ class CortexStore:
             score -= 2
         return score
 
-    def detect_conflicts(self, user_id: str, *, limit: int = 400) -> list[dict[str, Any]]:
+    def detect_conflicts(
+        self,
+        user_id: str,
+        *,
+        limit: int = 400,
+        memory_ids: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Deterministically find memories that CONTRADICT each other so retrieval never hands an
         agent a stale-vs-current pair. Two active (non-superseded) memories conflict when they make
         the same field claim (same subject) with different values — reusing the read-time claim
@@ -13134,17 +13221,53 @@ class CortexStore:
         newer -> current-language) and which is stale, plus why. Pure detection: NO LLM, NO
         auto-rewrite; resolve_conflict applies the user's/agent's decision. Grouped by claim field
         so it stays near-linear, not O(n^2) across the corpus."""
+        selected_ids = (
+            tuple(
+                sorted(
+                    {
+                        str(memory_id).strip()
+                        for memory_id in memory_ids
+                        if str(memory_id).strip()
+                    }
+                )
+            )
+            if memory_ids is not None
+            else None
+        )
+        rows: list[Any] = []
         with connect(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT * FROM memories
-                WHERE user_id = ? AND status = 'active'
-                  AND (superseded_by IS NULL OR superseded_by = '')
-                ORDER BY id
-                LIMIT ?
-                """,
-                (user_id, max(1, int(limit))),
-            ).fetchall()
+            if selected_ids is None:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM memories
+                    WHERE user_id = ? AND status = 'active'
+                      AND (superseded_by IS NULL OR superseded_by = '')
+                    ORDER BY id
+                    LIMIT ?
+                    """,
+                    (user_id, max(1, int(limit))),
+                ).fetchall()
+            else:
+                # Context packs already bounded this set by their token budget.
+                # Chunk anyway so a future caller cannot exceed SQLite's bind
+                # variable limit.
+                for offset in range(0, len(selected_ids), 500):
+                    chunk = selected_ids[offset : offset + 500]
+                    if not chunk:
+                        continue
+                    rows.extend(
+                        conn.execute(
+                            f"""
+                            SELECT * FROM memories
+                            WHERE user_id = ? AND status = 'active'
+                              AND (superseded_by IS NULL OR superseded_by = '')
+                              AND id IN ({','.join('?' for _ in chunk)})
+                            ORDER BY id
+                            """,
+                            (user_id, *chunk),
+                        ).fetchall()
+                    )
+        rows.sort(key=lambda row: str(row["id"] or ""))
         # Bucket every (field -> value) claim to its memory; a field with >=2 distinct values is a
         # contradiction candidate. field_values: field -> list[(value, item)] in deterministic order.
         items = [self._memory_from_row(row) for row in rows]
@@ -18911,12 +19034,22 @@ class CortexStore:
 
         included_ids = {str(citation.get("memory_id") or "") for citation in citations}
         conflicts_payload: list[dict[str, Any]] = []
-        # The store-wide conflict scan is only worth a pass when facts/decisions actually
-        # made it into the pack.
+        # Any evidence layer can contain a structured claim. Scan whenever at
+        # least one memory made the pack so preference/style/procedure layers
+        # receive the same conflict handling as facts and decisions.
         has_conflictable_items = any(
-            entry.get("items") for entry in layers_payload if entry.get("layer") in {"decisions", "facts"}
+            item.get("memory_id")
+            for entry in layers_payload
+            for item in entry.get("items") or []
         )
-        for conflict in self.detect_conflicts(user_id, limit=100) if has_conflictable_items else []:
+        for conflict in (
+            self.detect_conflicts(
+                user_id,
+                memory_ids=included_ids,
+            )
+            if has_conflictable_items
+            else []
+        ):
             current = conflict.get("current") or {}
             stale = conflict.get("stale") or {}
             if str(current.get("memory_id") or "") in included_ids or str(stale.get("memory_id") or "") in included_ids:
@@ -20933,19 +21066,176 @@ class CortexStore:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%fZ")
         backup_dir = self.vault.backups_dir
         backup_dir.mkdir(parents=True, exist_ok=True)
-        sqlite_backup_path = backup_dir / f"index-{timestamp}.sqlite"
-        source = sqlite3.connect(self.db_path)
-        target = sqlite3.connect(sqlite_backup_path)
+        backup_temp_dir = tempfile.TemporaryDirectory(
+            prefix="cortex-backup-"
+        )
+        sqlite_backup_path = (
+            Path(backup_temp_dir.name) / f"index-{timestamp}.sqlite"
+        )
+        source = None
+        target = None
+        excluded_profile_artifacts = 0
+        excluded_report_artifacts = 0
+        excluded_execution_requests = 0
+        excluded_execution_call_checkpoints = 0
+        excluded_dispatch_consents = 0
+        excluded_twin_eval_runs = 0
         try:
-            source.backup(target)
-        finally:
+            with shared_database_access(self.db_path):
+                source = sqlite3.connect(self.db_path)
+                target = sqlite3.connect(sqlite_backup_path)
+                sqlite_backup_path.chmod(0o600)
+                source.backup(target)
+                source.close()
+                source = None
+            target.execute("PRAGMA secure_delete=ON")
+            if target.execute("PRAGMA secure_delete").fetchone()[0] != 1:
+                raise RuntimeError(
+                    "backup sanitization requires SQLite secure_delete"
+                )
+            baseline_foreign_keys = {
+                tuple(row)
+                for row in target.execute(
+                    "PRAGMA foreign_key_check"
+                )
+            }
+            # Pairwise artifacts have run/evidence retention independent of
+            # generic backup retention, while today's CXE1 hierarchy is per
+            # user. Omit the complete graph so a backup contains neither
+            # decryptable expired content nor broken marker-only runs. VACUUM
+            # below removes plaintext from the backup copy's free pages.
+            cursor = target.execute(
+                "DELETE FROM twin_eval_profile_artifacts"
+            )
+            excluded_profile_artifacts = max(0, int(cursor.rowcount or 0))
+            cursor = target.execute(
+                "DELETE FROM twin_eval_report_artifacts"
+            )
+            excluded_report_artifacts = max(0, int(cursor.rowcount or 0))
+            cursor = target.execute(
+                "DELETE FROM twin_eval_execution_call_checkpoints"
+            )
+            excluded_execution_call_checkpoints = max(
+                0, int(cursor.rowcount or 0)
+            )
+            cursor = target.execute(
+                "DELETE FROM twin_eval_execution_requests"
+            )
+            excluded_execution_requests = max(
+                0, int(cursor.rowcount or 0)
+            )
+            cursor = target.execute(
+                "DELETE FROM twin_eval_dispatch_consents"
+            )
+            excluded_dispatch_consents = max(
+                0, int(cursor.rowcount or 0)
+            )
+            target.execute(
+                """
+                UPDATE twin_eval_dispatch_runtime
+                SET dispatch_enabled = 0,
+                    config_epoch = config_epoch + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE singleton = 1 AND dispatch_enabled = 1
+                """
+            )
+            for table in (
+                "twin_eval_ranking_manifests",
+                "twin_eval_rankings",
+                "twin_eval_resolved_comparisons",
+                "twin_eval_comparisons",
+                "twin_eval_candidates",
+            ):
+                target.execute(f"DELETE FROM {table}")
+            cursor = target.execute("DELETE FROM twin_eval_runs")
+            excluded_twin_eval_runs = max(0, int(cursor.rowcount or 0))
+            target.commit()
+            _verified_wal_truncate(target, phase="pre-VACUUM")
+            target.execute("VACUUM")
+            _verified_wal_truncate(target, phase="post-VACUUM")
             target.close()
-            source.close()
-        backup_path = self.vault.create_zip_backup(timestamp, sqlite_backup_path)
+            target = None
+            wal_path = Path(f"{sqlite_backup_path}-wal")
+            if wal_path.exists() and wal_path.stat().st_size:
+                raise RuntimeError(
+                    "sanitized backup retained a non-empty WAL"
+                )
+            target = sqlite3.connect(
+                f"file:{sqlite_backup_path}?mode=ro&immutable=1",
+                uri=True,
+            )
+            if tuple(
+                str(row[0])
+                for row in target.execute("PRAGMA integrity_check")
+            ) != ("ok",):
+                raise RuntimeError(
+                    "sanitized backup failed SQLite integrity_check"
+                )
+            foreign_keys = {
+                tuple(row)
+                for row in target.execute(
+                    "PRAGMA foreign_key_check"
+                )
+            }
+            if not foreign_keys.issubset(
+                baseline_foreign_keys
+            ):
+                raise RuntimeError(
+                    "sanitized backup introduced foreign-key violations"
+                )
+            remaining_twin_rows = sum(
+                int(
+                    target.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]
+                )
+                for table in (
+                    "twin_eval_profile_artifacts",
+                    "twin_eval_report_artifacts",
+                    "twin_eval_execution_requests",
+                    "twin_eval_execution_call_checkpoints",
+                    "twin_eval_dispatch_consents",
+                    "twin_eval_ranking_manifests",
+                    "twin_eval_rankings",
+                    "twin_eval_resolved_comparisons",
+                    "twin_eval_comparisons",
+                    "twin_eval_candidates",
+                    "twin_eval_runs",
+                )
+            )
+            if remaining_twin_rows:
+                raise RuntimeError(
+                    "sanitized backup still contains pairwise rows"
+                )
+        finally:
+            active_exception = sys.exc_info()[0] is not None
+            close_error = None
+            for connection in (target, source):
+                if connection is None:
+                    continue
+                try:
+                    connection.close()
+                except Exception as exc:
+                    if close_error is None:
+                        close_error = exc
+            if active_exception or close_error is not None:
+                backup_temp_dir.cleanup()
+            if close_error is not None and not active_exception:
+                raise close_error
         try:
-            sqlite_backup_path.unlink()
-        except FileNotFoundError:
-            pass
+            backup_path = self.vault.create_zip_backup(
+                timestamp,
+                sqlite_backup_path,
+                security_manifest={
+                    "schema_version": "cortex-backup-security/v1",
+                    "pairwise_graph_omitted": True,
+                    "sqlite_sha256": _file_sha256(
+                        sqlite_backup_path
+                    ),
+                },
+            )
+        finally:
+            backup_temp_dir.cleanup()
         with connect(self.db_path) as conn:
             self._event(
                 conn,
@@ -20967,7 +21257,231 @@ class CortexStore:
             "created_at": now_iso(),
             "retention": retention,
             "pruned_backups": pruned,
+            "excluded_twin_eval_profile_artifacts": (
+                excluded_profile_artifacts
+            ),
+            "excluded_twin_eval_report_artifacts": (
+                excluded_report_artifacts
+            ),
+            "excluded_twin_eval_execution_requests": (
+                excluded_execution_requests
+            ),
+            "excluded_twin_eval_execution_call_checkpoints": (
+                excluded_execution_call_checkpoints
+            ),
+            "excluded_twin_eval_dispatch_consents": (
+                excluded_dispatch_consents
+            ),
+            "excluded_twin_eval_runs": excluded_twin_eval_runs,
         }
+
+    def audit_pairwise_backup_storage(
+        self,
+        *,
+        require_clean: bool = False,
+    ) -> dict[str, Any]:
+        """Require cryptographic receipts for every managed Cortex backup."""
+
+        unsafe: list[dict[str, str]] = []
+        inspected = 0
+        vault_identity_verified = False
+        try:
+            manifest = json.loads(
+                self.vault.manifest_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+            configured_index = manifest.get("index_path")
+            if not isinstance(configured_index, str):
+                raise ValueError(
+                    "vault manifest has no configured index path"
+                )
+            configured_path = Path(
+                configured_index
+            ).expanduser()
+            if not configured_path.is_absolute():
+                configured_path = (
+                    self.vault.root / configured_path
+                )
+            if (
+                configured_path.resolve()
+                != self.db_path.expanduser().resolve()
+            ):
+                raise ValueError(
+                    "vault manifest belongs to a different database"
+                )
+            vault_identity_verified = True
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            unsafe.append(
+                {
+                    "name": "manifest.json",
+                    "reason": str(exc) or type(exc).__name__,
+                }
+            )
+        backup_dir = self.vault.backups_dir
+        unexpected_entries = tuple(
+            sorted(
+                path
+                for path in (
+                    backup_dir.iterdir()
+                    if backup_dir.is_dir()
+                    else ()
+                )
+                if not path.is_file() or path.suffix != ".zip"
+            )
+        )
+        unsafe.extend(
+            {
+                "name": path.name,
+                "reason": "unexpected managed backup artifact",
+            }
+            for path in unexpected_entries
+        )
+        backups = tuple(
+            sorted(
+                path
+                for path in backup_dir.glob("*.zip")
+                if path.is_file()
+            )
+        )
+        for backup_path in backups:
+            reason = ""
+            try:
+                with zipfile.ZipFile(backup_path) as archive:
+                    names = archive.namelist()
+                    if (
+                        names.count("index.sqlite") != 1
+                        or names.count("backup-security.json") != 1
+                    ):
+                        raise ValueError(
+                            "missing unique database/security receipt"
+                        )
+                    receipt_info = archive.getinfo(
+                        "backup-security.json"
+                    )
+                    if receipt_info.file_size > 16 * 1024:
+                        raise ValueError("oversized security receipt")
+                    receipt = json.loads(
+                        archive.read("backup-security.json")
+                    )
+                    if (
+                        not isinstance(receipt, dict)
+                        or set(receipt)
+                        != {
+                            "schema_version",
+                            "pairwise_graph_omitted",
+                            "sqlite_sha256",
+                        }
+                        or receipt.get("schema_version")
+                        != "cortex-backup-security/v1"
+                        or receipt.get("pairwise_graph_omitted")
+                        is not True
+                        or not isinstance(
+                            receipt.get("sqlite_sha256"),
+                            str,
+                        )
+                        or re.fullmatch(
+                            r"[0-9a-f]{64}",
+                            receipt.get("sqlite_sha256", ""),
+                        )
+                        is None
+                    ):
+                        raise ValueError("invalid security receipt")
+                    if archive.testzip() is not None:
+                        raise ValueError("archive CRC verification failed")
+                    with tempfile.TemporaryDirectory(
+                        prefix="cortex-backup-audit-"
+                    ) as audit_dir:
+                        audit_db = Path(audit_dir) / "index.sqlite"
+                        with (
+                            archive.open("index.sqlite") as source,
+                            audit_db.open("wb") as destination,
+                        ):
+                            shutil.copyfileobj(source, destination)
+                        if (
+                            _file_sha256(audit_db)
+                            != receipt["sqlite_sha256"]
+                        ):
+                            raise ValueError(
+                                "database digest does not match receipt"
+                            )
+                        conn = sqlite3.connect(
+                            f"file:{audit_db}?mode=ro&immutable=1",
+                            uri=True,
+                        )
+                        try:
+                            if tuple(
+                                str(row[0])
+                                for row in conn.execute(
+                                    "PRAGMA integrity_check"
+                                )
+                            ) != ("ok",):
+                                raise ValueError(
+                                    "database integrity check failed"
+                                )
+                            twin_tables = tuple(
+                                str(row[0])
+                                for row in conn.execute(
+                                    """
+                                    SELECT name FROM sqlite_master
+                                    WHERE type = 'table'
+                                      AND name LIKE 'twin_eval_%'
+                                    ORDER BY name
+                                    """
+                                )
+                            )
+                            residual_rows = sum(
+                                int(
+                                    conn.execute(
+                                        "SELECT COUNT(*) FROM "
+                                        + '"'
+                                        + table.replace('"', '""')
+                                        + '"'
+                                    ).fetchone()[0]
+                                )
+                                for table in twin_tables
+                            )
+                            if residual_rows:
+                                raise ValueError(
+                                    "pairwise rows remain in backup"
+                                )
+                        finally:
+                            conn.close()
+                inspected += 1
+            except (
+                OSError,
+                TypeError,
+                ValueError,
+                zipfile.BadZipFile,
+                sqlite3.Error,
+            ) as exc:
+                reason = str(exc) or type(exc).__name__
+            if reason:
+                unsafe.append(
+                    {"name": backup_path.name, "reason": reason}
+                )
+        result = {
+            "backup_count": len(backups),
+            "verified_safe_count": inspected,
+            "vault_identity_verified": vault_identity_verified,
+            "unsafe_backups": tuple(unsafe),
+            "managed_backups_clean": (
+                vault_identity_verified and not unsafe
+            ),
+            "external_snapshot_attestation_required": True,
+        }
+        if require_clean and not result["managed_backups_clean"]:
+            raise RuntimeError(
+                f"managed {APP_BRAND} vault/backups require correct identity, "
+                "removal, or verified replacement before pairwise "
+                "migration finalization"
+            )
+        return result
 
     def delete_backups(self, user_id: str) -> dict[str, Any]:
         deleted_at = now_iso()
@@ -21028,6 +21542,50 @@ class CortexStore:
                 "shared_memory_writes": conn.execute(
                     "SELECT COUNT(*) FROM shared_memory_writes WHERE user_id = ?", (user_id,)
                 ).fetchone()[0],
+                "twin_eval_runs": conn.execute(
+                    "SELECT COUNT(*) FROM twin_eval_runs WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0],
+                "twin_eval_profile_artifacts": conn.execute(
+                    "SELECT COUNT(*) FROM twin_eval_profile_artifacts WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0],
+                "twin_eval_report_artifacts": conn.execute(
+                    "SELECT COUNT(*) FROM twin_eval_report_artifacts WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0],
+                "twin_eval_execution_requests": conn.execute(
+                    "SELECT COUNT(*) FROM twin_eval_execution_requests WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0],
+                "twin_eval_execution_call_checkpoints": conn.execute(
+                    "SELECT COUNT(*) FROM twin_eval_execution_call_checkpoints WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0],
+                "twin_eval_dispatch_consents": conn.execute(
+                    "SELECT COUNT(*) FROM twin_eval_dispatch_consents WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0],
+                "twin_eval_candidates": conn.execute(
+                    "SELECT COUNT(*) FROM twin_eval_candidates WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0],
+                "twin_eval_comparisons": conn.execute(
+                    "SELECT COUNT(*) FROM twin_eval_comparisons WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0],
+                "twin_eval_resolved_comparisons": conn.execute(
+                    "SELECT COUNT(*) FROM twin_eval_resolved_comparisons WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0],
+                "twin_eval_rankings": conn.execute(
+                    "SELECT COUNT(*) FROM twin_eval_rankings WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0],
+                "twin_eval_ranking_manifests": conn.execute(
+                    "SELECT COUNT(*) FROM twin_eval_ranking_manifests WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0],
             }
             # M3: raw canvas evidence is user data and must not survive "delete my data". The
             # vault files are content-addressed (not user-scoped), so only delete blobs no OTHER
@@ -21073,6 +21631,17 @@ class CortexStore:
             conn.execute("DELETE FROM shared_memory_nonces WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM shared_memory_writes WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM shared_memory_principals WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM twin_eval_profile_artifacts WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM twin_eval_report_artifacts WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM twin_eval_execution_call_checkpoints WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM twin_eval_execution_requests WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM twin_eval_dispatch_consents WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM twin_eval_ranking_manifests WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM twin_eval_rankings WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM twin_eval_resolved_comparisons WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM twin_eval_comparisons WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM twin_eval_candidates WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM twin_eval_runs WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM authorship_signatures WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM captures WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_events WHERE user_id = ?", (user_id,))
@@ -31913,6 +32482,156 @@ class CortexStore:
 
     def public_payload(self, user_id: str, value: Any) -> Any:
         return self._shared_payload(value, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
+
+    def redact_export_text(self, value: str) -> str:
+        """Always redact sensitive text crossing Cortex's provider boundary."""
+
+        redacted = self._redact_text(str(value or ""), enabled=True)
+        for pattern, replacement in EXPORT_ONLY_SENSITIVE_PATTERNS:
+            redacted = pattern.sub(replacement, redacted)
+        return redacted
+
+    def pairwise_profile_snapshot_digest(self, user_id: str) -> str:
+        """Digest authoritative context state so multi-prompt builds detect races.
+
+        The trigger-maintained revision covers every memory/task/settings
+        mutation and capture review transition. Smaller auxiliary tables that
+        can change retrieval or context packing are hashed explicitly. This is
+        a build-consistency guard, not a historical snapshot identifier.
+        """
+
+        digest = hashlib.sha256()
+        with connect(self.db_path) as conn:
+            revision = conn.execute(
+                """
+                SELECT revision
+                FROM memory_corpus_revisions
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+            digest.update(
+                f"context_revision:{int(revision['revision'] or 0) if revision else 0}".encode(
+                    "utf-8"
+                )
+            )
+            queries = (
+                (
+                    "captures",
+                    """
+                    SELECT id, source, source_url, source_account_id,
+                           author_principal_id, review_status, approved_at,
+                           archived_at, captured_at
+                    FROM captures
+                    WHERE user_id = ?
+                    ORDER BY id
+                    """,
+                ),
+                (
+                    "source_accounts",
+                    """
+                    SELECT id, policy_json, updated_at
+                    FROM source_accounts
+                    WHERE user_id = ?
+                    ORDER BY id
+                    """,
+                ),
+                (
+                    "entities",
+                    """
+                    SELECT id, kind, name, aliases_json, context,
+                           first_seen, last_seen
+                    FROM entities
+                    WHERE user_id = ?
+                    ORDER BY id
+                    """,
+                ),
+                (
+                    "graph_edges",
+                    """
+                    SELECT id, source_id, target_id, kind, weight,
+                           evidence_id, created_at
+                    FROM graph_edges
+                    WHERE user_id = ?
+                    ORDER BY id
+                    """,
+                ),
+                (
+                    "memory_entities",
+                    """
+                    SELECT memory_id, entity_id, created_at
+                    FROM memory_entities
+                    WHERE user_id = ?
+                    ORDER BY memory_id, entity_id
+                    """,
+                ),
+                (
+                    "memory_topics",
+                    """
+                    SELECT memory_id, topic, created_at
+                    FROM memory_topics
+                    WHERE user_id = ?
+                    ORDER BY memory_id, topic
+                    """,
+                ),
+                (
+                    "memory_relations",
+                    """
+                    SELECT id, source_memory_id, target_memory_id, kind,
+                           weight, metadata_json, created_at
+                    FROM memory_relations
+                    WHERE user_id = ?
+                    ORDER BY id
+                    """,
+                ),
+                (
+                    "task_entities",
+                    """
+                    SELECT task_id, entity_id, created_at
+                    FROM task_entities
+                    WHERE user_id = ?
+                    ORDER BY task_id, entity_id
+                    """,
+                ),
+                (
+                    "task_topics",
+                    """
+                    SELECT task_id, topic, created_at
+                    FROM task_topics
+                    WHERE user_id = ?
+                    ORDER BY task_id, topic
+                    """,
+                ),
+                (
+                    "memory_vec_map",
+                    """
+                    SELECT memory_id, embedding_model, text_hash, updated_at
+                    FROM memory_vec_map
+                    WHERE user_id = ?
+                    ORDER BY memory_id
+                    """,
+                ),
+            )
+            for label, query in queries:
+                digest.update(label.encode("utf-8"))
+                try:
+                    rows = conn.execute(query, (user_id,))
+                except sqlite3.OperationalError:
+                    if label == "memory_vec_map":
+                        # sqlite-vec is optional; absence is a stable FTS-only
+                        # retrieval state, not a failed build guard.
+                        digest.update(b"unavailable")
+                        continue
+                    raise
+                for row in rows:
+                    digest.update(
+                        json.dumps(
+                            tuple(row),
+                            ensure_ascii=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    )
+        return f"pairwise_context_build_guard_{digest.hexdigest()}"
 
     def _redact_local_path_payload(self, value: Any, key: str = "") -> Any:
         if isinstance(value, str):

@@ -1313,21 +1313,72 @@ class CortexVault:
                     events.append(payload)
             return events
 
-    def create_zip_backup(self, timestamp: str, sqlite_backup_path: Path) -> Path:
+    def create_zip_backup(
+        self,
+        timestamp: str,
+        sqlite_backup_path: Path,
+        *,
+        security_manifest: dict[str, Any] | None = None,
+    ) -> Path:
         self.ensure()
         with self._lock:
             return self._create_zip_backup_locked(timestamp, sqlite_backup_path)
 
     def _create_zip_backup_locked(self, timestamp: str, sqlite_backup_path: Path) -> Path:
         backup_path = self.backups_dir / f"cortex-vault-{timestamp}.zip"
-        with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-            for path in sorted(self._iter_backup_files()):
-                if path == self.index_path or path.name in {self.index_path.name + "-wal", self.index_path.name + "-shm"}:
-                    continue
-                relative = path.relative_to(self.root)
-                archive.write(path, relative.as_posix())
-            if sqlite_backup_path.exists():
-                archive.write(sqlite_backup_path, "index.sqlite")
+        descriptor, temp_name = tempfile.mkstemp(
+            prefix=".cortex-vault-",
+            suffix=".zip.tmp",
+            dir=self.backups_dir,
+        )
+        os.close(descriptor)
+        temp_path = Path(temp_name)
+        temp_path.chmod(0o600)
+        try:
+            with zipfile.ZipFile(
+                temp_path,
+                "w",
+                compression=zipfile.ZIP_DEFLATED,
+                compresslevel=6,
+            ) as archive:
+                for path in sorted(self._iter_backup_files()):
+                    if path == self.index_path or path.name in {
+                        self.index_path.name + "-wal",
+                        self.index_path.name + "-shm",
+                    }:
+                        continue
+                    relative = path.relative_to(self.root)
+                    archive.write(path, relative.as_posix())
+                if sqlite_backup_path.exists():
+                    archive.write(sqlite_backup_path, "index.sqlite")
+                if security_manifest is not None:
+                    archive.writestr(
+                        "backup-security.json",
+                        json.dumps(
+                            security_manifest,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8"),
+                    )
+            with zipfile.ZipFile(temp_path) as archive:
+                if archive.testzip() is not None:
+                    raise zipfile.BadZipFile(
+                        "backup archive verification failed"
+                    )
+                if "index.sqlite" not in archive.namelist():
+                    raise zipfile.BadZipFile(
+                        "backup archive is missing index.sqlite"
+                    )
+                if (
+                    security_manifest is not None
+                    and "backup-security.json" not in archive.namelist()
+                ):
+                    raise zipfile.BadZipFile(
+                        "backup archive is missing its security receipt"
+                    )
+            os.replace(temp_path, backup_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
         return backup_path
 
     def _iter_backup_files(self) -> Iterable[Path]:
@@ -1660,7 +1711,10 @@ class CortexVault:
             return
         if top in RESTORE_DIRECTORIES:
             return
-        if len(path.parts) == 1 and path.name == "index.sqlite":
+        if len(path.parts) == 1 and path.name in {
+            "index.sqlite",
+            "backup-security.json",
+        }:
             return
         raise ValueError(f"unsupported backup member path: {name}")
 

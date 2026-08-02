@@ -43,6 +43,10 @@ from .mcp_tools import (
 )
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION, ExportSizeLimitError, UnknownAgentSessionError
+from .twin_eval import (
+    build_pairwise_preflight_response,
+    pairwise_admission_policy_from_settings,
+)
 
 
 settings = load_settings()
@@ -189,6 +193,7 @@ def _required_api_scope(method: str, path: str) -> str:
         "/v1/integrity/verify",
         "/v1/export/manifest",
         "/v1/export/verify",
+        "/v1/twin/pairwise/preflight",
     }:
         return "read"
     if normalized_method == "POST" and (
@@ -1132,6 +1137,26 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     )
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/twin/pairwise/preflight":
+                body = self._json_body()
+                try:
+                    policy = pairwise_admission_policy_from_settings(settings)
+                    response = build_pairwise_preflight_response(
+                        body,
+                        policy=policy,
+                        subject=user_id,
+                        signing_key=settings.pairwise_admission_signing_key,
+                        receipt_ttl_seconds=(
+                            settings.pairwise_admission_receipt_ttl_seconds
+                        ),
+                    )
+                    self._send_json(response)
+                except (TypeError, ValueError) as exc:
+                    self._send_json(
+                        {"detail": str(exc)},
+                        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                    )
                 return
             if method == "POST" and path == "/v1/twin/draft-as-me":
                 body = self._json_body()

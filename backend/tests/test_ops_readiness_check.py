@@ -188,16 +188,22 @@ class OpsReadinessSupportBundleTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 validate_update_manifest(manifest_path)
 
-            payload = validate_update_manifest(manifest_path, allow_remote_artifacts=True)
+            payload = validate_update_manifest(
+                manifest_path, allow_remote_artifacts=True
+            )
 
             self.assertEqual(payload["build"], "1")
 
-            manifest["artifacts"][0]["url"] = "http://downloads.example.test/Cortex-1.0.0-1.dmg"
+            manifest["artifacts"][0]["url"] = (
+                "http://downloads.example.test/Cortex-1.0.0-1.dmg"
+            )
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaises(FileNotFoundError):
                 validate_update_manifest(manifest_path, allow_remote_artifacts=True)
 
-            manifest["artifacts"][0]["url"] = "https://downloads.example.test/Cortex-1.0.0-1.dmg"
+            manifest["artifacts"][0]["url"] = (
+                "https://downloads.example.test/Cortex-1.0.0-1.dmg"
+            )
             manifest["artifacts"][0]["sha256"] = "not-a-digest"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaises(ValueError):

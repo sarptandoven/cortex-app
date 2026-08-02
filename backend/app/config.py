@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +52,13 @@ class Settings:
     store_cache_size: int = 512
     rate_limit_per_minute: int = 0
     default_memory_quota: int = 0
+    pairwise_preflight_max_provider_calls: int = 1_000
+    pairwise_preflight_max_total_tokens: int = 10_000_000
+    pairwise_preflight_max_duration_seconds: float = 86_400
+    pairwise_preflight_max_parallel_generations: int = 1
+    pairwise_preflight_max_parallel_judgments: int = 1
+    pairwise_admission_signing_key: str = ""
+    pairwise_admission_receipt_ttl_seconds: int = 15 * 60
     require_scoped_api_tokens: bool = False
     sync_signing_key: str = ""
     hosted_database_url: str = ""
@@ -192,6 +200,22 @@ def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)) or str(default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)) or str(default))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) and value > 0 else default
+
+
 def _load_plan_quotas() -> dict[str, int] | None:
     """Parse CORTEX_PLAN_QUOTAS (JSON object mapping plan name -> int quota).
     Malformed input falls back to the baked-in defaults so a bad env can never
@@ -269,6 +293,37 @@ def load_settings() -> Settings:
         store_cache_size=max(1, int(os.environ.get("CORTEX_STORE_CACHE_SIZE", "512") or "512")),
         rate_limit_per_minute=max(0, int(os.environ.get("CORTEX_RATE_LIMIT_PER_MINUTE", "0") or "0")),
         default_memory_quota=max(0, int(os.environ.get("CORTEX_DEFAULT_MEMORY_QUOTA", "0") or "0")),
+        pairwise_preflight_max_provider_calls=_positive_int_env(
+            "CORTEX_PAIRWISE_MAX_PROVIDER_CALLS",
+            1_000,
+        ),
+        pairwise_preflight_max_total_tokens=_positive_int_env(
+            "CORTEX_PAIRWISE_MAX_TOTAL_TOKENS",
+            10_000_000,
+        ),
+        pairwise_preflight_max_duration_seconds=_positive_float_env(
+            "CORTEX_PAIRWISE_MAX_DURATION_SECONDS",
+            86_400,
+        ),
+        pairwise_preflight_max_parallel_generations=_positive_int_env(
+            "CORTEX_PAIRWISE_MAX_PARALLEL_GENERATIONS",
+            1,
+        ),
+        pairwise_preflight_max_parallel_judgments=_positive_int_env(
+            "CORTEX_PAIRWISE_MAX_PARALLEL_JUDGMENTS",
+            1,
+        ),
+        pairwise_admission_signing_key=os.environ.get(
+            "CORTEX_PAIRWISE_ADMISSION_SIGNING_KEY",
+            "",
+        ),
+        pairwise_admission_receipt_ttl_seconds=min(
+            _positive_int_env(
+                "CORTEX_PAIRWISE_ADMISSION_RECEIPT_TTL_SECONDS",
+                15 * 60,
+            ),
+            60 * 60,
+        ),
         require_scoped_api_tokens=require_scoped_api_tokens,
         sync_signing_key=os.environ.get("CORTEX_SYNC_SIGNING_KEY", ""),
         hosted_database_url=os.environ.get("CORTEX_HOSTED_DATABASE_URL", os.environ.get("DATABASE_URL", "")).strip(),

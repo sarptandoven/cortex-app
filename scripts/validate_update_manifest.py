@@ -70,9 +70,16 @@ def validate(manifest_path: Path, *, allow_remote_artifacts: bool = False) -> di
                 size = int(artifact["size_bytes"])
                 digest = str(artifact["sha256"]).lower()
                 if size <= 0:
-                    raise ValueError(f"size_bytes must be positive for remote artifact: {artifact['filename']}")
-                if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-                    raise ValueError(f"sha256 must be a 64-character hexadecimal digest: {artifact['filename']}")
+                    raise ValueError(
+                        f"size_bytes must be positive for remote artifact: {artifact['filename']}"
+                    )
+                if len(digest) != 64 or any(
+                    char not in "0123456789abcdef" for char in digest
+                ):
+                    raise ValueError(
+                        "sha256 must be a 64-character hexadecimal digest: "
+                        f"{artifact['filename']}"
+                    )
                 continue
             raise FileNotFoundError(f"artifact not found: {path}")
         size = path.stat().st_size
@@ -93,10 +100,15 @@ def main() -> None:
     parser.add_argument(
         "--allow-remote-artifacts",
         action="store_true",
-        help="Allow absent artifacts only when their manifest URL uses HTTPS; schema, size, and digest metadata remain required.",
+        help=(
+            "Allow absent artifacts only when their manifest URL uses HTTPS; "
+            "schema, size, and digest metadata remain required."
+        ),
     )
     args = parser.parse_args()
-    payload = validate(args.manifest, allow_remote_artifacts=args.allow_remote_artifacts)
+    payload = validate(
+        args.manifest, allow_remote_artifacts=args.allow_remote_artifacts
+    )
     print(json.dumps({"status": "ok", "version": payload["version"], "build": payload["build"], "artifacts": len(payload["artifacts"])}, indent=2))
 
 
