@@ -1,0 +1,43 @@
+name: Integration showcase
+description: Share something you built with Cortex so others can learn from it.
+title: "[Showcase]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for building with Cortex. Share the pattern, not private data:
+        use synthetic examples and remove tokens, personal memories, and vault paths.
+  - type: input
+    id: project
+    attributes:
+      label: Project
+      description: What did you build?
+      placeholder: A coding agent that retrieves cited architecture decisions
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What it unlocks
+      description: Describe the user or developer outcome in a few sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: integration
+    attributes:
+      label: How Cortex is used
+      description: Which API, MCP tool, SDK, connector, or example did you start from?
+    validations:
+      required: true
+  - type: input
+    id: link
+    attributes:
+      label: Public link
+      description: Optional repository, demo, article, or screenshot URL.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed credentials, personal memories, exports, and identifying vault data.
+          required: true

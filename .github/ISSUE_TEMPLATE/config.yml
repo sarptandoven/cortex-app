@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/trace-cortex/cortex-app/security/policy
+    about: Report vulnerabilities privately; do not open a public issue.
+  - name: Support guide
+    url: https://github.com/trace-cortex/cortex-app/blob/main/SUPPORT.md
+    about: Choose the right support path and learn what diagnostics are safe to share.

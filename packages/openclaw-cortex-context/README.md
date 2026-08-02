@@ -1,4 +1,4 @@
-# `@cortex/openclaw-context`
+# `@doppl-tech/openclaw-context`
 
 Reference OpenClaw `contextEngine` adapter for [Cortex](../../README.md). It has two modes:
 
@@ -119,7 +119,7 @@ Bundle-mode context also exposes the verified signer id, source-tenant SHA-256 b
 The independent TypeScript protocol verifier is also exported:
 
 ```ts
-import { verifyPortableMemoryBundle } from "@cortex/openclaw-context/portable";
+import { verifyPortableMemoryBundle } from "@doppl-tech/openclaw-context/portable";
 
 const result = verifyPortableMemoryBundle(bundle, expectedSigningKeyId);
 if (!result.verified) throw new Error(result.error ?? "verification failed");

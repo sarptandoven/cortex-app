@@ -141,8 +141,17 @@ class Phase2ContextPackTests(unittest.TestCase):
         self.assertEqual(replay["session_id"], session["id"])
 
     def test_pin_with_unknown_session_fails_loudly(self) -> None:
-        with self.assertRaises(ValueError):
+        with connect(self.db_path) as conn:
+            events_before = int(conn.execute("SELECT COUNT(*) FROM memory_events").fetchone()[0])
+            working_before = int(conn.execute("SELECT COUNT(*) FROM session_working_set").fetchone()[0])
+        with self.assertRaisesRegex(ValueError, "Unknown agent session"):
             self._pin(session_id="asess_missing")
+        with connect(self.db_path) as conn:
+            events_after = int(conn.execute("SELECT COUNT(*) FROM memory_events").fetchone()[0])
+            working_after = int(conn.execute("SELECT COUNT(*) FROM session_working_set").fetchone()[0])
+        self.assertEqual(working_after, working_before)
+        self.assertEqual(events_after, events_before)
+        self.assertEqual(self._call("list_context_packs", {}), [])
 
     # -- substrate invariants ---------------------------------------------------------------------
 

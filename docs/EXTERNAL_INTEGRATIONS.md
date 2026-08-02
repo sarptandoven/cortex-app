@@ -4,10 +4,20 @@ Cortex is local-first: it runs a small server on your Mac at `http://127.0.0.1:8
 integration talks to *that* — your memory never leaves your machine unless you explicitly send it.
 This doc covers every way an external app can use your Cortex memory as context.
 
-All requests authenticate with a scoped token in `Authorization: Bearer <token>`. Tokens are minted
-in the Cortex app (or `POST /v1/pair` / `POST /v1/integrations/mcp-token`) and carry scopes
-(`read`, `write`, `export`, `maintenance`, `destructive`). **Advertisement is never authorization** —
-every call is re-checked against the token's scopes and your Connections & Privacy trust toggles.
+Cortex has two scoped token audiences, both sent as
+`Authorization: Bearer <token>`:
+
+- `cxa_` tokens authenticate the REST API, including `/v1/context`,
+  `/v1/search`, `/v1/ask`, and `/v1/tools/*`. Use these with the Python and
+  TypeScript SDKs.
+- `cxm_` tokens authenticate only the MCP JSON-RPC endpoint at `/mcp` and its
+  stdio bridge. Do not put an MCP token in an SDK.
+
+Tokens are minted in the Cortex app (or the matching integration-token
+endpoint) and carry scopes (`read`, `write`, `export`, `maintenance`,
+`destructive`). **Advertisement is never authorization** — every call is
+re-checked against the token's scopes and your Connections & Privacy trust
+toggles.
 
 ## 1. MCP (Claude Desktop, Claude Code, Cursor, VS Code)
 
@@ -61,7 +71,7 @@ MCP:
 Example (OpenAI Python):
 ```python
 import openai, requests
-BASE, TOK = "http://127.0.0.1:8766", "<cxm_ token>"
+BASE, TOK = "http://127.0.0.1:8766", "<cxa_ REST token>"
 tools = requests.get(f"{BASE}/v1/tools/schema?format=openai", headers={"Authorization": f"Bearer {TOK}"}).json()["schema"]
 resp = openai.chat.completions.create(model="...", messages=[...], tools=tools)
 # For each tool call, POST /v1/tools/call {name, arguments} and feed the result back.
@@ -73,7 +83,7 @@ resp = openai.chat.completions.create(model="...", messages=[...], tools=tools)
 (`@doppl-tech/cortex-client`, fetch-based) wrap the above:
 ```python
 from cortex_client import CortexClient
-cx = CortexClient(token="<cxm_ token>")            # base_url defaults to loopback
+cx = CortexClient(token="<cxa_ REST token>")       # base_url defaults to loopback
 pack = cx.context("prep for the Acme sync")          # cited context pack
 answer = cx.ask("what did we decide about pricing?")  # cite-or-abstain
 tools = cx.openai_tools()                             # ready for tools=[...]

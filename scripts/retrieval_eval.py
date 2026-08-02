@@ -5674,6 +5674,11 @@ def main() -> None:
         action="store_true",
         help="Print metrics without failing on threshold regressions (local inspection).",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the complete per-case result instead of the concise default summary.",
+    )
     args = parser.parse_args()
 
     if args.db_path:
@@ -5683,10 +5688,29 @@ def main() -> None:
             root = Path(tmp)
             result = run_retrieval_eval(root / "retrieval-eval.sqlite", root / "Cortex.vault", args.user_id)
 
-    print(json.dumps(result, indent=2, sort_keys=True))
-
     failures = check_retrieval_metric_thresholds(result)
     failures.extend(check_relevance_monotonicity(result))
+    if args.json or failures:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        overall = result["metrics"]["overall"]
+        monotonicity = result["relevance_monotonicity"]
+        print(
+            json.dumps(
+                {
+                    "status": result.get("status"),
+                    "retrieval_mode": "deterministic hash/FTS regression path",
+                    "cases": overall.get("case_count"),
+                    "top1_accuracy": overall.get("top1_accuracy"),
+                    "recall@3": overall.get("recall@3"),
+                    "precision@3": overall.get("precision@3"),
+                    "pairwise_concordance": monotonicity.get("pairwise_concordance"),
+                    "note": "Use --json for per-case diagnostics.",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
     if failures and not args.report_only:
         print("\nRETRIEVAL QUALITY GATE FAILED:", file=sys.stderr)
         for failure in failures:

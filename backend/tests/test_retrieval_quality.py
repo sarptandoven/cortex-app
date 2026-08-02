@@ -586,6 +586,77 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in results], ["strict_taipei_positioning"])
 
+    def test_owner_and_release_paraphrases_beat_explicit_non_answer_bait(self) -> None:
+        query = "Who is accountable for the Project Aster launch?"
+        self.store._vector_ready = lambda conn: False
+        self.assertEqual(
+            self.store._lexical_fallback_terms(query),
+            ["owner", "project", "aster", "release"],
+        )
+
+        for order_name, canonical_first in (
+            ("canonical-first", True),
+            ("bait-first", False),
+        ):
+            with self.subTest(order=order_name):
+                user_id = f"adversarial-paraphrase-{order_name}"
+                self.store.update_settings(
+                    user_id,
+                    {
+                        "review_new_captures": False,
+                        "allow_pending_in_context": True,
+                    },
+                )
+                canonical_id = f"aster_canonical_{order_name}"
+                bait_id = f"aster_bait_{order_name}"
+                canonical = {
+                    "id": canonical_id,
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": "Project Aster's rollout DRI is Mina Chen.",
+                    "summary": "Mina Chen is the DRI for the Project Aster rollout.",
+                    "confidence": "confirmed",
+                    "importance": 3,
+                    "topics": ["project-aster", "rollout", "dri"],
+                    "entity_ids": [],
+                }
+                bait = {
+                    "id": bait_id,
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": (
+                        "Project Aster launch accountability template. This "
+                        "unassigned template does not name an owner and must not "
+                        "be used to answer who is accountable."
+                    ),
+                    "summary": "An unassigned Project Aster accountability template.",
+                    "confidence": "confirmed",
+                    "importance": 3,
+                    "topics": ["project-aster", "launch", "accountability"],
+                    "entity_ids": [],
+                }
+                records = [canonical, bait] if canonical_first else [bait, canonical]
+                self.store.save_capture(
+                    user_id=user_id,
+                    content="\n".join(str(record["content"]) for record in records),
+                    source="adversarial-retrieval-test",
+                    source_url="https://example.invalid/project-aster",
+                    title="Project Aster ownership fixture",
+                    extracted={
+                        "_timestamp": "2026-07-30T00:00:00Z",
+                        "summary": "Project Aster ownership fixture.",
+                        "records": records,
+                        "tasks": [],
+                        "entities": [],
+                    },
+                )
+
+                results = self.store.search(user_id, query, limit=5)
+
+                self.assertTrue(results)
+                self.assertEqual(results[0]["id"], canonical_id)
+                self.assertIn(canonical_id, [item["id"] for item in results])
+
     def test_lexical_fallback_applies_recency_and_importance_boosts(self) -> None:
         self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
         self.store._vector_ready = lambda conn: False

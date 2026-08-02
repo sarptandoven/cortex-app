@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .http_security import open_same_origin
+
 
 VECTOR_DIMENSIONS = 384
 VECTOR_MODEL = "cortex-hash-v1"
@@ -27,9 +29,11 @@ DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 # hash when it does not — so no new asset is bundled and hash-only machines/CI stay byte-identical.
 DEFAULT_MODEL2VEC_MODEL = "minishlab/potion-base-8M"
 MODEL2VEC_DIMENSIONS = 256
+EMBEDDING_TEXT_RECIPE_VERSION = "source-text-v1"
 
 _MODEL2VEC_MODEL: Any = None
 _MODEL2VEC_MODEL_KEY: str | None = None
+_MODEL2VEC_DIMENSIONS_BY_KEY: dict[str, int] = {}
 _MODEL2VEC_LOCK = threading.Lock()
 
 # Process-level failure latch: when model2vec is CONFIGURED but a live embed actually
@@ -177,12 +181,66 @@ def configured_embedding_dimensions(default: int = VECTOR_DIMENSIONS) -> int:
         # model2vec emits a fixed native dimension (256 for potion-base-8M);
         # honour that as the default so status/index_compatible are truthful.
         if configured_embedding_provider() == "model2vec":
+            key = resolve_model2vec_path() or configured_embedding_model()
+            if key in _MODEL2VEC_DIMENSIONS_BY_KEY:
+                return _MODEL2VEC_DIMENSIONS_BY_KEY[key]
             return MODEL2VEC_DIMENSIONS
         return default
     try:
         return max(1, int(raw))
     except ValueError:
         return default
+
+
+def embedding_index_fingerprint(dimensions: int | None = None) -> str:
+    """Identity of vectors that may safely coexist in one sqlite-vec table.
+
+    Equal dimensions do not imply equal vector spaces. Include the effective
+    provider, configured model/revision, local asset identity, native dimension,
+    and text recipe so a model swap triggers a rebuild instead of silently
+    mixing incompatible vectors.
+    """
+    provider = effective_embedding_provider()
+    model = configured_embedding_model() if provider != "hash" else VECTOR_MODEL
+    resolved_dimensions = int(
+        dimensions if dimensions is not None else configured_embedding_dimensions()
+    )
+    payload = {
+        "provider": provider,
+        "model": model,
+        "revision": os.environ.get("CORTEX_EMBEDDING_REVISION", "").strip(),
+        "dimensions": resolved_dimensions,
+        "text_recipe": EMBEDDING_TEXT_RECIPE_VERSION,
+        "local_asset": _local_model_asset_identity() if provider == "model2vec" else "",
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _local_model_asset_identity() -> str:
+    """Cheap replacement detector for a bundled/local Model2Vec directory.
+
+    Hash the small model config and include size/mtime metadata for large model
+    files. Remote/cache users can pin `CORTEX_EMBEDDING_REVISION` explicitly.
+    """
+    raw_path = resolve_model2vec_path()
+    if not raw_path:
+        return ""
+    path = Path(raw_path).expanduser()
+    parts = [str(path.resolve(strict=False))]
+    config = path / "config.json"
+    try:
+        parts.append(hashlib.sha256(config.read_bytes()).hexdigest())
+    except OSError:
+        parts.append("missing-config")
+    for name in ("model.safetensors", "tokenizer.json"):
+        candidate = path / name
+        try:
+            stat = candidate.stat()
+            parts.append(f"{name}:{stat.st_size}:{stat.st_mtime_ns}")
+        except OSError:
+            parts.append(f"{name}:missing")
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
 def embedding_status(schema_dimensions: int | None = None) -> dict[str, Any]:
@@ -298,7 +356,7 @@ def _openai_embedding(text: str, dimensions: int) -> EmbeddingResult:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=_openai_timeout_seconds()) as response:
+        with open_same_origin(request, timeout=_openai_timeout_seconds()) as response:
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -390,6 +448,8 @@ def _model2vec_embedding(text: str, dimensions: int) -> EmbeddingResult:
     vector = [float(value) for value in (raw.tolist() if hasattr(raw, "tolist") else raw)]
     if not vector:
         raise ValueError("model2vec produced an empty embedding")
+    key = resolve_model2vec_path() or configured_embedding_model()
+    _MODEL2VEC_DIMENSIONS_BY_KEY[key] = len(vector)
     # Report the model's NATIVE dimension truthfully (potion-base-8M = 256), not the requested
     # default — the storage layer sizes/rebuilds the vector index from embedding_status().
     return EmbeddingResult(

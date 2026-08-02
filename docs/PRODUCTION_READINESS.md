@@ -2,9 +2,15 @@
 
 ## Current Goal
 
-This repo is now a local-first beta candidate: useful enough for daily dogfooding on macOS, hardened enough to protect local user memory during a controlled beta, and shaped so a hosted backend can replace local SQLite later without changing the client contract.
+This repo is now a local-first beta candidate: useful enough for daily
+dogfooding on macOS, hardened enough to protect local user memory during a
+controlled beta, and supported by a hosted account/sync plane without moving
+local retrieval out of the app.
 
-It is not yet a broad public launch or millions-of-users hosted system. That requires hosted auth, a managed multi-tenant database, remote MCP/OAuth, billing/quotas, observability, incident response, and notarized distribution.
+It is not yet a broad public launch or millions-of-users hosted system. The
+direct macOS beta is signed and notarized, but broad launch still requires
+production hardening of hosted auth and storage, remote MCP/OAuth,
+billing/quotas, observability, formal support, and incident response.
 
 ## Productization Status
 
@@ -34,12 +40,14 @@ The remaining roadmap should stay non-overengineered:
 - prove daily value with real connected sources, approvals, and cited Ask results;
 - keep improving connector quality, chunking, reranking, citation paths, and review ergonomics before adding automation;
 - package and support a controlled macOS beta with repeatable checks, backups, and sanitized support bundles;
-- add notarization, hosted downloads, update-feed policy, and formal support before external distribution;
-- defer hosted accounts, remote MCP/OAuth, teams, billing, and enterprise controls until the local MCP/Obsidian loop is consistently useful.
+- maintain signed/notarized hosted downloads and a verified update feed, then
+  add formal support before broader external distribution;
+- defer broad-scale hosted operations, remote MCP/OAuth, teams, billing, and
+  enterprise controls until the local memory loop is consistently useful.
 
 ## Local Production Guarantees
 
-- User-approved MCP and Obsidian sync only; no background app crawling
+- Explicitly connected sources only; no ambient or background app crawling
 - API-token protected local endpoints
 - User-owned local vault folder with JSON records and append-only events
 - Content-free local sync change feed for event ordering, counts, safe metadata, and future hosted materialization planning
@@ -77,7 +85,7 @@ The remaining roadmap should stay non-overengineered:
 ## Pre-Hosted Backend Checklist
 
 - Dogfood with at least 1,000 captures across clipboard, notes, ChatGPT, Claude, docs, and meetings
-- Run `python3 -m unittest discover backend/tests` before every app package
+- Run `python3 -m pytest backend/tests -q` before every app package
 - Run `python3 scripts/retrieval_eval.py` before every app package
 - Run `python3 scripts/check_connector_baseline.py` before claiming the 10k baseline connector set is intact
 - Run `python3 scripts/backend_beta_smoke.py` before inviting beta users; it must pass the Obsidian/MCP -> Review -> Ask loop with sockets blocked
@@ -103,7 +111,8 @@ The remaining roadmap should stay non-overengineered:
 - Verify `python3 scripts/ops_readiness_check.py --refresh-site` passes before inviting testers
 - Verify the inbox is still understandable with 100+ pending captures
 - Verify the graph remains useful and responsive with thousands of nodes
-- Add app notarization and signed installer before external distribution
+- Keep Developer ID signing, notarization, release manifests, and hosted
+  artifact checks in the release gate
 - Add a user-facing "Open Vault Folder", "Change Vault Location", and "Restore Backup" flow
 
 ## Hosted Backend Requirements

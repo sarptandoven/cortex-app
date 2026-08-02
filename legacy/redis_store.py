@@ -1,5 +1,5 @@
 """
-cortex/redis_store.py
+legacy/redis_store.py
 ---------------------
 Embed context items and store in Redis Stack for semantic + metadata search.
 

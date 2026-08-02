@@ -54,7 +54,10 @@ class PublicPagesTests(unittest.TestCase):
         self.assertIn("16 years", terms)  # age gate matches the signup ToS checkbox
         privacy = self.client.get("/privacy").text
         self.assertIn("Privacy Policy", privacy)
-        self.assertIn("crypto-shred", privacy)  # reflects the real deletion behavior
+        self.assertIn("Connector credentials are", privacy)
+        self.assertIn("encrypted at rest", privacy)
+        self.assertIn("removes your hosted memory", privacy)
+        self.assertNotIn("whole-memory crypto", privacy.lower())
 
     def test_download_points_at_the_public_notarized_artifact(self) -> None:
         # The download button must hand out the Developer ID signed + notarized DMG from the

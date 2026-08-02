@@ -15,13 +15,58 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 __all__ = ["CortexClient", "CortexError"]
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8766"
 DEFAULT_TIMEOUT = 30.0
+
+
+def _origin(url: str) -> tuple[str, str, int] | None:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    return parsed.scheme, parsed.hostname.lower(), port or (443 if parsed.scheme == "https" else 80)
+
+
+class _SameOriginRedirectHandler(HTTPRedirectHandler):
+    """Never forward a Cortex bearer token to another origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        resolved = urljoin(req.full_url, str(newurl or ""))
+        if _origin(req.full_url) != _origin(resolved):
+            raise HTTPError(
+                req.full_url,
+                code,
+                "cross-origin redirect blocked for credential-bearing request",
+                headers,
+                fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, resolved)
+
+
+def _safe_urlopen(request: Request, *, timeout: float):
+    if _origin(request.full_url) is None:
+        raise CortexError(
+            0,
+            "Invalid Cortex base URL: expected an absolute HTTP(S) URL "
+            "without user info, a query, or a fragment",
+        )
+    return build_opener(_SameOriginRedirectHandler()).open(request, timeout=timeout)
 
 
 class CortexError(Exception):
@@ -54,7 +99,7 @@ class CortexClient:
         timeout: Per-request socket timeout in seconds.
 
     Example:
-        >>> client = CortexClient(token="ctx_...")
+        >>> client = CortexClient(token="cxa_...")
         >>> answer = client.ask("What database do we use?")
         >>> hits = client.search("release checklist", top_k=5)
     """
@@ -66,7 +111,23 @@ class CortexClient:
         user: Optional[str] = None,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        normalized_base_url = base_url.strip().rstrip("/")
+        try:
+            parsed_base_url = urlsplit(normalized_base_url)
+        except ValueError:
+            parsed_base_url = None
+        if (
+            _origin(normalized_base_url) is None
+            or parsed_base_url is None
+            or bool(parsed_base_url.query)
+            or bool(parsed_base_url.fragment)
+        ):
+            raise CortexError(
+                0,
+                "Invalid Cortex base URL: expected an absolute HTTP(S) URL "
+                "without user info, a query, or a fragment",
+            )
+        self.base_url = normalized_base_url
         self.token = token
         self.user = user
         self.timeout = timeout
@@ -114,7 +175,7 @@ class CortexClient:
             headers=self._headers(json_body=body is not None),
         )
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with _safe_urlopen(request, timeout=self.timeout) as response:
                 raw = response.read()
         except HTTPError as exc:
             raise self._error_from_http(exc) from exc
@@ -212,6 +273,14 @@ class CortexClient:
         intent: Optional[str] = None,
         token_budget: int = 2000,
         surface: str = "agent",
+        *,
+        format: Optional[str] = None,
+        model: Optional[str] = None,
+        session_id: Optional[str] = None,
+        pin: Optional[bool] = None,
+        sector: Optional[str] = None,
+        project: Optional[str] = None,
+        as_of: Optional[str] = None,
     ) -> Any:
         """Build a token-budgeted, cited working-context pack for a task.
 
@@ -223,20 +292,37 @@ class CortexClient:
                 ``recall``).
             token_budget: Approximate token budget for the assembled pack.
             surface: Which tool/agent you are (e.g. ``cursor``, ``claude``, ``agent``).
+            format: Optional response projection: ``json``, ``markdown``, or ``smp``.
+            model: Optional target-model profile used for pack adaptation.
+            session_id: Optional multi-turn session identifier for delta packs. When
+                combined with ``pin=True``, this must be an ``asess_...`` id returned
+                by the ``start_agent_session`` MCP tool.
+            pin: Whether to persist an immutable, content-addressed copy of the pack.
+            sector: Optional hard memory-sector filter; use this for corpus isolation.
+            project: Optional entity-ranking hint. This is not an access-control or
+                isolation boundary; use ``sector`` for isolation.
+            as_of: Optional ISO 8601 historical cutoff.
 
         Returns:
             The assembled context pack (JSON object).
         """
-        return self._request(
-            "POST",
-            "/v1/context",
-            body={
-                "task": task,
-                "intent": intent,
-                "token_budget": token_budget,
-                "surface": surface,
-            },
-        )
+        body: dict[str, Any] = {
+            "task": task,
+            "intent": intent,
+            "token_budget": token_budget,
+            "surface": surface,
+        }
+        optional_fields = {
+            "format": format,
+            "model": model,
+            "session_id": session_id,
+            "pin": pin,
+            "sector": sector,
+            "project": project,
+            "as_of": as_of,
+        }
+        body.update({key: value for key, value in optional_fields.items() if value is not None})
+        return self._request("POST", "/v1/context", body=body)
 
     def search(self, query: str, top_k: int = 8) -> Any:
         """Search Cortex memory and return results with retrieval diagnostics.

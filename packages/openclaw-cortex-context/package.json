@@ -1,5 +1,5 @@
 {
-  "name": "@cortex/openclaw-context",
+  "name": "@doppl-tech/openclaw-context",
   "version": "0.1.0",
   "description": "OpenClaw contextEngine adapter for live Cortex and signed portable-memory bundles.",
   "type": "module",
@@ -41,8 +41,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/doppl-tech/cortex-app.git",
+    "url": "https://github.com/trace-cortex/cortex-app.git",
     "directory": "packages/openclaw-cortex-context"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "peerDependencies": {
     "openclaw": ">=2026.6.11"

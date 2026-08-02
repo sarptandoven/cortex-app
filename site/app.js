@@ -1,18 +1,18 @@
 (function () {
   const fallbackRelease = {
     version: "0.2.0",
-    build: "22",
+    build: "51",
     channel: "local-beta",
     artifacts: [
       {
         kind: "dmg",
-        filename: "Cortex-0.2.0-22.dmg",
-        url: "downloads/Cortex-0.2.0-22.dmg"
+        filename: "Cortex-0.2.0-51.dmg",
+        url: "https://github.com/doppl-tech/releases/releases/download/v0.2.0-51/Cortex-0.2.0-51.dmg"
       },
       {
         kind: "zip",
-        filename: "Cortex-0.2.0-22.app.zip",
-        url: "downloads/Cortex-0.2.0-22.app.zip"
+        filename: "Cortex-0.2.0-51.app.zip",
+        url: "https://github.com/doppl-tech/releases/releases/download/v0.2.0-51/Cortex-0.2.0-51.app.zip"
       }
     ]
   };

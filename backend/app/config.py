@@ -80,6 +80,8 @@ class Settings:
     auth_access_ttl_seconds: int = 0  # 0 = authn.py default (1h)
     auth_refresh_idle_ttl_seconds: int = 0  # 0 = authn.py default (30d sliding)
     auth_refresh_absolute_ttl_seconds: int = 0  # 0 = authn.py default (90d absolute)
+    # Fail closed for hosted account creation until approved legal text is live.
+    legal_terms_approved: bool = False
     auth_email_mode: str = "log"  # "log" (console sink) | "smtp"
     # SMTP delivery (used only when auth_email_mode == "smtp"). Read from
     # CORTEX_SMTP_*. If mode is "smtp" but no host is configured, AuthRuntime
@@ -237,7 +239,16 @@ def load_settings() -> Settings:
         or bool(oidc_apple_client_id)
         or bool(accounts_db_env)
     )
-    public_base_url = os.environ.get("CORTEX_PUBLIC_BASE_URL", "http://127.0.0.1:8766")
+    configured_public_base = os.environ.get("CORTEX_PUBLIC_BASE_URL", "").strip()
+    if configured_public_base:
+        public_base_url = configured_public_base
+    else:
+        # Development servers can move off 8766 when the desktop app already owns
+        # that port. Keep discovery and generated callback URLs on the same origin.
+        configured_port = int(os.environ.get("CORTEX_PORT", "8766") or "8766")
+        if configured_port < 1 or configured_port > 65535:
+            raise ValueError("CORTEX_PORT must be between 1 and 65535")
+        public_base_url = f"http://127.0.0.1:{configured_port}"
     api_key = os.environ.get("CORTEX_API_KEY", "").strip()
     if api_key == INSECURE_DEV_API_KEY and not _truthy_env("CORTEX_ALLOW_INSECURE_DEV_TOKEN"):
         raise RuntimeError(
@@ -277,6 +288,7 @@ def load_settings() -> Settings:
         auth_access_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_ACCESS_TTL_SECONDS", "0") or "0")),
         auth_refresh_idle_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_REFRESH_IDLE_TTL_SECONDS", "0") or "0")),
         auth_refresh_absolute_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_REFRESH_ABSOLUTE_TTL_SECONDS", "0") or "0")),
+        legal_terms_approved=_truthy_env("CORTEX_LEGAL_TERMS_APPROVED"),
         auth_email_mode=(os.environ.get("CORTEX_AUTH_EMAIL_MODE", "log").strip().lower() or "log"),
         smtp_host=os.environ.get("CORTEX_SMTP_HOST", "").strip(),
         smtp_port=max(1, int(os.environ.get("CORTEX_SMTP_PORT", "587") or "587")),

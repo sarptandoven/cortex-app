@@ -8,7 +8,7 @@ a packaging script.
 |---|---|---|
 | Packager | `macos/package_app_store.sh` | `macos/package_release.sh` |
 | Sandbox | Yes (App Sandbox entitlement) | No |
-| Cloud account | No | Optional |
+| Account / sync | Sign-in required; memory sync over Swift `URLSession` | Sign-in required; sync optional |
 | Outbound HTTPS connectors | No — TLS stripped from the bundle | Yes |
 | MCP setup | Guided **manual** (no config writes) | **Automatic** config install |
 | Distribution | App Store Connect review | Signed + notarized + stapled DMG/ZIP |
@@ -16,10 +16,11 @@ a packaging script.
 
 ## Hybrid strategy
 
-The Mac App Store build is **LOCAL-FIRST ONLY**. It is the sandbox-compliant,
-review-safe build:
+The Mac App Store build is **local-first and account-gated**. It is the
+sandbox-compliant, review-safe build:
 
-- No cloud account and no sign-in.
+- Required account sign-in and memory sync use the native Swift networking
+  layer. Local ingestion and retrieval still run inside the sandbox.
 - No outbound HTTPS connectors. In `app-store` mode `macos/build.sh` strips
   `_ssl*.so` and `ssl.py` from the bundled Python. `urllib`/`http.client` guard
   `import ssl`, so the backend degrades cleanly to loopback/HTTP only. The local
@@ -31,9 +32,9 @@ review-safe build:
 - All memory stays inside the app's sandbox container.
 
 The notarized **Developer-ID DMG** is the full-featured power-user path: no
-sandbox, optional cloud, outbound HTTPS connectors available, and automatic MCP
-config install. It keeps `_ssl` and is built by `package_release.sh` — that path
-is byte-identical to before and is documented in the second half of this file.
+sandbox, required account sign-in, optional cloud sync, outbound HTTPS
+connectors, and automatic MCP config install. It keeps `_ssl` and is built by
+`package_release.sh` — that path is documented in the second half of this file.
 
 Every App Store behavior difference is gated behind `DistributionMode.isAppStore`
 (Swift, reads `CortexDistributionMode == "app-store"` from Info.plist) or the
@@ -185,7 +186,8 @@ communication):
 
 - **No auto-MCP-connect** — MCP is set up via guided **manual** steps; the app
   never writes into other apps' config files.
-- **No cloud** — no account, no sign-in.
+- **Account required** — sign-in and memory sync use native Swift networking;
+  connector networking in the bundled Python runtime remains disabled.
 - **No HTTPS connectors** — the TLS stack (`_ssl`, `ssl.py`) is removed from the
   bundle, so outbound HTTPS connectors are disabled.
 - Persistent access to external, user-selected vault folders is disabled until
@@ -303,12 +305,14 @@ or Obsidian/local notes and complete one sync, approve one memory, ask Cortex an
 verify a cited memory appears, create one backup, export one support bundle,
 quit + relaunch, and verify the memory folder remains intact.
 
-## Current public release blockers (DMG path)
+## Current public release status (DMG path)
 
-- Developer ID signing
-- notarization
-- hosted HTTPS download domain
-- public privacy policy URL and support email
-- clean rollback archive for the previous DMG
-- final app icon and final landing/privacy copy review
-- test on a clean Mac that has never run the dev build
+The canonical public manifest, `site/downloads/latest.json`, records Cortex
+0.2.0 build 51 as Developer ID signed, notarized, and hosted on GitHub Releases.
+That statement applies only to the exact artifacts and SHA-256 values in the
+manifest.
+
+Cutting a later release still requires the signing identity, notary profile,
+clean-profile install test, rollback archive, checksum verification, and
+publication order described above. If any of those checks is unavailable, keep
+the candidate internal and do not replace the public manifest.

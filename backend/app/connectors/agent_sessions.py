@@ -254,7 +254,7 @@ def _claude_records(root: Path, path: Path, *, session_cap: int) -> list[AgentSe
         cleaned = _clean_user_text(text)
         if not cleaned:
             continue
-        fingerprint = sha1(cleaned.encode("utf-8")).hexdigest()
+        fingerprint = sha1(cleaned.encode("utf-8"), usedforsecurity=False).hexdigest()
         if fingerprint in seen_texts:
             continue
         seen_texts.add(fingerprint)
@@ -316,7 +316,7 @@ def _codex_records(root: Path, path: Path, *, session_cap: int) -> list[AgentSes
         cleaned = _clean_user_text(str(payload.get("message") or ""))
         if not cleaned:
             continue
-        fingerprint = sha1(cleaned.encode("utf-8")).hexdigest()
+        fingerprint = sha1(cleaned.encode("utf-8"), usedforsecurity=False).hexdigest()
         if fingerprint in seen_texts:
             continue
         seen_texts.add(fingerprint)
@@ -370,7 +370,7 @@ def _cursor_records(root: Path, path: Path, *, mtime: float, session_cap: int) -
         cleaned = _clean_user_text(str(prompt.get("text") or ""))
         if not cleaned:
             continue
-        fingerprint = sha1(cleaned.encode("utf-8")).hexdigest()
+        fingerprint = sha1(cleaned.encode("utf-8"), usedforsecurity=False).hexdigest()
         if fingerprint in seen_texts:
             continue
         seen_texts.add(fingerprint)
@@ -465,7 +465,7 @@ def _stable_external_id(agent: str, session_id: str, anchor: str) -> str:
     raw = f"{agent}:{session_id}:{anchor}"
     if len(raw) <= 240:
         return raw
-    digest = sha1(raw.encode("utf-8")).hexdigest()[:16]
+    digest = sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
     return f"{raw[:220]}#{digest}"
 
 

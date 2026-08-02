@@ -6,21 +6,48 @@
 #
 #   bash deploy/macmini/setup.sh
 # Env overrides: CORTEX_DATA_DIR (default ~/CortexServer), CORTEX_PORT (8766),
-#   CORTEX_PUBLIC_HOST (default api.trydoppl.com), CORTEX_SETUP_DRY_RUN=1 (write
-#   files but don't launchctl load — for inspection/testing).
+#   CORTEX_PUBLIC_HOST (default api.signindoppl.com),
+#   CORTEX_PYTHON_BIN (default python3.12), CORTEX_SETUP_DRY_RUN=1 (write files
+#   but don't launchctl load — for inspection/testing).
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-PYTHON="$(command -v python3)"
 DATA_DIR="${CORTEX_DATA_DIR:-$HOME/CortexServer}"
+VENV_DIR="$DATA_DIR/venv"
 PORT="${CORTEX_PORT:-8766}"
-PUBLIC_HOST="${CORTEX_PUBLIC_HOST:-api.trydoppl.com}"
+PUBLIC_HOST="${CORTEX_PUBLIC_HOST:-api.signindoppl.com}"
 ENV_FILE="$DATA_DIR/cortex.env"
 KEK_FILE="$DATA_DIR/kek"
 LOG_DIR="$DATA_DIR/logs"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
 API_LABEL="com.cortex.api"
 WORKER_LABEL="com.cortex.worker"
+
+PYTHON_BIN="${CORTEX_PYTHON_BIN:-python3.12}"
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  echo "!! Cortex requires Python 3.12; '$PYTHON_BIN' was not found." >&2
+  echo "   Install Python 3.12 or set CORTEX_PYTHON_BIN=/absolute/path/to/python3.12." >&2
+  exit 1
+fi
+PYTHON_BIN="$(command -v "$PYTHON_BIN")"
+PYTHON_VERSION="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+if [ "$PYTHON_VERSION" != "3.12" ]; then
+  echo "!! Cortex requires Python 3.12; '$PYTHON_BIN' reports Python $PYTHON_VERSION." >&2
+  exit 1
+fi
+
+mkdir -p "$DATA_DIR/shards" "$DATA_DIR/control" "$LOG_DIR" "$AGENTS_DIR"
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+  echo "==> Creating dedicated Python environment at $VENV_DIR"
+  "$PYTHON_BIN" -m venv "$VENV_DIR"
+fi
+PYTHON="$VENV_DIR/bin/python"
+VENV_VERSION="$("$PYTHON" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+if [ "$VENV_VERSION" != "3.12" ]; then
+  echo "!! Existing environment at $VENV_DIR uses Python $VENV_VERSION; expected 3.12." >&2
+  echo "   Move that environment aside and rerun setup." >&2
+  exit 1
+fi
 
 echo "=============================================================="
 echo " Cortex Mac mini setup"
@@ -29,8 +56,6 @@ echo "   python: $PYTHON"
 echo "   data:   $DATA_DIR"
 echo "   host:   https://$PUBLIC_HOST  (via Cloudflare Tunnel -> 127.0.0.1:$PORT)"
 echo "=============================================================="
-
-mkdir -p "$DATA_DIR/shards" "$DATA_DIR/control" "$LOG_DIR" "$AGENTS_DIR"
 
 # --- secrets, generated ONCE ---
 if [ ! -f "$ENV_FILE" ]; then
@@ -61,10 +86,11 @@ CORTEX_HOSTED_RUNTIME_TIER=sharded_sqlite
 CORTEX_WORKER_MODE=external
 CORTEX_SYNC_SIGNING_KEY=$SIGNING_KEY
 
-# accounts (BETA: signup works with no email server; set 0 + SMTP for public)
+# accounts (public-safe: configure SMTP before accepting signups)
 CORTEX_AUTH_ENABLED=1
-CORTEX_AUTH_AUTOVERIFY=1
-CORTEX_AUTH_EMAIL_MODE=log
+CORTEX_LEGAL_TERMS_APPROVED=0
+CORTEX_AUTH_AUTOVERIFY=0
+CORTEX_AUTH_EMAIL_MODE=smtp
 
 # BETA ergonomics: captures are immediately retrievable (skip the Review inbox) so a new
 # user's first capture -> ask returns a cited answer without a manual approval step.
@@ -74,10 +100,13 @@ CORTEX_AUTO_APPROVE_CAPTURES=1
 
 # per-user encryption
 CORTEX_KEK_FILE=$KEK_FILE
+CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS=1
 
 # fair use (non-zero on purpose)
 CORTEX_RATE_LIMIT_PER_MINUTE=120
 CORTEX_DEFAULT_MEMORY_QUOTA=20000
+CORTEX_MAX_SYNC_EXPORT_BYTES=25000000
+CORTEX_PASSWORD_HASH_CONCURRENCY=2
 
 # on-device embeddings (free, private)
 CORTEX_EMBEDDING_PROVIDER=model2vec
@@ -100,13 +129,29 @@ ensure_env() {
   fi
 }
 ensure_env CORTEX_AUTO_APPROVE_CAPTURES 1
+ensure_env CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS 1
+ensure_env CORTEX_LEGAL_TERMS_APPROVED 0
+ensure_env CORTEX_PASSWORD_HASH_CONCURRENCY 2
+ensure_env CORTEX_MAX_SYNC_EXPORT_BYTES 25000000
+# Migrate only the former shipped default. Deliberate operator overrides are
+# preserved, while existing installs receive the safer in-memory export cap.
+if grep -q '^CORTEX_MAX_SYNC_EXPORT_BYTES=100000000$' "$ENV_FILE"; then
+  sed -i.bak \
+    's/^CORTEX_MAX_SYNC_EXPORT_BYTES=100000000$/CORTEX_MAX_SYNC_EXPORT_BYTES=25000000/' \
+    "$ENV_FILE"
+  rm -f "$ENV_FILE.bak"
+  echo "   lowered the former default CORTEX_MAX_SYNC_EXPORT_BYTES to 25000000"
+fi
 
 chmod +x "$REPO_DIR/deploy/macmini/run-api.sh" "$REPO_DIR/deploy/macmini/run-worker.sh"
 
 # --- Python deps ---
-echo "==> Installing backend dependencies into $PYTHON"
-"$PYTHON" -m pip install --quiet --upgrade pip
-"$PYTHON" -m pip install --quiet -r "$REPO_DIR/backend/requirements.txt" -r "$REPO_DIR/backend/runtime-requirements.txt" uvicorn || {
+echo "==> Installing backend dependencies into $VENV_DIR"
+"$PYTHON" -m pip install --quiet --require-hashes \
+  -r "$REPO_DIR/backend/requirements.lock" || {
+  echo "!! hosted dependency install failed; check $PYTHON"; exit 1; }
+"$PYTHON" -m pip install --quiet --require-hashes \
+  -r "$REPO_DIR/backend/runtime-requirements.lock" || {
   echo "!! pip install failed; check $PYTHON"; exit 1; }
 
 # --- launchd plists ---
@@ -170,9 +215,9 @@ done
 
 echo "=============================================================="
 if [ "${FIRST:-0}" = "1" ]; then
-  echo " SAVE THESE NOW (shown once):"
-  echo "   Admin token : $(grep '^CORTEX_API_KEY=' "$ENV_FILE" | cut -d= -f2)"
-  echo "   KEK (escrow OFFLINE, NOT with backups): $(cat "$KEK_FILE")"
+  echo " New admin token: stored in $ENV_FILE (not printed)"
+  echo " New KEK        : stored in $KEK_FILE (not printed)"
+  echo " Escrow the KEK offline from an interactive, non-logged session."
 fi
 echo " Services : launchctl list | grep com.cortex"
 echo " Logs     : $LOG_DIR/"

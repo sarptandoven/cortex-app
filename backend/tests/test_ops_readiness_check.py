@@ -154,6 +154,55 @@ class OpsReadinessSupportBundleTests(unittest.TestCase):
             self.assertEqual(payload["version"], "0.1.0")
             self.assertEqual({item["kind"] for item in payload["artifacts"]}, {"dmg", "zip", "obsidian-plugin"})
 
+    def test_update_manifest_allows_explicit_https_release_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifacts = [
+                {
+                    "kind": kind,
+                    "filename": filename,
+                    "url": f"https://github.com/trace-cortex/releases/download/v1/{filename}",
+                    "size_bytes": 123,
+                    "sha256": "a" * 64,
+                }
+                for kind, filename in (
+                    ("dmg", "Cortex-1.0.0-1.dmg"),
+                    ("zip", "Cortex-1.0.0-1.app.zip"),
+                )
+            ]
+            manifest = {
+                "app": "Cortex",
+                "bundle_id": "com.cortex.doppl",
+                "channel": "stable",
+                "version": "1.0.0",
+                "build": "1",
+                "minimum_macos": "13.0",
+                "released_at": "2026-07-28T00:00:00Z",
+                "mandatory": False,
+                "release_notes": [],
+                "artifacts": artifacts,
+            }
+            manifest_path = root / "latest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.assertRaises(FileNotFoundError):
+                validate_update_manifest(manifest_path)
+
+            payload = validate_update_manifest(manifest_path, allow_remote_artifacts=True)
+
+            self.assertEqual(payload["build"], "1")
+
+            manifest["artifacts"][0]["url"] = "http://downloads.example.test/Cortex-1.0.0-1.dmg"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(FileNotFoundError):
+                validate_update_manifest(manifest_path, allow_remote_artifacts=True)
+
+            manifest["artifacts"][0]["url"] = "https://downloads.example.test/Cortex-1.0.0-1.dmg"
+            manifest["artifacts"][0]["sha256"] = "not-a-digest"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                validate_update_manifest(manifest_path, allow_remote_artifacts=True)
+
     def test_site_match_payload_can_skip_site_for_local_dmg_only_beta(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

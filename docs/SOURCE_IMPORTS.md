@@ -1,6 +1,23 @@
 # Source Ingestion
 
-Cortex source ingestion turns connected services, local app connectors, MCP bridges, and support fallback imports into normalized memory candidates. The first-100-user product should lead with connected paths that can register a source account, stream records through `/v1/source-accounts/{account_id}/sync`, preserve citations, and route new records through Review.
+> **Choose your path:** To send records from an existing integration or build a
+> new first-party source, use the complete
+> [connector guide](ADDING_A_CONNECTOR.md). This page is the product support
+> matrix and source-account contract reference.
+
+> **Current connector note (audited 2026-07-30):** In addition to the export
+> parsers below, the backend now has read-only live connectors for GitHub,
+> Gmail, Google Drive, Outlook, Slack, Readwise, Calendar, Raindrop, Zotero,
+> Linear, Jira, Notion, and Obsidian. GitHub supports device-flow sign-in.
+> Google, Microsoft, and Notion managed OAuth flows exist in code, but the
+> direct build currently ships their client IDs empty; those connectors
+> therefore use a user-supplied token/key unless a release configures OAuth.
+
+Cortex source ingestion turns connected services, local app connectors, MCP
+bridges, and support fallback imports into normalized memory candidates. The
+current product leads with connected paths that register a source account,
+stream records through `/v1/source-accounts/{account_id}/sync`, preserve
+citations, and route new records through Review.
 
 Local export/file import still exists as backend infrastructure for tests, migrations, unsupported services, and support recovery. It should not be the normal first-run product path.
 
@@ -60,7 +77,10 @@ GET    /v1/sources/readiness
 
 A connector sends records with `content`, optional `title`, original `source_url`, `external_id`, `captured_at`, and metadata. If `source_url` is absent, Cortex generates a stable `source-account://{source}/{account_id}/{external_id}` locator. `processing: "sync"` extracts immediately; `processing: "async"` stores raw captures and queues extraction.
 
-The response reports saved, queued, skipped, failed, generated capture IDs, per-record statuses, and the updated cursor. This is the contract that should power local app integrations, MCP bridges, and future Gmail, Notion, Slack, Drive, Calendar, GitHub, Mail, Messages, browser, and AI-tool connectors.
+The response reports saved, queued, skipped, failed, generated capture IDs,
+per-record statuses, and the updated cursor. The shipped read-only connectors,
+local app integrations, and MCP bridges use this contract; new connectors
+should extend it instead of inventing a second ingestion path.
 
 For account-backed sync, `source_account_id + external_id` is the durable record identity. Re-syncing the same external record with unchanged content is skipped; re-syncing it with changed content replaces the capture's derived memories, tasks, graph edges, and queued extraction work under the same capture ID. Two different external records are allowed to produce separate captures even if their current text is identical, because service records often share boilerplate, signatures, or short repeated status text.
 
@@ -122,7 +142,14 @@ Repeated fallback imports are idempotent by content hash and source. If a fallba
 
 ## Source Account Registry
 
-Cortex keeps durable local connector state for connected-source sync. The macOS app now includes a first native local connector for Obsidian vaults: the user grants a vault folder once, Cortex scans Markdown/text notes, registers a source account, streams cited records through `/v1/source-accounts/{account_id}/sync`, advances a cursor, and lets Review decide what becomes trusted memory. Other source-specific OAuth/sign-in UI is still implemented connector by connector, but the shared backend contract is in place for local app integrations, MCP bridges, and connector processes.
+Cortex keeps durable local connector state for connected-source sync. Obsidian
+is the native local-folder path: the user grants a vault folder once, Cortex
+scans Markdown/text notes, registers a source account, streams cited records
+through `/v1/source-accounts/{account_id}/sync`, advances a cursor, and lets
+Review decide what becomes trusted memory. The same contract now backs the
+read-only token/API connectors listed in the note above. GitHub device flow is
+configured; managed Google, Microsoft, and Notion OAuth needs release-provided
+client IDs.
 
 Connector capability catalog:
 
@@ -133,7 +160,12 @@ GET /v1/sources/readiness
 
 The catalog lists common services such as ChatGPT, Claude, Gmail, Apple Mail, Outlook, email files, docs, PDFs, cloud-doc exports, Notion, Google Drive, Google Docs, Google Keep, Microsoft 365, Slack, Google Chat, Teams, Discord, Telegram, Messages, iMessage exports, WhatsApp, Calendar, Contacts, GitHub, Linear, Jira, Zoom, Browser Bookmarks, browser history exports, Readwise, Raindrop, Zotero, LinkedIn, Twitter/X, Apple Notes, and Obsidian. Each entry includes current connector readiness, future live-sync status, auth type, scopes, supported formats, `export_status`, and the canonical `source_ids` that captures and memories will use.
 
-Branded connectors can map to canonical memory sources. For example, Gmail, Apple Mail, and Outlook mail records can map to `email`, Google Drive and Google Docs records can map to `cloud-docs` or `docs`, PDFs map to `docs`, iMessage records map to `messages`, GitHub records map to `github` or `work-tools`, and Readwise/Raindrop/Zotero records map to their branded sources or `knowledge-base`. Connections & Privacy should show working account/local-note connections first and keep export/file import under Advanced/Fallback when a source cannot connect directly yet.
+Branded connectors can map to canonical memory sources. For example, Gmail,
+Apple Mail, and Outlook mail records can map to `email`; Google Drive and
+Google Docs records can map to `cloud-docs` or `docs`; and GitHub records can
+map to `github` or `work-tools`. Connections & Privacy shows working
+account/local-note connections first and keeps export/file import under
+Advanced/Fallback when a source cannot connect directly yet.
 
 See `docs/CONNECTOR_COVERAGE_READINESS.md` for the first-100-user beta coverage map and the later live OAuth readiness gates.
 
@@ -202,12 +234,12 @@ When aliases match a Slack handle/name or email sender, that text can seed user-
 
 ## Product Flow
 
-Connections & Privacy should present only useful connection paths in the default flow. For the first-100-user checkpoint, those are:
-
-- MCP AI tools for connected assistant access and memory writes.
-- Obsidian vault sync as the first native local notes connector.
-
-Future source rows should follow the same pattern: connect or authorize the source, register a source account, sync records, then let Review decide what becomes trusted memory. Manual sync controls, export/file import, and copy-oriented fallback flows should stay inside Advanced/Fallback, not Home, Review, or Ask.
+Connections & Privacy presents connection paths whose catalog readiness is
+implemented. Each follows the same product loop: connect or authorize the
+source, register a source account, sync records, then let Review decide what
+becomes trusted memory. MCP AI-tool setup and Obsidian local-folder sync remain
+the provider-neutral paths. Export/file import and copy-oriented fallback flows
+stay inside Advanced/Fallback rather than Home, Review, or Ask.
 
 ## Privacy Boundaries
 
@@ -222,8 +254,13 @@ Future source rows should follow the same pattern: connect or authorize the sour
 
 ## Current Limits
 
-- The generic source-account sync ingestion endpoint is implemented; branded OAuth/API sign-in flows still need to be built source by source for Gmail, Notion, Slack, Google Chat, Google Drive, Microsoft 365, Teams, Linear, Jira, GitHub, LinkedIn, Twitter/X, Zoom, and browser history.
+- The generic source-account sync ingestion endpoint and thirteen read-only
+  connector modules are implemented. Remaining gaps include configured
+  Google/Microsoft/Notion OAuth clients, managed OAuth for the other token
+  connectors, and direct connectors for Google Chat, Teams, LinkedIn,
+  Twitter/X, Zoom, and browser history.
 - Advanced/Fallback import remains available for services that cannot connect directly yet.
 - PDF extraction depends on optional `pypdf`; otherwise the macOS fallback can extract PDFs selected through the app.
-- Very large exports are capped by record count and per-record character limits, then chunking/reranking should be improved in the next ingestion pass.
+- Very large exports are capped by record count and per-record character limits;
+  chunking and ranking quality at those limits remain an open evaluation area.
 - The importer normalizes data into candidate captures; extraction quality still depends on the local heuristic extractor or the configured LLM extractor.

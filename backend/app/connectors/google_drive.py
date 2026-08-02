@@ -7,9 +7,10 @@ import json
 import re
 from typing import Any, Callable
 from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from ..config import APP_BRAND
+from ..http_security import open_same_origin
 from ._redaction import connector_error_payload
 
 
@@ -185,7 +186,7 @@ def fetch_google_drive_records(
 
 def _request_value(url: str, headers: dict[str, str]) -> Any:
     request = Request(url, headers=headers, method="GET")
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - trusted Google API URL by default.
+    with open_same_origin(request, timeout=30) as response:
         body = response.read().decode("utf-8", errors="replace")
         content_type = response.headers.get("Content-Type", "")
     if "application/json" in content_type:

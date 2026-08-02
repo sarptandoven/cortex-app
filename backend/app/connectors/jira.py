@@ -7,8 +7,9 @@ import json
 import re
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
+from ..http_security import open_same_origin
 from ._redaction import classify_error_message, connector_error_payload
 
 
@@ -184,7 +185,7 @@ def fetch_jira_records(
 
 def _request_json(url: str, headers: dict[str, str], body: dict[str, Any]) -> Any:
     request = Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - trusted Jira site URL provided by the user.
+    with open_same_origin(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

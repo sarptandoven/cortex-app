@@ -27,11 +27,6 @@
     <main class="privacy-main">
       <p class="eyebrow">Support</p>
       <h1>FAQ &amp; support</h1>
-      <p class="privacy-draft-note">
-        <strong>Draft — pending legal review before public launch.</strong> These answers describe
-        how the software actually behaves; the privacy answer below is a plain summary of the
-        <a href="privacy.html">Privacy page</a>, not a legal statement.
-      </p>
       <p>
         Short answers to the questions we hear most. Still stuck? Email
         <a href="mailto:support@trydoppl.com">support@trydoppl.com</a>. See also the
@@ -51,7 +46,7 @@
       <section>
         <h2>Is my data private? Is it encrypted?</h2>
         <ul>
-          <li><strong>Local app (the default):</strong> your memory stays on your Mac and needs no account. It works with the network off, and nothing is sent to us.</li>
+          <li><strong>Local memory (the default):</strong> the shipped beta requires a one-time account sign-in, but ingestion, retrieval, and your memory vault stay on your Mac unless you enable sync.</li>
           <li><strong>Cortex Cloud (optional):</strong> your data is stored in an isolated per-account store and is <strong>encrypted at rest with a key unique to your account</strong>. This is <em>not</em> end-to-end or "zero-knowledge" encryption: Cortex servers can read your memory in order to build embeddings, retrieve, and serve cited context to your AI tools. That is what makes the cloud features work.</li>
           <li>Full detail — including deletion by crypto-erasure and what connectors read — is on the <a href="privacy.html">Privacy page</a>.</li>
         </ul>
@@ -61,7 +56,7 @@
         <h2>How do I connect the app to my account?</h2>
         <ul>
           <li>Open the app's <strong>Settings → "Cortex Cloud"</strong> section.</li>
-          <li>Enter the hosted URL (for example <code>https://api.trydoppl.com</code>).</li>
+          <li>Enter the hosted URL (for example <code>https://api.signindoppl.com</code>).</li>
           <li>Sign in with your email and password, or use "Sign in with browser" for Google/GitHub. The "Create an account" link opens the signup page.</li>
           <li>The app stores your session securely in the macOS Keychain and refreshes it automatically. Power users can still paste a raw endpoint and token in the manual fields.</li>
         </ul>
@@ -97,7 +92,7 @@
       <section>
         <h2>Does it work offline?</h2>
         <ul>
-          <li>Yes. In <strong>local mode</strong> (the default) Cortex runs entirely on your Mac and works with the network off.</li>
+          <li>After the required sign-in, local ingestion and retrieval work with the network off. Signing in again, syncing, hosted retrieval, and connector authorization need a connection.</li>
           <li>Cortex Cloud features (syncing, hosted retrieval) need a connection, since they run against the hosted backend.</li>
         </ul>
       </section>
@@ -105,7 +100,7 @@
       <section>
         <h2>How do I update the app?</h2>
         <ul>
-          <li>Cortex checks for updates and will prompt you when a new version is available; follow the prompt to install it.</li>
+          <li>Cortex checks for updates and links you to the current download. It does not replace the running app automatically.</li>
           <li>You can also download the latest version from the <a href="index.html#download">download section</a> and replace the app in your Applications folder.</li>
         </ul>
       </section>

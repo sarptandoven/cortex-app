@@ -1,0 +1,58 @@
+name: Installation help
+description: Report a reproducible setup, launch, or first-run failure.
+title: "[Install]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with `make doctor` and the troubleshooting guide. Do not paste tokens, private memory, vault files, or account details.
+  - type: dropdown
+    id: path
+    attributes:
+      label: Installation path
+      options:
+        - Downloaded macOS DMG
+        - make demo / backend development
+        - macOS source build
+        - SDK or plugin
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS version, architecture, and relevant Python/Node version.
+      placeholder: "macOS 15.5 arm64; Python 3.12.13"
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or action that failed
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Sanitized output
+      description: Include the exact error and `make doctor` output when applicable.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What you already tried
+      description: Link the troubleshooting step if one applied.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety and duplicate checks
+      options:
+        - label: I checked docs/TROUBLESHOOTING.md and searched existing issues.
+          required: true
+        - label: I removed tokens, private data, account details, and vault contents.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

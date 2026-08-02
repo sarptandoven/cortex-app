@@ -36,11 +36,11 @@
   "homepage": "https://trydoppl.com",
   "repository": {
     "type": "git",
-    "url": "https://github.com/doppl-tech/cortex-app.git",
+    "url": "https://github.com/trace-cortex/cortex-app.git",
     "directory": "sdk/typescript"
   },
   "bugs": {
-    "url": "https://github.com/doppl-tech/cortex-app/issues"
+    "url": "https://github.com/trace-cortex/cortex-app/issues"
   },
   "publishConfig": {
     "access": "public"

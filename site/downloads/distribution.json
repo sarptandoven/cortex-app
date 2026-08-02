@@ -1,18 +1,18 @@
 {
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-22.dmg",
+      "filename": "Cortex-0.2.0-51.dmg",
       "kind": "dmg",
-      "sha256": "eb421cf0fd767b3aaf8a1d5ef05235186b67e056d30f299c777ae89d9cad34b9",
-      "size_bytes": 87312603,
-      "url": "downloads/Cortex-0.2.0-22.dmg"
+      "sha256": "b416c8af096d9bc2776adc306a9d60f843054bc35e503d993eda9e199436ec64",
+      "size_bytes": 74548179,
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-51/Cortex-0.2.0-51.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-22.app.zip",
+      "filename": "Cortex-0.2.0-51.app.zip",
       "kind": "zip",
-      "sha256": "eb8797c807fa2b50fc9a5972660ffd639348c59077a84c192a342f6266c4f2bd",
-      "size_bytes": 68365377,
-      "url": "downloads/Cortex-0.2.0-22.app.zip"
+      "sha256": "3a3ee9fc26fca2c3944c9bd4dff49fddb5f8dfc377b5efa14ce8966f5b34e273",
+      "size_bytes": 71687986,
+      "url": "https://github.com/doppl-tech/releases/releases/download/v0.2.0-51/Cortex-0.2.0-51.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
@@ -22,8 +22,8 @@
       "url": "downloads/cortex-memory-0.1.0.zip"
     }
   ],
-  "build": "22",
+  "build": "51",
   "channel": "local-beta",
-  "prepared_at": "2026-07-09T19:23:49+00:00",
+  "prepared_at": "2026-07-24T03:54:50Z",
   "version": "0.2.0"
 }

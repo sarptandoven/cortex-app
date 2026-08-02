@@ -17,12 +17,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, NamedTuple
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from .config import APP_BRAND
+from .connector_policy import (
+    is_atlassian_cloud_origin,
+    is_official_connector_origin,
+    is_official_oauth_token_endpoint,
+)
 from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
-from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status, warmup_embedding_provider
+from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_index_fingerprint, embedding_json, embedding_source_text, embedding_status, warmup_embedding_provider
+from .http_security import open_same_origin
 from .query_plan import (
     build_query_plan,
     context_hop_deadline_ms,
@@ -59,6 +65,23 @@ from .vault import CortexVault
 
 BACKEND_VERSION = "0.1.0"
 HEALTH_CONTRACT = 3
+try:
+    MAX_SYNCHRONOUS_EXPORT_BYTES = max(
+        1_000_000,
+        int(os.environ.get("CORTEX_MAX_SYNC_EXPORT_BYTES", "25000000") or "25000000"),
+    )
+except ValueError:
+    MAX_SYNCHRONOUS_EXPORT_BYTES = 25_000_000
+
+
+class ExportSizeLimitError(ValueError):
+    """The corpus is too large for an in-memory synchronous export."""
+
+
+class UnknownAgentSessionError(ValueError):
+    """A requested context-pack pin refers to no agent session for this user."""
+
+
 BACKEND_FEATURES = (
     "local-vault",
     "capture-surfaces",
@@ -601,11 +624,13 @@ QUERY_FTS_STOPWORDS = QUERY_TEMPORAL_STOPWORDS | {
     "did",
     "do",
     "does",
+    "for",
     "had",
     "has",
     "have",
     "how",
     "i",
+    "is",
     "me",
     "my",
     "or",
@@ -616,6 +641,7 @@ QUERY_FTS_STOPWORDS = QUERY_TEMPORAL_STOPWORDS | {
     "to",
     "usually",
     "we",
+    "who",
     "why",
     "you",
     "your",
@@ -708,10 +734,66 @@ QUERY_LEXICAL_FALLBACK_STOPWORDS = QUERY_FTS_STOPWORDS | {
     "told",
     "was",
     "were",
+    "who",
     "with",
     "you",
     "your",
 }
+
+# Small, reviewable concept groups close common product-language paraphrases
+# when the dependency-free hash/FTS fallback is active. This is not a general
+# thesaurus: each group is backed by adversarial retrieval fixtures and expands
+# only the public query, never stored source text.
+LEXICAL_CONCEPT_VARIANTS: dict[str, tuple[str, ...]] = {
+    "owner": (
+        "accountable",
+        "accountability",
+        "dri",
+        "owner",
+        "ownership",
+        "responsible",
+        "responsibility",
+    ),
+    "release": (
+        "launch",
+        "release",
+        "rollout",
+        "ship",
+        "shipping",
+    ),
+}
+_EXPLICIT_NON_ANSWER_RE = re.compile(
+    r"(?i)\b(?:"
+    r"does\s+not\s+name\s+(?:an?\s+)?owner|"
+    r"doesn't\s+name\s+(?:an?\s+)?owner|"
+    r"must\s+not\s+be\s+used\s+to\s+answer|"
+    r"not\s+(?:a\s+)?source\s+of\s+truth|"
+    r"template\s+(?:is\s+)?unassigned"
+    r")\b"
+)
+
+
+def _normalize_lexical_term(term: str) -> str:
+    clean = str(term or "").strip("_").lower()
+    if not clean:
+        return ""
+    if (
+        clean == "dri"
+        or clean.startswith("accountab")
+        or clean.startswith("responsib")
+        or clean.startswith("owner")
+    ):
+        return "owner"
+    if (
+        clean.startswith("launch")
+        or clean.startswith("release")
+        or clean.startswith("rollout")
+        or clean.startswith("ship")
+    ):
+        return "release"
+    if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
+        clean = clean[:-1]
+    return clean
 TASK_QUERY_STOPWORDS = {
     "action",
     "actions",
@@ -1691,7 +1773,7 @@ def _request_oauth_token(token_endpoint: str, form: dict[str, str]) -> dict[str,
         headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - caller supplies trusted OAuth token endpoint.
+    with open_same_origin(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -1737,7 +1819,7 @@ def _request_oauth_broker_exchange(
         headers={"Accept": "application/json", "Content-Type": "application/json"},
         method="POST",
     )
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - app-configured broker endpoint.
+    with open_same_origin(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -1762,7 +1844,7 @@ def _request_basic_json_oauth_token(
         headers=request_headers,
         method="POST",
     )
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - caller supplies trusted OAuth token endpoint.
+    with open_same_origin(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -3169,13 +3251,16 @@ def _path_event_summary(path: str) -> dict[str, Any]:
 class CortexStore:
     def __init__(self, db_path, vault_path: str | Path | None = None):
         self.db_path = Path(db_path)
+        # StoreRegistry sets this on sharded stores. Direct CortexStore instances
+        # are local by default, preserving the standalone/test contract.
+        self.hosted_mode = False
         resolved_vault_path = Path(vault_path).expanduser() if vault_path else self.db_path.parent
         self.vault = CortexVault(resolved_vault_path, self.db_path)
         self.vault.ensure()
-        # Cache of the vector-index dimension we've reconciled to (see _ensure_vector_index). None
-        # until reconciled; lets us detect an embedding-model/dimension change and rebuild the
+        # Cache of the vector-index identity we've reconciled to (see _ensure_vector_index). None
+        # until reconciled; lets us detect an embedding-model/revision/dimension change and rebuild the
         # (rebuildable) vec table + re-embed rather than silently mismatching.
-        self._vector_index_ensured: int | None = None
+        self._vector_index_ensured: tuple[int, str] | None = None
         # Current-head Proof-of-Belief substrate. The cache key is a trigger-maintained per-user
         # memory-event revision, so direct SQL edits/deletes/inserts invalidate it too.
         self._belief_integrity_cache: dict[str, dict[str, Any]] = {}
@@ -3189,14 +3274,14 @@ class CortexStore:
         self._prefetch_lock = _threading.Lock()
         self._prefetch_inflight_users: set[str] = set()
         self._prefetch_slots = _threading.BoundedSemaphore(self.SESSION_PREFETCH_MAX_INFLIGHT)
-        # Reconcile the vector index to the active model's dimension once, up front, on a dedicated
-        # connection (safe: not nested in any caller transaction).
-        self._ensure_vector_index()
         # Front-load the embedding model so the health surface is truthful before the first query:
         # if a model2vec store's model can't load, this trips the failure latch now (so /ready and
-        # search diagnostics report degraded and the vector-write gate drops to FTS-only) instead of
-        # leaving a lying "model2vec" state until the first real query silently falls back to hash.
+        # search diagnostics report degraded and the vector-write gate drops to FTS-only). The
+        # probe also records a custom model's actual native dimension before index reconciliation.
         warmup_embedding_provider()
+        # Reconcile the vector index to the warmed provider/model fingerprint once, up front, on a
+        # dedicated connection (safe: not nested in any caller transaction).
+        self._ensure_vector_index()
         # Store-owned lightweight migration (same duplicate-column-tolerant pattern as
         # database.MIGRATIONS): the memories dedup/occurrence semantics live here, so the
         # occurrences column is ensured here too. Legacy databases upgrade in place; every
@@ -3215,6 +3300,40 @@ class CortexStore:
         # behind the current one — re-deriving its memories from stored raw text (mirrors how an
         # embedding-model change re-embeds via _ensure_vector_index/_enqueue_reembed_all).
         self._reprocess_captures_on_extractor_change()
+
+    def _require_local_runtime(self, operation: str, *, test_adapter: bool = False) -> None:
+        if self.hosted_mode and not test_adapter:
+            raise ValueError(f"{operation} is available only in local mode")
+
+    def _require_hosted_connector_origin(
+        self,
+        source: str,
+        value: str | None,
+        *,
+        test_adapter: bool = False,
+    ) -> None:
+        if not self.hosted_mode or test_adapter:
+            return
+        if not is_official_connector_origin(source, str(value or "")):
+            raise ValueError(f"Custom {source} API origins are disabled in hosted mode")
+
+    def _require_hosted_jira_cloud_origin(self, value: str, *, test_adapter: bool = False) -> None:
+        if not self.hosted_mode or test_adapter:
+            return
+        if not is_atlassian_cloud_origin(value):
+            raise ValueError("Hosted Jira connections require an HTTPS *.atlassian.net site URL")
+
+    def _require_hosted_oauth_token_endpoint(
+        self,
+        source: str,
+        value: str,
+        *,
+        test_adapter: bool = False,
+    ) -> None:
+        if not self.hosted_mode or test_adapter:
+            return
+        if not is_official_oauth_token_endpoint(source, value):
+            raise ValueError(f"Custom {source} OAuth token endpoints are disabled in hosted mode")
 
     def _ensure_memory_occurrences_column(self) -> None:
         with connect(self.db_path) as conn:
@@ -5183,6 +5302,11 @@ class CortexStore:
         resolved_client_secret = _google_oauth_config_value(normalized_source, "CLIENT_SECRET", client_secret)
         resolved_redirect_uri = _google_oauth_redirect_uri(normalized_source, redirect_uri)
         resolved_token_endpoint = str(token_endpoint or "").strip() or _google_oauth_config_value(normalized_source, "TOKEN_ENDPOINT") or GOOGLE_OAUTH_TOKEN_ENDPOINT
+        self._require_hosted_oauth_token_endpoint(
+            normalized_source,
+            resolved_token_endpoint,
+            test_adapter=request_token is not None,
+        )
         if not resolved_client_id:
             raise ValueError("Google OAuth client ID is not configured")
         normalized_code_verifier = str(code_verifier or "").strip()
@@ -5407,6 +5531,11 @@ class CortexStore:
         resolved_client_secret = _managed_oauth_config_value(normalized_source, "CLIENT_SECRET", client_secret)
         resolved_redirect_uri = _managed_oauth_redirect_uri(normalized_source, redirect_uri)
         resolved_token_endpoint = str(token_endpoint or "").strip() or _managed_oauth_config_value(normalized_source, "TOKEN_ENDPOINT") or MANAGED_OAUTH_TOKEN_ENDPOINTS[normalized_source]
+        self._require_hosted_oauth_token_endpoint(
+            normalized_source,
+            resolved_token_endpoint,
+            test_adapter=request_token is not None,
+        )
         if not resolved_client_id:
             raise ValueError(f"{provider.title()} OAuth client ID is not configured")
         normalized_code_verifier = str(code_verifier or "").strip()
@@ -5700,6 +5829,7 @@ class CortexStore:
             raise ValueError(f"{source} access token expired and refresh configuration is missing")
         if source == "notion" and not client_secret:
             raise ValueError(f"{source} access token expired and refresh configuration is missing")
+        self._require_hosted_oauth_token_endpoint(source, token_endpoint)
 
         scope = str(payload.get("scope") or "").strip()
         secrets_to_redact = [
@@ -6274,6 +6404,7 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.obsidian import OBSIDIAN_SOURCE, scan_vault, vault_identity
 
+        self._require_local_runtime("Obsidian vault sync")
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         identity = vault_identity(vault_path)
@@ -6521,6 +6652,7 @@ class CortexStore:
         """
         from .connectors.agent_sessions import AGENT_SESSIONS_SOURCE, scan_agent_sessions
 
+        self._require_local_runtime("Coding-agent session sync")
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{AGENT_SESSIONS_SOURCE}:local")
@@ -6680,6 +6812,7 @@ class CortexStore:
             render_readme,
         )
 
+        self._require_local_runtime("Obsidian write-back")
         resolved_path = str(vault_path or "").strip()
         if not resolved_path:
             for account in self.list_source_accounts(user_id):
@@ -6886,6 +7019,9 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.github import GITHUB_SOURCE, fetch_github_records
 
+        self._require_hosted_connector_origin(
+            "github", api_base_url or "https://api.github.com", test_adapter=request_json is not None
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -7084,6 +7220,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.gmail import GMAIL_SOURCE, fetch_gmail_records
 
+        self._require_hosted_connector_origin(
+            "gmail",
+            api_base_url or "https://gmail.googleapis.com/gmail/v1",
+            test_adapter=request_json is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -7273,6 +7414,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.google_drive import GOOGLE_DRIVE_SOURCE, fetch_google_drive_records
 
+        self._require_hosted_connector_origin(
+            "google-drive",
+            api_base_url or "https://www.googleapis.com/drive/v3",
+            test_adapter=request_value is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -7464,6 +7610,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.outlook import OUTLOOK_SOURCE, fetch_outlook_records
 
+        self._require_hosted_connector_origin(
+            "outlook",
+            api_base_url or "https://graph.microsoft.com/v1.0",
+            test_adapter=request_json is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -7648,6 +7799,9 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.slack import SLACK_SOURCE, fetch_slack_records
 
+        self._require_hosted_connector_origin(
+            "slack", api_base_url or "https://slack.com/api", test_adapter=request_json is not None
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -7837,6 +7991,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.readwise import READWISE_SOURCE, fetch_readwise_records
 
+        self._require_hosted_connector_origin(
+            "readwise",
+            api_base_url or "https://readwise.io/api/v2",
+            test_adapter=request_json is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -8006,6 +8165,10 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.calendar import CALENDAR_SOURCE, fetch_calendar_records
 
+        self._require_local_runtime(
+            "Calendar file/feed sync",
+            test_adapter=read_text is not None or request_text is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -8185,6 +8348,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.raindrop import RAINDROP_SOURCE, fetch_raindrop_records
 
+        self._require_hosted_connector_origin(
+            "raindrop",
+            api_base_url or "https://api.raindrop.io/rest/v1",
+            test_adapter=request_json is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -8367,6 +8535,7 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.zotero import ZOTERO_SOURCE, fetch_zotero_records
 
+        self._require_local_runtime("Zotero local API sync", test_adapter=request_json is not None)
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -8553,6 +8722,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.linear import LINEAR_SOURCE, fetch_linear_records
 
+        self._require_hosted_connector_origin(
+            "linear",
+            api_url or "https://api.linear.app/graphql",
+            test_adapter=request_json is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -8723,6 +8897,7 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.jira import JIRA_SOURCE, fetch_jira_records
 
+        self._require_hosted_jira_cloud_origin(site_url, test_adapter=request_json is not None)
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -8901,6 +9076,11 @@ class CortexStore:
     ) -> dict[str, Any]:
         from .connectors.notion import NOTION_SOURCE, fetch_notion_records
 
+        self._require_hosted_connector_origin(
+            "notion",
+            api_base_url or "https://api.notion.com/v1",
+            test_adapter=request_json is not None,
+        )
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         try:
@@ -14108,9 +14288,7 @@ class CortexStore:
             clean = token.strip("_")
             if not clean:
                 continue
-            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
-                clean = clean[:-1]
-            item_terms.add(clean)
+            item_terms.add(_normalize_lexical_term(clean))
         return {term for term in terms if any(candidate.startswith(term) for candidate in item_terms)}
 
     def _citation_metadata(self, item: dict[str, Any], provenance: dict[str, Any]) -> dict[str, Any]:
@@ -14898,7 +15076,9 @@ class CortexStore:
                 continue
             seen_edges.add(key)
             canvas_edges.append({
-                "id": hashlib.sha1(("|".join(key)).encode("utf-8")).hexdigest()[:16],
+                "id": hashlib.sha1(
+                    ("|".join(key)).encode("utf-8"), usedforsecurity=False
+                ).hexdigest()[:16],
                 "fromNode": self.vault.entity_moc_short_id(key[0]),
                 "toNode": self.vault.entity_moc_short_id(key[1]),
             })
@@ -18485,8 +18665,8 @@ class CortexStore:
         (search, decision_history, entity_neighborhood, open_tasks, recent) under a
         per-intent budget allocator. Every included item is citation-backed
         (`_has_source_citation`); superseded facts are never served; drops are counted
-        and visible, never silent. `include_identity=False` (read-only tokens) replaces
-        the identity layer with an explicit omission record instead of erroring.
+        and visible, never silent. Callers that deliberately set `include_identity=False`
+        replace the identity layer with an explicit omission record instead of erroring.
 
         With `pin=True` (Phase 2) the assembled pack is also persisted as an immutable,
         content-addressed artifact: canonical JSON bytes hashed with sha256, written
@@ -18498,6 +18678,11 @@ class CortexStore:
         self.require_agent_access(user_id, "read")
         task = str(task or "").strip()[:500]
         surface = str(surface or "agent").strip().lower()[:40] or "agent"
+        linked_session = str(session_id or "").strip()
+        if pin and linked_session:
+            # Validate an explicit pin linkage before cache reads, retrieval, reuse
+            # recording, or working-set mutation. A failed pin must be atomic.
+            self._require_agent_session(user_id, linked_session)
         try:
             token_budget = int(token_budget)
         except (TypeError, ValueError):
@@ -18815,6 +19000,15 @@ class CortexStore:
             "citations": citations,
             "receipt": {"tool": "get_context", "audited": True, "event_kind": "context_pack"},
         }
+        if project:
+            # `project` predates hard sector scoping and is only an entity-ranking
+            # hint. Make that visible in-band so clients cannot mistake its legacy
+            # location under `filters` for an authorization boundary.
+            result["filter_semantics"] = {
+                "sector": "hard_scope",
+                "project": "ranking_hint_not_isolation",
+                "as_of": "historical_cutoff",
+            }
         # Session working-set delta (build-plan #13): when the call carries a session_id, compute
         # the delta of THIS pack's cited ids versus what the session already knows and advance the
         # working-set. The delta rides the SMP envelope's `working_memory` field (or the warnings[]
@@ -18822,7 +19016,6 @@ class CortexStore:
         # after `result` is built and never enters the content-addressed pack bytes.
         working_memory_delta: dict[str, Any] | None = None
         prefetch_centroid: dict[str, Any] = {}
-        linked_session = str(session_id or "").strip()
         if linked_session:
             cited_seq = [
                 {"ref": str(item.get("memory_id") or ""), "relevance": item.get("relevance")}
@@ -18841,7 +19034,7 @@ class CortexStore:
         if pin:
             # Pin the underlying pack first so the SMP/markdown response references a real,
             # content-addressed artifact (the pin block is envelope metadata, excluded from the sha).
-            result["pin"] = self.pin_context_pack(user_id, result, session_id=session_id)
+            result["pin"] = self.pin_context_pack(user_id, result, session_id=linked_session or None)
         # Speculative trajectory + 1-hop-graph prefetch (build-plan #13): warm the hot-cache for the
         # likely next request on a background thread under a HARD deadline. Never blocks the reply.
         if linked_session and record_reuse:
@@ -20014,9 +20207,48 @@ class CortexStore:
             redact_sensitive=bool(user_settings["redact_sensitive_context"]),
         )
 
+    def _estimated_export_bytes(self, conn: Any, user_id: str) -> int:
+        """Conservative preflight before materializing several full corpus copies.
+
+        SQLite ``length(TEXT)`` counts Unicode code points, not serialized
+        bytes. Canonical portable JSON uses ``ensure_ascii=True``; a non-BMP
+        code point can therefore expand to a 12-byte surrogate pair. The
+        12x multiplier is the real worst case, and the per-row allowance covers
+        keys, separators, nulls and envelope metadata. The 25 MB default leaves
+        headroom for the portable bundle's canonical and base64 copies.
+        """
+        raw_bytes = 0
+        row_count = 0
+        for table in ("captures", "memories", "tasks", "entities", "graph_edges"):
+            columns = [
+                str(row["name"])
+                for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+            ]
+            length_terms = " + ".join(
+                f'COALESCE(length("{column}"), 0)' for column in columns
+            )
+            row = conn.execute(
+                f'SELECT COUNT(*) AS row_count, '
+                f'COALESCE(SUM({length_terms}), 0) AS raw_bytes '
+                f'FROM "{table}" WHERE user_id = ?',
+                (user_id,),
+            ).fetchone()
+            row_count += int(row["row_count"] or 0)
+            raw_bytes += int(row["raw_bytes"] or 0)
+        return raw_bytes * 12 + row_count * 1024
+
+    def _enforce_synchronous_export_limit(self, conn: Any, user_id: str) -> None:
+        estimated = self._estimated_export_bytes(conn, user_id)
+        if estimated > MAX_SYNCHRONOUS_EXPORT_BYTES:
+            raise ExportSizeLimitError(
+                "Export is too large for the synchronous API "
+                f"(estimated {estimated} bytes; limit {MAX_SYNCHRONOUS_EXPORT_BYTES})."
+            )
+
     def export_json(self, user_id: str) -> dict[str, Any]:
         user_settings = self.settings(user_id)
         with connect(self.db_path) as conn:
+            self._enforce_synchronous_export_limit(conn, user_id)
             captures = [self._capture_from_row(row) for row in conn.execute("SELECT * FROM captures WHERE user_id = ? ORDER BY captured_at DESC", (user_id,)).fetchall()]
             imports = self.list_imports(user_id, limit=100)
             memories = [self._memory_from_row(row) for row in conn.execute("SELECT * FROM memories WHERE user_id = ? ORDER BY captured_at DESC", (user_id,)).fetchall()]
@@ -20314,8 +20546,6 @@ class CortexStore:
             "health_contract": HEALTH_CONTRACT,
             "features": list(BACKEND_FEATURES),
             "mode": mode,
-            "db_path": str(self.db_path),
-            "vault_path": str(self.vault.root),
             "auth": auth,
         }
 
@@ -21016,6 +21246,10 @@ class CortexStore:
         divergence and reconcile the SQLite index to match the current Markdown state, re-running
         the vault rebuild only when something actually changed (so idle watcher fires are cheap).
         """
+        with self.vault.read_snapshot():
+            return self._reconcile_vault_edits_locked(user_id)
+
+    def _reconcile_vault_edits_locked(self, user_id: str) -> dict[str, Any]:
         markdown_records = self.vault.iter_memory_markdown_records(user_id)
         markdown_sig: dict[str, str] = {}
         for record in markdown_records:
@@ -21167,6 +21401,10 @@ class CortexStore:
         return written
 
     def rebuild_index_from_vault(self, user_id: str) -> dict[str, Any]:
+        with self.vault.read_snapshot():
+            return self._rebuild_index_from_vault_locked(user_id)
+
+    def _rebuild_index_from_vault_locked(self, user_id: str) -> dict[str, Any]:
         tombstone_counts = self.vault.apply_tombstones(user_id)
         imports = list(self.vault.iter_records("imports", user_id))
         source_accounts = list(self.vault.iter_records("source_accounts", user_id))
@@ -25207,7 +25445,9 @@ class CortexStore:
                 (user_id, str(session_id or "").strip()),
             ).fetchone()
         if row is None:
-            raise ValueError("Unknown agent session; call start_agent_session first (ids look like asess_...).")
+            raise UnknownAgentSessionError(
+                "Unknown agent session; call start_agent_session first (ids look like asess_...)."
+            )
         return self._agent_session_from_row(row)
 
     def _next_checkpoint_index(self, user_id: str, session_id: str) -> int:
@@ -29906,7 +30146,7 @@ class CortexStore:
         # No meta recorded yet: init_db creates memory_vec at VECTOR_DIMENSIONS, so that is its size.
         return VECTOR_DIMENSIONS
 
-    def _record_vec_index_meta(self, conn, dimensions: int) -> None:
+    def _record_vec_index_meta(self, conn, dimensions: int, fingerprint: str) -> None:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS vec_index_meta (id INTEGER PRIMARY KEY CHECK (id = 1), "
             "dimensions INTEGER NOT NULL, model TEXT NOT NULL, updated_at TEXT NOT NULL)"
@@ -29915,7 +30155,7 @@ class CortexStore:
             "INSERT INTO vec_index_meta(id, dimensions, model, updated_at) VALUES (1, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET dimensions = excluded.dimensions, "
             "model = excluded.model, updated_at = excluded.updated_at",
-            (int(dimensions), configured_embedding_model(), now_iso()),
+            (int(dimensions), fingerprint, now_iso()),
         )
 
     def _ensure_vector_index(self) -> None:
@@ -29926,7 +30166,9 @@ class CortexStore:
         cache (the vault is the source of truth), so a dimension change drops + recreates it and
         re-embeds every memory in the background. No-op when sqlite-vec is unavailable."""
         desired = int(embedding_status()["dimensions"])
-        if self._vector_index_ensured == desired:
+        fingerprint = embedding_index_fingerprint(desired)
+        desired_identity = (desired, fingerprint)
+        if self._vector_index_ensured == desired_identity:
             return
         try:
             with connect(self.db_path) as conn:
@@ -29936,7 +30178,9 @@ class CortexStore:
                     "CREATE TABLE IF NOT EXISTS vec_index_meta (id INTEGER PRIMARY KEY CHECK (id = 1), "
                     "dimensions INTEGER NOT NULL, model TEXT NOT NULL, updated_at TEXT NOT NULL)"
                 )
-                meta_row = conn.execute("SELECT dimensions FROM vec_index_meta WHERE id = 1").fetchone()
+                meta_row = conn.execute(
+                    "SELECT dimensions, model FROM vec_index_meta WHERE id = 1"
+                ).fetchone()
                 table_exists = conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE name = 'memory_vec'"
                 ).fetchone() is not None
@@ -29945,21 +30189,20 @@ class CortexStore:
                 else:
                     # init_db creates memory_vec at VECTOR_DIMENSIONS; absent meta = still that size.
                     current = VECTOR_DIMENSIONS if table_exists else None
-                if table_exists and current == desired:
-                    if not (meta_row and meta_row[0]):
-                        self._record_vec_index_meta(conn, desired)
-                        conn.commit()
-                    self._vector_index_ensured = desired
+                stored_fingerprint = str(meta_row[1] or "") if meta_row else ""
+                if table_exists and current == desired and stored_fingerprint == fingerprint:
+                    self._vector_index_ensured = desired_identity
                     return
-                # Rebuild the vector table at the new dimension; drop the now-incompatible vectors.
+                # Rebuild when either dimensions OR the vector-space fingerprint changed. Equal
+                # dimensions are not compatible across providers/models/revisions.
                 conn.execute("DROP TABLE IF EXISTS memory_vec")
                 conn.execute(f"CREATE VIRTUAL TABLE memory_vec USING vec0(embedding float[{int(desired)}])")
                 conn.execute("DELETE FROM memory_vec_map")
-                self._record_vec_index_meta(conn, desired)
+                self._record_vec_index_meta(conn, desired, fingerprint)
                 conn.commit()
                 # Mark ensured BEFORE enqueuing: the enqueue path calls _vector_ready (pure read),
                 # which now matches the new dims, so nothing recurses back here.
-                self._vector_index_ensured = desired
+                self._vector_index_ensured = desired_identity
                 self._enqueue_reembed_all(conn)
                 conn.commit()
         except sqlite3.Error:
@@ -30194,7 +30437,11 @@ class CortexStore:
         terms = self._lexical_fallback_terms(query)
         if not terms:
             return []
-        match_query = " OR ".join(f"{term}*" for term in terms)
+        match_query = " OR ".join(
+            f"{variant}*"
+            for term in terms
+            for variant in LEXICAL_CONCEPT_VARIANTS.get(term, (term,))
+        )
         filters, params = self._memory_filters(
             user_id,
             user_settings,
@@ -30242,7 +30489,8 @@ class CortexStore:
                     + self._source_quality_boost(row, source_policies)
                     + self._recency_boost(row, now=now)
                     + self._importance_boost(row)
-                    + self._confidence_boost(row),
+                    + self._confidence_boost(row)
+                    + self._explicit_non_answer_penalty(row, terms),
                 }
             )
         return [item["row"] for item in sorted(ranked, key=lambda item: item["score"], reverse=True)]
@@ -30279,6 +30527,7 @@ class CortexStore:
         # never called and plan_entities stays empty, so _entity_overlap_boost returns 0.0 and every
         # fused score is bit-for-bit unchanged (retrieval_eval stays byte-identical).
         plan_entities = {e.lower() for e in build_query_plan(query).entities} if entity_boost_enabled() else set()
+        query_terms = self._lexical_fallback_terms(query, limit=12)
         for entry in ranked.values():
             entry["score"] += self._layer_boost(entry["row"], layer_boosts)
             entry["score"] += self._temporal_boost(entry["row"], temporal_prefixes)
@@ -30287,6 +30536,7 @@ class CortexStore:
             entry["score"] += self._importance_boost(entry["row"])
             entry["score"] += self._confidence_boost(entry["row"])
             entry["score"] += self._entity_overlap_boost(entry["row"], plan_entities)
+            entry["score"] += self._explicit_non_answer_penalty(entry["row"], query_terms)
         return [item["row"] for item in sorted(ranked.values(), key=lambda item: item["score"], reverse=True)[:limit]]
 
     def _rank_rows_with_layer_boosts(
@@ -31029,6 +31279,22 @@ class CortexStore:
                 return row.get(key, default)
             return default
 
+    def _explicit_non_answer_penalty(self, row: Any, query_terms: list[str]) -> float:
+        """Demote boilerplate that explicitly disclaims being an answer.
+
+        The check is intentionally narrow and applies only to ownership queries.
+        A legitimate record saying an owner is unassigned remains retrievable;
+        a template saying it must not answer the question loses to source
+        evidence that names the DRI.
+        """
+        if "owner" not in query_terms:
+            return 0.0
+        text = " ".join(
+            str(self._row_value(row, field) or "")
+            for field in ("content", "summary")
+        )
+        return -0.05 if _EXPLICIT_NON_ANSWER_RE.search(text) else 0.0
+
     def _lexical_fallback_terms(self, query: str, *, limit: int = 8) -> list[str]:
         terms: list[str] = []
         seen: set[str] = set()
@@ -31036,9 +31302,7 @@ class CortexStore:
             clean = token.strip("_")
             if not clean or clean in QUERY_LEXICAL_FALLBACK_STOPWORDS:
                 continue
-            normalized_token = clean
-            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
-                normalized_token = clean[:-1]
+            normalized_token = _normalize_lexical_term(clean)
             if len(normalized_token) < 3 or normalized_token in seen:
                 continue
             seen.add(normalized_token)
@@ -31062,9 +31326,7 @@ class CortexStore:
             clean = token.strip("_")
             if not clean:
                 continue
-            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
-                clean = clean[:-1]
-            row_terms.add(clean)
+            row_terms.add(_normalize_lexical_term(clean))
         return {term for term in terms if any(candidate.startswith(term) for candidate in row_terms)}
 
     def _relevance_terms(self, obj: Any, terms: list[str]) -> list[str]:
@@ -31087,9 +31349,7 @@ class CortexStore:
             clean = token.strip("_")
             if not clean:
                 continue
-            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
-                clean = clean[:-1]
-            row_terms.add(clean)
+            row_terms.add(_normalize_lexical_term(clean))
         return sorted(term for term in terms if any(candidate.startswith(term) for candidate in row_terms))
 
     def _annotate_search_relevance(
@@ -32952,10 +33212,13 @@ class CortexStore:
             clean = token.strip("_")
             if not clean or clean in QUERY_FTS_STOPWORDS:
                 continue
-            normalized_token = clean
-            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
-                normalized_token = clean[:-1]
+            normalized_token = _normalize_lexical_term(clean)
             if normalized_token not in seen:
                 seen.add(normalized_token)
-                normalized.append(normalized_token + "*")
-        return " ".join(normalized)
+                variants = LEXICAL_CONCEPT_VARIANTS.get(normalized_token)
+                normalized.append(
+                    "(" + " OR ".join(f"{variant}*" for variant in variants) + ")"
+                    if variants
+                    else normalized_token + "*"
+                )
+        return " AND ".join(normalized)

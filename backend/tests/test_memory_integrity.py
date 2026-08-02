@@ -4,10 +4,12 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.app.database import connect, init_db
 from backend.app.extractor import extract_context
-from backend.app.storage import CortexStore
+from backend.app import storage as storage_module
+from backend.app.storage import CortexStore, ExportSizeLimitError
 
 
 class MemoryIntegrityTests(unittest.TestCase):
@@ -66,6 +68,34 @@ class MemoryIntegrityTests(unittest.TestCase):
         self.assertEqual(digest["event_count"], 0)
         # With zero events the head is genesis folded zero times: exactly the genesis constant.
         self.assertEqual(digest["chain_head"], self.store.INTEGRITY_CHAIN_GENESIS)
+
+    def test_synchronous_export_refuses_corpus_above_preflight_limit(self) -> None:
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="large export evidence " * 200,
+            source="note",
+            source_url="note://large-export",
+            title=None,
+            extracted=extract_context("large export evidence"),
+        )
+        with patch.object(storage_module, "MAX_SYNCHRONOUS_EXPORT_BYTES", 100):
+            with self.assertRaises(ExportSizeLimitError):
+                self.store.export_json(self.user_id)
+
+    def test_export_preflight_is_conservative_for_non_bmp_unicode(self) -> None:
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="😀" * 10_000,
+            source="note",
+            source_url="note://unicode-export",
+            title="Unicode",
+            extracted=extract_context("😀" * 10_000),
+        )
+        with connect(self.db_path) as conn:
+            estimated = self.store._estimated_export_bytes(conn, self.user_id)
+        payload = self.store.export_json(self.user_id)
+        canonical_bytes = len(self.store._canonical_export_bytes(payload))
+        self.assertGreaterEqual(estimated, canonical_bytes)
 
     def test_new_event_advances_the_head(self) -> None:
         ids = self._seed(3, approve=1)

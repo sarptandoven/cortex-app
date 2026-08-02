@@ -229,14 +229,19 @@ No JWTs anywhere (OWASP: session state belongs server-side; revocation at 1M = o
 One additive branch: after the global-key check, before the scoped-token path, `cxs_` prefix dispatches to `AccountsService.authenticate_session()` → returns the account's `user_id` with full user scopes but **never admin**. Session auth joins `accounts.status` AND `users.status` so suspension is enforced on every request. **CSRF enforced centrally in this dependency (graft, judge 3):** cookie-authenticated state-changing requests require the custom `X-Cortex-Client` header (plus `__Host-cortex_session` cookie: Secure, HttpOnly, SameSite=Lax) — no new endpoint can ship without the check. `last_seen_at` written at most once per 5 min per session.
 
 ### Endpoints (new `/v1/auth` router included from main.py)
-- `POST /v1/auth/signup` `{email, password}` → account `pending_verification` + verification mail (rate-limited + blocklist BEFORE hashing).
+- `POST /v1/auth/signup` `{email, password, terms_accepted, age_confirmed}` → account
+  `pending_verification` + verification mail (rate-limited + blocklist BEFORE hashing).
+  Hosted signup is unavailable until the operator marks reviewed legal text approved.
 - `POST /v1/auth/verify-email` `{token}` → activate; **on activation, self-serve provisioning** calls the same internals as `StoreRegistry.provision_user` (sharding.py:819): `register_user` + lazy shard materialization + DEK creation — but does **not** auto-mint `cxa_`/`cxm_`.
 - `POST /v1/auth/login` `{email, password}` → `{cxs_, cxr_, account}`; uniform generic 401 on any failure (no enumeration/timing oracle).
 - `POST /v1/auth/refresh` (rotate; reuse ⇒ family revocation), `POST /v1/auth/logout` (revoke session), `GET /v1/auth/session` (whoami).
 - `POST /v1/auth/password/reset/request` + `/confirm` — single-use hashed tokens in `auth_flows`, 30-min TTL.
 - `GET /v1/auth/providers` — enabled `oidc_providers` rows for dynamic login buttons (the AI-vendor slot's UI half).
 - `GET /v1/auth/oauth/{provider}/start` → authorize URL; state+nonce+PKCE verifier persisted in `auth_flows` (dedicated table, NOT the connector-flow `remember_oauth_pending` machinery — callback is unauthenticated).
-- `GET /v1/auth/oauth/{provider}/callback` → code exchange + full id_token verification → identity match ⇒ login; no match ⇒ `link_required` challenge or fresh signup per section 2 rules.
+- `GET /v1/auth/oauth/{provider}/callback` → code exchange + full id_token verification
+  → identity match ⇒ login; verified-email collision ⇒ `link_required`; unknown identity
+  ⇒ signup only when terms/age consent was bound into the single-use OAuth state by the
+  signup page. OAuth started from the login page never silently creates an account.
 - `POST /v1/auth/oauth/{provider}/link` (session-authed) / `DELETE .../unlink` (refuse removing last method without a password).
 - `POST /v1/auth/app/start` → `{flow_id, browser_url, poll_secret}`; macOS app opens `browser_url` in `ASWebAuthenticationSession`; app polls `POST /v1/auth/app/poll {flow_id, poll_secret}` until it gets the token pair (poll_secret salted-hashed in `auth_flows`; **no token ever rides a redirect URL**). Refresh token → Keychain. Email+password login from the app is a plain POST, no browser.
 - `GET/POST/DELETE /v1/auth/tokens` — self-serve mint/list/revoke of the EXISTING `cxa_`/`cxm_` tokens via `create_api_token`/`create_mcp_token` (sharding.py:746/757), backfilling `scoped_token_index.account_id`. Sessions become the factory for PATs; the operator `/v1/admin/users` surface (main.py:1852) remains for support.
