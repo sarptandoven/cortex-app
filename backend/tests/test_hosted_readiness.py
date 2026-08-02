@@ -21,6 +21,8 @@ class HostedReadinessTests(unittest.TestCase):
         values = {
             "shard_mode": "bucket",
             "require_scoped_api_tokens": True,
+            "require_encrypted_credentials": True,
+            "legal_terms_approved": True,
             "public_base_url": "https://api.cortex-hq.com",
             "sync_signing_key": "sync-signing-key",
             "hosted_database_url": "postgresql://cortex:secret@db.cortex.internal/cortex",
@@ -37,6 +39,14 @@ class HostedReadinessTests(unittest.TestCase):
 
     def ready_runtime(self) -> dict:
         return {
+            "credential_encryption": {
+                "enforcement_enabled": True,
+                "keyring_available": True,
+                "remaining_plaintext": 0,
+                "scan_complete": True,
+                "unreadable_files": 0,
+                "invalid_records": 0,
+            },
             "control_plane": {
                 "active_api_tokens": 1,
                 "active_mcp_tokens": 1,
@@ -73,6 +83,7 @@ class HostedReadinessTests(unittest.TestCase):
         self.assertEqual(contract["global_token_user_switching"], "blocked")
         blocked = {check["name"] for check in contract["checks"] if check["status"] == "blocked"}
         self.assertIn("scoped_api_tokens_required", blocked)
+        self.assertIn("credential_encryption", blocked)
         self.assertIn("public_base_url", blocked)
         self.assertIn("sync_signing_key", blocked)
         self.assertIn("embedding_provider", blocked)
@@ -95,6 +106,49 @@ class HostedReadinessTests(unittest.TestCase):
         self.assertEqual(contract["status"], "blocked")
         blocked = {check["name"] for check in contract["checks"] if check["status"] == "blocked"}
         self.assertEqual(blocked, {"control_plane_scoped_tokens"})
+
+    def test_hosted_mode_blocks_when_credential_encryption_is_not_enforced(self) -> None:
+        contract = hosted_readiness_contract(
+            self.ready_hosted_settings(require_encrypted_credentials=False),
+            runtime=self.ready_runtime(),
+        )
+        check = next(
+            item for item in contract["checks"] if item["name"] == "credential_encryption"
+        )
+        self.assertEqual(check["status"], "blocked")
+        self.assertIn("CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS=1", check["detail"])
+
+    def test_hosted_mode_blocks_when_keyring_is_unavailable(self) -> None:
+        runtime = self.ready_runtime()
+        runtime["credential_encryption"]["keyring_available"] = False
+        contract = hosted_readiness_contract(self.ready_hosted_settings(), runtime=runtime)
+        check = next(
+            item for item in contract["checks"] if item["name"] == "credential_encryption"
+        )
+        self.assertEqual(check["status"], "blocked")
+        self.assertIn("KEK-backed runtime keyring", check["detail"])
+
+    def test_hosted_mode_blocks_until_plaintext_credential_scan_is_clean(self) -> None:
+        runtime = self.ready_runtime()
+        runtime["credential_encryption"]["remaining_plaintext"] = 3
+        contract = hosted_readiness_contract(self.ready_hosted_settings(), runtime=runtime)
+        check = next(
+            item for item in contract["checks"] if item["name"] == "credential_encryption"
+        )
+        self.assertEqual(check["status"], "blocked")
+        self.assertIn("3 remaining plaintext credential", check["detail"])
+
+    def test_hosted_mode_blocks_incomplete_or_unreadable_credential_scan(self) -> None:
+        runtime = self.ready_runtime()
+        runtime["credential_encryption"]["scan_complete"] = False
+        runtime["credential_encryption"]["unreadable_files"] = 1
+        contract = hosted_readiness_contract(self.ready_hosted_settings(), runtime=runtime)
+        check = next(
+            item for item in contract["checks"] if item["name"] == "credential_encryption"
+        )
+        self.assertEqual(check["status"], "blocked")
+        self.assertIn("non-truncated", check["detail"])
+        self.assertIn("unreadable credential file", check["detail"])
 
     def test_hosted_mode_blocks_worker_queue_attention_state(self) -> None:
         runtime = self.ready_runtime()
@@ -213,6 +267,8 @@ class ShardedSqliteTierTests(unittest.TestCase):
             public_base_url="https://api.cortex-hq.com",
             shard_mode="bucket",
             require_scoped_api_tokens=True,
+            require_encrypted_credentials=True,
+            legal_terms_approved=True,
             sync_signing_key="sync-signing-key",
             worker_mode="external",
             observability_enabled=True,
@@ -222,6 +278,14 @@ class ShardedSqliteTierTests(unittest.TestCase):
 
     def sqlite_runtime(self) -> dict:
         return {
+            "credential_encryption": {
+                "enforcement_enabled": True,
+                "keyring_available": True,
+                "remaining_plaintext": 0,
+                "scan_complete": True,
+                "unreadable_files": 0,
+                "invalid_records": 0,
+            },
             "control_plane": {
                 "active_api_tokens": 1,
                 "active_mcp_tokens": 1,

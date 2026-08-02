@@ -5,8 +5,9 @@ import json
 import re
 from typing import Any, Callable
 from urllib.parse import urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
+from ..http_security import open_same_origin
 from ._redaction import connector_error_payload
 
 
@@ -45,7 +46,7 @@ def _github_form_post(url: str, form: dict[str, str]) -> dict[str, Any]:
         headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
         method="POST",
     )
-    with urlopen(request, timeout=30) as response:  # noqa: S310 — fixed GitHub OAuth endpoints only
+    with open_same_origin(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -418,7 +419,7 @@ def fetch_github_records(
 
 def _request_json(url: str, headers: dict[str, str]) -> Any:
     request = Request(url, headers=headers, method="GET")
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - user-provided token, trusted GitHub API URL by default.
+    with open_same_origin(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

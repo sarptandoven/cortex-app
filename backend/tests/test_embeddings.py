@@ -54,7 +54,7 @@ class EmbeddingProviderTests(unittest.TestCase):
                 "OPENAI_API_KEY": "sk-test",
             },
         ):
-            with patch("backend.app.embeddings.urllib.request.urlopen", side_effect=fake_urlopen):
+            with patch("backend.app.embeddings.open_same_origin", side_effect=fake_urlopen):
                 result = embed_text_result("Remember the search backend decision.")
 
         self.assertEqual(result.provider, "openai")
@@ -82,7 +82,7 @@ class EmbeddingProviderTests(unittest.TestCase):
                 "OPENAI_API_KEY": "sk-test",
             },
         ):
-            with patch("backend.app.embeddings.urllib.request.urlopen", side_effect=TimeoutError("slow")):
+            with patch("backend.app.embeddings.open_same_origin", side_effect=TimeoutError("slow")):
                 result = embed_text_result("Fallback should keep local search usable.")
 
         self.assertEqual(result.provider, "hash")
@@ -100,7 +100,7 @@ class EmbeddingProviderTests(unittest.TestCase):
                 "OPENAI_API_KEY": "sk-test",
             },
         ):
-            with patch("backend.app.embeddings.urllib.request.urlopen", side_effect=TimeoutError("slow")):
+            with patch("backend.app.embeddings.open_same_origin", side_effect=TimeoutError("slow")):
                 with self.assertRaises(TimeoutError):
                     embed_text_result("Strict mode should expose provider failures.")
 

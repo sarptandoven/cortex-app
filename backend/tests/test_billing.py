@@ -235,6 +235,7 @@ class BillingHttpTests(unittest.TestCase):
             shard_mode="user",
             default_user_id="hosted-default",
             require_scoped_api_tokens=True,
+            legal_terms_approved=True,
             auth_enabled=True,
             accounts_db_path=None,
             auth_email_mode="log",
@@ -275,7 +276,15 @@ class BillingHttpTests(unittest.TestCase):
         raise AssertionError(f"no {kind} delivery found")
 
     def _signup_login(self, email: str = "buyer@example.com") -> dict[str, Any]:
-        r = self.client.post("/v1/auth/signup", json={"email": email, "password": PASSWORD})
+        r = self.client.post(
+            "/v1/auth/signup",
+            json={
+                "email": email,
+                "password": PASSWORD,
+                "terms_accepted": True,
+                "age_confirmed": True,
+            },
+        )
         self.assertEqual(r.status_code, 200, r.text)
         v = self.client.post("/v1/auth/verify-email", json={"token": self._last_flow_token("email_verify")})
         self.assertEqual(v.status_code, 200, v.text)
@@ -370,6 +379,7 @@ class BillingDisabledTests(unittest.TestCase):
             shard_mode="user",
             default_user_id="hosted-default",
             require_scoped_api_tokens=True,
+            legal_terms_approved=True,
             auth_enabled=True,
             accounts_db_path=None,
             auth_email_mode="log",
@@ -412,7 +422,15 @@ class BillingDisabledTests(unittest.TestCase):
 
     def test_account_plan_reports_billing_disabled(self) -> None:
         email = "nb@example.com"
-        r = self.client.post("/v1/auth/signup", json={"email": email, "password": PASSWORD})
+        r = self.client.post(
+            "/v1/auth/signup",
+            json={
+                "email": email,
+                "password": PASSWORD,
+                "terms_accepted": True,
+                "age_confirmed": True,
+            },
+        )
         self.assertEqual(r.status_code, 200, r.text)
         token = None
         for item in reversed(self.runtime.outbox):

@@ -27,27 +27,42 @@ hundreds of beta users fit comfortably here and the upgrade is a snapshot-restor
 
    That uploads the current tree and runs `bootstrap.sh` on the box: OS hardening +
    firewall, Caddy with automatic HTTPS, Python venv, secret generation (admin token,
-   KEK, signing key — printed ONCE at the end; store them in a password manager),
-   systemd services for the API + background worker, nightly WAL-safe backups, done.
+   KEK, signing key — stored in root-readable files and deliberately not printed),
+   systemd services for the API + background worker, nightly WAL-safe encrypted backups,
+   done.
 
 4. **Verify:** `curl https://api.signindoppl.com/health` → `{"status":"ok",...}` and open
    `https://api.signindoppl.com/ready`.
 
-5. **Escrow the KEK** (printed by bootstrap): copy `/etc/cortex/kek` into your password
-   manager AND one offline place. If the box dies and the KEK is lost, every user's
-   encrypted credentials are unrecoverable — that is the point of the design.
+5. **Escrow both recovery secrets** from an interactive, non-logged root session:
+   - `/etc/cortex/kek` decrypts stored connector credentials.
+   - `/etc/cortex/backup-age.key` decrypts backup archives.
+
+   Keep both in a password manager and offline recovery location, separately from the
+   backup bucket. Do not paste them into deployment logs or shell history. Losing either
+   can make a full restore impossible.
 
 ## What this beta configuration deliberately does
 
-- `CORTEX_AUTH_AUTOVERIFY=1`: accounts activate at signup with **no email server**.
-  Flip it off (and set up Postmark + `CORTEX_AUTH_EMAIL_MODE=smtp`) before public launch —
-  unverified emails mean no password-recovery channel.
+- `CORTEX_AUTH_AUTOVERIFY=0`: accounts stay pending until email verification. Configure
+  Postmark/SES (or another SMTP provider) before accepting public signups.
+- `CORTEX_LEGAL_TERMS_APPROVED=0`: public account creation and hosted readiness stay
+  blocked. Change this only after approved Terms and Privacy text is deployed; both
+  password and OAuth signup require explicit terms and age consent.
 - GitHub login works the moment you create a (2-minute, no-review) GitHub OAuth app and
   set the two env vars in `/etc/cortex/cortex.env`; Google login needs the consent-screen
   publishing review (1–2 weeks) so leave it for later.
 - Free tier only; no billing.
-- Backups are nightly, WAL-safe, kept 7 days **on the box** plus whatever Hetzner's
-  VM backup snapshots. Add true offsite (rclone target in `backup.sh`) in week one.
+- Backups are nightly, WAL-safe, age-encrypted, and kept 7 days **on the box** plus
+  Hetzner VM snapshots. Set `BACKUP_RCLONE_REMOTE` for an offsite encrypted copy.
+
+To inspect a recovery archive on a clean machine:
+
+```bash
+mkdir restore
+age --decrypt -i backup-age.key cortex-YYYYMMDD-HHMMSS.tar.gz.age \
+  | tar -xz -C restore
+```
 
 ## Updating the running backend
 
@@ -55,8 +70,30 @@ hundreds of beta users fit comfortably here and the upgrade is a snapshot-restor
 deploy/push.sh root@<VM-IP> --update
 ```
 
-(uploads the tree, reinstalls requirements, restarts worker, reloads API; the previous
-release dir is kept for instant rollback: `ln -sfn /srv/cortex/releases/<prev> /srv/cortex/current && systemctl restart cortex-api cortex-worker`)
+The updater refreshes the systemd units and hardened backup script, installs `age`
+when needed, takes a mandatory encrypted pre-deploy snapshot, reinstalls locked
+requirements, and then restarts the worker and API. Runtime service definitions are
+switched transactionally and restored automatically if the smoke check fails. The
+previous release directory is kept for a dependency-and-service-aware rollback:
+
+```bash
+bash /srv/cortex/current/deploy/update.sh /srv/cortex/releases/<prev>
+```
+
+Do not replace only the `current` symlink unless you have separately verified that the
+target release is compatible with the currently installed systemd units and Python
+environment. Release trees remain owned by `root`; the `cortex` service account writes
+only under `/var/lib/cortex`.
+
+On the first update from an older deployment, the updater may create
+`/etc/cortex/backup-age.key`. Escrow that identity separately from `/etc/cortex/kek`
+before relying on the new backups. Existing environment files are deliberately not
+rewritten with authentication or credential-encryption policy: reconcile
+`CORTEX_AUTH_AUTOVERIFY`, `CORTEX_LEGAL_TERMS_APPROVED`, and
+`CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS` using
+[`docs/SECURITY_REVIEW.md`](../docs/SECURITY_REVIEW.md) before public traffic. Enable
+credential-encryption enforcement only after the documented credential backfill is
+complete.
 
 ## Day-2 knobs (in `/etc/cortex/cortex.env`)
 

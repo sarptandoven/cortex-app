@@ -150,6 +150,69 @@ def validate_manifest(site_dir: Path) -> list[str]:
     return errors
 
 
+def validate_release_surfaces(site_dir: Path) -> list[str]:
+    """Keep static fallbacks and legacy distribution metadata on the canonical feed."""
+    errors: list[str] = []
+    manifest_path = site_dir / "downloads" / "latest.json"
+    app_js_path = site_dir / "app.js"
+    distribution_path = site_dir / "downloads" / "distribution.json"
+    if not manifest_path.exists():
+        return errors
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return errors  # validate_manifest reports the parse error.
+
+    canonical = {
+        artifact.get("kind"): artifact
+        for artifact in manifest.get("artifacts", [])
+        if artifact.get("kind") in {"dmg", "zip"}
+    }
+    if app_js_path.exists():
+        app_js = app_js_path.read_text(encoding="utf-8")
+        required_js_tokens = [
+            f'version: "{manifest.get("version")}"',
+            f'build: "{manifest.get("build")}"',
+            f'channel: "{manifest.get("channel")}"',
+            *[
+                str(artifact.get(field) or "")
+                for artifact in canonical.values()
+                for field in ("filename", "url")
+            ],
+        ]
+        for token in required_js_tokens:
+            if token and token not in app_js:
+                errors.append(f"app.js: release fallback is not aligned with latest.json ({token!r})")
+
+    if distribution_path.exists():
+        try:
+            distribution = json.loads(distribution_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            errors.append(f"downloads/distribution.json is invalid JSON: {exc}")
+        else:
+            for field in ("version", "build", "channel"):
+                if distribution.get(field) != manifest.get(field):
+                    errors.append(
+                        f"downloads/distribution.json: {field} does not match latest.json"
+                    )
+            distribution_artifacts = {
+                artifact.get("kind"): artifact
+                for artifact in distribution.get("artifacts", [])
+                if artifact.get("kind") in {"dmg", "zip"}
+            }
+            for kind, artifact in canonical.items():
+                candidate = distribution_artifacts.get(kind)
+                if candidate is None:
+                    errors.append(f"downloads/distribution.json: missing {kind} artifact")
+                    continue
+                for field in ("filename", "url", "sha256", "size_bytes"):
+                    if candidate.get(field) != artifact.get(field):
+                        errors.append(
+                            f"downloads/distribution.json: {kind} {field} does not match latest.json"
+                        )
+    return errors
+
+
 def self_test() -> list[str]:
     """Exercise both manifest branches in a throwaway site dir.
 
@@ -245,11 +308,12 @@ def main() -> None:
     else:
         errors.extend(validate_html(site_dir))
         errors.extend(validate_manifest(site_dir))
+        errors.extend(validate_release_surfaces(site_dir))
 
     if errors:
         print(json.dumps({"status": "error", "site_dir": str(site_dir), "errors": errors}, indent=2))
         raise SystemExit(1)
-    print(json.dumps({"status": "ok", "site_dir": str(site_dir), "checks": ["html-links", "release-manifest", "artifact-hashes"]}, indent=2))
+    print(json.dumps({"status": "ok", "site_dir": str(site_dir), "checks": ["html-links", "release-manifest", "release-surface-parity", "artifact-hashes"]}, indent=2))
 
 
 if __name__ == "__main__":

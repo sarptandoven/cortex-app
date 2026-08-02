@@ -26,8 +26,8 @@ test = ["pytest>=7.0"]
 
 [project.urls]
 Homepage = "https://trydoppl.com"
-Repository = "https://github.com/doppl-tech/cortex-app"
-Documentation = "https://github.com/doppl-tech/cortex-app/blob/main/docs/EXTERNAL_INTEGRATIONS.md"
+Repository = "https://github.com/trace-cortex/cortex-app"
+Documentation = "https://github.com/trace-cortex/cortex-app/blob/main/docs/EXTERNAL_INTEGRATIONS.md"
 
 [tool.setuptools.packages.find]
 where = ["."]

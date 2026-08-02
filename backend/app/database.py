@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .database_maintenance import shared_database_access
 from .embeddings import VECTOR_DIMENSIONS
 from .sqlite_runtime import sqlite3
 
@@ -505,6 +506,211 @@ CREATE INDEX IF NOT EXISTS idx_memory_topics_topic ON memory_topics(user_id, top
 CREATE INDEX IF NOT EXISTS idx_memory_events_object ON memory_events(user_id, object_type, object_id);
 CREATE INDEX IF NOT EXISTS idx_shared_principals_status ON shared_memory_principals(user_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shared_writes_principal ON shared_memory_writes(user_id, principal_id, created_at, id);
+
+-- Pairwise digital-twin evaluation artifacts are intentionally separate from
+-- memory_events. Runs are immutable replay bundles; child rows make their
+-- candidates, judgments, resolutions, and rankings independently auditable.
+CREATE TABLE IF NOT EXISTS twin_eval_runs (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  artifact_digest TEXT NOT NULL,
+  seed_json TEXT NOT NULL,
+  profile_fingerprint TEXT NOT NULL,
+  spec_json TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  report_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(user_id, run_id),
+  UNIQUE(user_id, artifact_digest)
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_profile_artifacts (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  artifact_id TEXT NOT NULL,
+  artifact_schema_version TEXT NOT NULL,
+  profile_fingerprint TEXT NOT NULL,
+  scope_digest TEXT NOT NULL,
+  artifact_digest TEXT NOT NULL,
+  artifact_ciphertext BLOB NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(user_id, run_id),
+  UNIQUE(user_id, artifact_id),
+  FOREIGN KEY(user_id, run_id) REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_report_artifacts (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  artifact_id TEXT NOT NULL,
+  artifact_schema_version TEXT NOT NULL,
+  artifact_digest TEXT NOT NULL,
+  report_digest TEXT NOT NULL,
+  artifact_ciphertext BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(user_id, run_id),
+  UNIQUE(user_id, artifact_id),
+  FOREIGN KEY(user_id, run_id) REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_candidates (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  candidate_id TEXT NOT NULL,
+  prompt_id TEXT NOT NULL,
+  system_id TEXT NOT NULL,
+  candidate_json TEXT NOT NULL,
+  candidate_digest TEXT NOT NULL,
+  PRIMARY KEY(user_id, run_id, candidate_id),
+  UNIQUE(user_id, run_id, prompt_id, system_id),
+  FOREIGN KEY(user_id, run_id) REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_comparisons (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  comparison_id TEXT NOT NULL,
+  logical_comparison_id TEXT NOT NULL,
+  left_candidate_id TEXT NOT NULL,
+  right_candidate_id TEXT NOT NULL,
+  comparison_json TEXT NOT NULL,
+  comparison_digest TEXT NOT NULL,
+  PRIMARY KEY(user_id, run_id, comparison_id),
+  FOREIGN KEY(user_id, run_id) REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT,
+  FOREIGN KEY(user_id, run_id, left_candidate_id)
+    REFERENCES twin_eval_candidates(user_id, run_id, candidate_id) ON DELETE RESTRICT,
+  FOREIGN KEY(user_id, run_id, right_candidate_id)
+    REFERENCES twin_eval_candidates(user_id, run_id, candidate_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_resolved_comparisons (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  logical_comparison_id TEXT NOT NULL,
+  resolved_json TEXT NOT NULL,
+  resolved_digest TEXT NOT NULL,
+  PRIMARY KEY(user_id, run_id, logical_comparison_id),
+  FOREIGN KEY(user_id, run_id) REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_rankings (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  system_id TEXT NOT NULL,
+  rating_json TEXT NOT NULL,
+  rating_digest TEXT NOT NULL,
+  PRIMARY KEY(user_id, run_id, system_id),
+  FOREIGN KEY(user_id, run_id) REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_ranking_manifests (
+  user_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  ranking_json TEXT NOT NULL,
+  ranking_digest TEXT NOT NULL,
+  PRIMARY KEY(user_id, run_id),
+  FOREIGN KEY(user_id, run_id) REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT
+);
+
+-- Pairwise execution requests contain private profile and prompt material, so
+-- only their encrypted CXE1 envelope is stored. This table is also the atomic
+-- receipt-consumption and idempotency boundary; no paid worker is enabled yet.
+CREATE TABLE IF NOT EXISTS twin_eval_execution_requests (
+  user_id TEXT NOT NULL,
+  evaluation_id TEXT NOT NULL,
+  receipt_id TEXT NOT NULL,
+  binding_key_id TEXT NOT NULL,
+  idempotency_digest TEXT NOT NULL,
+  request_binding TEXT NOT NULL,
+  config_digest TEXT NOT NULL,
+  artifact_digest TEXT NOT NULL,
+  request_ciphertext BLOB,
+  consent_version TEXT NOT NULL,
+  receipt_consumed_at TEXT NOT NULL,
+  request_expires_at TEXT NOT NULL,
+  content_deleted_at TEXT,
+  status TEXT NOT NULL DEFAULT 'prepared'
+    CHECK(status IN (
+      'prepared', 'queued', 'running', 'cancel_requested',
+      'cancelled', 'succeeded', 'failed'
+    )),
+  attempt_count INTEGER NOT NULL DEFAULT 0
+    CHECK(attempt_count BETWEEN 0 AND 1),
+  provider_calls_reserved INTEGER NOT NULL DEFAULT 0
+    CHECK(provider_calls_reserved >= 0),
+  provider_calls_dispatched INTEGER NOT NULL DEFAULT 0
+    CHECK(
+      provider_calls_dispatched >= 0
+      AND provider_calls_dispatched <= provider_calls_reserved
+    ),
+  remote_outcome_unknown INTEGER NOT NULL DEFAULT 0
+    CHECK(remote_outcome_unknown IN (0, 1)),
+  lease_generation INTEGER NOT NULL DEFAULT 0
+    CHECK(lease_generation >= 0),
+  lease_owner TEXT,
+  lease_token_digest TEXT,
+  lease_expires_at TEXT,
+  execution_deadline_at TEXT,
+  queued_at TEXT,
+  started_at TEXT,
+  last_heartbeat_at TEXT,
+  completed_at TEXT,
+  cancel_requested_at TEXT,
+  result_run_id TEXT,
+  result_artifact_digest TEXT,
+  completion_binding TEXT,
+  error_code TEXT CHECK(
+    error_code IS NULL OR (
+      length(error_code) BETWEEN 1 AND 80
+      AND error_code NOT GLOB '*[^a-z0-9_]*'
+    )
+  ),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(user_id, evaluation_id),
+  UNIQUE(user_id, receipt_id),
+  UNIQUE(user_id, idempotency_digest),
+  FOREIGN KEY(user_id, result_run_id)
+    REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_twin_eval_execution_status
+  ON twin_eval_execution_requests(user_id, status, created_at);
+
+-- Dispatch authorization is deliberately separate from request submission.
+-- The singleton runtime row is an operational kill switch and epoch. Every
+-- user grant is bound to that exact epoch so any config or enablement change
+-- invalidates previously captured consent. Provider execution remains absent.
+CREATE TABLE IF NOT EXISTS twin_eval_dispatch_runtime (
+  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+  config_digest TEXT NOT NULL,
+  config_epoch INTEGER NOT NULL CHECK(config_epoch >= 1),
+  dispatch_enabled INTEGER NOT NULL DEFAULT 0
+    CHECK(dispatch_enabled IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS twin_eval_dispatch_consents (
+  user_id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL,
+  consent_version TEXT NOT NULL,
+  config_digest TEXT NOT NULL,
+  config_epoch INTEGER NOT NULL CHECK(config_epoch >= 1),
+  revision INTEGER NOT NULL CHECK(revision >= 1),
+  granted_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK(expires_at > granted_at),
+  CHECK(revoked_at IS NULL OR revoked_at >= granted_at)
+);
+CREATE INDEX IF NOT EXISTS idx_twin_eval_dispatch_consent_expiry
+  ON twin_eval_dispatch_consents(expires_at, revoked_at);
+
+CREATE INDEX IF NOT EXISTS idx_twin_eval_comparisons_logical
+  ON twin_eval_comparisons(user_id, run_id, logical_comparison_id);
 """
 
 VECTOR_SCHEMA = f"""
@@ -558,7 +764,96 @@ MIGRATIONS = [
     "ALTER TABLE memories ADD COLUMN trust_score REAL NOT NULL DEFAULT 0.5",
     "ALTER TABLE memory_events ADD COLUMN fingerprint_sha256 TEXT",
     "ALTER TABLE import_sessions ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count BETWEEN 0 AND 1)",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN provider_calls_reserved INTEGER NOT NULL DEFAULT 0 CHECK(provider_calls_reserved >= 0)",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN provider_calls_dispatched INTEGER NOT NULL DEFAULT 0 CHECK(provider_calls_dispatched >= 0 AND provider_calls_dispatched <= provider_calls_reserved)",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN remote_outcome_unknown INTEGER NOT NULL DEFAULT 0 CHECK(remote_outcome_unknown IN (0, 1))",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN lease_generation INTEGER NOT NULL DEFAULT 0 CHECK(lease_generation >= 0)",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN lease_owner TEXT",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN lease_token_digest TEXT",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN lease_expires_at TEXT",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN execution_deadline_at TEXT",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN queued_at TEXT",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN started_at TEXT",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN last_heartbeat_at TEXT",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN completed_at TEXT",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN result_artifact_digest TEXT",
+    "ALTER TABLE twin_eval_execution_requests ADD COLUMN completion_binding TEXT",
 ]
+
+TWIN_EVAL_EXECUTION_CHECKPOINT_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS twin_eval_execution_call_checkpoints (
+  user_id TEXT NOT NULL,
+  evaluation_id TEXT NOT NULL,
+  call_id TEXT NOT NULL,
+  call_kind TEXT NOT NULL CHECK(call_kind IN ('candidate', 'judge')),
+  call_ordinal INTEGER NOT NULL CHECK(call_ordinal >= 0),
+  binding_key_id TEXT NOT NULL,
+  coordinate_binding TEXT NOT NULL,
+  payload_binding TEXT NOT NULL,
+  adapter_binding TEXT NOT NULL,
+  checkpoint_binding TEXT NOT NULL,
+  checkpoint_ciphertext BLOB NOT NULL,
+  request_artifact_digest TEXT NOT NULL,
+  config_digest TEXT NOT NULL,
+  consent_config_epoch INTEGER NOT NULL
+    CHECK(consent_config_epoch >= 1),
+  consent_revision INTEGER NOT NULL CHECK(consent_revision >= 1),
+  lease_generation INTEGER NOT NULL CHECK(lease_generation >= 1),
+  lease_token_digest TEXT NOT NULL,
+  permit_digest TEXT NOT NULL,
+  idempotency_supported INTEGER NOT NULL
+    CHECK(idempotency_supported IN (0, 1)),
+  state TEXT NOT NULL
+    CHECK(state IN ('reserved', 'dispatching', 'outcome_unknown')),
+  paid_attempt_count INTEGER NOT NULL
+    CHECK(paid_attempt_count BETWEEN 0 AND 1),
+  reserved_at TEXT NOT NULL,
+  call_deadline_at TEXT NOT NULL,
+  consumed_at TEXT,
+  consume_binding TEXT,
+  outcome_unknown_at TEXT,
+  PRIMARY KEY(user_id, evaluation_id, call_id),
+  UNIQUE(user_id, evaluation_id, call_ordinal),
+  UNIQUE(user_id, evaluation_id, coordinate_binding),
+  FOREIGN KEY(user_id, evaluation_id)
+    REFERENCES twin_eval_execution_requests(user_id, evaluation_id)
+    ON DELETE CASCADE,
+  CHECK(
+    (
+      state = 'reserved'
+      AND paid_attempt_count = 0
+      AND consumed_at IS NULL
+      AND consume_binding IS NULL
+      AND outcome_unknown_at IS NULL
+    ) OR (
+      state = 'dispatching'
+      AND paid_attempt_count = 1
+      AND consumed_at IS NOT NULL
+      AND consumed_at >= reserved_at
+      AND consumed_at < call_deadline_at
+      AND consume_binding IS NOT NULL
+      AND outcome_unknown_at IS NULL
+    ) OR (
+      state = 'outcome_unknown'
+      AND paid_attempt_count = 1
+      AND consumed_at IS NOT NULL
+      AND consumed_at >= reserved_at
+      AND consumed_at < call_deadline_at
+      AND consume_binding IS NOT NULL
+      AND outcome_unknown_at IS NOT NULL
+      AND outcome_unknown_at >= consumed_at
+    )
+  )
+);
+"""
+
+TWIN_EVAL_EXECUTION_CHECKPOINT_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_twin_eval_execution_call_state
+ON twin_eval_execution_call_checkpoints(
+  user_id, evaluation_id, state, call_ordinal
+);
+"""
 
 POST_MIGRATION_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_memories_layer ON memories(user_id, layer);
@@ -581,6 +876,188 @@ CREATE INDEX IF NOT EXISTS idx_import_sessions_user_created ON import_sessions(u
 CREATE INDEX IF NOT EXISTS idx_import_sessions_user_status ON import_sessions(user_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_import_records_import ON import_records(user_id, import_id, ordinal);
 CREATE INDEX IF NOT EXISTS idx_import_records_capture ON import_records(user_id, capture_id);
+CREATE INDEX IF NOT EXISTS idx_twin_eval_execution_claim
+ON twin_eval_execution_requests(user_id, status, request_expires_at, created_at);
+CREATE TRIGGER IF NOT EXISTS enforce_twin_eval_dispatch_runtime_insert
+BEFORE INSERT ON twin_eval_dispatch_runtime
+WHEN NEW.config_epoch != 1
+  OR NEW.dispatch_enabled != 0
+  OR EXISTS (SELECT 1 FROM twin_eval_dispatch_runtime)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid twin dispatch runtime initialization');
+END;
+CREATE TRIGGER IF NOT EXISTS enforce_twin_eval_dispatch_runtime_delete
+BEFORE DELETE ON twin_eval_dispatch_runtime
+BEGIN
+  SELECT RAISE(ABORT, 'twin dispatch runtime cannot be deleted');
+END;
+CREATE TRIGGER IF NOT EXISTS enforce_twin_eval_dispatch_runtime_epoch
+BEFORE UPDATE ON twin_eval_dispatch_runtime
+WHEN (
+  (
+    NEW.config_digest != OLD.config_digest
+    OR NEW.dispatch_enabled != OLD.dispatch_enabled
+  )
+  AND NEW.config_epoch != OLD.config_epoch + 1
+) OR (
+  NEW.config_digest = OLD.config_digest
+  AND NEW.dispatch_enabled = OLD.dispatch_enabled
+  AND NEW.config_epoch != OLD.config_epoch
+)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid twin dispatch runtime epoch');
+END;
+CREATE TRIGGER IF NOT EXISTS enforce_twin_eval_dispatch_consent_insert
+BEFORE INSERT ON twin_eval_dispatch_consents
+WHEN NEW.revision != 1
+  OR NEW.revoked_at IS NOT NULL
+  OR EXISTS (
+    SELECT 1 FROM twin_eval_dispatch_consents
+    WHERE user_id = NEW.user_id
+  )
+  OR NOT EXISTS (
+    SELECT 1 FROM twin_eval_dispatch_runtime
+    WHERE singleton = 1
+      AND dispatch_enabled = 1
+      AND config_digest = NEW.config_digest
+      AND config_epoch = NEW.config_epoch
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'invalid twin dispatch consent config');
+END;
+CREATE TRIGGER IF NOT EXISTS enforce_twin_eval_dispatch_consent_update
+BEFORE UPDATE ON twin_eval_dispatch_consents
+WHEN NEW.revision != OLD.revision + 1
+  OR NEW.user_id IS NOT OLD.user_id
+  OR NEW.created_at IS NOT OLD.created_at
+  OR (
+    NEW.revoked_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM twin_eval_dispatch_runtime
+      WHERE singleton = 1
+        AND dispatch_enabled = 1
+        AND config_digest = NEW.config_digest
+        AND config_epoch = NEW.config_epoch
+    )
+  )
+  OR (
+    NEW.revoked_at IS NOT NULL
+    AND (
+      OLD.revoked_at IS NOT NULL
+      OR NEW.scope IS NOT OLD.scope
+      OR NEW.consent_version IS NOT OLD.consent_version
+      OR NEW.config_digest IS NOT OLD.config_digest
+      OR NEW.config_epoch IS NOT OLD.config_epoch
+      OR NEW.granted_at IS NOT OLD.granted_at
+      OR NEW.expires_at IS NOT OLD.expires_at
+    )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'invalid twin dispatch consent revision');
+END;
+CREATE TRIGGER IF NOT EXISTS enforce_twin_eval_execution_result_insert
+BEFORE INSERT ON twin_eval_execution_requests
+WHEN (
+  NEW.status = 'succeeded'
+  AND (
+    NEW.result_run_id IS NULL
+    OR NEW.result_artifact_digest IS NULL
+    OR NEW.completion_binding IS NULL
+  )
+) OR (
+  NEW.status != 'succeeded'
+  AND (
+    NEW.result_run_id IS NOT NULL
+    OR NEW.result_artifact_digest IS NOT NULL
+    OR NEW.completion_binding IS NOT NULL
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid twin evaluation result state');
+END;
+CREATE TRIGGER IF NOT EXISTS enforce_twin_eval_execution_no_open_calls
+BEFORE UPDATE OF status ON twin_eval_execution_requests
+WHEN NEW.status = 'succeeded'
+  AND EXISTS (
+    SELECT 1 FROM twin_eval_execution_call_checkpoints
+    WHERE user_id = NEW.user_id
+      AND evaluation_id = NEW.evaluation_id
+      AND state IN ('reserved', 'dispatching', 'outcome_unknown')
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'open twin execution call has no outcome');
+END;
+CREATE TRIGGER IF NOT EXISTS enforce_twin_eval_execution_call_transition
+BEFORE UPDATE ON twin_eval_execution_call_checkpoints
+WHEN
+  NEW.user_id != OLD.user_id
+  OR NEW.evaluation_id != OLD.evaluation_id
+  OR NEW.call_id != OLD.call_id
+  OR NEW.call_kind != OLD.call_kind
+  OR NEW.call_ordinal != OLD.call_ordinal
+  OR NEW.binding_key_id != OLD.binding_key_id
+  OR NEW.coordinate_binding != OLD.coordinate_binding
+  OR NEW.payload_binding != OLD.payload_binding
+  OR NEW.adapter_binding != OLD.adapter_binding
+  OR NEW.checkpoint_binding != OLD.checkpoint_binding
+  OR NEW.checkpoint_ciphertext != OLD.checkpoint_ciphertext
+  OR NEW.request_artifact_digest != OLD.request_artifact_digest
+  OR NEW.config_digest != OLD.config_digest
+  OR NEW.consent_config_epoch != OLD.consent_config_epoch
+  OR NEW.consent_revision != OLD.consent_revision
+  OR NEW.lease_generation != OLD.lease_generation
+  OR NEW.lease_token_digest != OLD.lease_token_digest
+  OR NEW.permit_digest != OLD.permit_digest
+  OR NEW.idempotency_supported != OLD.idempotency_supported
+  OR NEW.reserved_at != OLD.reserved_at
+  OR NEW.call_deadline_at != OLD.call_deadline_at
+  OR NOT (
+    (
+      OLD.state = 'reserved'
+      AND NEW.state = 'dispatching'
+      AND OLD.paid_attempt_count = 0
+      AND NEW.paid_attempt_count = 1
+      AND OLD.consumed_at IS NULL
+      AND NEW.consumed_at IS NOT NULL
+      AND OLD.consume_binding IS NULL
+      AND NEW.consume_binding IS NOT NULL
+      AND OLD.outcome_unknown_at IS NULL
+      AND NEW.outcome_unknown_at IS NULL
+    ) OR (
+      OLD.state = 'dispatching'
+      AND NEW.state = 'outcome_unknown'
+      AND NEW.paid_attempt_count = 1
+      AND NEW.consumed_at = OLD.consumed_at
+      AND NEW.consume_binding = OLD.consume_binding
+      AND OLD.outcome_unknown_at IS NULL
+      AND NEW.outcome_unknown_at IS NOT NULL
+    )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'invalid twin execution call transition');
+END;
+CREATE TRIGGER IF NOT EXISTS enforce_twin_eval_execution_result_update
+BEFORE UPDATE OF status, result_run_id, result_artifact_digest,
+  completion_binding
+ON twin_eval_execution_requests
+WHEN (
+  NEW.status = 'succeeded'
+  AND (
+    NEW.result_run_id IS NULL
+    OR NEW.result_artifact_digest IS NULL
+    OR NEW.completion_binding IS NULL
+  )
+) OR (
+  NEW.status != 'succeeded'
+  AND (
+    NEW.result_run_id IS NOT NULL
+    OR NEW.result_artifact_digest IS NOT NULL
+    OR NEW.completion_binding IS NOT NULL
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid twin evaluation result state');
+END;
 CREATE INDEX IF NOT EXISTS idx_tasks_open_rank ON tasks(user_id, status, importance DESC, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_edges_user_created ON graph_edges(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_edges_user_target ON graph_edges(user_id, target_id);
@@ -707,23 +1184,401 @@ CREATE TABLE IF NOT EXISTS oauth_pending (
   expires_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_oauth_pending_expiry ON oauth_pending(expires_at);
+
 """
 
 
 def init_db(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    try:
-        conn.executescript(SCHEMA)
-        _apply_lightweight_migrations(conn)
-        _migrate_entities_composite_primary_key(conn)
-        conn.executescript(POST_MIGRATION_INDEXES)
-        if load_sqlite_vec(conn)[0]:
-            conn.executescript(VECTOR_SCHEMA)
-        conn.execute("PRAGMA user_version=1")
-        conn.commit()
-    finally:
-        conn.close()
+    with shared_database_access(path):
+        conn = sqlite3.connect(path)
+        try:
+            conn.executescript(SCHEMA)
+            _migrate_twin_eval_execution_request_shape(conn)
+            _apply_lightweight_migrations(conn)
+            _migrate_entities_composite_primary_key(conn)
+            conn.execute("SAVEPOINT twin_checkpoint_migration")
+            try:
+                _recover_interrupted_twin_eval_checkpoint_migration(
+                    conn
+                )
+                conn.execute(
+                    TWIN_EVAL_EXECUTION_CHECKPOINT_TABLE_SQL
+                )
+                conn.execute(
+                    TWIN_EVAL_EXECUTION_CHECKPOINT_INDEX_SQL
+                )
+                _migrate_twin_eval_execution_checkpoint_shape(conn)
+                conn.execute(
+                    "RELEASE SAVEPOINT twin_checkpoint_migration"
+                )
+            except Exception:
+                conn.execute(
+                    "ROLLBACK TO SAVEPOINT twin_checkpoint_migration"
+                )
+                conn.execute(
+                    "RELEASE SAVEPOINT twin_checkpoint_migration"
+                )
+                raise
+            conn.executescript(POST_MIGRATION_INDEXES)
+            if load_sqlite_vec(conn)[0]:
+                conn.executescript(VECTOR_SCHEMA)
+            conn.execute("PRAGMA user_version=1")
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _migrate_twin_eval_execution_request_shape(
+    conn: sqlite3.Connection,
+) -> None:
+    """Replace the pre-control-plane prototype table without trusting it."""
+
+    info = conn.execute(
+        "PRAGMA table_info(twin_eval_execution_requests)"
+    ).fetchall()
+    if not info:
+        return
+    columns = {str(row[1]): row for row in info}
+    control_plane_columns = {
+        "user_id",
+        "evaluation_id",
+        "receipt_id",
+        "binding_key_id",
+        "idempotency_digest",
+        "request_binding",
+        "config_digest",
+        "artifact_digest",
+        "request_ciphertext",
+        "consent_version",
+        "receipt_consumed_at",
+        "request_expires_at",
+        "content_deleted_at",
+        "status",
+        "cancel_requested_at",
+        "result_run_id",
+        "error_code",
+        "created_at",
+        "updated_at",
+    }
+    ciphertext_is_nullable = (
+        "request_ciphertext" in columns
+        and int(columns["request_ciphertext"][3]) == 0
+    )
+    if control_plane_columns.issubset(columns) and ciphertext_is_nullable:
+        return
+    legacy_core = {
+        "user_id",
+        "evaluation_id",
+        "receipt_id",
+        "idempotency_digest",
+        "config_digest",
+        "artifact_digest",
+        "consent_version",
+        "status",
+        "created_at",
+        "updated_at",
+    }
+    if not legacy_core.issubset(columns):
+        raise sqlite3.OperationalError(
+            "unsupported twin evaluation execution table shape"
+        )
+
+    request_binding_source = (
+        "request_binding"
+        if "request_binding" in columns
+        else "request_digest"
+        if "request_digest" in columns
+        else "artifact_digest"
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_twin_eval_execution_status")
+    conn.execute("DROP INDEX IF EXISTS idx_twin_eval_execution_claim")
+    conn.execute(
+        "ALTER TABLE twin_eval_execution_requests "
+        "RENAME TO twin_eval_execution_requests_legacy_shape"
+    )
+    conn.execute(
+        """
+        CREATE TABLE twin_eval_execution_requests (
+          user_id TEXT NOT NULL,
+          evaluation_id TEXT NOT NULL,
+          receipt_id TEXT NOT NULL,
+          binding_key_id TEXT NOT NULL,
+          idempotency_digest TEXT NOT NULL,
+          request_binding TEXT NOT NULL,
+          config_digest TEXT NOT NULL,
+          artifact_digest TEXT NOT NULL,
+          request_ciphertext BLOB,
+          consent_version TEXT NOT NULL,
+          receipt_consumed_at TEXT NOT NULL,
+          request_expires_at TEXT NOT NULL,
+          content_deleted_at TEXT,
+          status TEXT NOT NULL DEFAULT 'prepared'
+            CHECK(status IN (
+              'prepared', 'queued', 'running', 'cancel_requested',
+              'cancelled', 'succeeded', 'failed'
+            )),
+          attempt_count INTEGER NOT NULL DEFAULT 0
+            CHECK(attempt_count BETWEEN 0 AND 1),
+          provider_calls_reserved INTEGER NOT NULL DEFAULT 0
+            CHECK(provider_calls_reserved >= 0),
+          provider_calls_dispatched INTEGER NOT NULL DEFAULT 0
+            CHECK(
+              provider_calls_dispatched >= 0
+              AND provider_calls_dispatched <= provider_calls_reserved
+            ),
+          remote_outcome_unknown INTEGER NOT NULL DEFAULT 0
+            CHECK(remote_outcome_unknown IN (0, 1)),
+          lease_generation INTEGER NOT NULL DEFAULT 0
+            CHECK(lease_generation >= 0),
+          lease_owner TEXT,
+          lease_token_digest TEXT,
+          lease_expires_at TEXT,
+          execution_deadline_at TEXT,
+          queued_at TEXT,
+          started_at TEXT,
+          last_heartbeat_at TEXT,
+          completed_at TEXT,
+          cancel_requested_at TEXT,
+          result_run_id TEXT,
+          result_artifact_digest TEXT,
+          completion_binding TEXT,
+          error_code TEXT CHECK(
+            error_code IS NULL OR (
+              length(error_code) BETWEEN 1 AND 80
+              AND error_code NOT GLOB '*[^a-z0-9_]*'
+            )
+          ),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(user_id, evaluation_id),
+          UNIQUE(user_id, receipt_id),
+          UNIQUE(user_id, idempotency_digest),
+          FOREIGN KEY(user_id, result_run_id)
+            REFERENCES twin_eval_runs(user_id, run_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        f"""
+        INSERT INTO twin_eval_execution_requests
+        (
+          user_id, evaluation_id, receipt_id, binding_key_id,
+          idempotency_digest, request_binding, config_digest,
+          artifact_digest, request_ciphertext, consent_version,
+          receipt_consumed_at, request_expires_at, content_deleted_at,
+          status, attempt_count, lease_generation, completed_at,
+          cancel_requested_at, created_at, updated_at
+        )
+        SELECT
+          user_id, evaluation_id, receipt_id, 'legacy-unavailable',
+          idempotency_digest, {request_binding_source}, config_digest,
+          artifact_digest, NULL, consent_version,
+          created_at, created_at, updated_at,
+          'cancelled', 0, 0, updated_at,
+          updated_at, created_at, updated_at
+        FROM twin_eval_execution_requests_legacy_shape
+        """
+    )
+    conn.execute("DROP TABLE twin_eval_execution_requests_legacy_shape")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_twin_eval_execution_status
+        ON twin_eval_execution_requests(user_id, status, created_at)
+        """
+    )
+
+
+def _recover_interrupted_twin_eval_checkpoint_migration(
+    conn: sqlite3.Connection,
+) -> None:
+    """Recover the only safe states left by the former non-atomic rebuild."""
+
+    tables = {
+        str(row[0])
+        for row in conn.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN (
+                'twin_eval_execution_call_checkpoints',
+                'twin_eval_execution_call_checkpoints_legacy_shape'
+              )
+            """
+        ).fetchall()
+    }
+    legacy = "twin_eval_execution_call_checkpoints_legacy_shape"
+    current = "twin_eval_execution_call_checkpoints"
+    if legacy not in tables:
+        return
+    conn.execute(
+        "DROP TRIGGER IF EXISTS enforce_twin_eval_execution_no_open_calls"
+    )
+    conn.execute(
+        """
+        DROP TRIGGER IF EXISTS
+          enforce_twin_eval_execution_call_transition
+        """
+    )
+    conn.execute(
+        "DROP INDEX IF EXISTS idx_twin_eval_execution_call_state"
+    )
+    legacy_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM twin_eval_execution_call_checkpoints_legacy_shape
+            """
+        ).fetchone()[0]
+    )
+    current_count = (
+        0
+        if current not in tables
+        else int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM twin_eval_execution_call_checkpoints
+                """
+            ).fetchone()[0]
+        )
+    )
+    if legacy_count and current_count:
+        raise sqlite3.OperationalError(
+            "ambiguous interrupted twin checkpoint migration"
+        )
+    if legacy_count:
+        if current in tables:
+            conn.execute(
+                "DROP TABLE twin_eval_execution_call_checkpoints"
+            )
+        conn.execute(
+            """
+            ALTER TABLE twin_eval_execution_call_checkpoints_legacy_shape
+            RENAME TO twin_eval_execution_call_checkpoints
+            """
+        )
+        return
+    conn.execute(
+        """
+        DROP TABLE twin_eval_execution_call_checkpoints_legacy_shape
+        """
+    )
+
+
+def _migrate_twin_eval_execution_checkpoint_shape(
+    conn: sqlite3.Connection,
+) -> None:
+    """Add the one-shot dispatch state machine without trusting old state."""
+
+    info = conn.execute(
+        "PRAGMA table_info(twin_eval_execution_call_checkpoints)"
+    ).fetchall()
+    if not info:
+        return
+    columns = {str(row[1]) for row in info}
+    table_sql_row = conn.execute(
+        """
+        SELECT sql FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'twin_eval_execution_call_checkpoints'
+        """
+    ).fetchone()
+    table_sql = "" if table_sql_row is None else str(table_sql_row[0])
+    dispatch_columns = {
+        "consumed_at",
+        "consume_binding",
+        "outcome_unknown_at",
+    }
+    if dispatch_columns.issubset(columns) and "outcome_unknown" in table_sql:
+        return
+    legacy_columns = {
+        "user_id",
+        "evaluation_id",
+        "call_id",
+        "call_kind",
+        "call_ordinal",
+        "binding_key_id",
+        "coordinate_binding",
+        "payload_binding",
+        "adapter_binding",
+        "checkpoint_binding",
+        "checkpoint_ciphertext",
+        "request_artifact_digest",
+        "config_digest",
+        "consent_config_epoch",
+        "consent_revision",
+        "lease_generation",
+        "lease_token_digest",
+        "permit_digest",
+        "idempotency_supported",
+        "state",
+        "paid_attempt_count",
+        "reserved_at",
+        "call_deadline_at",
+    }
+    if not legacy_columns.issubset(columns):
+        raise sqlite3.OperationalError(
+            "unsupported twin execution checkpoint table shape"
+        )
+    invalid = conn.execute(
+        """
+        SELECT 1 FROM twin_eval_execution_call_checkpoints
+        WHERE state != 'reserved'
+        LIMIT 1
+        """
+    ).fetchone()
+    if invalid is not None:
+        raise sqlite3.OperationalError(
+            "unsupported legacy twin execution checkpoint state"
+        )
+    conn.execute(
+        "DROP TRIGGER IF EXISTS enforce_twin_eval_execution_no_open_calls"
+    )
+    conn.execute(
+        """
+        DROP TRIGGER IF EXISTS
+          enforce_twin_eval_execution_call_transition
+        """
+    )
+    conn.execute(
+        "DROP INDEX IF EXISTS idx_twin_eval_execution_call_state"
+    )
+    conn.execute(
+        """
+        ALTER TABLE twin_eval_execution_call_checkpoints
+        RENAME TO twin_eval_execution_call_checkpoints_legacy_shape
+        """
+    )
+    conn.execute(TWIN_EVAL_EXECUTION_CHECKPOINT_TABLE_SQL)
+    conn.execute(TWIN_EVAL_EXECUTION_CHECKPOINT_INDEX_SQL)
+    conn.execute(
+        """
+        INSERT INTO twin_eval_execution_call_checkpoints (
+          user_id, evaluation_id, call_id, call_kind, call_ordinal,
+          binding_key_id, coordinate_binding, payload_binding,
+          adapter_binding, checkpoint_binding, checkpoint_ciphertext,
+          request_artifact_digest, config_digest, consent_config_epoch,
+          consent_revision, lease_generation, lease_token_digest,
+          permit_digest, idempotency_supported, state,
+          paid_attempt_count, reserved_at, call_deadline_at,
+          consumed_at, consume_binding, outcome_unknown_at
+        )
+        SELECT
+          user_id, evaluation_id, call_id, call_kind, call_ordinal,
+          binding_key_id, coordinate_binding, payload_binding,
+          adapter_binding, checkpoint_binding, checkpoint_ciphertext,
+          request_artifact_digest, config_digest, consent_config_epoch,
+          consent_revision, lease_generation, lease_token_digest,
+          permit_digest, idempotency_supported, 'reserved',
+          0, reserved_at, call_deadline_at,
+          NULL, NULL, NULL
+        FROM twin_eval_execution_call_checkpoints_legacy_shape
+        """
+    )
+    conn.execute(
+        "DROP TABLE twin_eval_execution_call_checkpoints_legacy_shape"
+    )
 
 
 def load_sqlite_vec(conn: sqlite3.Connection) -> tuple[bool, str | None]:
@@ -771,9 +1626,37 @@ def sqlite_vec_status(conn: sqlite3.Connection) -> dict[str, str | bool | None]:
 
 
 def _apply_lightweight_migrations(conn: sqlite3.Connection) -> None:
+    known_columns: dict[str, set[str]] = {}
     for statement in MIGRATIONS:
+        # Every migration above is an ADD COLUMN statement. Check the current
+        # schema before executing it instead of relying on SQLite's duplicate-
+        # column error: newer SQLite versions can fail while rolling back a
+        # duplicate constrained column when another CHECK references it.
+        parts = statement.split()
+        migration_target: tuple[str, str] | None = None
+        if (
+            len(parts) >= 6
+            and parts[0:2] == ["ALTER", "TABLE"]
+            and parts[3:5] == ["ADD", "COLUMN"]
+        ):
+            table_name = parts[2]
+            column_name = parts[5]
+            migration_target = (table_name, column_name)
+            columns = known_columns.setdefault(
+                table_name,
+                {
+                    str(row[1])
+                    for row in conn.execute(
+                        f'PRAGMA table_info("{table_name}")'
+                    ).fetchall()
+                },
+            )
+            if column_name in columns:
+                continue
         try:
             conn.execute(statement)
+            if migration_target is not None:
+                known_columns[table_name].add(column_name)
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
@@ -789,6 +1672,41 @@ def _apply_lightweight_migrations(conn: sqlite3.Connection) -> None:
         """
         INSERT OR IGNORE INTO memory_event_revisions(user_id, revision)
         SELECT user_id, 1 FROM memory_events GROUP BY user_id
+        """
+    )
+    conn.execute(
+        """
+        UPDATE twin_eval_execution_requests
+        SET status = 'cancelled',
+            completed_at = COALESCE(completed_at, updated_at),
+            cancel_requested_at = COALESCE(
+              cancel_requested_at, updated_at
+            ),
+            lease_owner = NULL,
+            lease_token_digest = NULL,
+            lease_expires_at = NULL,
+            execution_deadline_at = NULL,
+            last_heartbeat_at = NULL
+        WHERE (
+            status = 'queued' AND queued_at IS NULL
+          ) OR (
+            status IN ('running', 'cancel_requested')
+            AND (
+              attempt_count != 1
+              OR lease_owner IS NULL
+              OR lease_token_digest IS NULL
+              OR lease_expires_at IS NULL
+              OR execution_deadline_at IS NULL
+            )
+          )
+        """
+    )
+    conn.execute(
+        """
+        UPDATE twin_eval_execution_requests
+        SET completed_at = COALESCE(completed_at, updated_at)
+        WHERE status IN ('cancelled', 'succeeded', 'failed')
+          AND completed_at IS NULL
         """
     )
     # Never invent transaction time from updated_at: that field may be a trust rescore, rebuild, or
@@ -889,13 +1807,14 @@ def _migrate_entities_composite_primary_key(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def connect(path: Path) -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=5000")
-    load_sqlite_vec(conn)
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
+    with shared_database_access(path):
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
+        load_sqlite_vec(conn)
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()

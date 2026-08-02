@@ -260,6 +260,26 @@ class GoogleOidcTests(OidcRegistryTestBase):
         self.assertEqual(exchanges[0]["code"], "auth-code")
         self.assertEqual(exchanges[0]["redirect_uri"], "https://app.example/callback")
 
+    def test_signup_consent_is_bound_to_and_consumed_with_oauth_state(self) -> None:
+        started = self.registry.start(
+            "google",
+            "https://app.example/callback",
+            signup_consent=True,
+        )
+        flow = self.store.get_flow(started["state"])
+        assert flow is not None
+        payload = json.loads(flow["payload_json"])
+        self.assertIs(payload["signup_consent"], True)
+        self.id_token_claims = self._claims(payload)
+
+        identity = self.registry.complete(
+            "google",
+            state=started["state"],
+            code="auth-code",
+        )
+
+        self.assertIs(identity["signup_consent"], True)
+
     def test_state_is_single_use(self) -> None:
         started, payload = self._start()
         self.id_token_claims = self._claims(payload)

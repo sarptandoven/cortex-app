@@ -32,7 +32,10 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
@@ -77,6 +80,31 @@ class AuthError(Exception):
 class RateLimited(AuthError):
     def __init__(self) -> None:
         super().__init__("rate limited")
+
+
+# Argon2id uses 64 MiB per operation. Hosted deployments accept concurrent auth
+# requests, so an unbounded thread-pool burst can exhaust the service memory limit
+# before per-identifier rate limits help. Bound all password work in this process;
+# multi-worker deployments multiply this small cap rather than the request burst.
+def _password_work_limit() -> int:
+    try:
+        configured = int(os.environ.get("CORTEX_PASSWORD_HASH_CONCURRENCY", "2") or "2")
+    except ValueError:
+        configured = 2
+    return max(1, min(configured, 8))
+
+
+_PASSWORD_WORK_SLOTS = threading.BoundedSemaphore(_password_work_limit())
+
+
+@contextmanager
+def _password_work_slot():
+    if not _PASSWORD_WORK_SLOTS.acquire(timeout=5):
+        raise RateLimited()
+    try:
+        yield
+    finally:
+        _PASSWORD_WORK_SLOTS.release()
 
 
 # --------------------------------------------------------------------------
@@ -168,9 +196,10 @@ class PasswordEngine:
 
     # -- minting -----------------------------------------------------------
     def hash(self, password: str) -> str:
-        if self._hasher is not None:
-            return self._hasher.hash(password)
-        return self._scrypt_hash(password)
+        with _password_work_slot():
+            if self._hasher is not None:
+                return self._hasher.hash(password)
+            return self._scrypt_hash(password)
 
     def _scrypt_hash(self, password: str) -> str:
         salt = secrets.token_bytes(16)
@@ -194,28 +223,29 @@ class PasswordEngine:
     def verify(self, phc: str, password: str) -> bool:
         if not phc or not isinstance(phc, str):
             return False
-        if phc.startswith("$argon2"):
-            if self._argon2_verifier is None:
-                return False
-            try:
-                return bool(self._argon2_verifier.verify(phc, password))
-            except (
-                _argon2_exceptions.VerificationError,
-                _argon2_exceptions.InvalidHashError,
-                ValueError,
-            ):
-                return False
-        if phc.startswith("$scrypt$"):
-            parsed = self._parse_scrypt(phc)
-            if parsed is None:
-                return False
-            ln, r, p, salt, expected = parsed
-            try:
-                derived = self._scrypt_derive(password, salt, ln, r, p)
-            except (ValueError, MemoryError):
-                return False
-            return hmac.compare_digest(derived, expected)
-        return False
+        with _password_work_slot():
+            if phc.startswith("$argon2"):
+                if self._argon2_verifier is None:
+                    return False
+                try:
+                    return bool(self._argon2_verifier.verify(phc, password))
+                except (
+                    _argon2_exceptions.VerificationError,
+                    _argon2_exceptions.InvalidHashError,
+                    ValueError,
+                ):
+                    return False
+            if phc.startswith("$scrypt$"):
+                parsed = self._parse_scrypt(phc)
+                if parsed is None:
+                    return False
+                ln, r, p, salt, expected = parsed
+                try:
+                    derived = self._scrypt_derive(password, salt, ln, r, p)
+                except (ValueError, MemoryError):
+                    return False
+                return hmac.compare_digest(derived, expected)
+            return False
 
     @staticmethod
     def _parse_scrypt(phc: str) -> tuple[int, int, int, bytes, bytes] | None:

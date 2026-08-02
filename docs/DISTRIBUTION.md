@@ -1,9 +1,12 @@
 # Cortex Landing Page and Distribution
 
-This document defines the controlled distribution path for the local-first macOS
-beta. For the first 100 testers, the current path is an unnotarized direct
-local-beta DMG unless the exact build has completed Developer ID signing,
-notarization, and stapling.
+This document defines the controlled distribution paths for the local-first
+macOS beta. The current download referenced by
+`site/downloads/latest.json` is a Developer ID signed, Apple-notarized direct
+DMG hosted in `doppl-tech/releases`. An ad-hoc-signed `local-beta` path remains
+available for internal QA, but it is not the build described by the public
+download page. The direct build requires account sign-in; local retrieval
+continues to run on-device and cloud capture sync is optional.
 
 ## Goal
 
@@ -16,27 +19,33 @@ Ship a clean beta experience:
 5. User completes the local setup loop.
 6. User can verify privacy, checksums, and update metadata.
 
-## First-100 Distribution Status
+## Current Distribution Status
 
-Current first-100 local-beta distribution is ready for controlled named-tester
-invites when the package, static site, clean-profile install, update, rollback,
-and support-bundle checks pass for the exact build being shared.
+The current direct beta is ready for controlled tester distribution when the
+package, static site, clean-profile install, update, rollback, and
+support-bundle checks pass for the exact build being shared.
 
-It is not a Gatekeeper-ready public release by default:
+For the build named by `site/downloads/latest.json`:
 
-- The local-beta app is ad-hoc signed, not Developer ID signed.
-- The local-beta app and DMG are not notarized or stapled.
-- The user may need Control-click > Open on first launch.
-- Updates are manual DMG downloads and app replacement.
+- The app is Developer ID signed and notarized by Apple.
+- The normal install path is a double-click launch after copying the app to
+  Applications.
+- Cortex checks the HTTPS update feed and directs users to the current DMG.
+- Installation and rollback still use app replacement; there is no background
+  self-updater.
 - Rollback is manual app replacement with the local memory folder left in place.
-- The site hosts downloads and metadata; it does not provide automatic update
-  installation.
+- GitHub Releases hosts the binaries; the site hosts release metadata,
+  checksums, and download links.
 
-Do not invite first-100 users from a generic public download page unless the page
-clearly says this is a local-first beta, lists the manual install/update path,
-links to privacy and checksum information, and avoids promises about
-notarization, automatic updates, cloud backup, hosted accounts, or production
-support.
+This signing state does not make Cortex a broad production service. Public copy
+must still identify it as a local-first beta, describe the app-replacement
+update path, link privacy and checksum information, and avoid promises about
+background updates, cloud backup, production-grade hosted operations, or
+production support.
+
+Internal ad-hoc builds must use a separate handoff that explicitly documents
+Control-click > Open. Never use that internal signing language for the current
+notarized public DMG.
 
 ## Static Site
 
@@ -59,7 +68,7 @@ The hero uses a canvas memory map instead of stock photography. This keeps the p
 
 ## Prepare Downloads
 
-After packaging the app:
+For an internal ad-hoc QA build:
 
 ```bash
 ./macos/package_release.sh \
@@ -88,8 +97,8 @@ python3 scripts/prepare_distribution_site.py \
 
 This copies the DMG, ZIP, checksums, and update feed into `site/downloads/`.
 
-This can host the first-100 local-beta artifacts, but hosting over HTTPS does
-not make the build notarized or automatic-update ready.
+This path can host internal QA artifacts, but HTTPS hosting does not change
+their signing state or make them automatic-update ready.
 
 For a Gatekeeper-ready public direct download release, use the fail-closed
 packaging path instead:
@@ -209,14 +218,16 @@ scripts/check_distribution_site.py --self-test` to exercise both branches.
 
 ## GitHub Releases Distribution (free binary hosting in the org)
 
-Committing the DMG/ZIP into `site/downloads/` bloats git (~37 MB of stale
-binaries today). The public path is to attach the notarized binaries to a GitHub
-Release in the canonical org repo (free hosting) and point `latest.json` at the
-Release asset URLs, so the site links to the Release and git stays small.
+Committing the DMG/ZIP into `site/downloads/` bloats git. The current public
+path attaches notarized binaries to
+[`doppl-tech/releases`](https://github.com/doppl-tech/releases/releases) and
+points `latest.json` at the Release asset URLs, so the site links to the Release
+and git stays small.
 
-The canonical org repo is decided by DECISION 0 in
-`docs/REMAINING_LAUNCH_WORK.txt` (recommended: an org repo such as
-`doppl-tech/cortex`). Pass it as `--repo OWNER/REPO`.
+The canonical source repository is
+[`trace-cortex/cortex-app`](https://github.com/trace-cortex/cortex-app); binary
+artifacts currently use the separate `doppl-tech/releases` repository. Pass the
+binary repository as `--repo OWNER/REPO`.
 
 Procedure:
 
@@ -228,7 +239,7 @@ Procedure:
    CORTEX_NOTARY_PROFILE=cortex-notary \
    CORTEX_BUNDLE_PYTHON=1 \
    ./macos/package_release.sh --production --channel stable \
-     --base-url https://github.com/doppl-tech/cortex/releases/download/v0.1.0-1
+     --base-url https://github.com/doppl-tech/releases/releases/download/v0.2.0-52
    ```
 
    The `--base-url` can point at the Release download prefix so the release
@@ -246,9 +257,9 @@ Procedure:
 
    ```bash
    scripts/publish_release.sh \
-     --tag v0.1.0-1 \
-     --release-dir outputs/Cortex-0.1.0-1 \
-     --repo doppl-tech/cortex
+     --tag v0.2.0-52 \
+     --release-dir outputs/Cortex-0.2.0-52 \
+     --repo doppl-tech/releases
    ```
 
    `scripts/publish_release.sh`:
@@ -286,30 +297,23 @@ assets. This is founder task F4d. In a GitHub Actions workflow, grant
 `permissions: contents: write` to the job and export the token as `GH_TOKEN` so
 `gh` picks it up.
 
-### Removing the binaries from git (after the first Release)
+### Keeping binaries out of git
 
-The stale binaries in `site/downloads/` are intentionally **left in place for
-now**: the current `latest.json` still references local files, and removing them
-before a real Release exists would break the download feed. The first notarized
-Release has not been published yet (it needs F2/F10 — the Developer ID cert and a
-notarized DMG).
+The first notarized releases have been published and the current
+`site/downloads/latest.json` uses GitHub Release URLs. Large DMG and ZIP
+artifacts therefore stay out of git.
 
-Once the first notarized Release is published and `latest.json` points at the
-Release URLs (step 3 above), remove the binaries from git — the checker now
-tolerates absent, Release-hosted artifacts:
+For future releases, keep the binaries ignored and verify that the manifest
+points at the newly published Release:
 
 ```bash
-git rm --cached site/downloads/*.dmg site/downloads/*.app.zip
-# add site/downloads/*.dmg and site/downloads/*.app.zip to .gitignore
 python3 scripts/check_distribution_site.py   # still green: URLs are Release-hosted
 ```
 
 Keep `site/downloads/latest.json`, `distribution.json`, and the
-`*.checksums.txt` in git. Also update `site/index.html`'s download links to point
-at the Release URLs (or at `latest.json`), since the checker validates local HTML
-references and those download buttons currently target the local
-`downloads/Cortex-<v>-<b>.dmg` files. (This repo's site HTML is owned separately;
-flag it as part of the same change.)
+`*.checksums.txt` in git. Update `site/index.html` and the manifest together so
+the visible buttons, checksums, and machine-readable feed identify the same
+build.
 
 ## Manual Site QA
 
@@ -473,20 +477,23 @@ Positioning:
 Cortex is not just AI memory. It is your personal operating model for the AI tools you already use.
 ```
 
-## Public Distribution Blockers
+## Broad-Launch Status
 
-Before broad public distribution:
+Completed for the current direct macOS beta:
 
 - Apple Developer ID Application certificate
 - hardened runtime signing
 - notarized app and DMG
 - stapled notarization tickets
 - HTTPS-hosted downloads
+- rollback artifacts for the current release
+
+Remaining before a broad production launch:
+
 - signed update feed or Sparkle appcast
 - formal privacy policy review
 - crash/error reporting decision
-- support email or feedback form
-- rollback plan for broken releases
+- formal support and incident-response ownership
 
 The local static site is enough for a small free beta. The public site should not promise automatic updates, hosted sync, team accounts, or background capture until those systems exist.
 
@@ -495,12 +502,12 @@ The local static site is enough for a small free beta. The public site should no
 Do not describe these as available beta capabilities:
 
 - automatic app updates or in-app rollback
-- hosted accounts, cloud sync, or cloud backup
-- live OAuth/API sync for third-party services
+- cloud backup or production-grade hosted operations
+- preconfigured managed Google, Microsoft, or Notion OAuth in the distributed
+  build (their client IDs currently ship empty)
 - remote MCP/OAuth
 - billing, teams, enterprise policy, or hosted analytics
 - production incident response or telemetry
-- notarized external distribution unless the current build completed Developer ID signing and notarization
 
 ## Free Beta Checklist
 
@@ -508,9 +515,10 @@ The beta is ready to share with a small group when:
 
 - generated artifacts pass checksum, manifest, and package-readiness verification
 - the exact hosted DMG matches the verified release directory
-- current copy states the build is an unnotarized local beta unless the exact
-  build completed Developer ID signing and notarization
-- the Control-click > Open path has been tested for the unnotarized build
+- public copy matches the manifest's version, build, signing state, and artifact
+  URLs
+- normal double-click launch is tested for the notarized public DMG; the
+  Control-click > Open path is tested only for explicitly internal ad-hoc builds
 - a user can download and install in under two minutes
 - the app opens from Applications
 - first-run setup completes without docs

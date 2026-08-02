@@ -97,7 +97,7 @@ Maintenance tools still pass through Trust controls.
 ## QA Commands
 
 ```bash
-python3 -m unittest discover backend/tests
+python3 -m pytest backend/tests -q
 python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 python3 scripts/first100_live_smoke.py --base-url http://127.0.0.1:8766
 python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"

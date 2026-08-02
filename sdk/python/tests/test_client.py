@@ -1,7 +1,7 @@
 """Unit tests for the Cortex Python SDK.
 
-These tests DO NOT hit the network. They monkeypatch ``urllib.request.urlopen`` (the
-one call the SDK makes) so we can assert the exact URL, method, headers, and JSON body
+These tests DO NOT hit the network. They monkeypatch the SDK transport seam so we can
+assert the exact URL, method, headers, and JSON body
 the client builds, and verify parsing of canned responses plus error raising.
 
 Run:  python3 -m pytest sdk/python/tests/test_client.py
@@ -14,6 +14,7 @@ import json
 import os
 import sys
 from urllib.error import HTTPError, URLError
+from urllib.request import Request
 
 import pytest
 
@@ -57,7 +58,7 @@ class _Recorder:
 @pytest.fixture
 def recorder(monkeypatch):
     rec = _Recorder()
-    monkeypatch.setattr(client_module, "urlopen", rec)
+    monkeypatch.setattr(client_module, "_safe_urlopen", rec)
     return rec
 
 
@@ -103,6 +104,25 @@ def test_base_url_trailing_slash_stripped(recorder):
     assert recorder.request.full_url.startswith("http://127.0.0.1:8766/v1/search")
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "not-a-url",
+        "file:///tmp/cortex",
+        "https://user:password@api.signindoppl.com",
+        "http://127.0.0.1:not-a-port",
+        "https://[::1",
+        "https://api.signindoppl.com?tenant=other",
+        "https://api.signindoppl.com#fragment",
+    ],
+)
+def test_invalid_base_url_raises_documented_cortex_error(base_url):
+    with pytest.raises(CortexError) as excinfo:
+        CortexClient(base_url=base_url, token="secret")
+    assert excinfo.value.status == 0
+    assert "Invalid Cortex base URL" in str(excinfo.value.detail)
+
+
 # -- search ----------------------------------------------------------------------------
 
 def test_search_url_method_and_topk(recorder):
@@ -117,7 +137,7 @@ def test_search_url_method_and_topk(recorder):
 def test_search_parses_canned_response(monkeypatch):
     payload = {"query": "q", "results": [{"id": "m1", "content": "hi"}]}
     rec = _Recorder(json.dumps(payload).encode("utf-8"))
-    monkeypatch.setattr(client_module, "urlopen", rec)
+    monkeypatch.setattr(client_module, "_safe_urlopen", rec)
     client = CortexClient(token="t")
     result = client.search("q")
     assert result == payload
@@ -160,12 +180,41 @@ def test_context_defaults(recorder):
     assert body["surface"] == "agent"
 
 
+def test_context_forwards_cmp_session_and_scope_options(recorder):
+    client = CortexClient(token="t")
+    client.context(
+        "plan the Project Atlas launch",
+        intent="plan",
+        format="smp",
+        model="claude",
+        session_id="session-atlas",
+        pin=True,
+        sector="Project Atlas",
+        project="Atlas",
+        as_of="2026-07-30T00:00:00Z",
+    )
+    body = json.loads(recorder.request.data.decode("utf-8"))
+    assert body == {
+        "task": "plan the Project Atlas launch",
+        "intent": "plan",
+        "token_budget": 2000,
+        "surface": "agent",
+        "format": "smp",
+        "model": "claude",
+        "session_id": "session-atlas",
+        "pin": True,
+        "sector": "Project Atlas",
+        "project": "Atlas",
+        "as_of": "2026-07-30T00:00:00Z",
+    }
+
+
 # -- call_tool -------------------------------------------------------------------------
 
 def test_call_tool_body_and_unwrap(monkeypatch):
     canned = {"tool": "search_memory", "result": {"results": [1, 2, 3]}}
     rec = _Recorder(json.dumps(canned).encode("utf-8"))
-    monkeypatch.setattr(client_module, "urlopen", rec)
+    monkeypatch.setattr(client_module, "_safe_urlopen", rec)
     client = CortexClient(token="t")
     result = client.call_tool("search_memory", {"query": "x", "top_k": 2})
     # URL / method / body
@@ -189,7 +238,7 @@ def test_call_tool_defaults_arguments_to_empty(recorder):
 def test_tools_schema_default_format_and_unwrap(monkeypatch):
     schema = [{"type": "function", "function": {"name": "get_context"}}]
     rec = _Recorder(json.dumps({"schema": schema}).encode("utf-8"))
-    monkeypatch.setattr(client_module, "urlopen", rec)
+    monkeypatch.setattr(client_module, "_safe_urlopen", rec)
     client = CortexClient(token="t")
     result = client.tools_schema()
     assert rec.request.get_method() == "GET"
@@ -199,7 +248,7 @@ def test_tools_schema_default_format_and_unwrap(monkeypatch):
 
 def test_openai_tools_uses_openai_format(monkeypatch):
     rec = _Recorder(json.dumps({"schema": []}).encode("utf-8"))
-    monkeypatch.setattr(client_module, "urlopen", rec)
+    monkeypatch.setattr(client_module, "_safe_urlopen", rec)
     client = CortexClient(token="t")
     client.openai_tools()
     assert "format=openai" in rec.request.full_url
@@ -207,7 +256,7 @@ def test_openai_tools_uses_openai_format(monkeypatch):
 
 def test_anthropic_tools_uses_anthropic_format(monkeypatch):
     rec = _Recorder(json.dumps({"schema": []}).encode("utf-8"))
-    monkeypatch.setattr(client_module, "urlopen", rec)
+    monkeypatch.setattr(client_module, "_safe_urlopen", rec)
     client = CortexClient(token="t")
     client.anthropic_tools()
     assert "format=anthropic" in rec.request.full_url
@@ -233,7 +282,7 @@ def _raise_http_error(status: int, detail):
 def test_403_raises_cortex_error_with_detail(monkeypatch):
     monkeypatch.setattr(
         client_module,
-        "urlopen",
+        "_safe_urlopen",
         _raise_http_error(403, "Cortex API token requires write scope"),
     )
     client = CortexClient(token="t")
@@ -246,7 +295,7 @@ def test_403_raises_cortex_error_with_detail(monkeypatch):
 def test_401_raises_cortex_error(monkeypatch):
     monkeypatch.setattr(
         client_module,
-        "urlopen",
+        "_safe_urlopen",
         _raise_http_error(401, "Missing or invalid Cortex API token"),
     )
     client = CortexClient(token="")
@@ -258,7 +307,7 @@ def test_401_raises_cortex_error(monkeypatch):
 
 def test_error_detail_can_be_object(monkeypatch):
     detail = {"status": "needs_configuration", "hosted_readiness": {"status": "error"}}
-    monkeypatch.setattr(client_module, "urlopen", _raise_http_error(503, detail))
+    monkeypatch.setattr(client_module, "_safe_urlopen", _raise_http_error(503, detail))
     client = CortexClient(token="t")
     with pytest.raises(CortexError) as excinfo:
         client.ask("q")
@@ -270,12 +319,47 @@ def test_transport_error_raises_cortex_error_status_zero(monkeypatch):
     def _fake(request, timeout=None):
         raise URLError("Connection refused")
 
-    monkeypatch.setattr(client_module, "urlopen", _fake)
+    monkeypatch.setattr(client_module, "_safe_urlopen", _fake)
     client = CortexClient(token="t")
     with pytest.raises(CortexError) as excinfo:
         client.search("q")
     assert excinfo.value.status == 0
     assert "Connection refused" in str(excinfo.value.detail)
+
+
+def test_cross_origin_redirect_is_blocked_before_bearer_token_can_move():
+    handler = client_module._SameOriginRedirectHandler()
+    request = Request(
+        "https://api.signindoppl.com/v1/search",
+        headers={"Authorization": "Bearer secret"},
+    )
+    with pytest.raises(HTTPError, match="cross-origin redirect blocked"):
+        handler.redirect_request(
+            request,
+            io.BytesIO(),
+            302,
+            "Found",
+            {},
+            "https://attacker.invalid/collect",
+        )
+
+
+def test_same_origin_relative_redirect_is_allowed():
+    handler = client_module._SameOriginRedirectHandler()
+    request = Request(
+        "https://api.signindoppl.com/v1/search",
+        headers={"Authorization": "Bearer secret"},
+    )
+    redirected = handler.redirect_request(
+        request,
+        io.BytesIO(),
+        307,
+        "Temporary Redirect",
+        {},
+        "/v1/search-next",
+    )
+    assert redirected is not None
+    assert redirected.full_url == "https://api.signindoppl.com/v1/search-next"
 
 
 if __name__ == "__main__":
