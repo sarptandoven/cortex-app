@@ -19,7 +19,9 @@ apt-get install -y -qq python3 python3-venv python3-pip ufw fail2ban unattended-
 
 id -u cortex >/dev/null 2>&1 || useradd --system --home /srv/cortex --shell /usr/sbin/nologin cortex
 mkdir -p /srv/cortex/releases /var/lib/cortex/shards /var/lib/cortex/backups /etc/cortex
-chown -R cortex:cortex /srv/cortex /var/lib/cortex
+chown root:root /srv/cortex /srv/cortex/releases
+chmod 0755 /srv/cortex /srv/cortex/releases
+chown -R cortex:cortex /var/lib/cortex
 
 # Firewall: SSH + HTTP(S) only.
 ufw allow OpenSSH >/dev/null
@@ -94,7 +96,10 @@ python3 -m venv /srv/cortex/venv 2>/dev/null || true
 /srv/cortex/venv/bin/pip install --quiet --require-hashes \
   -r "$RELEASE_DIR/backend/runtime-requirements.lock"
 ln -sfn "$RELEASE_DIR" /srv/cortex/current
-chown -R cortex:cortex /srv/cortex/releases
+# Release code includes scripts that an operator executes as root during updates
+# and rollback. Keep it immutable to the unprivileged service account; all runtime
+# writes are explicitly confined to /var/lib/cortex by the systemd units.
+chown -R root:root /srv/cortex/releases
 
 # --- 5. systemd services -------------------------------------------------------
 cp "$RELEASE_DIR"/deploy/systemd/cortex-api.service /etc/systemd/system/
@@ -107,7 +112,7 @@ systemctl enable --now cortex-api cortex-worker cortex-backup.timer
 
 # --- 6. Smoke ------------------------------------------------------------------
 sleep 3
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   if curl -fsS -o /dev/null "http://127.0.0.1:8766/health" -H "Authorization: Bearer $(grep '^CORTEX_API_KEY=' "$ENV_FILE" | cut -d= -f2)"; then
     break
   fi

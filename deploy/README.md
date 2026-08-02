@@ -70,8 +70,30 @@ age --decrypt -i backup-age.key cortex-YYYYMMDD-HHMMSS.tar.gz.age \
 deploy/push.sh root@<VM-IP> --update
 ```
 
-(uploads the tree, reinstalls requirements, restarts worker, reloads API; the previous
-release dir is kept for instant rollback: `ln -sfn /srv/cortex/releases/<prev> /srv/cortex/current && systemctl restart cortex-api cortex-worker`)
+The updater refreshes the systemd units and hardened backup script, installs `age`
+when needed, takes a mandatory encrypted pre-deploy snapshot, reinstalls locked
+requirements, and then restarts the worker and API. Runtime service definitions are
+switched transactionally and restored automatically if the smoke check fails. The
+previous release directory is kept for a dependency-and-service-aware rollback:
+
+```bash
+bash /srv/cortex/current/deploy/update.sh /srv/cortex/releases/<prev>
+```
+
+Do not replace only the `current` symlink unless you have separately verified that the
+target release is compatible with the currently installed systemd units and Python
+environment. Release trees remain owned by `root`; the `cortex` service account writes
+only under `/var/lib/cortex`.
+
+On the first update from an older deployment, the updater may create
+`/etc/cortex/backup-age.key`. Escrow that identity separately from `/etc/cortex/kek`
+before relying on the new backups. Existing environment files are deliberately not
+rewritten with authentication or credential-encryption policy: reconcile
+`CORTEX_AUTH_AUTOVERIFY`, `CORTEX_LEGAL_TERMS_APPROVED`, and
+`CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS` using
+[`docs/SECURITY_REVIEW.md`](../docs/SECURITY_REVIEW.md) before public traffic. Enable
+credential-encryption enforcement only after the documented credential backfill is
+complete.
 
 ## Day-2 knobs (in `/etc/cortex/cortex.env`)
 

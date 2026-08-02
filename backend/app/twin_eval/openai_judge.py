@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from ..http_security import open_same_origin
 from .domain import (
     Candidate,
     ComparisonOutcome,
@@ -400,7 +401,10 @@ def _post_responses(
             method="POST",
         )
         try:
-            with urllib.request.urlopen(  # noqa: S310 - validated provider URL
+            # The request carries both a provider credential and owner evidence.
+            # urllib forwards Authorization across redirects, so use Cortex's
+            # same-origin opener rather than trusting a validated initial URL.
+            with open_same_origin(
                 request,
                 timeout=config.request_timeout_seconds,
             ) as response:

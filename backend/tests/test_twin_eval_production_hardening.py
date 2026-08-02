@@ -226,7 +226,7 @@ class ProductionHardeningTests(unittest.TestCase):
         )
         self.assertIn("does not occur", reason)
 
-    def test_provider_http_retries_then_succeeds(self):
+    def test_provider_http_uses_redirect_guard_retries_then_succeeds(self):
         config = OpenAIJudgeConfig(max_retries=1)
         http_error = urllib.error.HTTPError(
             config.responses_url,
@@ -239,9 +239,9 @@ class ProductionHardeningTests(unittest.TestCase):
         with (
             patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}),
             patch(
-                "backend.app.twin_eval.openai_judge.urllib.request.urlopen",
+                "backend.app.twin_eval.openai_judge.open_same_origin",
                 side_effect=(http_error, response),
-            ) as urlopen,
+            ) as safe_open,
         ):
             payload, attempts, _ = openai_judge_module._post_responses(
                 config,
@@ -250,7 +250,10 @@ class ProductionHardeningTests(unittest.TestCase):
             )
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(attempts, 2)
-        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(safe_open.call_count, 2)
+        request = safe_open.call_args.args[0]
+        self.assertEqual(request.full_url, config.responses_url)
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-key")
 
     @unittest.skipUnless(
         "fork" in multiprocessing.get_all_start_methods(),
