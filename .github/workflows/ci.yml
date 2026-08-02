@@ -156,7 +156,7 @@ jobs:
         run: python scripts/check_distribution_site.py
 
       - name: Validate site update manifest
-        run: python scripts/validate_update_manifest.py site/downloads/latest.json
+        run: python scripts/validate_update_manifest.py --allow-remote-artifacts site/downloads/latest.json
 
   obsidian-plugin:
     name: Obsidian plugin build

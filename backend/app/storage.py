@@ -15021,7 +15021,9 @@ class CortexStore:
                 continue
             seen_edges.add(key)
             canvas_edges.append({
-                "id": hashlib.sha1(("|".join(key)).encode("utf-8")).hexdigest()[:16],
+                "id": hashlib.sha1(
+                    ("|".join(key)).encode("utf-8"), usedforsecurity=False
+                ).hexdigest()[:16],
                 "fromNode": self.vault.entity_moc_short_id(key[0]),
                 "toNode": self.vault.entity_moc_short_id(key[1]),
             })

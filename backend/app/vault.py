@@ -671,7 +671,9 @@ class CortexVault:
         summary/content) so it is invariant across edits — that is what makes glob-by-suffix
         reliable. Sweeps that mutate/delete also confirm the parsed frontmatter id, so even an
         (astronomically unlikely) collision can at worst rewrite the same logical note."""
-        return hashlib.sha1(str(memory_id or "").encode("utf-8")).hexdigest()[:12]
+        return hashlib.sha1(
+            str(memory_id or "").encode("utf-8"), usedforsecurity=False
+        ).hexdigest()[:12]
 
     def memory_note_stem(self, record: dict[str, Any]) -> str:
         """`<summary-slug>--<shortid>` — the SINGLE source of both the on-disk note filename and the
@@ -812,7 +814,9 @@ class CortexVault:
         disambiguator and by the stale-page sweep. 16 hex = 64 bits: birthday-collision-safe well
         past any realistic entity count (an 8-hex/32-bit id collides around tens of thousands of
         entities and would clobber another entity's page)."""
-        return hashlib.sha1(str(entity_id or "").encode("utf-8")).hexdigest()[:16]
+        return hashlib.sha1(
+            str(entity_id or "").encode("utf-8"), usedforsecurity=False
+        ).hexdigest()[:16]
 
     def entity_moc_stem(self, entity_id: str, label: str | None = None) -> str:
         """The MOC note filename stem — the SINGLE source of the entity->entity wikilink target and
