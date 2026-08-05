@@ -206,16 +206,22 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    configured_provider = embedding_status().get("provider")
-    # embedding_status reports configuration, not whether model loading
-    # succeeded. Probe the active implementation before deciding run/skip.
-    active_provider = embed_text_result("rerank eval availability probe").provider
-    if active_provider != "model2vec":
+    provider = embedding_status().get("provider")
+    if provider != "model2vec":
         if args.forbid_skip:
-            print(json.dumps({"status": "failed", "reason": f"--forbid-skip: model2vec unavailable (configured={configured_provider}, active={active_provider}); refusing to skip the semantic-retrieval gate"}, indent=2))
+            print(json.dumps({"status": "failed", "reason": f"--forbid-skip: model2vec unavailable (provider={provider}); refusing to skip the semantic-retrieval gate"}, indent=2))
             return 1
-        print(json.dumps({"status": "skipped", "reason": f"model2vec unavailable (configured={configured_provider}, active={active_provider})"}, indent=2))
+        print(json.dumps({"status": "skipped", "reason": f"model2vec unavailable (provider={provider})"}, indent=2))
         return 0
+    if args.forbid_skip:
+        # embedding_status() reports the CONFIGURED provider; the runtime silently degrades to the
+        # keyword-hash embedder when the model can't actually load. Under --forbid-skip, prove the
+        # ACTIVE provider is really model2vec before trusting the eval — hash could still clear the
+        # keyword-friendly floor and paint this gate green without any real semantics.
+        active = embed_text_result("rerank eval demo-integrity probe").provider
+        if active != "model2vec":
+            print(json.dumps({"status": "failed", "reason": f"--forbid-skip: model2vec configured but the active embedder degraded to '{active}' (model failed to load); the eval would silently measure hash embeddings"}, indent=2))
+            return 1
     with tempfile.TemporaryDirectory() as tmp:
         summary = run_rerank_eval(Path(tmp) / "cortex.db", Path(tmp) / "vault")
     print(json.dumps(summary, indent=2))

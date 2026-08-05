@@ -15,23 +15,12 @@ ExecStart=/srv/cortex/venv/bin/uvicorn backend.app.main:app --host 127.0.0.1 --p
 Restart=always
 RestartSec=3
 # Sandboxing
-UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-PrivateDevices=yes
-ProtectClock=yes
-ProtectControlGroups=yes
-ProtectKernelModules=yes
-ProtectKernelTunables=yes
-LockPersonality=yes
-RestrictRealtime=yes
-RestrictSUIDSGID=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/var/lib/cortex
 MemoryMax=5G
-TasksMax=256
 
 [Install]
 WantedBy=multi-user.target

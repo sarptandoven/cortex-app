@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email import policy
@@ -656,20 +656,17 @@ def _source_fair_order(records: list[SourceRecord]) -> list[SourceRecord]:
     sources). A single source keeps parse order. This ordering is consistent
     regardless of window, so paginating with an offset never skips or reorders
     records between pages."""
-    buckets: dict[str, deque[SourceRecord]] = {}
+    buckets: dict[str, list[SourceRecord]] = {}
     for record in records:
-        buckets.setdefault(record.source, deque()).append(record)
+        buckets.setdefault(record.source, []).append(record)
     if len(buckets) <= 1:
         return list(records)
     ordered: list[SourceRecord] = []
-    active = list(buckets.values())
-    while active:
-        next_active = []
-        for bucket in active:
-            ordered.append(bucket.popleft())
+    bucket_lists = list(buckets.values())
+    while any(bucket_lists):
+        for bucket in bucket_lists:
             if bucket:
-                next_active.append(bucket)
-        active = next_active
+                ordered.append(bucket.pop(0))
     return ordered
 
 
@@ -759,9 +756,9 @@ def _source_fair_record_cap(records: list[SourceRecord], max_records: int) -> li
     if len(records) <= max_records:
         return records
 
-    buckets: dict[str, deque[SourceRecord]] = {}
+    buckets: dict[str, list[SourceRecord]] = {}
     for record in records:
-        buckets.setdefault(record.source, deque()).append(record)
+        buckets.setdefault(record.source, []).append(record)
     if len(buckets) <= 1:
         return records[:max_records]
 
@@ -771,7 +768,7 @@ def _source_fair_record_cap(records: list[SourceRecord], max_records: int) -> li
         for bucket in buckets.values():
             if not bucket:
                 continue
-            selected.append(bucket.popleft())
+            selected.append(bucket.pop(0))
             added = True
             if len(selected) >= max_records:
                 break
@@ -1260,63 +1257,23 @@ def _asset_from_path(path: Path, name: str | None = None) -> list[SourceAsset]:
 _MAX_INNER_ZIP_DEPTH = 2
 _MAX_ZIP_MEMBER_COUNT = 20_000
 _MAX_INNER_ZIP_BYTES = MAX_TEXT_BYTES * 8
-_MAX_ZIP_TOTAL_BYTES = MAX_TEXT_BYTES * 8
-_MAX_ZIP_ARCHIVE_BYTES = MAX_TEXT_BYTES * 8
-
-
-def _zip_declared_member_count(tail: bytes) -> int | None:
-    """Read the classic EOCD member count without materializing ZipInfo objects."""
-    marker = b"PK\x05\x06"
-    offset = tail.rfind(marker)
-    while offset >= 0:
-        if len(tail) >= offset + 22:
-            comment_length = int.from_bytes(tail[offset + 20 : offset + 22], "little")
-            if offset + 22 + comment_length == len(tail):
-                count = int.from_bytes(tail[offset + 10 : offset + 12], "little")
-                # ZIP64 uses 0xffff as a sentinel; such an archive already exceeds our
-                # member budget and is intentionally rejected.
-                return _MAX_ZIP_MEMBER_COUNT + 1 if count == 0xFFFF else count
-        offset = tail.rfind(marker, 0, offset)
-    return None
 
 
 def _assets_from_zip(path: Path) -> list[SourceAsset]:
     try:
-        if path.stat().st_size > _MAX_ZIP_ARCHIVE_BYTES:
-            return []
-        with path.open("rb") as handle:
-            handle.seek(max(0, path.stat().st_size - 65_557))
-            declared_members = _zip_declared_member_count(handle.read())
-        if declared_members is None or declared_members > _MAX_ZIP_MEMBER_COUNT:
-            return []
         with zipfile.ZipFile(path) as archive:
-            return _assets_from_open_zip(
-                archive,
-                str(path),
-                depth=0,
-                member_budget=[_MAX_ZIP_MEMBER_COUNT],
-                byte_budget=[_MAX_ZIP_TOTAL_BYTES],
-            )
+            return _assets_from_open_zip(archive, str(path), depth=0, budget=[_MAX_ZIP_MEMBER_COUNT])
     except (zipfile.BadZipFile, OSError):
         return [SourceAsset(name=path.name, display_path=str(path), filesystem_path=path)]
 
 
 def _assets_from_open_zip(
-    archive: zipfile.ZipFile,
-    display_root: str,
-    *,
-    depth: int,
-    member_budget: list[int],
-    byte_budget: list[int],
+    archive: zipfile.ZipFile, display_root: str, *, depth: int, budget: list[int]
 ) -> list[SourceAsset]:
     assets: list[SourceAsset] = []
-    infos = archive.infolist()
-    if len(infos) > member_budget[0]:
-        return assets
-    for info in infos:
-        if member_budget[0] <= 0 or byte_budget[0] <= 0:
+    for info in archive.infolist():
+        if budget[0] <= 0:
             break
-        member_budget[0] -= 1
         if info.is_dir():
             continue
         name = info.filename
@@ -1325,45 +1282,33 @@ def _assets_from_open_zip(
         if Path(name).suffix.lower() == ".zip":
             # Expand a nested export archive one more level (Notion multi-part
             # exports), guarding against deep nesting and oversized inner zips.
-            if (
-                depth >= _MAX_INNER_ZIP_DEPTH
-                or info.file_size > _MAX_INNER_ZIP_BYTES
-                or info.file_size > byte_budget[0]
-            ):
+            if depth >= _MAX_INNER_ZIP_DEPTH or info.file_size > _MAX_INNER_ZIP_BYTES:
                 continue
+            budget[0] -= 1
             try:
                 inner_bytes = archive.read(info)
-                byte_budget[0] -= len(inner_bytes)
-                declared_members = _zip_declared_member_count(inner_bytes[-65_557:])
-                if declared_members is None or declared_members > member_budget[0]:
-                    continue
                 with zipfile.ZipFile(io.BytesIO(inner_bytes)) as inner:
                     assets.extend(
                         _assets_from_open_zip(
-                            inner,
-                            f"{display_root}::{name}",
-                            depth=depth + 1,
-                            member_budget=member_budget,
-                            byte_budget=byte_budget,
+                            inner, f"{display_root}::{name}", depth=depth + 1, budget=budget
                         )
                     )
             except (KeyError, RuntimeError, zipfile.BadZipFile, OSError):
                 continue
             continue
-        read_limit = min(MAX_TEXT_BYTES, byte_budget[0])
-        truncated = info.file_size > read_limit
+        budget[0] -= 1
+        truncated = info.file_size > MAX_TEXT_BYTES
         try:
             if truncated:
                 # Oversized members used to be skipped entirely — silent
-                # whole-file loss. Stream only the per-file/aggregate bytes
-                # still available and mark the asset truncated instead.
+                # whole-file loss. Stream the first MAX_TEXT_BYTES and
+                # mark the asset truncated instead.
                 with archive.open(info) as member:
-                    data = member.read(read_limit)
+                    data = member.read(MAX_TEXT_BYTES)
             else:
                 data = archive.read(info)
         except (KeyError, RuntimeError, zipfile.BadZipFile):
             continue
-        byte_budget[0] -= len(data)
         assets.append(SourceAsset(name=name, display_path=f"{display_root}::{name}", data=data, read_truncated=truncated))
     return assets
 

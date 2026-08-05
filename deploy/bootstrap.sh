@@ -15,13 +15,11 @@ echo "=============================================================="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq python3 python3-venv python3-pip ufw fail2ban unattended-upgrades \
-  sqlite3 curl age debian-keyring debian-archive-keyring apt-transport-https gnupg
+  sqlite3 curl debian-keyring debian-archive-keyring apt-transport-https gnupg
 
 id -u cortex >/dev/null 2>&1 || useradd --system --home /srv/cortex --shell /usr/sbin/nologin cortex
 mkdir -p /srv/cortex/releases /var/lib/cortex/shards /var/lib/cortex/backups /etc/cortex
-chown root:root /srv/cortex /srv/cortex/releases
-chmod 0755 /srv/cortex /srv/cortex/releases
-chown -R cortex:cortex /var/lib/cortex
+chown -R cortex:cortex /srv/cortex /var/lib/cortex
 
 # Firewall: SSH + HTTP(S) only.
 ufw allow OpenSSH >/dev/null
@@ -72,34 +70,12 @@ else
   FIRST_INSTALL=0
 fi
 
-# Backups use a dedicated public-key recipient. The private age identity is required
-# only for disaster recovery and must be escrowed separately from backup archives.
-BACKUP_AGE_IDENTITY=/etc/cortex/backup-age.key
-if [ ! -f "$BACKUP_AGE_IDENTITY" ]; then
-  age-keygen -o "$BACKUP_AGE_IDENTITY"
-  chown root:root "$BACKUP_AGE_IDENTITY"
-  chmod 0400 "$BACKUP_AGE_IDENTITY"
-  BACKUP_IDENTITY_CREATED=1
-else
-  BACKUP_IDENTITY_CREATED=0
-fi
-BACKUP_AGE_RECIPIENT="$(age-keygen -y "$BACKUP_AGE_IDENTITY")"
-if ! grep -q '^BACKUP_AGE_RECIPIENT=' "$ENV_FILE"; then
-  printf 'BACKUP_AGE_RECIPIENT=%s\n' "$BACKUP_AGE_RECIPIENT" >> "$ENV_FILE"
-fi
-
 # --- 4. Python env + release switch -------------------------------------------
 python3 -m venv /srv/cortex/venv 2>/dev/null || true
 /srv/cortex/venv/bin/pip install --quiet --upgrade pip
-/srv/cortex/venv/bin/pip install --quiet --require-hashes \
-  -r "$RELEASE_DIR/backend/requirements.lock"
-/srv/cortex/venv/bin/pip install --quiet --require-hashes \
-  -r "$RELEASE_DIR/backend/runtime-requirements.lock"
+/srv/cortex/venv/bin/pip install --quiet -r "$RELEASE_DIR/backend/requirements.txt" -r "$RELEASE_DIR/backend/runtime-requirements.txt" uvicorn
 ln -sfn "$RELEASE_DIR" /srv/cortex/current
-# Release code includes scripts that an operator executes as root during updates
-# and rollback. Keep it immutable to the unprivileged service account; all runtime
-# writes are explicitly confined to /var/lib/cortex by the systemd units.
-chown -R root:root /srv/cortex/releases
+chown -R cortex:cortex /srv/cortex/releases
 
 # --- 5. systemd services -------------------------------------------------------
 cp "$RELEASE_DIR"/deploy/systemd/cortex-api.service /etc/systemd/system/
@@ -112,7 +88,7 @@ systemctl enable --now cortex-api cortex-worker cortex-backup.timer
 
 # --- 6. Smoke ------------------------------------------------------------------
 sleep 3
-for _ in $(seq 1 30); do
+for i in $(seq 1 30); do
   if curl -fsS -o /dev/null "http://127.0.0.1:8766/health" -H "Authorization: Bearer $(grep '^CORTEX_API_KEY=' "$ENV_FILE" | cut -d= -f2)"; then
     break
   fi
@@ -123,16 +99,11 @@ curl -fsS "http://127.0.0.1:8766/health" -H "Authorization: Bearer $(grep '^CORT
 echo "==> Public check (TLS may take ~30s on first issue): https://$API_DOMAIN/health"
 
 echo "=============================================================="
-echo " DONE."
+echo " DONE. Store these NOW (shown once):"
 if [ "$FIRST_INSTALL" = "1" ]; then
-  echo "   New admin token: stored in $ENV_FILE (not printed)"
-  echo "   New KEK        : stored in /etc/cortex/kek (not printed)"
+  echo "   Admin token : $(grep '^CORTEX_API_KEY=' "$ENV_FILE" | cut -d= -f2)"
+  echo "   KEK (escrow offline + password manager): $(cat /etc/cortex/kek)"
 fi
-if [ "$BACKUP_IDENTITY_CREATED" = "1" ]; then
-  echo "   Backup identity: stored in $BACKUP_AGE_IDENTITY (not printed)"
-fi
-echo "   Escrow the KEK and backup identity separately using an interactive,"
-echo "   non-logged session. Do not copy them into deployment output."
 echo "   Env file    : /etc/cortex/cortex.env"
 echo "   API         : https://$API_DOMAIN   (health/ready)"
 echo "   Services    : systemctl status cortex-api cortex-worker caddy"

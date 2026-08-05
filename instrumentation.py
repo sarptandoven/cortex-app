@@ -1,5 +1,5 @@
 """
-legacy/instrumentation.py
+cortex/instrumentation.py
 --------------------------
 Centralized Arize AX tracing setup.
 

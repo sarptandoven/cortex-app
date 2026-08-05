@@ -5,7 +5,7 @@ import Foundation
 import SwiftUI
 import Carbon
 import Security
-@preconcurrency import UserNotifications
+import UserNotifications
 import Darwin
 import UniformTypeIdentifiers
 

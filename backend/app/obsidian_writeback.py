@@ -71,9 +71,7 @@ def safe_page_stem(name: str, fallback: str = "page") -> str:
 def person_page_filename(entity_id: str, name: str) -> str:
     """``<slug>--<hash12>.md`` — slug for human browsing, hash so the page survives label
     edits/collisions (same scheme as the native vault's entity MOC pages)."""
-    short = hashlib.sha1(
-        str(entity_id or "").encode("utf-8"), usedforsecurity=False
-    ).hexdigest()[:12]
+    short = hashlib.sha1(str(entity_id or "").encode("utf-8")).hexdigest()[:12]
     return f"{safe_page_stem(name, 'person')}--{short}.md"
 
 

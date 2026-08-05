@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,13 +51,6 @@ class Settings:
     store_cache_size: int = 512
     rate_limit_per_minute: int = 0
     default_memory_quota: int = 0
-    pairwise_preflight_max_provider_calls: int = 1_000
-    pairwise_preflight_max_total_tokens: int = 10_000_000
-    pairwise_preflight_max_duration_seconds: float = 86_400
-    pairwise_preflight_max_parallel_generations: int = 1
-    pairwise_preflight_max_parallel_judgments: int = 1
-    pairwise_admission_signing_key: str = ""
-    pairwise_admission_receipt_ttl_seconds: int = 15 * 60
     require_scoped_api_tokens: bool = False
     sync_signing_key: str = ""
     hosted_database_url: str = ""
@@ -88,8 +80,6 @@ class Settings:
     auth_access_ttl_seconds: int = 0  # 0 = authn.py default (1h)
     auth_refresh_idle_ttl_seconds: int = 0  # 0 = authn.py default (30d sliding)
     auth_refresh_absolute_ttl_seconds: int = 0  # 0 = authn.py default (90d absolute)
-    # Fail closed for hosted account creation until approved legal text is live.
-    legal_terms_approved: bool = False
     auth_email_mode: str = "log"  # "log" (console sink) | "smtp"
     # SMTP delivery (used only when auth_email_mode == "smtp"). Read from
     # CORTEX_SMTP_*. If mode is "smtp" but no host is configured, AuthRuntime
@@ -200,22 +190,6 @@ def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _positive_int_env(name: str, default: int) -> int:
-    try:
-        value = int(os.environ.get(name, str(default)) or str(default))
-    except (TypeError, ValueError):
-        return default
-    return value if value > 0 else default
-
-
-def _positive_float_env(name: str, default: float) -> float:
-    try:
-        value = float(os.environ.get(name, str(default)) or str(default))
-    except (TypeError, ValueError):
-        return default
-    return value if math.isfinite(value) and value > 0 else default
-
-
 def _load_plan_quotas() -> dict[str, int] | None:
     """Parse CORTEX_PLAN_QUOTAS (JSON object mapping plan name -> int quota).
     Malformed input falls back to the baked-in defaults so a bad env can never
@@ -263,16 +237,7 @@ def load_settings() -> Settings:
         or bool(oidc_apple_client_id)
         or bool(accounts_db_env)
     )
-    configured_public_base = os.environ.get("CORTEX_PUBLIC_BASE_URL", "").strip()
-    if configured_public_base:
-        public_base_url = configured_public_base
-    else:
-        # Development servers can move off 8766 when the desktop app already owns
-        # that port. Keep discovery and generated callback URLs on the same origin.
-        configured_port = int(os.environ.get("CORTEX_PORT", "8766") or "8766")
-        if configured_port < 1 or configured_port > 65535:
-            raise ValueError("CORTEX_PORT must be between 1 and 65535")
-        public_base_url = f"http://127.0.0.1:{configured_port}"
+    public_base_url = os.environ.get("CORTEX_PUBLIC_BASE_URL", "http://127.0.0.1:8766")
     api_key = os.environ.get("CORTEX_API_KEY", "").strip()
     if api_key == INSECURE_DEV_API_KEY and not _truthy_env("CORTEX_ALLOW_INSECURE_DEV_TOKEN"):
         raise RuntimeError(
@@ -293,37 +258,6 @@ def load_settings() -> Settings:
         store_cache_size=max(1, int(os.environ.get("CORTEX_STORE_CACHE_SIZE", "512") or "512")),
         rate_limit_per_minute=max(0, int(os.environ.get("CORTEX_RATE_LIMIT_PER_MINUTE", "0") or "0")),
         default_memory_quota=max(0, int(os.environ.get("CORTEX_DEFAULT_MEMORY_QUOTA", "0") or "0")),
-        pairwise_preflight_max_provider_calls=_positive_int_env(
-            "CORTEX_PAIRWISE_MAX_PROVIDER_CALLS",
-            1_000,
-        ),
-        pairwise_preflight_max_total_tokens=_positive_int_env(
-            "CORTEX_PAIRWISE_MAX_TOTAL_TOKENS",
-            10_000_000,
-        ),
-        pairwise_preflight_max_duration_seconds=_positive_float_env(
-            "CORTEX_PAIRWISE_MAX_DURATION_SECONDS",
-            86_400,
-        ),
-        pairwise_preflight_max_parallel_generations=_positive_int_env(
-            "CORTEX_PAIRWISE_MAX_PARALLEL_GENERATIONS",
-            1,
-        ),
-        pairwise_preflight_max_parallel_judgments=_positive_int_env(
-            "CORTEX_PAIRWISE_MAX_PARALLEL_JUDGMENTS",
-            1,
-        ),
-        pairwise_admission_signing_key=os.environ.get(
-            "CORTEX_PAIRWISE_ADMISSION_SIGNING_KEY",
-            "",
-        ),
-        pairwise_admission_receipt_ttl_seconds=min(
-            _positive_int_env(
-                "CORTEX_PAIRWISE_ADMISSION_RECEIPT_TTL_SECONDS",
-                15 * 60,
-            ),
-            60 * 60,
-        ),
         require_scoped_api_tokens=require_scoped_api_tokens,
         sync_signing_key=os.environ.get("CORTEX_SYNC_SIGNING_KEY", ""),
         hosted_database_url=os.environ.get("CORTEX_HOSTED_DATABASE_URL", os.environ.get("DATABASE_URL", "")).strip(),
@@ -343,7 +277,6 @@ def load_settings() -> Settings:
         auth_access_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_ACCESS_TTL_SECONDS", "0") or "0")),
         auth_refresh_idle_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_REFRESH_IDLE_TTL_SECONDS", "0") or "0")),
         auth_refresh_absolute_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_REFRESH_ABSOLUTE_TTL_SECONDS", "0") or "0")),
-        legal_terms_approved=_truthy_env("CORTEX_LEGAL_TERMS_APPROVED"),
         auth_email_mode=(os.environ.get("CORTEX_AUTH_EMAIL_MODE", "log").strip().lower() or "log"),
         smtp_host=os.environ.get("CORTEX_SMTP_HOST", "").strip(),
         smtp_port=max(1, int(os.environ.get("CORTEX_SMTP_PORT", "587") or "587")),

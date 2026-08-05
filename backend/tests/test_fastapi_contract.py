@@ -17,7 +17,6 @@ os.environ["CORTEX_API_KEY"] = "test-token"
 from fastapi.testclient import TestClient
 
 from backend.app import main as main_module
-from backend.app.keyring import LocalKekProvider, UserKeyring
 from backend.app.provenance import sign_shared_write
 from backend.tests.test_decision_history import CURRENT_DECISION_ID, CURRENT_SOURCE_URL, seed_decision_history_fixture
 
@@ -82,62 +81,6 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertTrue(citation["source_url"].startswith(source_url_prefix))
         self.assertIn("line=", citation["source_url"])
         self.assertIn("excerpt=", citation["source_url"])
-
-    def test_openapi_schema_generates_with_unique_operation_ids(self) -> None:
-        schema = app.openapi()
-        self.assertEqual(schema["openapi"], "3.1.0")
-        self.assertIn("/v1/context", schema["paths"])
-        self.assertIn("/oauth/broker/exchange", schema["paths"])
-
-        operation_ids = [
-            operation["operationId"]
-            for path_item in schema["paths"].values()
-            for operation in path_item.values()
-            if isinstance(operation, dict) and "operationId" in operation
-        ]
-        self.assertTrue(operation_ids)
-        self.assertEqual(len(operation_ids), len(set(operation_ids)))
-        self.assertEqual(
-            schema["paths"]["/v1/context"]["post"]["operationId"],
-            "post_v1_context",
-        )
-        bearer = schema["components"]["securitySchemes"]["BearerAuth"]
-        self.assertEqual(bearer["type"], "http")
-        self.assertEqual(bearer["scheme"], "bearer")
-        self.assertIn(
-            {"BearerAuth": []},
-            schema["paths"]["/v1/context"]["post"]["security"],
-        )
-        request_schema = schema["paths"]["/v1/context"]["post"]["requestBody"][
-            "content"
-        ]["application/json"]["schema"]
-        self.assertEqual(
-            request_schema["$ref"],
-            "#/components/schemas/ContextRequest",
-        )
-
-    def test_context_post_rejects_unbounded_or_invalid_request_data(self) -> None:
-        headers = {"Authorization": "Bearer test-token"}
-        too_large = self.client.post(
-            "/v1/context",
-            json={"task": "x" * 501},
-            headers=headers,
-        )
-        self.assertEqual(too_large.status_code, 422)
-
-        invalid_budget = self.client.post(
-            "/v1/context",
-            json={"task": "bounded", "token_budget": 100_001},
-            headers=headers,
-        )
-        self.assertEqual(invalid_budget.status_code, 422)
-
-        invalid_format = self.client.post(
-            "/v1/context",
-            json={"task": "bounded", "format": "xml"},
-            headers=headers,
-        )
-        self.assertEqual(invalid_format.status_code, 422)
 
     def test_capture_get_invalid_token_returns_unauthorized_page(self) -> None:
         response = self.client.get("/capture", params={"token": "wrong-token", "content": "Remember this."})
@@ -228,32 +171,22 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("trust_score", payload["ai_access"])
         self.assertIn("events", payload["audit"])
 
-    def test_health_exposes_only_safe_sharding_status(self) -> None:
+    def test_health_exposes_sharding_contract(self) -> None:
         response = self.client.get("/health")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         sharding = payload["sharding"]
         self.assertEqual(sharding["mode"], "local")
-        self.assertEqual(sharding["default_shard_id"], "local")
-        self.assertNotIn("db_path", json.dumps(payload))
-        self.assertNotIn("vault_path", json.dumps(payload))
-        self.assertNotIn("hosted_readiness", payload)
-
-    def test_hosted_health_defers_tenant_wide_readiness_scan(self) -> None:
-        original_settings = main_module.settings
-        main_module.settings = replace(original_settings, shard_mode="bucket")
-        try:
-            with patch(
-                "backend.app.main._cached_credential_encryption_evidence",
-                side_effect=AssertionError("liveness must not scan tenant credentials"),
-            ):
-                response = self.client.get("/health")
-        finally:
-            main_module.settings = original_settings
-
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("hosted_readiness", response.json())
+        self.assertEqual(sharding["default"]["shard_id"], "local")
+        self.assertIn("db_path", sharding["default"])
+        hosted_readiness = payload["hosted_readiness"]
+        self.assertEqual(hosted_readiness["status"], "ok")
+        self.assertFalse(hosted_readiness["hosted_mode"])
+        self.assertEqual(hosted_readiness["shard_mode"], "local")
+        self.assertFalse(hosted_readiness["require_scoped_api_tokens"])
+        self.assertEqual(hosted_readiness["global_token_user_switching"], "allowed_local_compatibility")
+        self.assertEqual(hosted_readiness["checks"][0]["name"], "scoped_api_tokens_required")
 
     def test_ready_requires_scoped_api_tokens_for_hosted_shard_modes(self) -> None:
         original_settings = main_module.settings
@@ -263,10 +196,15 @@ class FastAPIContractTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 503)
             detail = response.json()["detail"]
-            self.assertEqual(
-                detail,
-                {"status": "not_ready", "check": "hosted_configuration"},
-            )
+            self.assertEqual(detail["status"], "needs_configuration")
+            hosted_readiness = detail["hosted_readiness"]
+            self.assertEqual(hosted_readiness["status"], "blocked")
+            self.assertTrue(hosted_readiness["hosted_mode"])
+            self.assertEqual(hosted_readiness["shard_mode"], "bucket")
+            self.assertFalse(hosted_readiness["require_scoped_api_tokens"])
+            self.assertEqual(hosted_readiness["global_token_user_switching"], "blocked")
+            self.assertEqual(hosted_readiness["checks"][0]["status"], "blocked")
+            self.assertIn("CORTEX_REQUIRE_SCOPED_API_TOKENS=1", hosted_readiness["checks"][0]["detail"])
         finally:
             main_module.settings = original_settings
 
@@ -475,8 +413,6 @@ class FastAPIContractTests(unittest.TestCase):
                 default_user_id="hosted-default",
                 shard_mode="bucket",
                 require_scoped_api_tokens=True,
-                require_encrypted_credentials=True,
-                legal_terms_approved=True,
                 public_base_url="https://api.cortex-hq.com",
                 sync_signing_key="sync-signing-key",
                 hosted_database_url="postgresql://cortex:secret@db.cortex.internal/cortex",
@@ -490,26 +426,13 @@ class FastAPIContractTests(unittest.TestCase):
             )
             main_module.settings = hosted_settings
             main_module.store = main_module.StoreRegistry.from_settings(hosted_settings)
-            main_module.store.keyring = UserKeyring(
-                root / "keyring.sqlite",
-                LocalKekProvider(
-                    env={
-                        "CORTEX_KEK": base64.b64encode(bytes(range(32))).decode("ascii"),
-                    }
-                ),
-            )
             user = "hosted-ready-contract"
 
             response = self.client.get("/ready")
             self.assertEqual(response.status_code, 503)
-            self.assertEqual(
-                response.json()["detail"],
-                {"status": "not_ready", "check": "hosted_configuration"},
-            )
-            hosted_readiness = main_module._hosted_readiness_contract()
             blocked = {
                 check["name"]
-                for check in hosted_readiness["checks"]
+                for check in response.json()["detail"]["hosted_readiness"]["checks"]
                 if check["status"] == "blocked"
             }
             self.assertEqual(blocked, {"runtime_hosted_storage", "background_worker_queue", "control_plane_scoped_tokens"})
@@ -519,10 +442,9 @@ class FastAPIContractTests(unittest.TestCase):
             main_module.store.ensure_mcp_token(split_user, "cxm_hosted_ready_split_mcp_token_123456789", label="Hosted MCP", scopes=["read"])
             split_ready = self.client.get("/ready")
             self.assertEqual(split_ready.status_code, 503)
-            hosted_readiness = main_module._hosted_readiness_contract()
             split_blocked = {
                 check["name"]
-                for check in hosted_readiness["checks"]
+                for check in split_ready.json()["detail"]["hosted_readiness"]["checks"]
                 if check["status"] == "blocked"
             }
             self.assertEqual(split_blocked, {"runtime_hosted_storage", "background_worker_queue", "control_plane_scoped_tokens"})
@@ -531,7 +453,7 @@ class FastAPIContractTests(unittest.TestCase):
 
             ready = self.client.get("/ready")
             self.assertEqual(ready.status_code, 503)
-            hosted_readiness = main_module._hosted_readiness_contract()
+            hosted_readiness = ready.json()["detail"]["hosted_readiness"]
             runtime_blocked = {
                 check["name"]
                 for check in hosted_readiness["checks"]
@@ -1107,23 +1029,6 @@ class FastAPIContractTests(unittest.TestCase):
         bad_format = self.client.post("/v1/context", json={"task": "x", "format": "yaml"}, headers=headers)
         self.assertEqual(bad_format.status_code, 422)
 
-        for method in ("get", "post"):
-            with self.subTest(method=method):
-                if method == "get":
-                    invalid_session = self.client.get(
-                        "/v1/context",
-                        params={"task": "Atlas database decision", "pin": True, "session_id": "asess_missing"},
-                        headers=headers,
-                    )
-                else:
-                    invalid_session = self.client.post(
-                        "/v1/context",
-                        json={"task": "Atlas database decision", "pin": True, "session_id": "asess_missing"},
-                        headers=headers,
-                    )
-                self.assertEqual(invalid_session.status_code, 422)
-                self.assertIn("Unknown agent session", invalid_session.json()["detail"])
-
         # A READ-scoped API token can use the engine AND receives the identity layer — the
         # distilled picture of the user is a read, which is the whole point of the product.
         read_token = "cxa-context-read-token"
@@ -1139,23 +1044,8 @@ class FastAPIContractTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
         )
         self.assertEqual(scoped.status_code, 200)
-        scoped_payload = scoped.json()
-        scoped_identity = next(layer for layer in scoped_payload["layers"] if layer["layer"] == "identity")
+        scoped_identity = next(layer for layer in scoped.json()["layers"] if layer["layer"] == "identity")
         self.assertIsNone(scoped_identity.get("omitted"))
-        scoped_post = self.client.post(
-            "/v1/context",
-            json={"task": "Atlas database decision"},
-            headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
-        )
-        self.assertEqual(scoped_post.status_code, 200)
-        scoped_post_payload = scoped_post.json()
-        scoped_post_identity = next(
-            layer for layer in scoped_post_payload["layers"] if layer["layer"] == "identity"
-        )
-        self.assertIsNone(scoped_post_identity.get("omitted"))
-        scoped_payload.pop("generated_at", None)
-        scoped_post_payload.pop("generated_at", None)
-        self.assertEqual(scoped_payload, scoped_post_payload)
 
         # The MCP core tool round-trips through /mcp with the same engine.
         mcp_token = "cxm-context-tool-token"
@@ -2140,32 +2030,6 @@ class FastAPIContractTests(unittest.TestCase):
                 headers={"Authorization": f"Bearer {scoped_token}", "X-Cortex-User": "alice"},
             )
             self.assertEqual(scoped.status_code, 200)
-
-            tool_headers = {
-                "Authorization": f"Bearer {scoped_token}",
-                "X-Cortex-User": "alice",
-            }
-            tool_schema = self.client.get(
-                "/v1/tools/schema",
-                headers=tool_headers,
-            )
-            self.assertEqual(tool_schema.status_code, 200, tool_schema.text)
-            self.assertTrue(tool_schema.json()["schema"])
-            tool_call = self.client.post(
-                "/v1/tools/call",
-                json={"name": "search_memory", "arguments": {"query": "nothing"}},
-                headers=tool_headers,
-            )
-            self.assertEqual(tool_call.status_code, 200, tool_call.text)
-            self.assertEqual(tool_call.json()["tool"], "search_memory")
-
-            # The REST token remains invalid on the MCP transport.
-            mcp_rejected = self.client.post(
-                "/mcp",
-                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-                headers=tool_headers,
-            )
-            self.assertEqual(mcp_rejected.status_code, 401)
 
             # A read/write token still cannot pull the raw bulk dump (distilled reads are allowed).
             export_blocked = self.client.get(

@@ -1,17 +1,9 @@
 .env
 .context/
 venv/
-.venv/
 __pycache__/
 *.pyc
-.coverage
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-htmlcov/
-*.egg-info/
 .DS_Store
-.idea/
 node_modules/
 npm-debug.log*
 backend/data/

@@ -183,13 +183,7 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
   # not reject on these symbols) so outbound HTTPS connectors remain available.
   DYNLOAD="$PY_STDLIB/lib-dynload"
   strip_ext() { # $1 = glob under lib-dynload
-    for f in "$DYNLOAD"/$1; do
-      if [[ -e "$f" ]]; then
-        rm -f "$f"
-        echo "  pruned $(basename "$f")"
-      fi
-    done
-    return 0
+    for f in "$DYNLOAD"/$1; do [[ -e "$f" ]] && rm -f "$f" && echo "  pruned $(basename "$f")"; done
   }
   echo "Pruning non-public-API C extensions (_tkinter always; _ssl in app-store mode)..."
   strip_ext "_tkinter*.so"
@@ -270,9 +264,8 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
     "$PYTHON_FRAMEWORK_SOURCE/bin/python3.12" -m pip install \
       --disable-pip-version-check \
       --only-binary=:all: \
-      --require-hashes \
       --target "$PY_RUNTIME_DEPS" \
-      -r "$ROOT/../backend/runtime-requirements.lock"
+      -r "$ROOT/../backend/runtime-requirements.txt"
     find "$PY_RUNTIME_DEPS" -type d -name "__pycache__" -prune -exec rm -rf {} +
     find "$PY_RUNTIME_DEPS" -type f -name "*.pyc" -delete
     # Notarization hygiene: joblib ships intentionally-truncated .gz test pickles that the

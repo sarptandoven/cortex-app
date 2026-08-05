@@ -3,7 +3,7 @@ import ApplicationServices
 import Carbon
 import CoreGraphics
 import SwiftUI
-@preconcurrency import Vision
+import Vision
 
 // MARK: - KeyCombo
 

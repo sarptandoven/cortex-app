@@ -1,3 +1,7 @@
+I have verified all the load-bearing claims against the actual code. I have everything I need to produce the design.
+
+---
+
 # Phase-2 Local→Hosted Background Push-Sync — Implementation Design
 
 All claims below are grounded in the actual code. Key verified facts:

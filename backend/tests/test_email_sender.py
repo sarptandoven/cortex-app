@@ -271,8 +271,7 @@ class AuthRuntimeSmtpIntegrationTests(AuthEnabledTestCase):
 
     def test_signup_calls_sender_once_with_verification_recipient(self) -> None:
         resp = self.client.post(
-            "/v1/auth/signup",
-            json={"email": "new@example.com", "password": PASSWORD, "terms_accepted": True, "age_confirmed": True},
+            "/v1/auth/signup", json={"email": "new@example.com", "password": PASSWORD}
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(len(self.recording.calls), 1)
@@ -286,8 +285,7 @@ class AuthRuntimeSmtpIntegrationTests(AuthEnabledTestCase):
     def test_send_failure_does_not_break_signup_and_keeps_outbox(self) -> None:
         self.recording.fail = True
         resp = self.client.post(
-            "/v1/auth/signup",
-            json={"email": "flaky@example.com", "password": PASSWORD, "terms_accepted": True, "age_confirmed": True},
+            "/v1/auth/signup", json={"email": "flaky@example.com", "password": PASSWORD}
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(len(self.recording.calls), 1)
@@ -313,8 +311,7 @@ class AuthRuntimeSmtpMisconfigTests(AuthEnabledTestCase):
         # The sender must be a LogEmailSender, not an SmtpEmailSender.
         self.assertIsInstance(self.runtime.email_sender, LogEmailSender)
         resp = self.client.post(
-            "/v1/auth/signup",
-            json={"email": "beta@example.com", "password": PASSWORD, "terms_accepted": True, "age_confirmed": True},
+            "/v1/auth/signup", json={"email": "beta@example.com", "password": PASSWORD}
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         # outbox has the canonical token record — nothing lost.

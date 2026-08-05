@@ -10,7 +10,7 @@ suites. Covers:
 - enumeration-resistant response shapes
 - cxs_ works on data routes but is REJECTED by /v1/admin/* and /mcp
 - activation provisions the user (registry row + usable shard, NO auto tokens)
-- OAuth callback journeys against a faked transport: consented signup, login, and
+- OAuth callback journeys against a faked transport: auto-signup, login, and
   the never-silent-auto-link link_required challenge
 - app start/poll handoff: poll_secret single-use, no token in any URL
 - self-serve cxa_ mint (account_id linkage) that then authenticates
@@ -85,7 +85,6 @@ class AuthEnabledTestCase(unittest.TestCase):
             shard_mode=self.shard_mode,
             default_user_id="hosted-default",
             require_scoped_api_tokens=True,
-            legal_terms_approved=True,
             auth_enabled=True,
             accounts_db_path=None,
             auth_email_mode="log",
@@ -127,13 +126,7 @@ class AuthEnabledTestCase(unittest.TestCase):
 
     def _signup_and_verify(self, email: str = "user@example.com") -> dict[str, Any]:
         response = self.client.post(
-            "/v1/auth/signup",
-            json={
-                "email": email,
-                "password": PASSWORD,
-                "terms_accepted": True,
-                "age_confirmed": True,
-            },
+            "/v1/auth/signup", json={"email": email, "password": PASSWORD}
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), {"ok": True, "next": "verify_email"})
@@ -150,35 +143,6 @@ class AuthEnabledTestCase(unittest.TestCase):
         response = self.client.post("/v1/auth/login", json={"email": email, "password": password})
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
-
-    def test_hosted_signup_requires_explicit_legal_and_age_consent(self) -> None:
-        response = self.client.post(
-            "/v1/auth/signup",
-            json={"email": "no-consent@example.com", "password": PASSWORD},
-        )
-        self.assertEqual(response.status_code, 422, response.text)
-        self.assertIsNone(
-            self.runtime.control_store.get_account_by_email("no-consent@example.com")
-        )
-
-    def test_hosted_signup_is_disabled_until_legal_text_is_approved(self) -> None:
-        original = main_module.settings
-        main_module.settings = replace(original, legal_terms_approved=False)
-        try:
-            page = self.client.get("/account/signup")
-            self.assertEqual(page.status_code, 503)
-            response = self.client.post(
-                "/v1/auth/signup",
-                json={
-                    "email": "legal-block@example.com",
-                    "password": PASSWORD,
-                    "terms_accepted": True,
-                    "age_confirmed": True,
-                },
-            )
-            self.assertEqual(response.status_code, 503, response.text)
-        finally:
-            main_module.settings = original
 
     def _bearer(self, token: str) -> dict[str, str]:
         return {"Authorization": f"Bearer {token}"}
@@ -226,21 +190,8 @@ class AuthEnabledTestCase(unittest.TestCase):
         claims.update(overrides)
         return claims
 
-    def _oauth_start(
-        self,
-        app_flow: str | None = None,
-        *,
-        signup: bool = False,
-    ) -> tuple[str, str]:
+    def _oauth_start(self, app_flow: str | None = None) -> tuple[str, str]:
         params = {"app_flow": app_flow} if app_flow else {}
-        if signup:
-            params.update(
-                {
-                    "signup": "true",
-                    "terms_accepted": "true",
-                    "age_confirmed": "true",
-                }
-            )
         started = self.client.get("/v1/auth/oauth/google/start", params=params)
         self.assertEqual(started.status_code, 200, started.text)
         state = started.json()["state"]
@@ -311,13 +262,7 @@ class EmailPasswordJourneyTests(AuthEnabledTestCase):
         main_module.settings = replace(main_module.settings, auth_autoverify=True)
         try:
             response = self.client.post(
-                "/v1/auth/signup",
-                json={
-                    "email": "beta@example.com",
-                    "password": PASSWORD,
-                    "terms_accepted": True,
-                    "age_confirmed": True,
-                },
+                "/v1/auth/signup", json={"email": "beta@example.com", "password": PASSWORD}
             )
             self.assertEqual(response.status_code, 200, response.text)
             # Identical generic shape to the non-autoverify path — no enumeration signal.
@@ -342,13 +287,7 @@ class EmailPasswordJourneyTests(AuthEnabledTestCase):
         # Default (public) profile: signup stays pending_verification; the safety default.
         self.assertFalse(main_module.settings.auth_autoverify)
         response = self.client.post(
-            "/v1/auth/signup",
-            json={
-                "email": "pending@example.com",
-                "password": PASSWORD,
-                "terms_accepted": True,
-                "age_confirmed": True,
-            },
+            "/v1/auth/signup", json={"email": "pending@example.com", "password": PASSWORD}
         )
         self.assertEqual(response.status_code, 200, response.text)
         account = self.runtime.control_store.get_account_by_email("pending@example.com")
@@ -356,22 +295,10 @@ class EmailPasswordJourneyTests(AuthEnabledTestCase):
 
     def test_enumeration_resistant_shapes(self) -> None:
         first = self.client.post(
-            "/v1/auth/signup",
-            json={
-                "email": "dupe@example.com",
-                "password": PASSWORD,
-                "terms_accepted": True,
-                "age_confirmed": True,
-            },
+            "/v1/auth/signup", json={"email": "dupe@example.com", "password": PASSWORD}
         )
         second = self.client.post(
-            "/v1/auth/signup",
-            json={
-                "email": "dupe@example.com",
-                "password": PASSWORD,
-                "terms_accepted": True,
-                "age_confirmed": True,
-            },
+            "/v1/auth/signup", json={"email": "dupe@example.com", "password": PASSWORD}
         )
         self.assertEqual(first.status_code, second.status_code)
         self.assertEqual(first.json(), second.json())
@@ -463,26 +390,7 @@ class OAuthJourneyTests(AuthEnabledTestCase):
             ["http://127.0.0.1:8766/v1/auth/oauth/github/callback"],
         )
 
-    def test_login_oauth_cannot_silently_create_an_unknown_account(self) -> None:
-        fake = self._install_fake_google()
-        state, nonce = self._oauth_start()
-        fake["claims"] = self._google_claims(
-            nonce,
-            sub="google-no-consent",
-            email="no-oauth-consent@example.com",
-        )
-        callback = self.client.get(
-            "/v1/auth/oauth/google/callback",
-            params={"code": "auth-code", "state": state},
-        )
-        self.assertEqual(callback.status_code, 409, callback.text)
-        self.assertIsNone(
-            self.runtime.control_store.get_account_by_email(
-                "no-oauth-consent@example.com"
-            )
-        )
-
-    def test_consented_signup_then_login_via_google(self) -> None:
+    def test_auto_signup_then_login_via_google(self) -> None:
         fake = self._install_fake_google()
         providers = self.client.get("/v1/auth/providers")
         self.assertEqual(providers.status_code, 200)
@@ -490,8 +398,8 @@ class OAuthJourneyTests(AuthEnabledTestCase):
         self.assertIn("google", names)
         self.assertNotIn("openai", names)
 
-        # Unknown identity with a provider-verified email and bound consent: signup, ACTIVE.
-        state, nonce = self._oauth_start(signup=True)
+        # Unknown identity with a provider-verified email: auto-signup, ACTIVE.
+        state, nonce = self._oauth_start()
         fake["claims"] = self._google_claims(nonce)
         callback = self.client.get(
             "/v1/auth/oauth/google/callback", params={"code": "auth-code", "state": state}
@@ -588,7 +496,7 @@ class OAuthJourneyTests(AuthEnabledTestCase):
         # value directly to simulate the browser holding it.
         from backend.app import main as _main
         self.client.cookies.set("df_af", _main._app_flow_cookie(flow_id))
-        state, nonce = self._oauth_start(app_flow=flow_id, signup=True)
+        state, nonce = self._oauth_start(app_flow=flow_id)
         authorize_url = self.runtime.control_store.get_flow(state)
         assert authorize_url is not None
         fake["claims"] = self._google_claims(nonce, sub="google-sub-app")
@@ -821,9 +729,6 @@ class EncryptionBackfillTests(AuthEnabledTestCase):
             vault.cipher = cipher
         raw = json.loads(vault.credentials_path.read_text(encoding="utf-8"))
         self.assertIn("payload", raw["users"][user_id]["legacy-acct"])
-        before = main_module._credential_encryption_evidence()
-        self.assertEqual(before["remaining_plaintext"], 1)
-        self.assertTrue(before["scan_complete"])
 
         response = self.client.post("/v1/admin/encryption/backfill", headers=ADMIN)
         self.assertEqual(response.status_code, 200, response.text)
@@ -836,50 +741,8 @@ class EncryptionBackfillTests(AuthEnabledTestCase):
         record = raw_after["users"][user_id]["legacy-acct"]
         self.assertIn("payload_cxe1", record)
         self.assertNotIn("payload", record)
-        after = main_module._credential_encryption_evidence()
-        self.assertEqual(after["remaining_plaintext"], 0)
-        self.assertTrue(after["scan_complete"])
         read_back = vault.read_source_credential(user_id=user_id, source_account_id="legacy-acct")
         self.assertEqual(read_back["payload"]["token"], "legacy-plaintext")
-
-    def test_readiness_counts_plaintext_even_beside_an_envelope(self) -> None:
-        account = self._signup_and_verify(email="partial-migration@example.com")
-        user_id = account["user_id"]
-        vault = main_module.store.store_for_user(user_id).vault
-        cipher = vault.cipher
-        vault.cipher = None
-        try:
-            vault.write_source_credential(
-                user_id=user_id,
-                source_account_id="partial-acct",
-                source="notion",
-                payload={"token": "still-plaintext"},
-            )
-        finally:
-            vault.cipher = cipher
-        raw = json.loads(vault.credentials_path.read_text(encoding="utf-8"))
-        raw["users"][user_id]["partial-acct"]["payload_cxe1"] = "00"
-        vault.credentials_path.write_text(json.dumps(raw), encoding="utf-8")
-
-        evidence = main_module._credential_encryption_evidence()
-
-        self.assertEqual(evidence["remaining_plaintext"], 1)
-        self.assertGreaterEqual(evidence["invalid_records"], 1)
-
-    def test_readiness_evidence_fails_closed_when_scan_is_truncated(self) -> None:
-        account = self._signup_and_verify(email="scan-limit@example.com")
-        vault = main_module.store.store_for_user(account["user_id"]).vault
-        vault.write_source_credential(
-            user_id=account["user_id"],
-            source_account_id="encrypted-acct",
-            source="notion",
-            payload={"token": "encrypted"},
-        )
-
-        evidence = main_module._credential_encryption_evidence(max_files=0)
-
-        self.assertFalse(evidence["scan_complete"])
-        self.assertEqual(evidence["files_scanned"], 0)
 
 
 class AuthDisabledTests(unittest.TestCase):

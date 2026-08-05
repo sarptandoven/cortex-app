@@ -11,14 +11,11 @@ from __future__ import annotations
 
 import tempfile
 import threading
-import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 from backend.app.accounts import SQLiteControlStore
-from backend.app import authn as authn_module
 from backend.app.authn import (
     ACCESS_TOKEN_PREFIX,
     GENERIC_AUTH_FAILURE,
@@ -131,48 +128,6 @@ class PasswordEngineTests(unittest.TestCase):
         engine = PasswordEngine(**CHEAP_ARGON2)
         self.assertFalse(engine.dummy_verify("anything"))
         self.assertFalse(engine.dummy_verify("anything"))  # cached dummy path
-
-    def test_password_work_is_bounded_under_concurrency(self) -> None:
-        state_lock = threading.Lock()
-        active = 0
-        max_active = 0
-
-        class SlowHasher:
-            def hash(self, _password: str) -> str:
-                nonlocal active, max_active
-                with state_lock:
-                    active += 1
-                    max_active = max(max_active, active)
-                try:
-                    time.sleep(0.03)
-                    return "$argon2id$test"
-                finally:
-                    with state_lock:
-                        active -= 1
-
-        engine = PasswordEngine(**CHEAP_SCRYPT)
-        engine._hasher = SlowHasher()
-        errors: list[BaseException] = []
-
-        def worker() -> None:
-            try:
-                engine.hash("bounded-password")
-            except BaseException as exc:  # noqa: BLE001 - assert all worker failures
-                errors.append(exc)
-
-        with patch.object(
-            authn_module,
-            "_PASSWORD_WORK_SLOTS",
-            threading.BoundedSemaphore(2),
-        ):
-            threads = [threading.Thread(target=worker) for _ in range(8)]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join(timeout=2)
-
-        self.assertEqual(errors, [])
-        self.assertEqual(max_active, 2)
 
 
 # ---------------------------------------------------------------------------

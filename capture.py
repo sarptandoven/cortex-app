@@ -1,5 +1,5 @@
 """
-legacy/capture.py
+cortex/capture.py
 -----------------
 Global hotkey capture tool. Lives in your Mac menu bar.
 

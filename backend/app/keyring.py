@@ -49,20 +49,10 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from .keyring_errors import KeyringError
 from .sqlite_runtime import sqlite3
 
 CXE1_MAGIC = b"CXE1"
-PURPOSES = (
-    "credentials",
-    "content",
-    "vault",
-    "backup",
-    "twin_eval_evidence",
-    "twin_eval_report",
-    "twin_eval_execution",
-    "twin_eval_execution_call",
-)
+PURPOSES = ("credentials", "content", "vault", "backup")
 HKDF_INFO_PREFIX = b"cortex:v1:"
 DEFAULT_NONCE_BUDGET = 2**28  # per (user, dek_version); far below the GCM 2^32 bound
 DEFAULT_CACHE_SIZE = 512
@@ -71,6 +61,10 @@ _WRAP_NONCE_LEN = 12
 _DATA_NONCE_LEN = 12
 _GCM_TAG_LEN = 16
 _DEK_LEN = 32
+
+
+class KeyringError(Exception):
+    """Base class for all keyring failures."""
 
 
 class KekConfigError(KeyringError):

@@ -1,15 +1,6 @@
 # Connector Coverage Readiness
 
-This map is the product-facing source coverage plan for the first-100-user beta
-and later managed-OAuth rollout.
-
-> **Implementation status (audited 2026-07-30):** Thirteen read-only connector
-> modules are wired into the local backend. GitHub device-flow sign-in is
-> configured. Managed Google, Microsoft, and Notion OAuth flows are implemented,
-> but the direct build ships those client IDs empty, so token/key setup remains
-> the available path until release configuration supplies them. The executable
-> setup contract in `backend/app/storage.py` overrides older roadmap wording in
-> this document.
+This map is the product-facing source coverage plan for the first-100-user beta and the later live OAuth phase.
 
 ## Phase Definitions
 
@@ -17,12 +8,7 @@ First-100 beta means local-first connected-source setup first. A supported servi
 
 Advanced/Fallback import remains only for unsupported services, migrations, legal exports, and support recovery. It is not the primary product loop and should not be presented as the normal setup path.
 
-Live OAuth means direct cloud sync for services that expose appropriate APIs.
-The source-account sync contract, GitHub device flow, and managed
-Google/Microsoft/Notion OAuth flows are implemented. A release still needs to
-provide the latter three providers' client IDs and validate consent, reconnect,
-rate-limit, deletion, and source-health behavior before presenting them as
-configured sign-in options.
+Live OAuth means direct cloud sync for services that expose appropriate APIs. Cortex now has the local source-account sync ingestion contract, but source-specific OAuth/sign-in flows still need explicit user consent, least-privilege scopes, durable source account health, reconnect states, sync cursors, rate-limit handling, deletion semantics, and product copy that distinguishes account sync from fallback import.
 
 ## Readiness Legend
 
@@ -56,10 +42,10 @@ Representative catalog expectations:
 | ChatGPT | `export-only` | MCP/direct AI-tool bridge where available; fallback export stays Advanced/Fallback. | None. |
 | Claude | `export-only` | MCP/direct AI-tool bridge where available; fallback export stays Advanced/Fallback. | None. |
 | Apple Mail | `import-ready` | Planned permissioned local mail integration; fallback `.eml`, `.emlx`, or `.mbox` stays Advanced/Fallback. | None. |
-| Gmail | `token-ready` | Read-only sync and managed Google OAuth are implemented; the current direct build has no Google client ID, so token setup is the available path. | `gmail.readonly`. |
+| Gmail | `token-ready` | Backend read-only Gmail sync works when a trusted OAuth access token is already available; managed Google sign-in remains planned. | `gmail.readonly`. |
 | Notion | `token-ready` | Read-only page sync works with an internal integration token shared into selected pages; fallback Markdown/CSV/HTML export stays Advanced/Fallback. | `read_content`. |
 | Slack | `token-ready` | Read-only selected channel sync works with a bot or user token; fallback workspace export stays Advanced/Fallback. | `channels:history`, `groups:history`, `channels:read`, `groups:read`. |
-| GitHub | `token-ready` | Read-only issue and pull-request sync supports configured GitHub device flow, with a pasted token as fallback. | `repo:read`. |
+| GitHub | `token-ready` | Read-only GitHub issue and pull request sync works through source-account sync with a user-supplied token; fallback issue, PR, project, CSV, JSON, Markdown, or text export stays Advanced/Fallback. | `repo:read`. |
 | Linear | `token-ready` | Read-only issue sync works with a personal API key. | `read`. |
 | Jira | `token-ready` | Read-only issue sync works with a Jira Cloud site URL, Atlassian account email, and API token. | `read:jira-work`. |
 | Readwise | `token-ready` | Read-only highlight sync works with a user access token. | `read`. |
@@ -87,10 +73,10 @@ First-100 launch copy should still treat MCP AI tools and Obsidian/local notes a
 | Connector | Functional now | Local-only / local-first boundary | Explicitly not promised |
 | --- | --- | --- | --- |
 | Obsidian | Scans a user-selected Markdown/text vault, registers a source account, syncs records through Review, preserves file citations, advances cursors, skips unchanged notes, and supersedes edited notes. | Local folder access only after the user selects the vault. This is the first native first-100 connector. | No Obsidian cloud account sync, no remote vault crawl, and no write-back to notes. |
-| GitHub | Syncs read-only issues and pull requests from selected repositories with stable GitHub citations and cursor-backed source-account state. | GitHub device-flow sign-in is configured; a pasted token remains the advanced fallback. | No GitHub App install, no writes/comments, no project/discussion coverage promise, and no org-wide discovery promise. |
-| Gmail | Syncs read-only messages from Gmail using an explicit access token, query/label filters, pagination, parsed message bodies, and stable message citations. | Managed Google OAuth is implemented but the direct build ships no Google client ID; token setup remains available. | No mailbox writes, no broad label policy UI, and no authorship claims without identity aliases. |
-| Google Drive | Syncs read-only Google Drive files and exported Google Docs/text/HTML content with stable file citations, pagination, and cursor state. | Managed Google OAuth is implemented but the direct build ships no Google client ID; unsupported binaries are skipped. | No Drive writes, no full binary/PDF OCR promise, and no Docs revision UI. |
-| Outlook | Syncs read-only Outlook/Microsoft Graph mail messages with parsed bodies, pagination, and stable message citations. | Managed Microsoft OAuth is implemented but the direct build ships no Microsoft client ID; mail is the current wired slice. | No Outlook writes, no Teams/OneDrive/contacts coverage in this connector, and no broad tenant administration. |
+| GitHub | Syncs read-only issues and pull requests from selected repositories with stable GitHub citations and cursor-backed source-account state. | User-supplied read token at sync time; local backend stores source-account/cursor metadata, not a managed OAuth app flow. | No GitHub OAuth install, no writes/comments, no project/discussion coverage promise, and no org-wide discovery promise. |
+| Gmail | Syncs read-only messages from Gmail using an explicit access token, query/label filters, pagination, parsed message bodies, and stable message citations. | The backend can consume an access token supplied by a local connector or operator path; managed Google sign-in is not shipped. | No managed Gmail OAuth, no mailbox writes, no broad label policy UI, and no authorship claims without identity aliases. |
+| Google Drive | Syncs read-only Google Drive files and exported Google Docs/text/HTML content with stable file citations, pagination, and cursor state. | The backend can consume an access token supplied by a local connector or operator path; unsupported binaries are skipped. | No managed Google OAuth, no Drive writes, no full binary/PDF OCR promise, and no Docs revision UI. |
+| Outlook | Syncs read-only Outlook/Microsoft Graph mail messages with parsed bodies, pagination, and stable message citations. | The backend can consume an access token supplied by a local connector or operator path; mail is the current wired slice. | No managed Microsoft OAuth, no Outlook writes, no Teams/OneDrive/contacts coverage in this connector, and no broad tenant administration. |
 | Slack | Syncs read-only messages from selected channels with Slack permalinks or stable fallback citations and per-channel cursor state. | User-supplied bot/user token and explicit channel list. | No managed Slack OAuth, no broad workspace crawl, no DM/private-channel promise beyond granted scopes, and no automatic user-authorship attribution without aliases. |
 | Readwise | Syncs read-only highlights with pagination, source URLs or stable fallback citations, and source-account cursors. | User-supplied Readwise access token. | No OAuth, no write/highlight management, and no guarantee that unsupported Readwise object types sync. |
 | Calendar | Syncs read-only local `.ics` files or user-provided `.ics` feeds into event records with generated safe citations. | Local file/feed only; private feed URLs are not a product surface. | No Google Calendar/Microsoft OAuth, no system calendar database access, no calendar writes, and no background calendar daemon. |
@@ -98,13 +84,9 @@ First-100 launch copy should still treat MCP AI tools and Obsidian/local notes a
 | Zotero | Syncs read-only items, notes, and annotations through the local desktop API by default, with optional Web API token support and Zotero item citations. | Local API is the default; attachment import is off by default. | No Zotero OAuth, no library writes, and no attachment/PDF content import promise by default. |
 | Linear | Syncs read-only issues with pagination, source URLs or `linear://` fallback citations, and source-account cursors. | User-supplied Linear API key. | No OAuth, no issue writes/comments, no project/team administration, and no workflow mutation. |
 | Jira | Syncs read-only Jira Cloud issues with a site URL, account email, API token, optional JQL, stable browse URLs, and cursor state. | User-supplied Atlassian API token; Jira Cloud path only. | No OAuth, no issue writes/transitions, no full project/changelog coverage promise, and no on-prem Jira guarantee. |
-| Notion | Syncs read-only pages shared with a Notion integration, preserving page IDs, page URLs, pagination, and optional page content. | Managed Notion OAuth is implemented but the direct build ships no Notion client ID; an integration token remains available. | No whole-workspace discovery beyond granted pages, no writes, and no full block/database fidelity promise. |
+| Notion | Syncs read-only pages shared with a Notion internal integration token, preserving page IDs, page URLs, pagination, and optional page content. | User-supplied integration token; only pages shared with the integration are in scope. | No consumer OAuth, no whole-workspace discovery, no writes, and no full block/database fidelity promise. |
 
-Across all thirteen, the current promise is read-only local source-account sync
-into Review and cited Ask. The checklist does not promise that unconfigured
-managed OAuth providers work in a distributed build, nor hosted background
-workers, team administration, two-way service writes, billing/quotas, or
-primary first-run UI placement for every connector.
+Across all thirteen, the current promise is read-only local source-account sync into Review and cited Ask. The checklist explicitly does not promise managed OAuth, secret custody, hosted background workers, hosted deletion/export receipts, team administration, two-way service writes, billing/quotas, or primary first-run UI placement for every connector.
 
 ## Coverage Map
 
@@ -112,11 +94,11 @@ primary first-run UI placement for every connector.
 | --- | --- | --- | --- | --- |
 | ChatGPT / Claude / MCP tools | Connect local AI tools through MCP so assistants can read approved memory and write source records into Review. | Beta ready through MCP bridge. | Direct account import can stay planned; MCP output is the first useful integration surface. | `chatgpt`, `claude`, `mcp`, and canonical AI-tool sources. |
 | Obsidian/Markdown | In-app Obsidian vault connector for Markdown/text notes, with review-first source-account sync. | Beta ready for explicit local vault connection. | Local folder connector first; a background watcher can build on the same cursor contract later. | `obsidian`, `knowledge-base`, and `docs`. |
-| Gmail | Advanced read-only Gmail connector backed by source-account sync with an explicit access token. | Backend and managed OAuth flow are wired; the direct build's Google client ID is empty. | Configure and validate the shipped Google OAuth client before making managed sign-in a release promise. | `gmail` maps to canonical `email`. |
+| Gmail | Advanced read-only Gmail connector backed by source-account sync with an explicit access token. | Backend wired; managed OAuth planned; export remains Advanced/Fallback for unsupported setup. | OAuth planned with read-only mail scopes, incremental cursors, reconnect, and label/thread preservation. | `gmail` maps to canonical `email`. |
 | Apple Mail | Planned permissioned local mail connector; fallback export stays Advanced/Fallback. | Beta conditional. | Local/import only unless a safe permissioned local integration is added. | `apple-mail` maps to canonical `email`. |
-| Outlook | Advanced read-only Outlook mail connector backed by source-account sync with an explicit Microsoft Graph access token. | Backend and managed OAuth flow are wired for mail; the direct build's Microsoft client ID is empty. | Configure the shipped OAuth client before broadening coverage to calendar, contacts, or files. | `outlook` maps to `email`, `calendar`, `contacts`, and `cloud-docs`. |
-| Notion | Advanced Notion integration-token connector backed by source-account sync for pages shared with the integration. | Backend and managed OAuth flow are wired; the direct build's Notion client ID is empty. | Configure and validate the shipped Notion OAuth client before making one-click sign-in a release promise. | `notion`. |
-| Google Drive/Docs | Advanced read-only Drive connector backed by source-account sync with an explicit access token; Google Docs export is supported through Drive. | Backend and managed OAuth flow are wired; the direct build's Google client ID is empty. | Configure and validate the shipped Google OAuth client; preserve file cursors and revision safety. | `google-drive` and `google-docs` map to `cloud-docs` and `docs`. |
+| Outlook | Advanced read-only Outlook mail connector backed by source-account sync with an explicit Microsoft Graph access token. | Backend wired for mail; managed OAuth planned; export remains Advanced/Fallback for unsupported setup. | OAuth planned through Microsoft Graph for broader mail, calendar, contacts, and files. | `outlook` maps to `email`, `calendar`, `contacts`, and `cloud-docs`. |
+| Notion | Advanced Notion integration-token connector backed by source-account sync for pages shared with the integration. | Token-ready; primary OAuth is still planned. | OAuth later for consumer-grade sign-in. Preserve page/database IDs and cite page URLs. | `notion`. |
+| Google Drive/Docs | Advanced read-only Drive connector backed by source-account sync with an explicit access token; Google Docs export is supported through Drive. | Backend wired for Drive files and exported Docs/text/HTML; managed OAuth planned; standalone Docs OAuth remains planned. | OAuth planned through Drive/Docs read-only scopes with file cursors and revision safety. | `google-drive` and `google-docs` map to `cloud-docs` and `docs`. |
 | Slack | Advanced read-only channel connector backed by source-account sync with a bot/user token and selected channels. | Token-ready; primary OAuth is still planned. | OAuth later for channels, private channels, and DMs where granted. Requires workspace policy clarity. | `slack`. |
 | Discord | Planned only if a user-consented history API or connector path becomes product-safe. | Local/import only. | Local/import only until an official user-consented history export or API path is product-safe. | `discord`. |
 | Calendar | Read-only local `.ics` file/feed connector backed by source-account sync; Google/Microsoft account sign-in remains later. | Local/feed-ready; OAuth planned. | Preserve event UIDs and use generated source-account citations so local paths and private feed URLs do not leak. | `calendar`. |

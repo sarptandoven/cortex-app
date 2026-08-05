@@ -25,24 +25,6 @@ class ConfigSecurityTests(unittest.TestCase):
 
         self.assertEqual(settings.api_key, "")
 
-    def test_public_base_url_follows_an_overridden_development_port(self) -> None:
-        with patch.dict(os.environ, {"CORTEX_PORT": "57490"}, clear=True):
-            settings = load_settings()
-        self.assertEqual(settings.public_base_url, "http://127.0.0.1:57490")
-        self.assertEqual(settings.public_app_url, "http://127.0.0.1:57490")
-
-    def test_explicit_public_base_url_overrides_the_development_port(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "CORTEX_PORT": "57490",
-                "CORTEX_PUBLIC_BASE_URL": "https://api.example.invalid",
-            },
-            clear=True,
-        ):
-            settings = load_settings()
-        self.assertEqual(settings.public_base_url, "https://api.example.invalid")
-
 
 if __name__ == "__main__":
     unittest.main()

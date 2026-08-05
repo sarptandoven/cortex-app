@@ -1,5 +1,5 @@
 """
-legacy/ui.py
+cortex/ui.py
 ------------
 Streamlit chat UI for Cortex — your universal second brain.
 

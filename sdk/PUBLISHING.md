@@ -22,10 +22,9 @@ that has changed:
 
 The original placeholders (`cortex-client` on PyPI, `@cortex/client` on npm) were both
 **already taken by unrelated parties** — `@cortex` and `@cortex-memory` are both claimed npm
-scopes owned by other accounts. `@doppl-tech` is the project's package and signed-release
-namespace. Source provenance points to
-[`trace-cortex/cortex-app`](https://github.com/trace-cortex/cortex-app), while binary artifacts
-are published from `doppl-tech/releases`.
+scopes owned by other accounts. `@doppl-tech` matches this repo's real GitHub org
+(`github.com/doppl-tech`), so it doubles as a trust signal for anyone verifying the package's
+provenance.
 
 ## Python — PyPI (`doppl-cortex-client`)
 

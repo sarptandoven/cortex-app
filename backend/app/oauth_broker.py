@@ -30,11 +30,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import urlencode
-from urllib.request import Request as URLLibRequest
+from urllib.request import Request as URLLibRequest, urlopen
 from urllib.error import HTTPError, URLError
 
 from .config import APP_BRAND
-from .http_security import open_same_origin
 
 # The route handlers below annotate `request: "Request"`. Because `from __future__ import
 # annotations` makes every annotation a STRING, FastAPI resolves "Request" against THIS module's
@@ -44,10 +43,8 @@ from .http_security import open_same_origin
 # import at startup. Guarded so the broker's own fastapi-free logic still imports without fastapi.
 try:  # pragma: no cover - fastapi is a hosted-plane dependency
     from fastapi import Request
-    from fastapi.responses import JSONResponse
 except ImportError:  # pragma: no cover
     Request = Any  # type: ignore[assignment,misc]
-    JSONResponse = Any  # type: ignore[assignment,misc]
 
 
 # --- Provider blueprints ----------------------------------------------------
@@ -304,7 +301,7 @@ def _http_token_request(token_url: str, form: dict[str, str], headers: dict[str,
     req_headers = {"Content-Type": "application/x-www-form-urlencoded", **headers}
     request = URLLibRequest(token_url, data=data, headers=req_headers, method="POST")
     try:
-        with open_same_origin(request, timeout=30) as response:
+        with urlopen(request, timeout=30) as response:  # noqa: S310 — provider token endpoints only
             raw = response.read().decode("utf-8")
     except HTTPError as exc:
         try:
@@ -325,7 +322,8 @@ def _http_token_request(token_url: str, form: dict[str, str], headers: dict[str,
 def register_oauth_broker_routes(app: Any, registry: OAuthBrokerRegistry | None = None) -> OAuthBrokerRegistry:
     """Attach /oauth/broker/* routes to the hosted FastAPI app. Safe to call always: with no providers
     configured the endpoints simply return 503 'not configured'."""
-    from fastapi import HTTPException
+    from fastapi import HTTPException, Request
+    from fastapi.responses import JSONResponse
 
     broker = registry or OAuthBrokerRegistry()
 

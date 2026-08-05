@@ -12,7 +12,7 @@ CORTEX_TURNSTILE_SECRET are set. These tests cover:
   or invalid token is rejected (400/403) BEFORE the account is ever created; with
   Turnstile disabled signup works with no token (no-op).
 
-The siteverify HTTP call is monkeypatched at the guarded transport boundary so no network
+The siteverify HTTP call is monkeypatched (urllib.request.urlopen) so no network
 is touched; the argon2 signup path runs against the real FastAPI app in
 auth-enabled hosted mode (same discipline as test_web_account / test_billing).
 """
@@ -26,6 +26,7 @@ import os
 import secrets
 import tempfile
 import unittest
+import urllib.request
 from dataclasses import replace
 from pathlib import Path
 
@@ -78,7 +79,6 @@ class _HostedAppTestCase(unittest.TestCase):
             shard_mode="user",
             default_user_id="hosted-default",
             require_scoped_api_tokens=True,
-            legal_terms_approved=True,
             auth_enabled=True,
             accounts_db_path=None,
             auth_email_mode="log",
@@ -134,15 +134,7 @@ class TurnstileDisabledTests(_HostedAppTestCase):
 
     def test_signup_succeeds_with_no_token(self) -> None:
         email = "nobot@example.com"
-        resp = self.client.post(
-            "/v1/auth/signup",
-            json={
-                "email": email,
-                "password": PASSWORD,
-                "terms_accepted": True,
-                "age_confirmed": True,
-            },
-        )
+        resp = self.client.post("/v1/auth/signup", json={"email": email, "password": PASSWORD})
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertTrue(self._account_exists(email))
 
@@ -155,11 +147,11 @@ class TurnstileEnabledTests(_HostedAppTestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self._orig_open_same_origin = main_module.open_same_origin
+        self._orig_urlopen = urllib.request.urlopen
         self._siteverify_calls: list = []
 
     def tearDown(self) -> None:
-        main_module.open_same_origin = self._orig_open_same_origin
+        urllib.request.urlopen = self._orig_urlopen
         super().tearDown()
 
     def _patch_siteverify(self, *, success: bool) -> None:
@@ -174,7 +166,7 @@ class TurnstileEnabledTests(_HostedAppTestCase):
                 payload["error-codes"] = ["invalid-input-response"]
             return _FakeSiteverifyResponse(payload)
 
-        main_module.open_same_origin = fake_urlopen
+        urllib.request.urlopen = fake_urlopen
 
     # ----------------------------------------------------------- page markup
     def test_settings_turnstile_enabled(self) -> None:
@@ -203,13 +195,7 @@ class TurnstileEnabledTests(_HostedAppTestCase):
         email = "human@example.com"
         resp = self.client.post(
             "/v1/auth/signup",
-            json={
-                "email": email,
-                "password": PASSWORD,
-                "turnstile_token": "tok-good",
-                "terms_accepted": True,
-                "age_confirmed": True,
-            },
+            json={"email": email, "password": PASSWORD, "turnstile_token": "tok-good"},
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertTrue(self._account_exists(email))
@@ -222,15 +208,7 @@ class TurnstileEnabledTests(_HostedAppTestCase):
     def test_missing_token_rejected_before_signup(self) -> None:
         self._patch_siteverify(success=True)  # would pass if reached
         email = "notoken@example.com"
-        resp = self.client.post(
-            "/v1/auth/signup",
-            json={
-                "email": email,
-                "password": PASSWORD,
-                "terms_accepted": True,
-                "age_confirmed": True,
-            },
-        )
+        resp = self.client.post("/v1/auth/signup", json={"email": email, "password": PASSWORD})
         self.assertEqual(resp.status_code, 400, resp.text)
         # No account created, and siteverify never called (rejected before hash).
         self.assertFalse(self._account_exists(email))
@@ -241,13 +219,7 @@ class TurnstileEnabledTests(_HostedAppTestCase):
         email = "badtoken@example.com"
         resp = self.client.post(
             "/v1/auth/signup",
-            json={
-                "email": email,
-                "password": PASSWORD,
-                "turnstile_token": "tok-bad",
-                "terms_accepted": True,
-                "age_confirmed": True,
-            },
+            json={"email": email, "password": PASSWORD, "turnstile_token": "tok-bad"},
         )
         self.assertEqual(resp.status_code, 403, resp.text)
         self.assertFalse(self._account_exists(email))
@@ -258,17 +230,11 @@ class TurnstileEnabledTests(_HostedAppTestCase):
         def boom(req, *a, **k):
             raise OSError("network down")
 
-        main_module.open_same_origin = boom
+        urllib.request.urlopen = boom
         email = "offline@example.com"
         resp = self.client.post(
             "/v1/auth/signup",
-            json={
-                "email": email,
-                "password": PASSWORD,
-                "turnstile_token": "tok",
-                "terms_accepted": True,
-                "age_confirmed": True,
-            },
+            json={"email": email, "password": PASSWORD, "turnstile_token": "tok"},
         )
         self.assertEqual(resp.status_code, 403, resp.text)
         self.assertFalse(self._account_exists(email))

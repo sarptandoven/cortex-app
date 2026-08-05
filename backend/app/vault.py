@@ -8,7 +8,6 @@ import shutil
 import tempfile
 import threading
 import zipfile
-import fcntl
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -24,61 +23,22 @@ from .vault_markdown import (
 )
 
 
-# A reentrant thread + process lock per vault root. Hosted deployments run multiple API workers
-# plus a background worker against the same bucket vault. A threading.RLock alone does not
-# serialize those processes: concurrent read-modify-write cycles silently lose settings,
-# credentials, and events. The outermost acquisition takes an advisory flock; nested calls in the
-# same thread reuse it. Cortex targets macOS/Linux, where fcntl.flock is available.
-class _VaultInterProcessRLock:
-    def __init__(self, root: Path):
-        self.root = Path(root)
-        self._thread_lock = threading.RLock()
-        self._local = threading.local()
-
-    def __enter__(self) -> "_VaultInterProcessRLock":
-        self._thread_lock.acquire()
-        depth = int(getattr(self._local, "depth", 0))
-        if depth == 0:
-            handle = None
-            try:
-                self.root.mkdir(parents=True, exist_ok=True)
-                handle = (self.root / ".cortex-vault.lock").open("a+b")
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                self._local.handle = handle
-            except Exception:
-                if handle is not None:
-                    handle.close()
-                self._thread_lock.release()
-                raise
-        self._local.depth = depth + 1
-        return self
-
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
-        depth = int(getattr(self._local, "depth", 1)) - 1
-        self._local.depth = depth
-        try:
-            if depth == 0:
-                handle = getattr(self._local, "handle", None)
-                if handle is not None:
-                    try:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                    finally:
-                        handle.close()
-                        del self._local.handle
-        finally:
-            self._thread_lock.release()
-
-
-_VAULT_LOCKS: dict[str, _VaultInterProcessRLock] = {}
+# A process-wide lock per vault root. In hosted/bucket mode many request threads (plus the
+# background worker) share ONE vault and do read-modify-write on the same root-level JSON files
+# (settings.json, credentials.json, manifest.json, events.jsonl). Without serialization those
+# RMW cycles lose updates — last writer wins on a stale read — silently dropping a user's
+# settings or a source credential. Keyed by the absolute root path so it serializes even across
+# separate CortexVault instances that happen to point at the same directory.
+_VAULT_LOCKS: dict[str, threading.RLock] = {}
 _VAULT_LOCKS_GUARD = threading.Lock()
 
 
-def _vault_lock_for(root: Path) -> _VaultInterProcessRLock:
+def _vault_lock_for(root: Path) -> threading.RLock:
     key = os.path.abspath(os.path.expanduser(str(root)))
     with _VAULT_LOCKS_GUARD:
         lock = _VAULT_LOCKS.get(key)
         if lock is None:
-            lock = _VaultInterProcessRLock(Path(key))
+            lock = threading.RLock()
             _VAULT_LOCKS[key] = lock
         return lock
 
@@ -130,7 +90,6 @@ CONSTELLATION_CANVAS_FILENAME = "Constellation.canvas"
 # user's own note dropped into Journal/ is never mistaken for a generated page (and never deleted).
 _DAILY_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 BACKUP_DENY_FILENAMES = {
-    ".cortex-vault.lock",
     ".env",
     ".netrc",
     "credentials.json",
@@ -171,20 +130,12 @@ class CortexVault:
         # enforcement -> writes plaintext exactly as before). Threaded in alongside
         # the cipher via StoreRegistry.store_for_user in hosted mode.
         self.enforce_encryption = bool(enforce_encryption)
-        # Each memory has a human-readable Markdown representation (frontmatter+body).
-        # Editable memory fields in Markdown win during rebuild; JSON retains immutable/system
-        # fields and remains authoritative for non-memory record types.
+        # Phase 1: also mirror each memory as a human-readable Markdown note (frontmatter+body)
+        # so the vault opens in any Markdown editor and is owned/portable. Additive — the JSON records
+        # remain the source of truth for now; a Markdown write never breaks the JSON write.
         self.markdown_mirror = True
         # Serializes read-modify-write of the shared root-level JSON files (see _vault_lock_for).
         self._lock = _vault_lock_for(self.root)
-
-    def read_snapshot(self) -> _VaultInterProcessRLock:
-        """Return the vault-wide lock for a multi-read consistent snapshot.
-
-        Callers that derive destructive decisions from several filesystem
-        observations must hold this context across the entire observation.
-        """
-        return self._lock
 
     @property
     def manifest_path(self) -> Path:
@@ -218,52 +169,51 @@ class CortexVault:
         return self.root / "deletion_tombstones"
 
     def ensure(self) -> None:
-        with self._lock:
-            self.root.mkdir(parents=True, exist_ok=True)
-            for directory in VAULT_DIRECTORIES:
-                (self.root / directory).mkdir(parents=True, exist_ok=True)
-            if not self.events_path.exists():
-                self.events_path.touch()
-            if not self.settings_path.exists():
-                self._write_json(
-                    self.settings_path,
-                    {
-                        "vault_record_type": "settings",
-                        "vault_record_version": VAULT_VERSION,
-                        "updated_at": vault_now(),
-                        "users": {},
-                    },
-                )
-            if not self.manifest_path.exists():
-                self._write_json(
-                    self.manifest_path,
-                    {
-                        "name": f"{APP_BRAND} Vault",
-                        "format": VAULT_FORMAT,
-                        "version": VAULT_VERSION,
-                        "created_at": vault_now(),
-                        "updated_at": vault_now(),
-                        "source_of_truth": "markdown_memories_and_json_records_and_events",
-                        "index_role": "rebuildable_local_search_index",
-                        "index_path": self._relative_or_absolute(self.index_path),
-                        "directories": list(VAULT_DIRECTORIES),
-                    },
-                )
-            else:
-                manifest = self._read_json(self.manifest_path, {})
-                manifest.update(
-                    {
-                        "format": manifest.get("format", VAULT_FORMAT),
-                        "version": manifest.get("version", VAULT_VERSION),
-                        "updated_at": vault_now(),
-                        "source_of_truth": "markdown_memories_and_json_records_and_events",
-                        "index_role": "rebuildable_local_search_index",
-                        "index_path": self._relative_or_absolute(self.index_path),
-                        "directories": list(VAULT_DIRECTORIES),
-                    }
-                )
-                self._write_json(self.manifest_path, manifest)
-            self._ensure_sync_scaffolding()
+        self.root.mkdir(parents=True, exist_ok=True)
+        for directory in VAULT_DIRECTORIES:
+            (self.root / directory).mkdir(parents=True, exist_ok=True)
+        if not self.events_path.exists():
+            self.events_path.touch()
+        if not self.settings_path.exists():
+            self._write_json(
+                self.settings_path,
+                {
+                    "vault_record_type": "settings",
+                    "vault_record_version": VAULT_VERSION,
+                    "updated_at": vault_now(),
+                    "users": {},
+                },
+            )
+        if not self.manifest_path.exists():
+            self._write_json(
+                self.manifest_path,
+                {
+                    "name": f"{APP_BRAND} Vault",
+                    "format": VAULT_FORMAT,
+                    "version": VAULT_VERSION,
+                    "created_at": vault_now(),
+                    "updated_at": vault_now(),
+                    "source_of_truth": "json_records_and_events",
+                    "index_role": "rebuildable_local_search_index",
+                    "index_path": self._relative_or_absolute(self.index_path),
+                    "directories": list(VAULT_DIRECTORIES),
+                },
+            )
+        else:
+            manifest = self._read_json(self.manifest_path, {})
+            manifest.update(
+                {
+                    "format": manifest.get("format", VAULT_FORMAT),
+                    "version": manifest.get("version", VAULT_VERSION),
+                    "updated_at": vault_now(),
+                    "source_of_truth": "json_records_and_events",
+                    "index_role": "rebuildable_local_search_index",
+                    "index_path": self._relative_or_absolute(self.index_path),
+                    "directories": list(VAULT_DIRECTORIES),
+                }
+            )
+            self._write_json(self.manifest_path, manifest)
+        self._ensure_sync_scaffolding()
 
     def _ensure_sync_scaffolding(self) -> None:
         """Make the vault safe + pleasant to sync (git/iCloud/Syncthing) and to open in any Markdown editor.
@@ -283,7 +233,6 @@ class CortexVault:
                 "*.db\n"
                 "*.db-*\n"
                 "credentials.json\n"
-                ".cortex-vault.lock\n"
                 "*.log\n"
                 "backups/\n"
                 ".*.tmp\n"
@@ -304,7 +253,7 @@ class CortexVault:
                 "  change; add a note and it becomes a memory; delete one to remove it.\n"
                 "- `captures/`, `entities/`, `tasks/`, ... — supporting records.\n"
                 f"- The SQLite index and `credentials.json` are {APP_BRAND}'s private working files —\n"
-                "  the index is rebuildable from the Markdown and JSON records; `credentials.json` holds secrets,\n"
+                "  the index is rebuildable from these notes and `credentials.json` holds secrets,\n"
                 "  so both are excluded from sync by `.gitignore`.\n\n"
                 f"Even if {APP_BRAND} goes away, these Markdown files stay readable and yours.\n"
             )
@@ -356,22 +305,18 @@ class CortexVault:
         entities: list[dict[str, Any]],
         edges: list[dict[str, Any]],
     ) -> dict[str, str]:
-        # A backup/delete/restore must observe either the whole capture-derived
-        # bundle or none of it. The lock is reentrant, so the individual write
-        # helpers can retain their own safety boundary.
-        with self._lock:
-            self.ensure()
-            written: dict[str, str] = {}
-            written["capture"] = str(self.write_capture(capture))
-            for memory in memories:
-                written[f"memory:{memory['id']}"] = str(self.write_memory(memory))
-            for task in tasks:
-                written[f"task:{task['id']}"] = str(self.write_task(task))
-            for entity in entities:
-                written[f"entity:{entity['id']}"] = str(self.write_entity(entity))
-            for edge in edges:
-                written[f"edge:{edge['id']}"] = str(self.write_edge(edge))
-            return written
+        self.ensure()
+        written: dict[str, str] = {}
+        written["capture"] = str(self.write_capture(capture))
+        for memory in memories:
+            written[f"memory:{memory['id']}"] = str(self.write_memory(memory))
+        for task in tasks:
+            written[f"task:{task['id']}"] = str(self.write_task(task))
+        for entity in entities:
+            written[f"entity:{entity['id']}"] = str(self.write_entity(entity))
+        for edge in edges:
+            written[f"edge:{edge['id']}"] = str(self.write_edge(edge))
+        return written
 
     def write_portable_memory_bundle(
         self,
@@ -439,15 +384,14 @@ class CortexVault:
         _write_record, no envelope keys are injected: byte-identity is the whole contract —
         sha256(file bytes) == pack_sha must hold forever, so replay/verify can prove integrity.
         Content-addressed files are immutable: an existing file is left untouched."""
-        with self._lock:
-            path = self.context_pack_path(pack_sha)
-            if path.exists():
-                return path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            temp = path.with_name(path.name + ".tmp")
-            temp.write_bytes(canonical_bytes)
-            temp.replace(path)
+        path = self.context_pack_path(pack_sha)
+        if path.exists():
             return path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(path.name + ".tmp")
+        temp.write_bytes(canonical_bytes)
+        temp.replace(path)
+        return path
 
     def read_context_pack(self, pack_sha: str) -> bytes | None:
         path = self.context_pack_path(pack_sha)
@@ -462,15 +406,14 @@ class CortexVault:
         return self.root / "working_canvas" / "evidence" / sha[:2] / f"{sha}.txt"
 
     def write_working_canvas_evidence(self, raw_sha256: str, raw_bytes: bytes) -> Path:
-        with self._lock:
-            path = self.working_canvas_evidence_path(raw_sha256)
-            if path.exists():
-                return path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            temp = path.with_name(path.name + ".tmp")
-            temp.write_bytes(raw_bytes)
-            temp.replace(path)
+        path = self.working_canvas_evidence_path(raw_sha256)
+        if path.exists():
             return path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(path.name + ".tmp")
+        temp.write_bytes(raw_bytes)
+        temp.replace(path)
+        return path
 
     def read_working_canvas_evidence(self, raw_sha256: str) -> bytes | None:
         try:
@@ -716,15 +659,11 @@ class CortexVault:
             return True
 
     def write_memory(self, record: dict[str, Any]) -> Path:
-        # JSON + Markdown are one logical memory representation. Holding the
-        # vault lock across both prevents backups from capturing a mismatched
-        # pair during an edit.
-        with self._lock:
-            kind = safe_segment(record.get("kind"), "memory")
-            path = self.root / "memories" / kind / f"{safe_segment(record.get('id'), 'memory')}.json"
-            written = self._write_record(path, "memory", record)
-            self._write_memory_markdown(record)
-            return written
+        kind = safe_segment(record.get("kind"), "memory")
+        path = self.root / "memories" / kind / f"{safe_segment(record.get('id'), 'memory')}.json"
+        written = self._write_record(path, "memory", record)
+        self._write_memory_markdown(record)
+        return written
 
     def memory_note_short_id(self, memory_id: str) -> str:
         """Stable 12-hex (48-bit) fingerprint of a memory id, used as the note-filename
@@ -732,9 +671,7 @@ class CortexVault:
         summary/content) so it is invariant across edits — that is what makes glob-by-suffix
         reliable. Sweeps that mutate/delete also confirm the parsed frontmatter id, so even an
         (astronomically unlikely) collision can at worst rewrite the same logical note."""
-        return hashlib.sha1(
-            str(memory_id or "").encode("utf-8"), usedforsecurity=False
-        ).hexdigest()[:12]
+        return hashlib.sha1(str(memory_id or "").encode("utf-8")).hexdigest()[:12]
 
     def memory_note_stem(self, record: dict[str, Any]) -> str:
         """`<summary-slug>--<shortid>` — the SINGLE source of both the on-disk note filename and the
@@ -814,10 +751,6 @@ class CortexVault:
         (atomic rename, not a re-render, so no content is ever lost — a stale generated-links block
         simply refreshes on the note's next write). Scoped to user_id when the vault is shared.
         Best-effort; returns the number of notes renamed."""
-        with self._lock:
-            return self._migrate_memory_note_filenames_locked(user_id)
-
-    def _migrate_memory_note_filenames_locked(self, user_id: str | None = None) -> int:
         if not self.markdown_mirror:
             return 0
         base = self.root / "memories"
@@ -879,9 +812,7 @@ class CortexVault:
         disambiguator and by the stale-page sweep. 16 hex = 64 bits: birthday-collision-safe well
         past any realistic entity count (an 8-hex/32-bit id collides around tens of thousands of
         entities and would clobber another entity's page)."""
-        return hashlib.sha1(
-            str(entity_id or "").encode("utf-8"), usedforsecurity=False
-        ).hexdigest()[:16]
+        return hashlib.sha1(str(entity_id or "").encode("utf-8")).hexdigest()[:16]
 
     def entity_moc_stem(self, entity_id: str, label: str | None = None) -> str:
         """The MOC note filename stem — the SINGLE source of the entity->entity wikilink target and
@@ -904,42 +835,40 @@ class CortexVault:
         if not entity_id:
             return None
         try:
-            with self._lock:
-                target = self.entity_moc_path(page)
-                short = self.entity_moc_short_id(entity_id)
-                for folder in ENTITY_MOC_DIRECTORIES:
-                    base = self.root / folder
-                    if not base.exists():
-                        continue
-                    for path in base.glob(f"*--{short}.md"):
-                        if path != target:
-                            try:
-                                path.unlink()
-                            except OSError:
-                                pass
-                atomic_write_text(target, render_entity_moc_markdown(page))
-                return target
+            target = self.entity_moc_path(page)
+            short = self.entity_moc_short_id(entity_id)
+            for folder in ENTITY_MOC_DIRECTORIES:
+                base = self.root / folder
+                if not base.exists():
+                    continue
+                for path in base.glob(f"*--{short}.md"):
+                    if path != target:
+                        try:
+                            path.unlink()
+                        except OSError:
+                            pass
+            atomic_write_text(target, render_entity_moc_markdown(page))
+            return target
         except Exception:
             return None
 
     def prune_entity_moc_pages(self, keep_short_ids: set[str]) -> int:
         """Delete MOC pages whose entity hash8 is not in keep_short_ids (entity deleted/merged away)."""
-        with self._lock:
-            removed = 0
-            for folder in ENTITY_MOC_DIRECTORIES:
-                base = self.root / folder
-                if not base.exists():
-                    continue
-                for path in base.glob("*.md"):
-                    stem = path.stem
-                    short = stem.rsplit("--", 1)[-1] if "--" in stem else ""
-                    if short and short not in keep_short_ids:
-                        try:
-                            path.unlink()
-                            removed += 1
-                        except OSError:
-                            pass
-            return removed
+        removed = 0
+        for folder in ENTITY_MOC_DIRECTORIES:
+            base = self.root / folder
+            if not base.exists():
+                continue
+            for path in base.glob("*.md"):
+                stem = path.stem
+                short = stem.rsplit("--", 1)[-1] if "--" in stem else ""
+                if short and short not in keep_short_ids:
+                    try:
+                        path.unlink()
+                        removed += 1
+                    except OSError:
+                        pass
+        return removed
 
     # ---- N3 Home page / N4 Journal / N5 Canvas: machine-owned vault pages (outside memories/) ----
 
@@ -949,10 +878,9 @@ class CortexVault:
         if not self.markdown_mirror:
             return None
         try:
-            with self._lock:
-                target = self.root / HOME_PAGE_FILENAME
-                atomic_write_text(target, render_home_markdown(page))
-                return target
+            target = self.root / HOME_PAGE_FILENAME
+            atomic_write_text(target, render_home_markdown(page))
+            return target
         except Exception:
             return None
 
@@ -967,10 +895,9 @@ class CortexVault:
         if not date:
             return None
         try:
-            with self._lock:
-                target = self.daily_markdown_path(date)
-                atomic_write_text(target, render_daily_markdown(page))
-                return target
+            target = self.daily_markdown_path(date)
+            atomic_write_text(target, render_daily_markdown(page))
+            return target
         except Exception:
             return None
 
@@ -987,21 +914,20 @@ class CortexVault:
         within the regenerated window). ONLY ever deletes files whose stem is a YYYY-MM-DD date — a
         user's own note dropped into Journal/ (e.g. reading-list.md) is never touched. Days outside
         the caller's window are also never pruned (callers pass the full considered set)."""
-        with self._lock:
-            removed = 0
-            base = self.root / DAILY_DIRECTORY
-            if not base.exists():
-                return 0
-            for path in base.glob("*.md"):
-                if not _DAILY_DATE_RE.fullmatch(path.stem):
-                    continue  # not a generated day page (user-authored) -> never delete
-                if path.stem not in keep_dates:
-                    try:
-                        path.unlink()
-                        removed += 1
-                    except OSError:
-                        pass
-            return removed
+        removed = 0
+        base = self.root / DAILY_DIRECTORY
+        if not base.exists():
+            return 0
+        for path in base.glob("*.md"):
+            if not _DAILY_DATE_RE.fullmatch(path.stem):
+                continue  # not a generated day page (user-authored) -> never delete
+            if path.stem not in keep_dates:
+                try:
+                    path.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        return removed
 
     def canvas_path(self, name: str = CONSTELLATION_CANVAS_FILENAME) -> Path:
         stem = safe_segment(name[:-7] if name.endswith(".canvas") else name, "Constellation")
@@ -1014,10 +940,9 @@ class CortexVault:
         if not self.markdown_mirror:
             return None
         try:
-            with self._lock:
-                target = self.canvas_path(name)
-                atomic_write_text(target, json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
-                return target
+            target = self.canvas_path(name)
+            atomic_write_text(target, json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
+            return target
         except Exception:
             return None
 
@@ -1070,13 +995,12 @@ class CortexVault:
         return self._patch_first("sync_cursors", cursor_id, updates)
 
     def patch_memory(self, memory_id: str, updates: dict[str, Any]) -> bool:
-        with self._lock:
-            patched_json = self._patch_first("memories", memory_id, updates)
-            # Keep the Markdown note in sync — it's the rebuild source of truth, so a patch that
-            # only touched JSON (e.g. status -> archived, superseded_by) would otherwise be reverted
-            # on the next Markdown-sourced rebuild. Also patches Markdown-native memories with no JSON.
-            patched_markdown = self._patch_memory_markdown(memory_id, updates)
-            return patched_json or patched_markdown
+        patched_json = self._patch_first("memories", memory_id, updates)
+        # Keep the Markdown note in sync — it's the rebuild source of truth, so a patch that
+        # only touched JSON (e.g. status -> archived, superseded_by) would otherwise be reverted
+        # on the next Markdown-sourced rebuild. Also patches Markdown-native memories with no JSON.
+        patched_markdown = self._patch_memory_markdown(memory_id, updates)
+        return patched_json or patched_markdown
 
     def _patch_memory_markdown(self, memory_id: str, updates: dict[str, Any]) -> bool:
         if not self.markdown_mirror:
@@ -1108,12 +1032,9 @@ class CortexVault:
         return self._delete_first("imports", import_id)
 
     def delete_memory(self, memory_id: str) -> bool:
-        # JSON and Markdown are one logical representation; a backup must not
-        # observe the delete between the two filesystem mutations.
-        with self._lock:
-            removed_json = self._delete_first("memories", memory_id)
-            removed_markdown = self._delete_memory_markdown(memory_id)
-            return removed_json or removed_markdown
+        removed_json = self._delete_first("memories", memory_id)
+        removed_markdown = self._delete_memory_markdown(memory_id)
+        return removed_json or removed_markdown
 
     def delete_task(self, task_id: str) -> bool:
         return self._delete_first("tasks", task_id)
@@ -1197,12 +1118,6 @@ class CortexVault:
         return self.iter_records("deletion_tombstones", user_id)
 
     def apply_tombstones(self, user_id: str) -> dict[str, int]:
-        # A tombstone can delete a graph of related records. Freeze that full
-        # logical operation so a backup never captures only a subset.
-        with self._lock:
-            return self._apply_tombstones_locked(user_id)
-
-    def _apply_tombstones_locked(self, user_id: str) -> dict[str, int]:
         self.ensure()
         counts = {
             "applied": 0,
@@ -1298,97 +1213,31 @@ class CortexVault:
         return counts
 
     def iter_events(self, user_id: str | None = None) -> Iterable[dict[str, Any]]:
-        with self._lock:
-            if not self.events_path.exists():
-                return []
-            events: list[dict[str, Any]] = []
-            with self.events_path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    try:
-                        payload = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if user_id is not None and payload.get("user_id") != user_id:
-                        continue
-                    events.append(payload)
-            return events
+        if not self.events_path.exists():
+            return []
+        events: list[dict[str, Any]] = []
+        with self.events_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if user_id is not None and payload.get("user_id") != user_id:
+                    continue
+                events.append(payload)
+        return events
 
-    def create_zip_backup(
-        self,
-        timestamp: str,
-        sqlite_backup_path: Path,
-        *,
-        security_manifest: dict[str, Any] | None = None,
-    ) -> Path:
+    def create_zip_backup(self, timestamp: str, sqlite_backup_path: Path) -> Path:
         self.ensure()
-        with self._lock:
-            return self._create_zip_backup_locked(
-                timestamp,
-                sqlite_backup_path,
-                security_manifest=security_manifest,
-            )
-
-    def _create_zip_backup_locked(
-        self,
-        timestamp: str,
-        sqlite_backup_path: Path,
-        *,
-        security_manifest: dict[str, Any] | None = None,
-    ) -> Path:
         backup_path = self.backups_dir / f"cortex-vault-{timestamp}.zip"
-        descriptor, temp_name = tempfile.mkstemp(
-            prefix=".cortex-vault-",
-            suffix=".zip.tmp",
-            dir=self.backups_dir,
-        )
-        os.close(descriptor)
-        temp_path = Path(temp_name)
-        temp_path.chmod(0o600)
-        try:
-            with zipfile.ZipFile(
-                temp_path,
-                "w",
-                compression=zipfile.ZIP_DEFLATED,
-                compresslevel=6,
-            ) as archive:
-                for path in sorted(self._iter_backup_files()):
-                    if path == self.index_path or path.name in {
-                        self.index_path.name + "-wal",
-                        self.index_path.name + "-shm",
-                    }:
-                        continue
-                    relative = path.relative_to(self.root)
-                    archive.write(path, relative.as_posix())
-                if sqlite_backup_path.exists():
-                    archive.write(sqlite_backup_path, "index.sqlite")
-                if security_manifest is not None:
-                    archive.writestr(
-                        "backup-security.json",
-                        json.dumps(
-                            security_manifest,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ).encode("utf-8"),
-                    )
-            with zipfile.ZipFile(temp_path) as archive:
-                if archive.testzip() is not None:
-                    raise zipfile.BadZipFile(
-                        "backup archive verification failed"
-                    )
-                if "index.sqlite" not in archive.namelist():
-                    raise zipfile.BadZipFile(
-                        "backup archive is missing index.sqlite"
-                    )
-                if (
-                    security_manifest is not None
-                    and "backup-security.json" not in archive.namelist()
-                ):
-                    raise zipfile.BadZipFile(
-                        "backup archive is missing its security receipt"
-                    )
-            os.replace(temp_path, backup_path)
-        finally:
-            temp_path.unlink(missing_ok=True)
+        with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            for path in sorted(self._iter_backup_files()):
+                if path == self.index_path or path.name in {self.index_path.name + "-wal", self.index_path.name + "-shm"}:
+                    continue
+                relative = path.relative_to(self.root)
+                archive.write(path, relative.as_posix())
+            if sqlite_backup_path.exists():
+                archive.write(sqlite_backup_path, "index.sqlite")
         return backup_path
 
     def _iter_backup_files(self) -> Iterable[Path]:
@@ -1426,10 +1275,6 @@ class CortexVault:
 
     def delete_backups(self) -> dict[str, Any]:
         self.ensure()
-        with self._lock:
-            return self._delete_backups_locked()
-
-    def _delete_backups_locked(self) -> dict[str, Any]:
         deleted = 0
         bytes_deleted = 0
         for path in sorted(self.backups_dir.glob("*")):
@@ -1442,10 +1287,6 @@ class CortexVault:
 
     def prune_backups(self, *, keep_latest: int = 20, max_age_days: int = 0) -> dict[str, Any]:
         self.ensure()
-        with self._lock:
-            return self._prune_backups_locked(keep_latest=keep_latest, max_age_days=max_age_days)
-
-    def _prune_backups_locked(self, *, keep_latest: int = 20, max_age_days: int = 0) -> dict[str, Any]:
         keep_latest = max(0, int(keep_latest))
         max_age_days = max(0, int(max_age_days))
         backups = sorted(
@@ -1480,10 +1321,6 @@ class CortexVault:
         }
 
     def delete_user_records(self, user_id: str, *, include_backups: bool = False) -> dict[str, Any]:
-        with self._lock:
-            return self._delete_user_records_locked(user_id, include_backups=include_backups)
-
-    def _delete_user_records_locked(self, user_id: str, *, include_backups: bool = False) -> dict[str, Any]:
         self.ensure()
         counts: dict[str, int] = {
             "imports": 0,
@@ -1620,10 +1457,6 @@ class CortexVault:
         return counts
 
     def restore_from_zip_backup(self, backup_path: Path) -> dict[str, Any]:
-        with self._lock:
-            return self._restore_from_zip_backup_locked(backup_path)
-
-    def _restore_from_zip_backup_locked(self, backup_path: Path) -> dict[str, Any]:
         self.ensure()
         backup_path = Path(backup_path).expanduser().resolve()
         backups_dir = self.backups_dir.resolve()
@@ -1721,10 +1554,7 @@ class CortexVault:
             return
         if top in RESTORE_DIRECTORIES:
             return
-        if len(path.parts) == 1 and path.name in {
-            "index.sqlite",
-            "backup-security.json",
-        }:
+        if len(path.parts) == 1 and path.name == "index.sqlite":
             return
         raise ValueError(f"unsupported backup member path: {name}")
 
@@ -1765,8 +1595,8 @@ class CortexVault:
     def _write_record(self, path: Path, record_type: str, record: dict[str, Any]) -> Path:
         # Underscore-prefixed keys are internal, in-memory render inputs (e.g. a memory's
         # _link_names / _backlinks used to build the note's [[wikilinks]]); they must never enter
-        # durable JSON system representation. The Markdown memory representation still sees the
-        # full record because _write_memory_markdown runs on the original dict.
+        # the durable JSON source-of-truth (a rebuild reads these files back). The Markdown mirror
+        # still sees the full record because _write_memory_markdown runs on the original dict.
         payload = {
             "vault_record_type": record_type,
             "vault_record_version": VAULT_VERSION,
@@ -1776,10 +1606,6 @@ class CortexVault:
         return self._write_json(path, payload)
 
     def _patch_first(self, record_dir: str, record_id: str, updates: dict[str, Any]) -> bool:
-        with self._lock:
-            return self._patch_first_locked(record_dir, record_id, updates)
-
-    def _patch_first_locked(self, record_dir: str, record_id: str, updates: dict[str, Any]) -> bool:
         self.ensure()
         base = self.root / record_dir
         for path in base.rglob(f"{safe_segment(record_id)}.json"):
@@ -1800,10 +1626,6 @@ class CortexVault:
         return False
 
     def _delete_first(self, record_dir: str, record_id: str) -> bool:
-        with self._lock:
-            return self._delete_first_locked(record_dir, record_id)
-
-    def _delete_first_locked(self, record_dir: str, record_id: str) -> bool:
         self.ensure()
         base = self.root / record_dir
         for path in base.rglob(f"{safe_segment(record_id)}.json"):
@@ -1823,10 +1645,6 @@ class CortexVault:
         return False
 
     def _delete_matching_records(self, record_dir: str, predicate) -> tuple[int, list[str]]:
-        with self._lock:
-            return self._delete_matching_records_locked(record_dir, predicate)
-
-    def _delete_matching_records_locked(self, record_dir: str, predicate) -> tuple[int, list[str]]:
         self.ensure()
         base = self.root / record_dir
         if not base.exists():
@@ -1906,29 +1724,25 @@ class CortexVault:
         return len(list(base.rglob("*.json"))) if base.exists() else 0
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> Path:
-        # Every durable JSON mutation participates in the same process/file
-        # lock used by backups, deletion and restore. This is intentionally at
-        # the primitive boundary so new record types cannot bypass the freeze.
-        with self._lock:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            # Temp name must be unique per writer: the shipping server is multi-threaded (one PID),
-            # so a pid-only temp path lets two concurrent writes to the same target collide — one
-            # thread's os.replace moves the shared temp out from under the other, raising
-            # FileNotFoundError or installing a half-written file. Thread id + randomness makes each
-            # write private; the temp is unlinked on failure so a crash mid-write leaves no litter.
-            tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.{os.urandom(4).hex()}.tmp")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Temp name must be unique per writer: the shipping server is multi-threaded (one PID),
+        # so a pid-only temp path lets two concurrent writes to the same target collide — one
+        # thread's os.replace moves the shared temp out from under the other, raising
+        # FileNotFoundError or installing a half-written file. Thread id + randomness makes each
+        # write private; the temp is unlinked on failure so a crash mid-write leaves no litter.
+        tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.{os.urandom(4).hex()}.tmp")
+        try:
+            with tmp_path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+                handle.write("\n")
+            os.replace(tmp_path, path)
+        except OSError:
             try:
-                with tmp_path.open("w", encoding="utf-8") as handle:
-                    json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-                    handle.write("\n")
-                os.replace(tmp_path, path)
+                tmp_path.unlink()
             except OSError:
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
-                raise
-            return path
+                pass
+            raise
+        return path
 
     def _read_json(self, path: Path, default: Any) -> Any:
         try:

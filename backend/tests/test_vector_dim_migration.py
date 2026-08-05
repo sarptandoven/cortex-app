@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,7 +37,6 @@ class VectorDimMigrationTests(unittest.TestCase):
         self.user_id = "vec-user"
         E._MODEL2VEC_MODEL = None
         E._MODEL2VEC_MODEL_KEY = None
-        E._MODEL2VEC_DIMENSIONS_BY_KEY.clear()
         E._MODEL2VEC_LOAD_FAILED = False
         E._MODEL2VEC_FAILURE_LOGGED = False
         # Create the user's settings once (persist in the DB; later stores reread them).
@@ -49,7 +47,6 @@ class VectorDimMigrationTests(unittest.TestCase):
     def tearDown(self) -> None:
         E._MODEL2VEC_MODEL = None
         E._MODEL2VEC_MODEL_KEY = None
-        E._MODEL2VEC_DIMENSIONS_BY_KEY.clear()
         E._MODEL2VEC_LOAD_FAILED = False
         E._MODEL2VEC_FAILURE_LOGGED = False
         self._tmp.cleanup()
@@ -161,58 +158,6 @@ class VectorDimMigrationTests(unittest.TestCase):
                 self.assertGreater(conn.execute("SELECT count(*) FROM memory_vec").fetchone()[0], 0)
             hits = store.search(self.user_id, "which datastore did we pick", limit=5)
             self.assertTrue(any(h.get("id") == "mem_db" for h in hits), [h.get("id") for h in hits])
-
-    def test_same_dimension_model_swap_rebuilds_incompatible_vectors(self) -> None:
-        base_env = {
-            "CORTEX_EMBEDDING_PROVIDER": "openai",
-            "CORTEX_EMBEDDING_DIMENSIONS": str(E.VECTOR_DIMENSIONS),
-        }
-        with mock.patch.dict(
-            "os.environ",
-            {**base_env, "CORTEX_EMBEDDING_MODEL": "same-dim-model-a"},
-            clear=False,
-        ):
-            first = self._store()
-            self._seed(
-                first,
-                "mem_same_dimension_swap",
-                "Project Ember uses SQLite for its local datastore.",
-                ["project-ember", "database"],
-            )
-            with connect(self.db_path) as conn:
-                first._write_memory_vector(
-                    conn,
-                    memory_id="mem_same_dimension_swap",
-                    user_id=self.user_id,
-                    embedding_model="same-dim-model-a",
-                    text_hash="fixture",
-                    vector=json.dumps([0.0] * E.VECTOR_DIMENSIONS),
-                    timestamp=now_iso(),
-                )
-                first_fingerprint = conn.execute(
-                    "SELECT model FROM vec_index_meta WHERE id = 1"
-                ).fetchone()[0]
-                self.assertEqual(conn.execute("SELECT count(*) FROM memory_vec").fetchone()[0], 1)
-
-        with mock.patch.dict(
-            "os.environ",
-            {**base_env, "CORTEX_EMBEDDING_MODEL": "same-dim-model-b"},
-            clear=False,
-        ):
-            second = self._store()
-            with connect(self.db_path) as conn:
-                second_fingerprint = conn.execute(
-                    "SELECT model FROM vec_index_meta WHERE id = 1"
-                ).fetchone()[0]
-                self.assertNotEqual(first_fingerprint, second_fingerprint)
-                self.assertEqual(conn.execute("SELECT count(*) FROM memory_vec").fetchone()[0], 0)
-                self.assertEqual(conn.execute("SELECT count(*) FROM memory_vec_map").fetchone()[0], 0)
-                self.assertGreater(
-                    conn.execute(
-                        "SELECT count(*) FROM memory_jobs WHERE job_type = 'embed_memory'"
-                    ).fetchone()[0],
-                    0,
-                )
 
 
 if __name__ == "__main__":

@@ -46,52 +46,6 @@ class TokenBucketRateLimiterTests(unittest.TestCase):
         limiter.reset("alice")
         self.assertTrue(limiter.check("alice")[0])
 
-    def test_bucket_map_fails_closed_instead_of_resetting_active_keys(self) -> None:
-        limiter = TokenBucketRateLimiter(
-            60,
-            burst=1,
-            max_buckets=3,
-            idle_ttl_seconds=100,
-            time_fn=lambda: 0.0,
-        )
-        for key in ("a", "b", "c"):
-            self.assertTrue(limiter.check(key)[0])
-        self.assertFalse(limiter.check("d")[0])
-        self.assertEqual(list(limiter._buckets), ["a", "b", "c"])
-        # Flooding novel keys cannot evict and reset a key that has exhausted
-        # its bucket.
-        self.assertFalse(limiter.check("a")[0])
-
-    def test_idle_buckets_are_evicted_before_active_buckets(self) -> None:
-        clock = {"t": 0.0}
-        limiter = TokenBucketRateLimiter(
-            60,
-            burst=1,
-            max_buckets=3,
-            idle_ttl_seconds=10,
-            time_fn=lambda: clock["t"],
-        )
-        limiter.check("old-a")
-        limiter.check("old-b")
-        clock["t"] = 11.0
-        limiter.check("new")
-        self.assertEqual(list(limiter._buckets), ["new"])
-
-    def test_fully_refilled_bucket_is_reclaimable_before_idle_ttl(self) -> None:
-        clock = {"t": 0.0}
-        limiter = TokenBucketRateLimiter(
-            60,
-            burst=1,
-            max_buckets=1,
-            idle_ttl_seconds=600,
-            time_fn=lambda: clock["t"],
-        )
-        self.assertTrue(limiter.check("finished")[0])
-        self.assertFalse(limiter.check("new")[0])
-        clock["t"] = 1.0
-        self.assertTrue(limiter.check("new")[0])
-        self.assertEqual(list(limiter._buckets), ["new"])
-
 
 if __name__ == "__main__":
     unittest.main()

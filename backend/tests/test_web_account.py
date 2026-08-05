@@ -63,7 +63,6 @@ class WebAccountAuthEnabledTests(unittest.TestCase):
             shard_mode="user",
             default_user_id="hosted-default",
             require_scoped_api_tokens=True,
-            legal_terms_approved=True,
             auth_enabled=True,
             accounts_db_path=None,
             auth_email_mode="log",
@@ -268,11 +267,6 @@ class WebAccountAuthEnabledTests(unittest.TestCase):
         self.assertIn("/terms", html)
         self.assertIn("/privacy", html)
         self.assertIn('autocomplete="new-password"', html)
-        self.assertIn("/v1/auth/oauth/google/start?signup=1", html)
-        self.assertIn('class="button secondary oauth-signup"', html)
-        js = self.client.get("/account/app.js").text
-        self.assertIn("target.searchParams.set('terms_accepted', 'true')", js)
-        self.assertIn("target.searchParams.set('age_confirmed', 'true')", js)
 
     def test_reset_page_points_at_reset_endpoints(self) -> None:
         html = self.client.get("/account/reset").text
@@ -425,8 +419,6 @@ class WebAccountAuthEnabledTests(unittest.TestCase):
             "account": {"account_id": "acc_1", "status": "login", "primary_email": "signin@example.com"},
         }
         with mock.patch.object(runtime.oidc, "complete", return_value=identity), mock.patch.object(
-            runtime.control_store, "get_identity", return_value={"identity_id": "ident_1"}
-        ), mock.patch.object(
             runtime.service, "find_or_challenge_identity", return_value=result
         ), mock.patch.object(runtime.service, "mint_session", return_value=session):
             r = self.client.get(

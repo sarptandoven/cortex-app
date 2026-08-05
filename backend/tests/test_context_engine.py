@@ -150,19 +150,6 @@ class ContextEngineTests(ContextEngineBase):
         labels = {connection.get("label") for connection in entity.get("connections") or []}
         self.assertIn("Atlas", labels)
 
-    def test_project_is_explicitly_labeled_as_a_ranking_hint(self) -> None:
-        self._seed_corpus()
-        pack = self.store.assemble_context(
-            self.user_id,
-            "summarize Atlas",
-            project="Project Atlas",
-        )
-        self.assertEqual(pack["filters"]["project"], "Project Atlas")
-        self.assertEqual(
-            pack["filter_semantics"]["project"],
-            "ranking_hint_not_isolation",
-        )
-
     def test_markdown_render_contains_included_ids(self) -> None:
         self._seed_corpus()
         pack = self.store.assemble_context(self.user_id, "what did we decide about Atlas?")

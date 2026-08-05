@@ -1352,11 +1352,6 @@ def main() -> None:
     parser.add_argument("--vault-path", type=Path, help="Optional vault path. Defaults beside the SQLite database.")
     parser.add_argument("--user-id", default=USER_ID)
     parser.add_argument("--report-only", action="store_true", help="Print metrics without failing on regressions.")
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the complete per-case result instead of the concise default summary.",
-    )
     args = parser.parse_args()
 
     if args.db_path:
@@ -1369,31 +1364,9 @@ def main() -> None:
         tmp = Path(tempfile.mkdtemp(prefix="context-pack-eval-"))
         result = run_context_pack_eval(tmp / "context-pack-eval.sqlite", tmp / "Cortex.vault", args.user_id)
 
+    print(json.dumps(result, indent=2, sort_keys=True))
+
     failures = check_context_pack_thresholds(result)
-    if args.json or failures:
-        print(json.dumps(result, indent=2, sort_keys=True))
-    else:
-        metrics = result["metrics"]
-        replay_metrics = result["session_replay"]["metrics"]
-        print(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "checks": result["counts"]["total_checks"],
-                    "profiles": result.get("profile_names", []),
-                    "ndcg@k": metrics.get("ndcg@k"),
-                    "mrr": metrics.get("mrr"),
-                    "citation_coverage": metrics.get("citation_coverage"),
-                    "no_leak": metrics.get("no_leak"),
-                    "budget_adherence": metrics.get("budget_adherence"),
-                    "session_turns": replay_metrics.get("turn_count"),
-                    "session_delta_token_ratio": replay_metrics.get("token_savings_ratio"),
-                    "note": "Use --json for per-case and session-replay diagnostics.",
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
     if failures and not args.report_only:
         print("\nCONTEXT PACK GATE FAILED:", file=sys.stderr)
         for failure in failures:

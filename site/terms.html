@@ -55,7 +55,7 @@
       <section>
         <h2>2. What Cortex is</h2>
         <ul>
-          <li><strong>Local-first app (the default):</strong> a macOS application that requires account sign-in but keeps its memory vault and retrieval engine on your own Mac. After sign-in, local ingestion and retrieval work with the network off. Cloud-processing terms apply only to account metadata and content you choose to sync.</li>
+          <li><strong>Local app (the default):</strong> a macOS application that keeps your memory on your own Mac and needs no account. It works with the network off. Nothing in these Terms about accounts, servers, or cloud processing applies while you use Cortex only locally.</li>
           <li><strong>Cortex Cloud (optional):</strong> a hosted service you sign in to. It syncs your memory and serves it back to your AI tools with cited context. Using it means your data is processed on our servers as described below and in the <a href="privacy.html">Privacy page</a>.</li>
         </ul>
       </section>
@@ -94,7 +94,7 @@
       <section>
         <h2>6. How your data is processed (AI processing disclosure)</h2>
         <ul>
-          <li>When you use Cortex Cloud, your content is processed on our servers to build embeddings, run retrieval, and assemble cited context. This means <strong>Cortex servers can read your memory in order to serve you.</strong> Connector credentials are encrypted at rest with a per-user key; broader encryption of hosted memory content is still rolling out. This is <strong>not</strong> end-to-end or "zero-knowledge" encryption. The <a href="privacy.html">Privacy page</a> states this plainly.</li>
+          <li>When you use Cortex Cloud, your content is processed on our servers to build embeddings, run retrieval, and assemble cited context. This means <strong>Cortex servers can read your memory in order to serve you.</strong> Your data is encrypted at rest with a per-user key; this is <strong>not</strong> end-to-end or "zero-knowledge" encryption. The <a href="privacy.html">Privacy page</a> states this plainly.</li>
           <li>By default the hosted deployment generates embeddings with an on-device model and uses no third-party AI processor. If the operator enables a cloud AI model, that provider is disclosed on the <a href="subprocessors.html">Subprocessors page</a>.</li>
           <li>Context is shared with an AI tool only when you connect it, and only within the permissions you grant.</li>
         </ul>
@@ -112,17 +112,18 @@
         <h2>8. Availability</h2>
         <ul>
           <li>Cortex Cloud is provided on an "as is" and "as available" basis. The free tier carries <strong>no uptime commitment or service-level agreement</strong>. We may change, suspend, or discontinue features, and we perform maintenance that can cause downtime.</li>
-          <li>After setup and a successful sign-in, the installed app can continue local ingestion and retrieval over data already stored on your Mac during a hosted-service outage. Account creation, first sign-in, token renewal, managed connector authorization, optional sync, update checks, and other network-backed features may be unavailable until the relevant service recovers.</li>
+          <li>The local app keeps working regardless of the hosted service's availability.</li>
         </ul>
       </section>
 
       <section>
         <h2>9. Paid plans (future)</h2>
-        <p>
-          Cortex does not currently offer a public paid plan. Before charging users, we will
-          publish the billing provider, renewal, cancellation, refund, and applicable
-          withdrawal terms and ask affected users to accept the updated Terms.
-        </p>
+        <p>Cortex may launch a paid tier. When it does, the following applies to paid plans:</p>
+        <ul>
+          <li><strong>Billing:</strong> payments are handled by a third-party merchant of record ([billing provider — confirm]), who processes your payment and, where a merchant of record, collects and remits applicable taxes. We receive payment metadata (not your full card details). Subscriptions renew automatically until cancelled; you can cancel at any time and keep access through the paid period you already bought.</li>
+          <li><strong>Refunds:</strong> <em>[REFUND POLICY PLACEHOLDER — state the window and conditions, e.g. "full refund within 14 days of a charge if the service was unused," and confirm the billing provider's own refund handling.]</em></li>
+          <li><strong>EU/UK right of withdrawal:</strong> if you are a consumer in the EU/UK, you have a statutory 14-day right to withdraw from a purchase of digital services. Where you ask us to begin the service immediately, you acknowledge you may lose that right once the service is fully performed, to the extent the law allows. Nothing here limits your mandatory statutory rights.</li>
+        </ul>
       </section>
 
       <section>

@@ -1,66 +1,19 @@
 # Cortex Architecture
 
-## Runtime Boundaries
-
-Cortex has two runtimes around one storage and retrieval core. The packaged
-macOS app starts a loopback-only standard-library server. The optional hosted
-plane uses FastAPI, account authentication, and per-user sharded stores.
-
-```mermaid
-flowchart LR
-    subgraph Desktop["Local desktop runtime"]
-        UI["SwiftUI app"]
-        LocalAPI["standalone_server.py<br/>127.0.0.1 only"]
-        MCP["Scoped MCP proxy"]
-    end
-    subgraph Core["Shared Python core"]
-        Review["Capture + Review"]
-        Retrieval["Hybrid retrieval<br/>cite or abstain"]
-        Store["CortexStore"]
-    end
-    subgraph Data["User-owned local data"]
-        Vault["Markdown / JSON vault"]
-        Index["SQLite FTS5 + sqlite-vec"]
-    end
-    subgraph Hosted["Optional hosted account + sync plane"]
-        FastAPI["FastAPI"]
-        Registry["StoreRegistry<br/>per-user shards"]
-        Workers["Scheduled sync workers"]
-    end
-    UI --> LocalAPI
-    MCP --> LocalAPI
-    LocalAPI --> Review --> Store
-    LocalAPI --> Retrieval --> Store
-    Store <--> Vault
-    Store <--> Index
-    FastAPI --> Registry --> Store
-    Workers --> Registry
-```
-
-The desktop app and hosted plane are separate trust boundaries. A path supplied
-to the hosted API names a file on the server—not on the user's Mac—so
-filesystem connectors and path-based imports are local-only. Credential-bearing
-hosted connectors are restricted to their official service origins.
-
-## Legacy Prototype (Reference Only)
+## Current Prototype
 
 The original prototype has these pieces:
 
-- `legacy/capture.py`: macOS menu bar capture using Python
-- `legacy/ingest.py`: Claude-based extraction into records, tasks, and entities
-- `legacy/github_store.py`: markdown persistence in GitHub
-- `legacy/redis_store.py`: Voyage embeddings plus Redis vector search
-- `legacy/mcp_server.py`: legacy prototype local stdio MCP server; packaged builds use the app-bundled `scripts/cortex_mcp_stdio.py` proxy instead
-- `legacy/ui.py`: Streamlit memory chat
+- `capture.py`: macOS menu bar capture using Python
+- `ingest.py`: Claude-based extraction into records, tasks, and entities
+- `github_store.py`: markdown persistence in GitHub
+- `redis_store.py`: Voyage embeddings plus Redis vector search
+- `mcp_server.py`: legacy prototype local stdio MCP server; packaged builds use the app-bundled `scripts/cortex_mcp_stdio.py` proxy instead
+- `ui.py`: Streamlit memory chat
 
-These modules are isolated under `legacy/`, retained for reference, and not
-used by the packaged app. New product work belongs in `backend/app/`, `macos/`,
-the SDKs, or the integration packages.
+## Productized MVP
 
-## Current Product
-
-The current product adds a backend service and native macOS client while
-preserving the extraction schema.
+The MVP adds a backend service and a native macOS client while preserving the extraction schema.
 
 ```
 macOS app
@@ -72,9 +25,7 @@ macOS app
   Obsidian/local notes sync
       |
       v
-Shared API surface
-  FastAPI: development and optional hosted plane
-  standalone_server.py: packaged local subset
+FastAPI backend
   /v1/captures
   /v1/captures/queue
   /v1/captures/{id}/status
@@ -147,8 +98,7 @@ Local vault
 Rebuildable SQLite index
   FTS5
   sqlite-vec when available
-  bundled Model2Vec embeddings when available
-  deterministic hash fallback or opt-in OpenAI embeddings
+  hash or opt-in OpenAI embeddings
   normalized joins
 
 Release pipeline
@@ -164,49 +114,20 @@ Release pipeline
     downloadable release artifacts
 ```
 
-## Request Lifecycle
+## Hosted Backend Migration
 
-```mermaid
-sequenceDiagram
-    participant Source as Connected source
-    participant API as Local or hosted API
-    participant Review as Review policy
-    participant Store as Vault + index
-    participant Tool as AI tool / MCP client
+The local SQLite storage is intentionally swappable.
 
-    Source->>API: Capture or sync records
-    API->>Review: Extract typed candidate memories
-    alt review required
-        Review-->>API: Pending until user approves
-    else trusted explicit import
-        Review-->>API: Auto-approved by policy
-    end
-    API->>Store: Persist source, memory, provenance, audit event
-    Tool->>API: Search / context / Ask with scoped token
-    API->>Store: Hybrid retrieval + policy filters
-    alt cited evidence is sufficient
-        API-->>Tool: Bounded context with memory IDs and citations
-    else evidence is missing
-        API-->>Tool: Explicit abstention
-    end
-```
+| Local Beta | Hosted Beta |
+|---|---|
+| User-owned local vault + SQLite index | FastAPI service with Postgres |
+| FTS5 keyword search | Postgres full-text search + pgvector |
+| local review status | hosted review workflow |
+| local install tokens | OAuth/login + scoped API tokens |
+| local vault files | durable object storage exports/backups plus relational memory rows |
+| localhost API and local MCP | HTTPS API and hosted MCP |
 
-## Hosted Backend and Scale Path
-
-The current hosted beta uses the same `CortexStore` behind `StoreRegistry`,
-which assigns isolated SQLite/vault shards per user. Postgres/pgvector is a
-future scale target, not the current hosted implementation.
-
-| Local desktop | Current hosted beta | Future scale target |
-|---|---|---|
-| User-owned vault + SQLite index | Per-user vault/SQLite shards | Relational memory store + durable object storage |
-| FTS5 + sqlite-vec | FTS5 + sqlite-vec per shard | Postgres full-text + pgvector, if benchmarks justify it |
-| Loopback server + local MCP | FastAPI HTTPS + scoped account tokens | Same public contracts behind horizontally scaled services |
-| Local review state | User-isolated hosted review state | Durable queues and multi-region operations |
-
-Local mode remains vault/SQLite-first. The migration seam is the store registry
-and public API contract; a future database change should not alter connector,
-review, citation, or client behavior.
+Local beta remains SQLite/vault-first. For the 10k-user hosted path, FastAPI plus Postgres/pgvector is the default unless benchmarks prove a separate vector store is needed.
 
 See `docs/MEMORY_BACKEND_BLUEPRINT.md` for the layered memory model and scale path across SQLite, sqlite-vec, libSQL/Turso, Postgres/pgvector, Qdrant, and LanceDB.
 
@@ -268,7 +189,6 @@ Each memory also has a retrieval layer:
 - decision
 - preference
 - negative
-- procedural
 
 ### Entity
 
@@ -322,14 +242,9 @@ Default packaged app path:
 ~/Library/Application Support/Cortex/Cortex.vault/
 ```
 
-The vault contains human-readable JSON records for imports, source accounts,
-sync cursors, captures, memories, tasks, entities, and graph edges. Memories
-also have editable Markdown notes; rebuild merges Markdown memories with the
-other durable JSON/JSONL records under the precedence rules in
-`LOCAL_VAULT_FORMAT.md`. SQLite is a rebuildable index, not the sole authority.
+The vault contains human-readable JSON records for imports, source accounts, sync cursors, captures, memories, tasks, entities, and graph edges, plus `settings.json`, `events.jsonl`, attachments, exports, backups, and `index.sqlite`.
 
-`POST /v1/maintenance/rebuild-index-from-vault` clears the current user's index
-rows and rebuilds them from that merged durable representation.
+`POST /v1/maintenance/rebuild-index-from-vault` clears the current user's index rows and rebuilds them from the vault records. This is the recovery path if the local index is corrupted or if a future sync process materializes records before rebuilding search.
 
 See `docs/LOCAL_VAULT_FORMAT.md`.
 
@@ -343,48 +258,50 @@ Operational readiness adds a sanitized support bundle that omits captured text, 
 
 ## MCP Tools
 
-The backend exposes an MCP-style JSON-RPC endpoint at `POST /mcp`. The tool registry is
-`TOOLS` in `backend/app/mcp_tools.py` and is the source of truth — it currently holds 110
-tools, so this document deliberately does not mirror the full list (a hand-copied list here
-drifted to 42 stale entries before).
+The backend exposes an MCP-style JSON-RPC endpoint with these tools:
 
-Clients cap how many tools they will accept (Cursor 40, ChatGPT 128), so tools are advertised
-by *surface* — `MCP_TOOL_SURFACES` in the same module, with presets `core`, `coding`,
-`chatgpt`, and `full`. The surface rides on the token's label. It is advertisement only and
-never authorization: scopes (`read`, `write`, `export`, `maintenance`, `destructive`) plus the
-user's Trust policy decide what a call is allowed to do, whatever the surface advertises.
-
-The `core` surface is the default ten:
-
-- `use_cortex`
-- `get_context`
-- `ask_memory`
-- `query_memory`
-- `expand`
-- `search_memory`
-- `get_entity_context`
-- `get_person_map`
 - `remember_this`
-- `list_capabilities`
-
-Beyond core, the registry groups roughly into: review/write (`propose_memory`,
-`approve_memory_capture`, `archive_memory_capture`, `forget_memory`), profile and adaptation
-(`get_personal_profile`, `get_agent_adaptation`, `get_style_profile`, `get_project_context`),
-connectors (`list_source_connectors`, `connect_source_account`, `sync_connected_sources` plus
-one `sync_*` per connector), sessions and context packs (`start_agent_session`,
-`build_context_pack`, `verify_context_pack`), provenance and audit (`get_decision_history`,
-`get_belief_timeline`, `verify_belief_proof`, `get_audit_log`, `get_trust_summary`), shared
-memory, and portability (`export_memory_bundle`, `verify_memory_bundle`,
-`create_memory_backup`).
-
-Two tools are named `search` and `fetch` purely because the ChatGPT deep-research connector
-requires those exact names; they are kept out of `core` so the default Claude/Cursor surface
-is unchanged.
-
-Desktop clients do not speak to `/mcp` directly. They launch the bundled stdio proxy
-`scripts/cortex_mcp_stdio.py`, which pipes stdio JSON-RPC to `http://127.0.0.1:8766/mcp` with
-a `cxm_` bearer token. `legacy/mcp_server.py` is the archived prototype and is not used by
-packaged builds.
+- `search_memory`
+- `get_recent_context`
+- `get_memory_graph`
+- `get_decisions`
+- `get_open_questions`
+- `get_daily_review`
+- `get_product_loop`
+- `get_style_profile`
+- `get_project_context`
+- `get_procedure`
+- `list_supported_import_sources`
+- `list_source_connectors`
+- `build_context_pack`
+- `get_about_person`
+- `get_about_entity`
+- `list_memory_topics`
+- `list_memory_entities`
+- `get_memory_stats`
+- `get_memory_inbox`
+- `get_memory_diagnostics`
+- `get_reliability_report`
+- `get_support_bundle`
+- `get_trust_summary`
+- `get_audit_log`
+- `get_personal_profile`
+- `get_agent_adaptation`
+- `connect_source_account`
+- `sync_source_records`
+- `sync_connected_sources`
+- `approve_memory_capture`
+- `archive_memory_capture`
+- `create_memory_backup`
+- `restore_latest_memory_backup`
+- `delete_memory_backups`
+- `delete_all_user_data`
+- `repair_memory_storage`
+- `rebuild_memory_search`
+- `forget_memory`
+- `delete_memory_capture`
+- `rebuild_index_from_vault`
+- `export_memory`
 
 The local source-account sync endpoint is enough for beta local app integrations, MCP bridges, and connector processes. Production ChatGPT/Claude and cloud-service connectors should add full remote MCP/OAuth flows on top of the same account, cursor, citation, and review contracts.
 

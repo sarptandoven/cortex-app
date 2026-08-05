@@ -11,23 +11,12 @@ WorkingDirectory=/srv/cortex/current
 ExecStart=/srv/cortex/venv/bin/python scripts/run_memory_worker.py --iterations 0 --interval-seconds 30
 Restart=always
 RestartSec=5
-UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-PrivateDevices=yes
-ProtectClock=yes
-ProtectControlGroups=yes
-ProtectKernelModules=yes
-ProtectKernelTunables=yes
-LockPersonality=yes
-RestrictRealtime=yes
-RestrictSUIDSGID=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/var/lib/cortex
 MemoryMax=2G
-TasksMax=256
 
 [Install]
 WantedBy=multi-user.target

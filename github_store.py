@@ -1,5 +1,5 @@
 """
-legacy/github_store.py
+cortex/github_store.py
 ----------------------
 Push extracted context to GitHub repo via the REST API.
 

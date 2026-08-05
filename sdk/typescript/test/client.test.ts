@@ -20,18 +20,10 @@ interface RecordedRequest {
   method: string;
   headers: Record<string, string>;
   body: string | undefined;
-  redirect: RequestRedirect | undefined;
 }
 
 /** A minimal fetch stub: records every call and returns a queued response (FIFO). */
-function makeFetchStub(
-  responses: Array<{
-    status: number;
-    body: unknown;
-    ok?: boolean;
-    headers?: Record<string, string>;
-  }>,
-) {
+function makeFetchStub(responses: Array<{ status: number; body: unknown; ok?: boolean }>) {
   const calls: RecordedRequest[] = [];
   let index = 0;
   const fetchStub = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -47,23 +39,16 @@ function makeFetchStub(
       method: init?.method ?? "GET",
       headers,
       body: typeof init?.body === "string" ? init.body : undefined,
-      redirect: init?.redirect,
     });
     const queued = responses[Math.min(index, responses.length - 1)];
     index += 1;
     const status = queued.status;
     const ok = queued.ok ?? (status >= 200 && status < 300);
     const text = typeof queued.body === "string" ? queued.body : JSON.stringify(queued.body);
-    const responseHeaders = new Map(
-      Object.entries(queued.headers ?? {}).map(([key, value]) => [key.toLowerCase(), value]),
-    );
     return {
       ok,
       status,
       statusText: ok ? "OK" : "Error",
-      headers: {
-        get: (name: string) => responseHeaders.get(name.toLowerCase()) ?? null,
-      },
       text: async () => text,
     } as unknown as Response;
   }) as typeof fetch;
@@ -76,16 +61,15 @@ test("toolsSchema issues GET /v1/tools/schema?format=<fmt> with bearer auth and 
   const { fetchStub, calls } = makeFetchStub([
     { status: 200, body: { schema: [{ type: "function", function: { name: "search_memory" } }] } },
   ]);
-  const client = new CortexClient({ baseUrl: "https://api.signindoppl.com", token: "cxa_test_token", fetch: fetchStub });
+  const client = new CortexClient({ baseUrl: "https://api.signindoppl.com", token: "cxm_test_token", fetch: fetchStub });
 
   const schema = await client.toolsSchema("anthropic");
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].method, "GET");
   assert.equal(calls[0].url, "https://api.signindoppl.com/v1/tools/schema?format=anthropic");
-  assert.equal(calls[0].headers["Authorization"], "Bearer cxa_test_token");
+  assert.equal(calls[0].headers["Authorization"], "Bearer cxm_test_token");
   assert.equal(calls[0].headers["Accept"], "application/json");
-  assert.equal(calls[0].redirect, "manual");
   assert.ok(!("Content-Type" in calls[0].headers), "GET requests must not send Content-Type");
   assert.deepEqual(schema, [{ type: "function", function: { name: "search_memory" } }]);
 });
@@ -117,13 +101,13 @@ test("callTool issues POST /v1/tools/call with {name, arguments} body and unwrap
   const { fetchStub, calls } = makeFetchStub([
     { status: 200, body: { tool: "search_memory", result: { results: [{ id: "m_1" }] } } },
   ]);
-  const client = new CortexClient({ baseUrl: "https://api.signindoppl.com", token: "cxa_test_token", fetch: fetchStub });
+  const client = new CortexClient({ baseUrl: "https://api.signindoppl.com", token: "cxm_test_token", fetch: fetchStub });
 
   const result = await client.callTool("search_memory", { query: "release checklist" });
 
   assert.equal(calls[0].method, "POST");
   assert.equal(calls[0].url, "https://api.signindoppl.com/v1/tools/call");
-  assert.equal(calls[0].headers["Authorization"], "Bearer cxa_test_token");
+  assert.equal(calls[0].headers["Authorization"], "Bearer cxm_test_token");
   assert.equal(calls[0].headers["Content-Type"], "application/json");
   assert.deepEqual(JSON.parse(calls[0].body ?? "{}"), { name: "search_memory", arguments: { query: "release checklist" } });
   assert.deepEqual(result, { results: [{ id: "m_1" }] });
@@ -165,36 +149,6 @@ test("context forwards intent/tokenBudget/surface overrides", async () => {
     intent: "plan",
     token_budget: 500,
     surface: "cursor",
-  });
-});
-
-test("context forwards CMP session, model, projection, and scope options", async () => {
-  const { fetchStub, calls } = makeFetchStub([{ status: 200, body: {} }]);
-  const client = new CortexClient({ token: "t", fetch: fetchStub });
-
-  await client.context("plan the Project Atlas launch", {
-    intent: "plan",
-    format: "smp",
-    model: "claude",
-    sessionId: "session-atlas",
-    pin: true,
-    sector: "Project Atlas",
-    project: "Atlas",
-    asOf: "2026-07-30T00:00:00Z",
-  });
-
-  assert.deepEqual(JSON.parse(calls[0].body ?? "{}"), {
-    task: "plan the Project Atlas launch",
-    intent: "plan",
-    token_budget: 2000,
-    surface: "agent",
-    format: "smp",
-    model: "claude",
-    session_id: "session-atlas",
-    pin: true,
-    sector: "Project Atlas",
-    project: "Atlas",
-    as_of: "2026-07-30T00:00:00Z",
   });
 });
 
@@ -258,123 +212,6 @@ test("baseUrl trailing slashes are stripped", async () => {
   await client.search("q");
 
   assert.ok(calls[0].url.startsWith("https://api.signindoppl.com/v1/search"));
-});
-
-test("constructor rejects unsafe or malformed base URLs with CortexError", () => {
-  for (const baseUrl of [
-    "not-a-url",
-    "file:///tmp/cortex",
-    "https://user:secret@example.com",
-    "https://example.com?token=secret",
-    "https://example.com/#fragment",
-  ]) {
-    assert.throws(
-      () => new CortexClient({ baseUrl, fetch: makeFetchStub([]).fetchStub }),
-      (err: unknown) => err instanceof CortexError && err.status === 0,
-      baseUrl,
-    );
-  }
-});
-
-test("GET follows at most same-origin redirects and retains bearer auth", async () => {
-  const { fetchStub, calls } = makeFetchStub([
-    {
-      status: 307,
-      body: "",
-      headers: { Location: "/v1/search-relocated?query=atlas&limit=8" },
-    },
-    { status: 200, body: { results: [{ id: "m_atlas" }] } },
-  ]);
-  const client = new CortexClient({
-    baseUrl: "https://api.signindoppl.com",
-    token: "cxa_redirect_test",
-    fetch: fetchStub,
-  });
-
-  const result = await client.search<{ results: Array<{ id: string }> }>("atlas");
-
-  assert.deepEqual(result, { results: [{ id: "m_atlas" }] });
-  assert.equal(calls.length, 2);
-  assert.equal(
-    calls[1].url,
-    "https://api.signindoppl.com/v1/search-relocated?query=atlas&limit=8",
-  );
-  assert.equal(calls[1].headers["Authorization"], "Bearer cxa_redirect_test");
-  assert.equal(calls[1].redirect, "manual");
-});
-
-test("cross-origin redirect is rejected before bearer auth can be replayed", async () => {
-  const { fetchStub, calls } = makeFetchStub([
-    {
-      status: 302,
-      body: "",
-      headers: { Location: "https://attacker.invalid/collect" },
-    },
-  ]);
-  const client = new CortexClient({
-    baseUrl: "https://api.signindoppl.com",
-    token: "cxa_secret",
-    fetch: fetchStub,
-  });
-
-  await assert.rejects(
-    () => client.search("atlas"),
-    (err: unknown) => {
-      assert.ok(err instanceof CortexError);
-      assert.equal(err.status, 302);
-      assert.match(String(err.detail), /Cross-origin redirect blocked/);
-      return true;
-    },
-  );
-  assert.equal(calls.length, 1);
-});
-
-test("POST redirects are rejected rather than replaying a request body or token", async () => {
-  const { fetchStub, calls } = makeFetchStub([
-    { status: 307, body: "", headers: { Location: "/v1/context-relocated" } },
-  ]);
-  const client = new CortexClient({
-    baseUrl: "https://api.signindoppl.com",
-    token: "cxa_secret",
-    fetch: fetchStub,
-  });
-
-  await assert.rejects(
-    () => client.context("Project Atlas"),
-    (err: unknown) => {
-      assert.ok(err instanceof CortexError);
-      assert.equal(err.status, 307);
-      assert.match(String(err.detail), /Redirect blocked.*POST/);
-      return true;
-    },
-  );
-  assert.equal(calls.length, 1);
-});
-
-test("GET stops after three same-origin redirects", async () => {
-  const { fetchStub, calls } = makeFetchStub([
-    { status: 307, body: "", headers: { Location: "/redirect/1" } },
-    { status: 307, body: "", headers: { Location: "/redirect/2" } },
-    { status: 307, body: "", headers: { Location: "/redirect/3" } },
-    { status: 307, body: "", headers: { Location: "/redirect/4" } },
-  ]);
-  const client = new CortexClient({
-    baseUrl: "https://api.signindoppl.com",
-    token: "cxa_secret",
-    fetch: fetchStub,
-  });
-
-  await assert.rejects(
-    () => client.search("atlas"),
-    (err: unknown) => {
-      assert.ok(err instanceof CortexError);
-      assert.equal(err.status, 307);
-      assert.match(String(err.detail), /Too many Cortex API redirects/);
-      return true;
-    },
-  );
-  assert.equal(calls.length, 4);
-  assert.ok(calls.every((call) => call.headers["Authorization"] === "Bearer cxa_secret"));
 });
 
 // -- error propagation ----------------------------------------------------------------

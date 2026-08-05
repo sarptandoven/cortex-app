@@ -10,7 +10,6 @@ metadata — and surfaces truncated reads as `source_file_truncated`.
 from __future__ import annotations
 
 import json
-import io
 import tempfile
 import unittest
 import zipfile
@@ -20,9 +19,7 @@ from backend.app.source_ingest import (
     MAX_TEXT_BYTES,
     SourceAsset,
     _assets_from_zip,
-    _assets_from_open_zip,
     _format_csv_export,
-    _zip_declared_member_count,
     _parse_mbox,
     _parse_single_asset,
     _parse_twitter_archive,
@@ -96,65 +93,6 @@ class OversizedFileTruncationTests(unittest.TestCase):
         tiny = assets["notes/tiny.md"]
         self.assertFalse(tiny.read_truncated)
         self.assertEqual(tiny.read_bytes(), b"tiny note")
-
-    def test_zip_import_enforces_an_aggregate_uncompressed_byte_budget(self) -> None:
-        payload = io.BytesIO()
-        with zipfile.ZipFile(payload, "w") as archive:
-            archive.writestr("one.md", b"12345678")
-            archive.writestr("two.md", b"abcdefgh")
-        payload.seek(0)
-
-        with zipfile.ZipFile(payload) as archive:
-            assets = _assets_from_open_zip(
-                archive,
-                "bounded.zip",
-                depth=0,
-                member_budget=[10],
-                byte_budget=[10],
-            )
-
-        self.assertEqual([asset.name for asset in assets], ["one.md", "two.md"])
-        self.assertEqual(sum(len(asset.read_bytes()) for asset in assets), 10)
-        self.assertEqual(assets[0].read_bytes(), b"12345678")
-        self.assertEqual(assets[1].read_bytes(), b"ab")
-        self.assertTrue(assets[1].read_truncated)
-
-    def test_zip_member_budget_counts_directories_and_hidden_entries(self) -> None:
-        payload = io.BytesIO()
-        with zipfile.ZipFile(payload, "w") as archive:
-            archive.writestr("one/", b"")
-            archive.writestr(".hidden", b"secret")
-            archive.writestr("visible.md", b"note")
-        payload.seek(0)
-        member_budget = [3]
-
-        with zipfile.ZipFile(payload) as archive:
-            assets = _assets_from_open_zip(
-                archive,
-                "bounded.zip",
-                depth=0,
-                member_budget=member_budget,
-                byte_budget=[100],
-            )
-
-        self.assertEqual(member_budget, [0])
-        self.assertEqual([asset.name for asset in assets], ["visible.md"])
-
-    def test_zip_with_excessive_declared_members_is_rejected_before_import(self) -> None:
-        zip_path = self.root / "metadata-pressure.zip"
-        with zipfile.ZipFile(zip_path, "w") as archive:
-            for index in range(20_001):
-                archive.writestr(f"d{index}/", b"")
-
-        self.assertEqual(_assets_from_zip(zip_path), [])
-
-    def test_zip_member_preflight_ignores_eocd_marker_inside_comment(self) -> None:
-        payload = io.BytesIO()
-        with zipfile.ZipFile(payload, "w") as archive:
-            archive.writestr("visible.md", b"note")
-            archive.comment = b"comment-with-PK\x05\x06-marker"
-
-        self.assertEqual(_zip_declared_member_count(payload.getvalue()), 1)
 
 
 class TwitterBatchingTests(unittest.TestCase):

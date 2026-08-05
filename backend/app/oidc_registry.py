@@ -47,7 +47,6 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from .accounts import ControlStore, iso_utc, utc_now
-from .http_security import open_same_origin
 
 OAUTH_FLOW_KIND = "oidc"  # accounts.FLOW_KINDS row used for OAuth state
 DEFAULT_STATE_TTL_SECONDS = 600  # ~10 minutes, single-use
@@ -168,7 +167,7 @@ def urllib_transport(request: dict[str, Any]) -> dict[str, Any]:
     )
     timeout = float(request.get("timeout") or DEFAULT_HTTP_TIMEOUT_SECONDS)
     try:
-        with open_same_origin(req, timeout=timeout) as response:
+        with urllib.request.urlopen(req, timeout=timeout) as response:  # noqa: S310 - scheme checked above
             return {
                 "status": int(getattr(response, "status", 200) or 200),
                 "headers": dict(response.headers.items()),
@@ -285,12 +284,11 @@ def _json_object(raw: bytes, what: str) -> dict[str, Any]:
 class OidcProviderRegistry:
     """Config-driven provider registry + the start/complete OAuth engine.
 
-    - ``start(provider, redirect_uri, app_flow_id=None, signup_consent=False)`` persists the
+    - ``start(provider, redirect_uri, app_flow_id=None)`` persists the
       single-use flow row (state = flow_id) and returns the authorize URL.
     - ``complete(provider, state, code, ...)`` consumes the flow, exchanges the
       code (PKCE verifier included), and returns the VERIFIED provider
-      assertion: {subject, email, email_verified, display_name, app_flow_id,
-      signup_consent}.
+      assertion: {subject, email, email_verified, display_name, app_flow_id}.
       The caller (main.py wiring) maps that onto accounts via
       AccountsService.find_or_challenge_identity — never here.
     """
@@ -350,7 +348,6 @@ class OidcProviderRegistry:
         redirect_uri: str,
         *,
         app_flow_id: Optional[str] = None,
-        signup_consent: bool = False,
     ) -> dict[str, Any]:
         definition = self._require_enabled(provider)
         redirect = str(redirect_uri or "").strip()
@@ -375,7 +372,6 @@ class OidcProviderRegistry:
                 "pkce_verifier": pkce_verifier,
                 "redirect_uri": redirect,
                 "app_flow_id": str(app_flow_id or "") or None,
-                "signup_consent": bool(signup_consent),
             },
             secret_hash=None,
             expires_at=iso_utc(now + timedelta(seconds=self.state_ttl_seconds)),
@@ -421,7 +417,6 @@ class OidcProviderRegistry:
             identity = self._oidc_identity(definition, token_response, nonce=str(payload.get("nonce") or ""))
         identity["provider"] = definition.name
         identity["app_flow_id"] = payload.get("app_flow_id") or None
-        identity["signup_consent"] = bool(payload.get("signup_consent"))
         return identity
 
     def verify_native_id_token(

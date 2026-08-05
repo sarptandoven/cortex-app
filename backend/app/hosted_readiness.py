@@ -26,15 +26,6 @@ def hosted_readiness_contract(settings: Settings, runtime: dict | None = None) -
 
     checks = [
         _scoped_token_check(hosted_mode, requires_scoped_tokens),
-        _credential_encryption_check(
-            hosted_mode,
-            bool(getattr(settings, "require_encrypted_credentials", False)),
-            runtime,
-        ),
-        _legal_terms_check(
-            hosted_mode,
-            bool(getattr(settings, "legal_terms_approved", False)),
-        ),
         _public_base_url_check(hosted_mode, settings.public_base_url),
         _sync_signing_key_check(hosted_mode, settings.sync_signing_key),
         _hosted_database_check(hosted_mode, settings.hosted_database_url, runtime_tier, shard_mode),
@@ -56,90 +47,6 @@ def hosted_readiness_contract(settings: Settings, runtime: dict | None = None) -
         "global_token_user_switching": global_token_user_switching,
         "runtime": runtime or {},
         "checks": checks,
-    }
-
-
-def _credential_encryption_check(
-    hosted_mode: bool,
-    enforcement_enabled: bool,
-    runtime: dict | None,
-) -> dict:
-    if not hosted_mode:
-        return {
-            "name": "credential_encryption",
-            "status": "ok",
-            "detail": "Local mode may keep connector credentials in the user-owned local vault.",
-        }
-    evidence = (runtime or {}).get("credential_encryption") if isinstance(runtime, dict) else None
-    keyring_available = bool(
-        isinstance(evidence, dict) and evidence.get("keyring_available")
-    )
-    remaining_plaintext = (
-        evidence.get("remaining_plaintext") if isinstance(evidence, dict) else None
-    )
-    scan_complete = bool(isinstance(evidence, dict) and evidence.get("scan_complete"))
-    unreadable_files = (
-        int(evidence.get("unreadable_files") or 0) if isinstance(evidence, dict) else 0
-    )
-    invalid_records = (
-        int(evidence.get("invalid_records") or 0) if isinstance(evidence, dict) else 0
-    )
-    if (
-        enforcement_enabled
-        and keyring_available
-        and remaining_plaintext == 0
-        and scan_complete
-        and unreadable_files == 0
-        and invalid_records == 0
-    ):
-        return {
-            "name": "credential_encryption",
-            "status": "ok",
-            "detail": (
-                "Hosted credential encryption is enforced, the runtime keyring is "
-                "available, and the complete credential scan found no plaintext."
-            ),
-        }
-    missing = []
-    if not enforcement_enabled:
-        missing.append("CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS=1")
-    if not keyring_available:
-        missing.append("an available KEK-backed runtime keyring")
-    if remaining_plaintext is None:
-        missing.append("a complete plaintext-credential scan")
-    elif remaining_plaintext != 0:
-        missing.append(f"migration of {remaining_plaintext} remaining plaintext credential(s)")
-    if not scan_complete:
-        missing.append("complete (non-truncated) credential scan coverage")
-    if unreadable_files:
-        missing.append(f"repair of {unreadable_files} unreadable credential file(s)")
-    if invalid_records:
-        missing.append(f"repair of {invalid_records} invalid credential record(s)")
-    return {
-        "name": "credential_encryption",
-        "status": "blocked",
-        "detail": "Hosted readiness requires " + " and ".join(missing) + ".",
-    }
-
-
-def _legal_terms_check(hosted_mode: bool, approved: bool) -> dict:
-    if not hosted_mode or approved:
-        return {
-            "name": "legal_terms",
-            "status": "ok",
-            "detail": (
-                "Hosted legal terms are marked approved by the operator."
-                if hosted_mode
-                else "Local mode does not expose hosted public account creation."
-            ),
-        }
-    return {
-        "name": "legal_terms",
-        "status": "blocked",
-        "detail": (
-            "Public signup is disabled until counsel-approved Terms and Privacy "
-            "are deployed and CORTEX_LEGAL_TERMS_APPROVED=1 is set."
-        ),
     }
 
 

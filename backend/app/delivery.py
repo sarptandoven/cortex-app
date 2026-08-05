@@ -11,18 +11,18 @@ in the product, so every send:
   - is gated at the endpoint by the export scope + the allow_agent_exports trust toggle (default
     off) and audited.
 
-Stdlib-only (http.client + socket + ipaddress). The HTTP sender is injectable for deterministic tests.
+Stdlib-only (urllib + socket + ipaddress). The HTTP sender is injectable for deterministic tests.
 """
 from __future__ import annotations
 
 import ipaddress
-import http.client
 import json
 import os
 import socket
-import ssl
 from typing import Any, Callable
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
 
 DELIVERY_KINDS = ("brief", "digest", "context")
 _DEFAULT_TIMEOUT = 15
@@ -32,107 +32,35 @@ def _allow_internal_targets() -> bool:
     return os.environ.get("CORTEX_DELIVERY_ALLOW_INTERNAL", "").strip().lower() in {"1", "true", "on", "yes"}
 
 
-def _validated_webhook_target(url: str) -> tuple[SplitResult | None, str | None, str]:
-    """Validate and resolve once, returning the exact address to connect to."""
+def is_safe_webhook_url(url: str) -> tuple[bool, str]:
+    """SSRF guard. Returns (ok, reason). Refuses non-http(s), credential-bearing, and — unless
+    CORTEX_DELIVERY_ALLOW_INTERNAL is set (local dev) — any target that resolves to a loopback,
+    private, link-local, reserved, or multicast address. Public targets must be https."""
     raw = str(url or "").strip()
-    parsed = urlsplit(raw)
+    parsed = urlparse(raw)
     if parsed.scheme not in {"http", "https"}:
-        return None, None, "URL must be http(s)"
-    if parsed.username is not None or parsed.password is not None:
-        return None, None, "credentials in URL are not allowed"
+        return False, "URL must be http(s)"
+    if "@" in (parsed.netloc or ""):
+        return False, "credentials in URL are not allowed"
     host = parsed.hostname
     if not host:
-        return None, None, "URL has no host"
+        return False, "URL has no host"
+    if _allow_internal_targets():
+        return True, ""
     try:
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    except ValueError:
-        return None, None, "URL has an invalid port"
-    try:
-        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
-    except (OSError, ValueError):
-        return None, None, "host does not resolve"
-    addresses: list[str] = []
+        infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False, "host does not resolve"
     for info in infos:
         try:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
-            return None, None, "unresolvable address"
-        # ``is_private`` does not cover every non-public range (notably
-        # 100.64.0.0/10 shared address space). Public delivery accepts only
-        # globally routable addresses.
-        if not _allow_internal_targets() and not ip.is_global:
-            return None, None, "target resolves to an internal address"
-        addresses.append(str(ip))
-    if not addresses:
-        return None, None, "host does not resolve"
-    if not _allow_internal_targets() and parsed.scheme != "https":
-        return None, None, "public targets must use https"
-    return parsed, addresses[0], ""
-
-
-def is_safe_webhook_url(url: str) -> tuple[bool, str]:
-    """Refuse unsafe webhook targets and require public HTTPS."""
-    parsed, _address, reason = _validated_webhook_target(url)
-    return parsed is not None, reason
-
-
-class _PinnedHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, host: str, port: int, pinned_address: str, *, timeout: int) -> None:
-        self._pinned_address = pinned_address
-        super().__init__(host, port, timeout=timeout)
-
-    def connect(self) -> None:
-        self.sock = socket.create_connection(
-            (self._pinned_address, self.port),
-            self.timeout,
-            self.source_address,
-        )
-
-
-class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-    def __init__(self, host: str, port: int, pinned_address: str, *, timeout: int) -> None:
-        self._pinned_address = pinned_address
-        super().__init__(
-            host,
-            port,
-            timeout=timeout,
-            context=ssl.create_default_context(),
-        )
-
-    def connect(self) -> None:
-        raw_socket = socket.create_connection(
-            (self._pinned_address, self.port),
-            self.timeout,
-            self.source_address,
-        )
-        # TLS verifies the original hostname even though the TCP connection is
-        # pinned to the already-validated address.
-        self.sock = self._context.wrap_socket(raw_socket, server_hostname=self.host)
-
-
-def _post_to_pinned_target(
-    parsed: SplitResult,
-    address: str,
-    body: bytes,
-    headers: dict[str, str],
-    *,
-    timeout: int,
-) -> int:
-    host = parsed.hostname or ""
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    connection_cls = _PinnedHTTPSConnection if parsed.scheme == "https" else _PinnedHTTPConnection
-    connection = connection_cls(host, port, address, timeout=timeout)
-    target = parsed.path or "/"
-    if parsed.query:
-        target += f"?{parsed.query}"
-    request_headers = {**headers, "Host": parsed.netloc}
-    try:
-        connection.request("POST", target, body=body, headers=request_headers)
-        response = connection.getresponse()
-        response.read(4096)
-        return int(response.status)
-    finally:
-        connection.close()
+            return False, "unresolvable address"
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+            return False, "target resolves to an internal address"
+    if parsed.scheme != "https":
+        return False, "public targets must use https"
+    return True, ""
 
 
 def build_delivery_payload(
@@ -173,8 +101,8 @@ def deliver_webhook(
 ) -> dict[str, Any]:
     """Deliver a payload to a webhook (POST JSON). SSRF-guarded. `request_fn(url, body, headers) ->
     status_code` is injectable for tests. Returns {ok, status, reason}."""
-    parsed, pinned_address, reason = _validated_webhook_target(url)
-    if parsed is None or pinned_address is None:
+    safe, reason = is_safe_webhook_url(url)
+    if not safe:
         return {"ok": False, "status": 0, "reason": reason}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json", "User-Agent": "Cortex-Delivery/1"}
@@ -182,13 +110,9 @@ def deliver_webhook(
         if request_fn is not None:
             status = int(request_fn(url, body, headers))
         else:
-            status = _post_to_pinned_target(
-                parsed,
-                pinned_address,
-                body,
-                headers,
-                timeout=timeout,
-            )
-    except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+            req = Request(url, data=body, headers=headers, method="POST")  # noqa: S310 — SSRF-guarded above
+            with urlopen(req, timeout=timeout) as response:  # noqa: S310
+                status = int(getattr(response, "status", 0) or 0)
+    except OSError as exc:
         return {"ok": False, "status": 0, "reason": f"delivery failed: {exc}"}
     return {"ok": 200 <= status < 300, "status": status, "reason": "" if 200 <= status < 300 else f"HTTP {status}"}

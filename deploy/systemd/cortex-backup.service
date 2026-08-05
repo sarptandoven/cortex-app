@@ -4,7 +4,5 @@ Description=Cortex nightly backup (WAL-safe SQLite snapshots + vaults)
 [Service]
 Type=oneshot
 User=root
-UMask=0077
-NoNewPrivileges=yes
 EnvironmentFile=/etc/cortex/cortex.env
 ExecStart=/usr/local/bin/cortex-backup

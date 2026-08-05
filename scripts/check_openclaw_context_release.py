@@ -2,9 +2,9 @@
 """Release gate for the packaged Cortex OpenClaw contextEngine adapter.
 
 The gate never touches the user's real OpenClaw state. It packs the npm artifact, installs and
-reinstalls it into a temporary HOME/profile, loads it through the pinned OpenClaw compatibility
-runtime, probes the installed artifact in live and signed-bundle modes, then boots and
-health-checks an isolated loopback Gateway.
+reinstalls it into a temporary HOME/profile, loads it through the real OpenClaw 2026.6.11 runtime,
+probes the installed artifact in live and signed-bundle modes, then boots and health-checks an
+isolated loopback Gateway.
 """
 
 from __future__ import annotations

@@ -10,19 +10,15 @@ import hmac
 import json
 import logging
 import os
-from pathlib import Path
 import secrets
-import threading
 import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.routing import APIRoute
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .accounts import iso_utc, utc_now
 from .authn import (
@@ -34,14 +30,8 @@ from .authn import (
     token_verify_hash,
 )
 from .config import APP_BRAND, load_settings
-from .connector_policy import (
-    is_atlassian_cloud_origin,
-    is_official_connector_origin,
-    is_official_oauth_token_endpoint,
-)
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .http_security import open_same_origin
 from .mcp_tools import (
     CORE_TOOL_NAMES,
     MCP_TOOL_SURFACES,
@@ -60,7 +50,6 @@ from .mcp_tools import (
 from .observability import metrics, route_label
 from .models import AgentSessionsSyncRequest, AgentSessionsSyncResponse, APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
-from .models import ContextRequest
 from .models import CaptureChangePage, SyncIngestRequest, SyncIngestResponse
 from .models import SyncDeletionPage, SyncDeletionApplyRequest, SyncDeletionApplyResponse
 from .models import GradeAnswerRequest, WouldIRequest, DraftAsMeRequest, GradeTwinPredictionRequest
@@ -72,11 +61,7 @@ from .oauth_broker import register_oauth_broker_routes
 from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
 from .sharding import StoreRegistry
-from .storage import BACKEND_VERSION, ExportSizeLimitError, UnknownAgentSessionError
-from .twin_eval import (
-    build_pairwise_preflight_response,
-    pairwise_admission_policy_from_settings,
-)
+from .storage import BACKEND_VERSION
 from .webauth import (
     FAVICON_SVG,
     PUBLIC_PAGE_CSP,
@@ -92,8 +77,6 @@ settings = load_settings()
 metrics.configure(settings.observability_enabled)
 store = StoreRegistry.from_settings(settings)
 rate_limiter = TokenBucketRateLimiter(settings.rate_limit_per_minute)
-_credential_evidence_cache: dict[str, Any] = {"key": None, "at": 0.0, "value": None}
-_credential_evidence_cache_lock = threading.Lock()
 store.ensure_vault_backfilled(settings.default_user_id)
 if settings.mcp_api_key:
     store.ensure_mcp_token(
@@ -104,38 +87,7 @@ if settings.mcp_api_key:
         token_id="tok_local_mcp",
     )
 
-def _stable_operation_id(route: APIRoute) -> str:
-    """Generate IDs from the public HTTP contract, not Python handler names."""
-    methods = "_".join(sorted(method.lower() for method in route.methods))
-    normalized_path = (
-        route.path.strip("/")
-        .replace("/", "_")
-        .replace("{", "by_")
-        .replace("}", "")
-        .replace("-", "_")
-        or "root"
-    )
-    return f"{methods}_{normalized_path}"
-
-
-app = FastAPI(
-    title=f"{APP_BRAND} API",
-    version=BACKEND_VERSION,
-    generate_unique_id_function=_stable_operation_id,
-)
-_bearer_scheme = HTTPBearer(
-    auto_error=False,
-    scheme_name="BearerAuth",
-    description="Origin-bound API, MCP, session, or operator bearer token.",
-)
-
-
-def _authorization_value(
-    credentials: HTTPAuthorizationCredentials | None,
-) -> str | None:
-    if credentials is None:
-        return None
-    return f"{credentials.scheme} {credentials.credentials}"
+app = FastAPI(title=f"{APP_BRAND} API", version="0.1.0")
 
 
 def _cors_origins() -> list[str]:
@@ -323,7 +275,6 @@ def _required_api_scope(method: str, path: str) -> str:
         "/v1/integrity/verify",
         "/v1/export/manifest",
         "/v1/export/verify",
-        "/v1/twin/pairwise/preflight",
     }:
         return "read"
     if normalized_method == "POST" and (
@@ -423,163 +374,15 @@ def _global_token_user_id(x_cortex_user: str | None) -> str:
     return requested_user or settings.default_user_id
 
 
-def _credential_encryption_evidence(
-    *,
-    max_files: int = 20_000,
-    max_file_bytes: int = 2_000_000,
-) -> dict[str, Any]:
-    """Return complete on-disk evidence for the hosted credential release gate.
-
-    Credential files are per vault (one per bucket/user shard), so scanning the
-    small aggregate files is both more complete and cheaper than walking the
-    control-plane user list and materializing every store. Corrupt, unreadable,
-    or over-limit storage fails closed in hosted readiness.
-    """
-    keyring = getattr(store, "keyring", None)
-    evidence: dict[str, Any] = {
-        "enforcement_enabled": bool(settings.require_encrypted_credentials),
-        "keyring_available": bool(keyring is not None and getattr(keyring, "available", False)),
-        "remaining_plaintext": 0,
-        "files_scanned": 0,
-        "scan_complete": True,
-        "unreadable_files": 0,
-        "invalid_records": 0,
-    }
-    shard_root = Path(store.router.shard_root)
-    if not shard_root.exists():
-        return evidence
-    for path in shard_root.rglob("credentials.json"):
-        if evidence["files_scanned"] >= max_files:
-            evidence["scan_complete"] = False
-            break
-        evidence["files_scanned"] += 1
-        try:
-            if path.stat().st_size > max_file_bytes:
-                evidence["invalid_records"] += 1
-                continue
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            evidence["unreadable_files"] += 1
-            continue
-        if not isinstance(payload, dict):
-            evidence["invalid_records"] += 1
-            continue
-        users = payload.get("users")
-        if not isinstance(users, dict):
-            evidence["invalid_records"] += 1
-            continue
-        for user_credentials in users.values():
-            if not isinstance(user_credentials, dict):
-                evidence["invalid_records"] += 1
-                continue
-            for record in user_credentials.values():
-                if not isinstance(record, dict):
-                    evidence["invalid_records"] += 1
-                    continue
-                plaintext = record.get("payload")
-                encrypted = record.get("payload_cxe1")
-                # Any retained plaintext copy is a release blocker even if a
-                # valid encrypted envelope is also present.
-                if isinstance(plaintext, dict):
-                    evidence["remaining_plaintext"] += 1
-                elif plaintext is not None:
-                    evidence["invalid_records"] += 1
-                if encrypted is None:
-                    if plaintext is None:
-                        evidence["invalid_records"] += 1
-                    continue
-                if not isinstance(encrypted, str) or not encrypted:
-                    evidence["invalid_records"] += 1
-                    continue
-                try:
-                    envelope = bytes.fromhex(encrypted)
-                except ValueError:
-                    evidence["invalid_records"] += 1
-                    continue
-                # Validate the self-describing CXE1 envelope shape without
-                # decrypting or mutating it during a readiness probe.
-                if len(envelope) < 38 or envelope[:4] != b"CXE1":
-                    evidence["invalid_records"] += 1
-                    continue
-                kek_id_length = envelope[4]
-                minimum_length = 4 + 1 + kek_id_length + 4 + 12 + 16
-                if kek_id_length == 0 or len(envelope) < minimum_length:
-                    evidence["invalid_records"] += 1
-    return evidence
-
-
-def _cached_credential_encryption_evidence(*, ttl_seconds: float = 30.0) -> dict[str, Any]:
-    """Bound repeated readiness probes while keeping the release gate fail-closed."""
-    cache_key = str(Path(store.router.shard_root).resolve())
-    now = time.monotonic()
-    with _credential_evidence_cache_lock:
-        if (
-            _credential_evidence_cache["key"] == cache_key
-            and now - float(_credential_evidence_cache["at"]) < ttl_seconds
-            and isinstance(_credential_evidence_cache["value"], dict)
-        ):
-            return dict(_credential_evidence_cache["value"])
-        value = _credential_encryption_evidence()
-        _credential_evidence_cache.update({"key": cache_key, "at": now, "value": dict(value)})
-        return value
-
-
 def _hosted_readiness_contract() -> dict[str, Any]:
     runtime: dict[str, Any] = {}
+    runtime_storage_status = getattr(store, "runtime_storage_status", None)
+    if callable(runtime_storage_status):
+        runtime["storage"] = runtime_storage_status()
     if settings.shard_mode != "local":
-        runtime_storage_status = getattr(store, "runtime_storage_status", None)
-        if callable(runtime_storage_status):
-            runtime["storage"] = runtime_storage_status()
         runtime["control_plane"] = store.control_plane_status()
         runtime["worker_queue"] = store.hosted_job_health()
-        runtime["credential_encryption"] = _cached_credential_encryption_evidence()
     return hosted_readiness_contract(settings, runtime=runtime)
-
-
-def _require_local_filesystem_access(operation: str) -> None:
-    """Keep client-supplied paths on the machine that actually owns them.
-
-    Local mode is the desktop/self-hosted trust boundary. In a sharded hosted
-    deployment, accepting a path would read from the API server rather than the
-    authenticated user's computer and could cross tenant boundaries.
-    """
-    if settings.shard_mode != "local":
-        raise HTTPException(
-            status_code=403,
-            detail=f"{operation} is available only in local mode; upload content to hosted {APP_BRAND} instead",
-        )
-
-
-def _require_hosted_connector_origin(source: str, value: str | None) -> None:
-    """Reject credential-bearing requests to user-controlled origins in hosted mode."""
-    if settings.shard_mode == "local" or not str(value or "").strip():
-        return
-    if not is_official_connector_origin(source, value):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Custom {source} API origins are disabled in hosted mode",
-        )
-
-
-def _require_hosted_oauth_token_endpoint(source: str, value: str | None) -> None:
-    if settings.shard_mode == "local" or not str(value or "").strip():
-        return
-    if not is_official_oauth_token_endpoint(source, str(value)):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Custom {source} OAuth token endpoints are disabled in hosted mode",
-        )
-
-
-def _require_hosted_jira_cloud_origin(value: str) -> None:
-    """Hosted Jira currently supports Atlassian Cloud, not arbitrary intranet URLs."""
-    if settings.shard_mode == "local":
-        return
-    if not is_atlassian_cloud_origin(value):
-        raise HTTPException(
-            status_code=422,
-            detail="Hosted Jira connections require an HTTPS *.atlassian.net site URL",
-        )
 
 
 def _enforce_rate_limit(user_id: str) -> None:
@@ -624,12 +427,7 @@ def _enforce_memory_quota(user_id: str) -> None:
         )
 
 
-def auth(
-    request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-    x_cortex_user: str | None = Header(default=None),
-) -> str:
-    authorization = _authorization_value(credentials)
+def auth(request: Request, authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} API token")
     token = authorization.split(" ", 1)[1].strip()
@@ -654,11 +452,7 @@ def auth(
     raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} API token")
 
 
-def mcp_auth(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-    x_cortex_user: str | None = Header(default=None),
-) -> dict[str, Any]:
-    authorization = _authorization_value(credentials)
+def mcp_auth(authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> dict[str, Any]:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} MCP token")
     token = authorization.split(" ", 1)[1].strip()
@@ -681,57 +475,10 @@ def mcp_auth(
     raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} MCP token")
 
 
-def tools_auth(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-    x_cortex_user: str | None = Header(default=None),
-) -> dict[str, Any]:
-    """Authenticate the REST tool adapter with either scoped token audience.
-
-    `/mcp` remains MCP-token-only. The SDK's `/v1/tools/*` adapter is part of
-    the REST surface, so a scoped `cxa_` token must be able to use it alongside
-    search/context without requiring a second client instance and token.
-    """
-    authorization = _authorization_value(credentials)
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail=f"Missing or invalid {APP_BRAND} API or MCP token",
-        )
-    token = authorization.split(" ", 1)[1].strip()
-    if settings.api_key and hmac.compare_digest(token, settings.api_key):
-        user_id = _global_token_user_id(x_cortex_user)
-        return {
-            "user_id": user_id,
-            "token_id": "admin",
-            "label": f"{APP_BRAND} app token",
-            "audience": "admin",
-            "scopes": ["read", "write", "export", "maintenance", "destructive"],
-            "admin": True,
-        }
-    scoped = store.authenticate_mcp_token(token, user_id=x_cortex_user)
-    if scoped is None:
-        scoped = store.authenticate_api_token(token, user_id=x_cortex_user)
-    if scoped:
-        if x_cortex_user and scoped["user_id"] != x_cortex_user:
-            raise HTTPException(
-                status_code=403,
-                detail=f"{APP_BRAND} token does not match requested user",
-            )
-        _enforce_rate_limit(scoped["user_id"])
-        return scoped
-    raise HTTPException(
-        status_code=401,
-        detail=f"Missing or invalid {APP_BRAND} API or MCP token",
-    )
-
-
-def admin_auth(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-) -> bool:
+def admin_auth(authorization: str | None = Header(default=None)) -> bool:
     """Gate control-plane/admin operations (user provisioning, listing) behind the
     operator's global CORTEX_API_KEY. Scoped per-user tokens can never perform
     these actions."""
-    authorization = _authorization_value(credentials)
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail=f"Missing or invalid {APP_BRAND} admin token")
     token = authorization.split(" ", 1)[1].strip()
@@ -826,16 +573,10 @@ def _save_capture_from_values(content: str, source: str, title: str | None, sour
 def root() -> Response:
     """Branded landing at the domain root. Account CTAs render only when auth is enabled (the hosted
     plane); a plain local backend just shows the download + developer health hints."""
-    create_account_cta = (
-        '        <a class="button secondary" href="/account/signup" '
-        'style="margin-left:10px">Create an account</a>\n'
-        if _public_signup_enabled()
-        else ""
-    )
     account_cta = (
         '      <div class="cta">\n'
         '        <a class="button primary" href="/account/login">Sign in</a>\n'
-        f"{create_account_cta}"
+        '        <a class="button secondary" href="/account/signup" style="margin-left:10px">Create an account</a>\n'
         "      </div>\n"
         if settings.auth_enabled
         else ""
@@ -892,8 +633,7 @@ def _public_footer(links: list[tuple[str, str]]) -> str:
     parts = [
         f'<a href="{href}">{html.escape(label)}</a>'
         for href, label in links
-        if (settings.auth_enabled or not href.startswith("/account/"))
-        and (_public_signup_enabled() or href != "/account/signup")
+        if settings.auth_enabled or not href.startswith("/account/")
     ]
     return '    <div class="foot-links">' + "".join(parts) + "</div>\n"
 
@@ -961,12 +701,11 @@ def privacy_page() -> Response:
     return _public_html(render_public_page("Privacy Policy · Doppl", body))
 
 
-# Plain-language beta disclosures. These are not a substitute for counsel review. Keep claims scoped
-# to behavior that is implemented today; in particular, connector credentials have per-user
-# envelope encryption, while broader hosted memory-content encryption is still being rolled out.
+# Plain-language Terms + Privacy that reflect how Doppl ACTUALLY works (local-first storage, per-user
+# encryption, crypto-shred deletion, no data sale). A solid, honest baseline the founder should have
+# reviewed by counsel before broad launch; far better than the 404 the signup page linked to.
 _TERMS_BODY = (
     "    <h1>Terms of Service</h1>\n"
-    '    <p><strong>Draft — pending legal review before public launch.</strong></p>\n'
     '    <p class="lede">These terms cover your use of Doppl (the “Service”), a personal AI-memory '
     "app and the account that syncs it. By creating an account you agree to them.</p>\n"
     "    <h2>Eligibility</h2>\n"
@@ -993,13 +732,12 @@ _TERMS_BODY = (
     "    <p>You can stop using Doppl and delete your account any time. We may suspend accounts that "
     "violate these terms.</p>\n"
     "    <h2>Contact</h2>\n"
-    '    <p>Questions about these terms? Email <a href="mailto:support@trydoppl.com">'
-    "support@trydoppl.com</a>.</p>\n"
+    '    <p>Questions about these terms? Email <a href="mailto:support@signindoppl.com">'
+    "support@signindoppl.com</a>.</p>\n"
 )
 
 _PRIVACY_BODY = (
     "    <h1>Privacy Policy</h1>\n"
-    '    <p><strong>Draft — pending legal review before public launch.</strong></p>\n'
     '    <p class="lede">Doppl is built local-first: your memory lives on your device, and your '
     "account exists to identify you and sync your own data. Here’s exactly what that means.</p>\n"
     "    <h2>What we collect</h2>\n"
@@ -1012,31 +750,27 @@ _PRIVACY_BODY = (
     "This is stored for you and synced to your devices.</li>\n"
     "    </ul>\n"
     "    <h2>How your content is protected</h2>\n"
-    "    <p>Your hosted memory is stored with per-user isolation. Connector credentials are "
-    "encrypted at rest with a key unique to your account; broader encryption of hosted memory "
-    "content is still rolling out. The hosted service can read hosted memory to index and retrieve it. "
-    "We don’t sell your data, share it with advertisers, or use it to train models for other "
-    "people.</p>\n"
+    "    <p>Your memory is stored with per-user isolation and encrypted at rest with a key unique to "
+    "your account. We don’t sell your data, we don’t share it with advertisers, and we don’t use it "
+    "to train models for other people.</p>\n"
     "    <h2>Deletion &amp; your control</h2>\n"
-    "    <p>You can delete your account from your account page at any time. Deletion destroys the "
-    "per-user key for encrypted connector credentials and removes your hosted memory and derived "
-    "data through the normal deletion path. You can also sign out of individual sessions.</p>\n"
+    "    <p>You can delete your account from your account page at any time. Deletion "
+    "<strong>crypto-shreds</strong> your encryption keys — making your stored content permanently "
+    "unreadable — and removes your data. You can also sign out of individual sessions.</p>\n"
     "    <h2>Third parties</h2>\n"
     "    <p>If you sign in with Google, GitHub, or Apple, we receive only the basic profile "
     "(identifier and email) needed to create your account. Optional payment processing, if you "
     "subscribe, is handled by a third-party processor — we never store your card details.</p>\n"
     "    <h2>Contact</h2>\n"
-    '    <p>Privacy questions or a data request? Email <a href="mailto:privacy@trydoppl.com">'
-    "privacy@trydoppl.com</a>.</p>\n"
+    '    <p>Privacy questions or a data request? Email <a href="mailto:support@signindoppl.com">'
+    "support@signindoppl.com</a>.</p>\n"
 )
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
     payload = store.health_payload(mode="fastapi", auth=bool(settings.api_key))
-    # Public liveness must be constant-time and must not expose storage paths,
-    # tenant counts, or configuration details. Authenticated diagnostics carry
-    # the operator-facing detail.
+    payload["hosted_readiness"] = _hosted_readiness_contract()
     return payload
 
 
@@ -1056,15 +790,15 @@ def ready() -> dict[str, Any]:
     if hosted_readiness["status"] != "ok":
         raise HTTPException(
             status_code=503,
-            detail={"status": "not_ready", "check": "hosted_configuration"},
+            detail={
+                "status": "needs_configuration",
+                "hosted_readiness": hosted_readiness,
+            },
         )
     diagnostics = store.diagnostics(settings.default_user_id)
     if diagnostics["status"] != "ok":
-        raise HTTPException(
-            status_code=503,
-            detail={"status": "not_ready", "check": "storage"},
-        )
-    return {"status": "ok", "backend_version": BACKEND_VERSION}
+        raise HTTPException(status_code=503, detail=diagnostics)
+    return {"status": "ok", "diagnostics": diagnostics, "hosted_readiness": hosted_readiness}
 
 
 @app.get("/capture", response_class=HTMLResponse)
@@ -1076,11 +810,6 @@ def capture_page(
     url: str = "",
     source: str = "browser-capture",
 ) -> HTMLResponse:
-    if settings.shard_mode != "local" and (token or text or content):
-        raise HTTPException(
-            status_code=405,
-            detail="Query-string capture is disabled in hosted mode; use POST /capture",
-        )
     payload = content or text
     if payload.strip():
         try:
@@ -1280,7 +1009,6 @@ def sync_source_account(account_id: str, request: SourceAccountSyncRequest, user
 
 @app.post("/v1/connectors/obsidian/sync", response_model=ObsidianVaultSyncResponse)
 def sync_obsidian_vault(request: ObsidianVaultSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_local_filesystem_access("Obsidian vault sync")
     try:
         result = store.sync_obsidian_vault(
             user_id,
@@ -1304,7 +1032,6 @@ def sync_obsidian_vault(request: ObsidianVaultSyncRequest, user_id: str = Depend
 def sync_agent_sessions(request: AgentSessionsSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     """Harvest the user's own messages from local coding-agent session logs (Claude Code, Codex,
     Cursor) into the review queue. Write-scoped like the other connector syncs; user words only."""
-    _require_local_filesystem_access("Coding-agent session sync")
     try:
         result = store.sync_agent_sessions(
             user_id,
@@ -1328,7 +1055,6 @@ def sync_agent_sessions(request: AgentSessionsSyncRequest, user_id: str = Depend
 def write_obsidian_pages(body: dict[str, Any] | None = None, user_id: str = Depends(auth)) -> Any:
     """Obsidian write-back: refresh the distilled, cited Cortex/ pages inside the user's vault.
     Export-scoped (memory egress into user-owned files), parity with the MCP tool."""
-    _require_local_filesystem_access("Obsidian write-back")
     payload = body or {}
     try:
         people_limit = int(payload.get("people_limit") or 10)
@@ -1351,7 +1077,6 @@ def write_obsidian_pages(body: dict[str, Any] | None = None, user_id: str = Depe
 
 @app.post("/v1/connectors/github/sync", response_model=GitHubSyncResponse)
 def sync_github_account(request: GitHubSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_connector_origin("github", request.api_base_url)
     try:
         result = store.sync_github_account(
             user_id,
@@ -1377,7 +1102,6 @@ def sync_github_account(request: GitHubSyncRequest, user_id: str = Depends(auth)
 @app.post("/v1/connectors/github/discover", response_model=GitHubRepositoryDiscoveryResponse)
 def discover_github_account_repositories(request: GitHubRepositoryDiscoveryRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     del user_id
-    _require_hosted_connector_origin("github", request.api_base_url)
     try:
         from .connectors.github import discover_github_repositories
 
@@ -1393,7 +1117,6 @@ def discover_github_account_repositories(request: GitHubRepositoryDiscoveryReque
 
 @app.post("/v1/connectors/google/oauth/start", response_model=GoogleOAuthStartResponse)
 def start_google_oauth(request: GoogleOAuthStartRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_oauth_token_endpoint(request.source, request.token_endpoint)
     try:
         target_store = store.store_for_user(user_id) if hasattr(store, "store_for_user") else store
         started = target_store.start_google_oauth(
@@ -1481,7 +1204,6 @@ def google_oauth_callback(
 
 @app.post("/v1/connectors/google/oauth/complete", response_model=GoogleOAuthCompleteResponse)
 def complete_google_oauth(request: GoogleOAuthCompleteRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_oauth_token_endpoint(request.source, request.token_endpoint)
     try:
         return store.public_payload(
             user_id,
@@ -1512,8 +1234,6 @@ def complete_google_oauth(request: GoogleOAuthCompleteRequest, user_id: str = De
 
 @app.post("/v1/connectors/oauth/start", response_model=ManagedOAuthStartResponse)
 def start_managed_oauth(request: ManagedOAuthStartRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_connector_origin(request.source, request.api_base_url)
-    _require_hosted_oauth_token_endpoint(request.source, request.token_endpoint)
     try:
         target_store = store.store_for_user(user_id) if hasattr(store, "store_for_user") else store
         started = target_store.start_managed_oauth(
@@ -1592,8 +1312,6 @@ def managed_oauth_callback(
 
 @app.post("/v1/connectors/oauth/complete", response_model=ManagedOAuthCompleteResponse)
 def complete_managed_oauth(request: ManagedOAuthCompleteRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_connector_origin(request.source, request.api_base_url)
-    _require_hosted_oauth_token_endpoint(request.source, request.token_endpoint)
     try:
         return store.public_payload(
             user_id,
@@ -1621,7 +1339,6 @@ def complete_managed_oauth(request: ManagedOAuthCompleteRequest, user_id: str = 
 
 @app.post("/v1/connectors/gmail/sync", response_model=GmailSyncResponse)
 def sync_gmail_account(request: GmailSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_connector_origin("gmail", request.api_base_url)
     try:
         result = store.sync_gmail_account(
             user_id,
@@ -1647,7 +1364,6 @@ def sync_gmail_account(request: GmailSyncRequest, user_id: str = Depends(auth)) 
 
 @app.post("/v1/connectors/google-drive/sync", response_model=GoogleDriveSyncResponse)
 def sync_google_drive_account(request: GoogleDriveSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_connector_origin("google-drive", request.api_base_url)
     try:
         result = store.sync_google_drive_account(
             user_id,
@@ -1673,7 +1389,6 @@ def sync_google_drive_account(request: GoogleDriveSyncRequest, user_id: str = De
 
 @app.post("/v1/connectors/outlook/sync", response_model=OutlookSyncResponse)
 def sync_outlook_account(request: OutlookSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_connector_origin("outlook", request.api_base_url)
     try:
         result = store.sync_outlook_account(
             user_id,
@@ -1698,7 +1413,6 @@ def sync_outlook_account(request: OutlookSyncRequest, user_id: str = Depends(aut
 
 @app.post("/v1/connectors/slack/sync", response_model=SlackSyncResponse)
 def sync_slack_account(request: SlackSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_connector_origin("slack", request.api_base_url)
     try:
         result = store.sync_slack_account(
             user_id,
@@ -1723,7 +1437,6 @@ def sync_slack_account(request: SlackSyncRequest, user_id: str = Depends(auth)) 
 @app.post("/v1/connectors/slack/discover", response_model=SlackChannelDiscoveryResponse)
 def discover_slack_account_channels(request: SlackChannelDiscoveryRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     del user_id
-    _require_hosted_connector_origin("slack", request.api_base_url)
     try:
         from .connectors.slack import discover_slack_channels
 
@@ -1740,7 +1453,6 @@ def discover_slack_account_channels(request: SlackChannelDiscoveryRequest, user_
 
 @app.post("/v1/connectors/readwise/sync", response_model=ReadwiseSyncResponse)
 def sync_readwise_account(request: ReadwiseSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_connector_origin("readwise", request.api_base_url)
     try:
         result = store.sync_readwise_account(
             user_id,
@@ -1763,13 +1475,6 @@ def sync_readwise_account(request: ReadwiseSyncRequest, user_id: str = Depends(a
 
 @app.post("/v1/connectors/calendar/sync", response_model=CalendarSyncResponse)
 def sync_calendar_account(request: CalendarSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    if request.ics_path:
-        _require_local_filesystem_access("Calendar file sync")
-    if settings.shard_mode != "local" and request.feed_url:
-        raise HTTPException(
-            status_code=422,
-            detail="Calendar feed URLs are disabled in hosted mode until outbound URL policy is configured",
-        )
     try:
         result = store.sync_calendar_account(
             user_id,
@@ -1791,7 +1496,6 @@ def sync_calendar_account(request: CalendarSyncRequest, user_id: str = Depends(a
 
 @app.post("/v1/connectors/raindrop/sync", response_model=RaindropSyncResponse)
 def sync_raindrop_account(request: RaindropSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_connector_origin("raindrop", request.api_base_url)
     try:
         result = store.sync_raindrop_account(
             user_id,
@@ -1816,7 +1520,6 @@ def sync_raindrop_account(request: RaindropSyncRequest, user_id: str = Depends(a
 
 @app.post("/v1/connectors/zotero/sync", response_model=ZoteroSyncResponse)
 def sync_zotero_account(request: ZoteroSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_local_filesystem_access("Zotero local API sync")
     try:
         result = store.sync_zotero_account(
             user_id,
@@ -1842,7 +1545,6 @@ def sync_zotero_account(request: ZoteroSyncRequest, user_id: str = Depends(auth)
 
 @app.post("/v1/connectors/linear/sync", response_model=LinearSyncResponse)
 def sync_linear_account(request: LinearSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_connector_origin("linear", request.api_url)
     try:
         result = store.sync_linear_account(
             user_id,
@@ -1865,7 +1567,6 @@ def sync_linear_account(request: LinearSyncRequest, user_id: str = Depends(auth)
 
 @app.post("/v1/connectors/jira/sync", response_model=JiraSyncResponse)
 def sync_jira_account(request: JiraSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_jira_cloud_origin(request.site_url)
     try:
         result = store.sync_jira_account(
             user_id,
@@ -1890,7 +1591,6 @@ def sync_jira_account(request: JiraSyncRequest, user_id: str = Depends(auth)) ->
 
 @app.post("/v1/connectors/notion/sync", response_model=NotionSyncResponse)
 def sync_notion_account(request: NotionSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_hosted_connector_origin("notion", request.api_base_url)
     try:
         result = store.sync_notion_account(
             user_id,
@@ -1993,7 +1693,6 @@ def list_imports(limit: int = Query(default=50, ge=1, le=100), include_deleted: 
 
 @app.post("/v1/imports/analyze", response_model=SourceAnalyzeResponse)
 def analyze_import_sources(request: SourceAnalyzeRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_local_filesystem_access("Path-based import analysis")
     return store.analyze_import_sources(
         request.paths,
         source_hint=request.source_hint,
@@ -2003,7 +1702,6 @@ def analyze_import_sources(request: SourceAnalyzeRequest, user_id: str = Depends
 
 @app.post("/v1/imports", response_model=SourceImportResponse)
 def import_sources(request: SourceImportRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
-    _require_local_filesystem_access("Path-based import")
     return store.import_sources(
         user_id=user_id or request.user_id,
         paths=request.paths,
@@ -2281,26 +1979,6 @@ def twin_would_i(payload: WouldIRequest, user_id: str = Depends(auth)) -> dict[s
     return store.would_i(user_id, payload.question, limit=payload.limit)
 
 
-@app.post("/v1/twin/pairwise/preflight")
-def twin_pairwise_preflight(
-    payload: Any = Body(...),
-    user_id: str = Depends(auth),
-) -> dict[str, Any]:
-    try:
-        policy = pairwise_admission_policy_from_settings(settings)
-        return build_pairwise_preflight_response(
-            payload,
-            policy=policy,
-            subject=user_id,
-            signing_key=settings.pairwise_admission_signing_key,
-            receipt_ttl_seconds=(
-                settings.pairwise_admission_receipt_ttl_seconds
-            ),
-        )
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
 @app.post("/v1/twin/draft-as-me")
 def twin_draft_as_me(payload: DraftAsMeRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.draft_as_me(user_id, payload.prompt, medium=payload.medium, limit=payload.limit)
@@ -2523,6 +2201,20 @@ def context_pack(query: str = "", limit: int = Query(default=12, ge=1, le=50), s
     return Response(content=store.context_pack(user_id, query=query, limit=limit, sector=sector), media_type="text/markdown")
 
 
+def _bearer_has_export_scope(request: Request) -> bool:
+    """Whether the (already-authenticated) bearer may see the identity/persona layer.
+    The admin app token always may; scoped API tokens need the export scope. Read-only
+    callers still get a pack — the identity layer degrades to a visible omission record."""
+    authorization = request.headers.get("authorization") or ""
+    token = authorization.split(" ", 1)[1].strip() if " " in authorization else ""
+    if not token:
+        return False
+    if settings.api_key and hmac.compare_digest(token, settings.api_key):
+        return True
+    scoped = store.authenticate_api_token(token)
+    return bool(scoped and "export" in set(scoped.get("scopes") or []))
+
+
 def _context_response(pack: dict[str, Any] | str, format: str) -> Any:
     if format == "markdown":
         return Response(content=pack, media_type="text/markdown")
@@ -2536,16 +2228,8 @@ def get_context(
     surface: str = Query(default="agent", max_length=40),
     token_budget: int = Query(default=2000, ge=1, le=100000),
     intent: str | None = Query(default=None, max_length=16),
-    sector: str | None = Query(
-        default=None,
-        max_length=120,
-        description="Hard memory-sector filter; use for corpus isolation.",
-    ),
-    project: str | None = Query(
-        default=None,
-        max_length=160,
-        description="Entity-ranking hint only; not an isolation boundary. Use sector for isolation.",
-    ),
+    sector: str | None = Query(default=None, max_length=120),
+    project: str | None = Query(default=None, max_length=160),
     as_of: str | None = Query(default=None, max_length=40),
     format: str = Query(default="json", pattern="^(json|markdown|smp)$"),
     model: str | None = Query(default=None, max_length=80),
@@ -2557,57 +2241,56 @@ def get_context(
     # internal render format falls back to json in that path. model=None + text = byte-identical.
     response_format = "smp" if format == "smp" else "text"
     internal_format = "json" if format == "smp" else format
-    try:
-        pack = store.assemble_context(
-            user_id,
-            task,
-            surface=surface,
-            token_budget=token_budget,
-            sector=sector,
-            project=project,
-            as_of=as_of,
-            intent=intent,
-            # Reaching this endpoint already required the read scope, and the identity layer is a read
-            # of distilled context — so it is always included here (parity with the local server's GET).
-            include_identity=True,
-            format=internal_format,
-            # Transport parity with POST /v1/context and the local server: a session_id turns on the
-            # per-session working-set delta channel (pay once per fact), and pin content-addresses the
-            # pack for later verification. Absent both, behavior is byte-identical to before.
-            pin=pin,
-            session_id=str(session_id or "") or None,
-            **_assemble_context_ext_kwargs(response_format, model),
-        )
-    except UnknownAgentSessionError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    pack = store.assemble_context(
+        user_id,
+        task,
+        surface=surface,
+        token_budget=token_budget,
+        sector=sector,
+        project=project,
+        as_of=as_of,
+        intent=intent,
+        # Reaching this endpoint already required the read scope, and the identity layer is a read
+        # of distilled context — so it is always included here (parity with the local server's GET).
+        include_identity=True,
+        format=internal_format,
+        # Transport parity with POST /v1/context and the local server: a session_id turns on the
+        # per-session working-set delta channel (pay once per fact), and pin content-addresses the
+        # pack for later verification. Absent both, behavior is byte-identical to before.
+        pin=pin,
+        session_id=str(session_id or "") or None,
+        **_assemble_context_ext_kwargs(response_format, model),
+    )
     return _context_response(pack, internal_format)
 
 
 @app.post("/v1/context", response_model=None)
-def post_context(body: ContextRequest, user_id: str = Depends(auth)) -> Any:
-    format = body.format
+def post_context(body: dict[str, Any], request: Request, user_id: str = Depends(auth)) -> Any:
+    format = str(body.get("format") or "json").strip().lower()
+    if format not in {"json", "markdown", "smp"}:
+        raise HTTPException(status_code=422, detail="format must be json, markdown, or smp")
     response_format = "smp" if format == "smp" else "text"
     internal_format = "json" if format == "smp" else format
+    model = str(body.get("model") or "") or None
     try:
-        pack = store.assemble_context(
-            user_id,
-            body.task,
-            surface=body.surface,
-            token_budget=body.token_budget,
-            sector=body.sector,
-            project=body.project,
-            as_of=body.as_of,
-            intent=body.intent,
-            # Identity/persona is distilled memory and follows the same read-scope policy as GET,
-            # standalone, MCP, and both SDKs (which use this POST transport).
-            include_identity=True,
-            format=internal_format,
-            pin=body.pin,
-            session_id=body.session_id,
-            **_assemble_context_ext_kwargs(response_format, body.model),
-        )
-    except UnknownAgentSessionError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        token_budget = int(body.get("token_budget") or 2000)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="token_budget must be an integer")
+    pack = store.assemble_context(
+        user_id,
+        str(body.get("task") or ""),
+        surface=str(body.get("surface") or "agent"),
+        token_budget=token_budget,
+        sector=str(body.get("sector") or "") or None,
+        project=str(body.get("project") or "") or None,
+        as_of=str(body.get("as_of") or "") or None,
+        intent=str(body.get("intent") or "") or None,
+        include_identity=_bearer_has_export_scope(request),
+        format=internal_format,
+        pin=bool(body.get("pin")),
+        session_id=str(body.get("session_id") or "") or None,
+        **_assemble_context_ext_kwargs(response_format, model),
+    )
     return _context_response(pack, internal_format)
 
 
@@ -3251,18 +2934,12 @@ def reconcile_vault_edits(user_id: str = Depends(auth)) -> dict[str, Any]:
 
 @app.get("/v1/export.json")
 def export_json(user_id: str = Depends(auth)) -> dict[str, Any]:
-    try:
-        return store.export_json(user_id)
-    except ExportSizeLimitError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    return store.export_json(user_id)
 
 
 @app.get("/v1/export.md")
 def export_markdown(user_id: str = Depends(auth)) -> Response:
-    try:
-        return Response(content=store.export_markdown(user_id), media_type="text/markdown")
-    except ExportSizeLimitError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    return Response(content=store.export_markdown(user_id), media_type="text/markdown")
 
 
 @app.get("/v1/integrity/digest")
@@ -3324,20 +3001,14 @@ def get_working_canvas_node(session_id: str, node_id: str, include_raw: bool = T
 def export_manifest(user_id: str = Depends(auth)) -> dict[str, Any]:
     """Phase D: a verifiable manifest (integrity head + record counts + payload sha256) for the
     portable export. Read-only — it attests the export without containing its content."""
-    try:
-        return store.export_manifest(user_id)
-    except ExportSizeLimitError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    return store.export_manifest(user_id)
 
 
 @app.get("/v1/export/bundle")
 def export_portable_bundle(user_id: str = Depends(auth)) -> dict[str, Any]:
     """Phase D: the whole memory as one self-verifying, restorable object (full export payload +
     integrity manifest). Export-scoped — it carries the full corpus out of Cortex custody."""
-    try:
-        return store.export_portable_bundle(user_id)
-    except ExportSizeLimitError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    return store.export_portable_bundle(user_id)
 
 
 @app.post("/v1/export/verify")
@@ -3637,13 +3308,10 @@ def _session_data_plane_user(token: str, x_cortex_user: str | None) -> str:
     return user_id
 
 
-def session_auth(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-) -> dict[str, Any]:
+def session_auth(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     """Dependency for the session-authed account surface (/v1/auth/*). Returns
     verify_session's payload: {'account', 'session_id', 'user_id', 'client'}."""
     runtime = _auth_runtime_or_404()
-    authorization = _authorization_value(credentials)
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
     token = authorization.split(" ", 1)[1].strip()
@@ -3705,7 +3373,7 @@ def _verify_turnstile(request: Request, token: str) -> None:
         method="POST",
     )
     try:
-        with open_same_origin(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310 (fixed https URL)
             body = resp.read().decode("utf-8")
         outcome = json.loads(body)
     except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
@@ -3781,35 +3449,11 @@ def _default_oauth_redirect(provider: str) -> str:
     return f"{settings.public_app_url.rstrip('/')}/v1/auth/oauth/{provider}/callback"
 
 
-def _public_signup_enabled() -> bool:
-    return settings.shard_mode == "local" or bool(settings.legal_terms_approved)
-
-
-def _require_signup_consent(payload: dict[str, Any]) -> None:
-    if not _public_signup_enabled():
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Public signup is disabled until approved Terms and Privacy "
-                "text is deployed."
-            ),
-        )
-    if settings.shard_mode != "local" and (
-        payload.get("terms_accepted") is not True
-        or payload.get("age_confirmed") is not True
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail="Hosted signup requires explicit Terms acceptance and age confirmation.",
-        )
-
-
 # --------------------------------------------------------- email + password
 
 @app.post("/v1/auth/signup")
 def auth_signup(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     runtime = _auth_runtime_or_404()
-    _require_signup_consent(payload)
     _auth_rate_limit(runtime, "signup", request)
     # Bot/DoS gate: verify the Cloudflare Turnstile token (if enabled) BEFORE any
     # argon2id hashing so a bot flood can't burn CPU. No-op when unconfigured.
@@ -3889,11 +3533,8 @@ def auth_refresh(payload: dict[str, Any], request: Request) -> dict[str, Any]:
 
 
 @app.post("/v1/auth/logout")
-def auth_logout(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-) -> dict[str, Any]:
+def auth_logout(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     runtime = _auth_runtime_or_404()
-    authorization = _authorization_value(credentials)
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
     try:
@@ -3931,8 +3572,6 @@ def auth_password_reset_confirm(payload: dict[str, Any], request: Request) -> di
         runtime.service.confirm_password_reset(
             str(payload.get("token") or ""), str(payload.get("new_password") or "")
         )
-    except RateLimited:
-        raise HTTPException(status_code=429, detail="rate limited")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except AuthError as exc:
@@ -3981,9 +3620,6 @@ def auth_oauth_start(
     request: Request,
     redirect_uri: str = Query(default="", max_length=500),
     app_flow: str = Query(default="", max_length=120),
-    signup: bool = Query(default=False),
-    terms_accepted: bool = Query(default=False),
-    age_confirmed: bool = Query(default=False),
 ) -> Any:
     runtime = _auth_runtime_or_404()
     _auth_rate_limit(runtime, "oauth_start", request)
@@ -3992,21 +3628,11 @@ def auth_oauth_start(
     # it and treat this as an ordinary web sign-in (mints a session for THIS browser only), so a
     # victim's OAuth completion can never be attached to an attacker-owned poll flow.
     bound_flow = app_flow if _app_flow_cookie_valid(request.cookies.get(APP_FLOW_COOKIE_NAME), app_flow) else ""
-    signup_consent = False
-    if signup:
-        _require_signup_consent(
-            {
-                "terms_accepted": terms_accepted,
-                "age_confirmed": age_confirmed,
-            }
-        )
-        signup_consent = True
     try:
         result = runtime.oidc.start(
             provider,
             redirect_uri or _default_oauth_redirect(provider),
             app_flow_id=bound_flow or None,
-            signup_consent=signup_consent,
         )
     except OidcError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -4059,30 +3685,6 @@ def auth_oauth_callback(
     except OidcError as exc:
         _auth_logger.info("oauth callback rejected for %s: %s", provider, exc)
         return _fail(GENERIC_AUTH_FAILURE, 401)
-    existing_identity = runtime.control_store.get_identity(
-        provider,
-        str(identity["subject"]),
-    )
-    existing_email_account = None
-    if (
-        existing_identity is None
-        and identity.get("email")
-        and identity.get("email_verified")
-    ):
-        existing_email_account = runtime.control_store.get_account_by_email(
-            str(identity["email"]).strip().lower()
-        )
-    if (
-        existing_identity is None
-        and existing_email_account is None
-        and not identity.get("signup_consent")
-    ):
-        # Refuse before find_or_challenge_identity, because its signup branch
-        # persists an account and identity.
-        return _fail(
-            "Create an account and accept the Terms before using this provider.",
-            409,
-        )
     try:
         result = runtime.service.find_or_challenge_identity(
             provider,
@@ -4094,13 +3696,6 @@ def auth_oauth_callback(
         )
     except AuthError as exc:
         return _fail(str(exc), 401)
-    if result["action"] == "signup" and not identity.get("signup_consent"):
-        # OAuth from the login page must not silently create an account. The
-        # signup page starts a state-bound flow only after explicit consent.
-        return _fail(
-            "Create an account and accept the Terms before using this provider.",
-            409,
-        )
     if result["action"] == "link_required":
         # Never-silent-auto-link: the user must authenticate with the existing
         # method, then complete the link via POST /v1/auth/oauth/{provider}/link.
@@ -4121,7 +3716,7 @@ def auth_oauth_callback(
         )
     account = result["account"]
     if str(account.get("status") or "") == "active":
-        # OAuth signup with bound consent and a provider-verified email activates directly;
+        # OAuth auto-signup with a provider-verified email activates directly;
         # provision the user now (no tokens minted).
         _ensure_account_provisioned(account)
     app_flow_id = identity.get("app_flow_id")
@@ -4169,11 +3764,6 @@ def auth_oauth_native(provider: str, payload: dict[str, Any], request: Request) 
     except OidcError as exc:
         _auth_logger.info("native oauth rejected for %s: %s", provider, exc)
         raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE) from exc
-    if runtime.control_store.get_identity(
-        provider,
-        str(identity["subject"]),
-    ) is None:
-        _require_signup_consent(payload)
     try:
         result = runtime.service.find_or_challenge_identity(
             provider,
@@ -4703,16 +4293,9 @@ def auth_delete_account(
     credential = runtime.control_store.get_password_credential(account_id)
     if credential is not None:
         supplied = str((payload or {}).get("password") or "")
-        try:
-            password_verified = bool(
-                supplied
-                and runtime.service.engine.verify(
-                    str(credential["password_hash"]), supplied
-                )
-            )
-        except RateLimited:
-            raise HTTPException(status_code=429, detail="rate limited")
-        if not password_verified:
+        if not supplied or not runtime.service.engine.verify(
+            str(credential["password_hash"]), supplied
+        ):
             raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
     shred: dict[str, Any] | None = None
     if runtime.keyring is not None and runtime.keyring.available:
@@ -4780,8 +4363,6 @@ def auth_claim(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             str(payload.get("password") or "") or None,
             display_name=str(payload.get("display_name") or "")[:160],
         )
-    except RateLimited:
-        raise HTTPException(status_code=429, detail="rate limited")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except AuthError as exc:
@@ -4870,7 +4451,6 @@ register_web_account_routes(
     # (tests/reboot) takes effect. "" when Turnstile is unconfigured -> the
     # signup page is byte-identical to today.
     turnstile_site_key=lambda: settings.turnstile_site_key if settings.turnstile_enabled else "",
-    signup_enabled=_public_signup_enabled,
     # Signs the app-login flow-binding cookie (login-CSRF guard for the desktop OAuth handoff).
     app_flow_cookie=_app_flow_cookie,
 )
@@ -5035,8 +4615,8 @@ def _safe_tool_error_message(exc: Exception) -> str:
 
 # Universal adapter surface (hosted mirror of standalone_server.py's /v1/tools/*): the same tool
 # catalog, reachable by any function-calling app over plain HTTP against api.signindoppl.com
-# instead of a local server. The REST adapter accepts API or MCP scoped tokens while `/mcp`
-# remains MCP-only; either read-only token gets the same read-only tool surface. GET /v1/tools/schema projects the
+# instead of a local server. Authed exactly like /mcp (Bearer -> scoped context via mcp_auth), so
+# a read-only MCP token gets a read-only surface here too. GET /v1/tools/schema projects the
 # catalog to openai/anthropic/openapi/mcp; POST /v1/tools/call dispatches through the SAME
 # call_tool/_require_tool_access path /mcp uses — advertisement is never authorization, call_tool
 # re-checks every scope regardless of what tools_for_scopes chose to show. Every call records an
@@ -5044,7 +4624,7 @@ def _safe_tool_error_message(exc: Exception) -> str:
 @app.get("/v1/tools/schema")
 def hosted_tools_schema(
     format: str = Query(default="openai"),
-    context: dict[str, Any] = Depends(tools_auth),
+    context: dict[str, Any] = Depends(mcp_auth),
 ) -> dict[str, Any]:
     token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
     base_url = settings.public_base_url.rstrip("/") or "http://127.0.0.1:8766"
@@ -5055,7 +4635,7 @@ def hosted_tools_schema(
 
 
 @app.post("/v1/tools/call")
-def hosted_tools_call(body: dict[str, Any], context: dict[str, Any] = Depends(tools_auth)) -> dict[str, Any]:
+def hosted_tools_call(body: dict[str, Any], context: dict[str, Any] = Depends(mcp_auth)) -> dict[str, Any]:
     tool_user = context["user_id"]
     token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
     tool_name = str(body.get("name") or "")
@@ -5078,7 +4658,7 @@ def hosted_tools_call(body: dict[str, Any], context: dict[str, Any] = Depends(to
 
 
 @app.post("/v1/tools/{tool_name}")
-def hosted_tools_call_named(tool_name: str, body: dict[str, Any] | None = None, context: dict[str, Any] = Depends(tools_auth)) -> Any:
+def hosted_tools_call_named(tool_name: str, body: dict[str, Any] | None = None, context: dict[str, Any] = Depends(mcp_auth)) -> Any:
     # Per-tool path matching the OpenAPI operationIds (/v1/tools/{name}): the URL names the tool,
     # the whole body is the arguments — mirrors standalone_server.py's dispatch for custom-GPT
     # actions / Zapier-style connectors that call one operationId per tool rather than the

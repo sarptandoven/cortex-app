@@ -742,7 +742,6 @@ class StoreRegistry:
         hosted mode, CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS makes plaintext writes
         refuse — even if the cipher is (mis)configured absent, the vault then
         raises rather than silently writing plaintext (design doc §4)."""
-        store.hosted_mode = self.router.mode != "local"
         if self.router.mode == "local":
             return
         vault = getattr(store, "vault", None)
@@ -784,11 +783,12 @@ class StoreRegistry:
     def health_payload(self, *, mode: str, auth: bool) -> dict[str, Any]:
         payload = self.default_store.health_payload(mode=mode, auth=auth)
         payload["sharding"] = {
-            "mode": self.router.mode,
-            "shard_count": self.router.shard_count if self.router.mode == "bucket" else 1,
+            **self.router.payload(),
             "active_store_count": len(self._stores),
-            "default_shard_id": self.assignment_for(self.default_user_id).shard_id,
+            "default": self.assignment_for(self.default_user_id).as_dict(),
         }
+        if self.router.mode != "local":
+            payload["sharding"]["control_plane"] = self.control_plane_status()
         return payload
 
     def runtime_storage_status(self) -> dict[str, Any]:

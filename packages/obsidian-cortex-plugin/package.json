@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Obsidian plugin package for syncing a local vault into Cortex memory.",
-  "license": "MIT",
+  "license": "UNLICENSED",
   "type": "module",
   "main": "main.js",
   "scripts": {

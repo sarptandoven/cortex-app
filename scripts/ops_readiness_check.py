@@ -619,16 +619,7 @@ def main() -> None:
             {"skipped": True, "reason": "local-dmg-only"},
         )
     else:
-        site_manifest_result = run_command(
-            root,
-            [
-                sys.executable,
-                "scripts/validate_update_manifest.py",
-                "--allow-remote-artifacts",
-                "site/downloads/latest.json",
-            ],
-            timeout=60,
-        )
+        site_manifest_result = run_command(root, [sys.executable, "scripts/validate_update_manifest.py", "site/downloads/latest.json"], timeout=60)
         add_check(checks, "site_update_manifest", site_manifest_result["ok"], "Site update feed validates.", site_manifest_result)
 
     strict_package_artifacts = args.include_package or args.require_package_artifacts or release_dir_arg is not None

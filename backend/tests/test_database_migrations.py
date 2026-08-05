@@ -73,11 +73,7 @@ def _build_pre_migration_db(path: Path) -> list[tuple[str, str]]:
     try:
         conn.executescript(SCHEMA)
         dropped: list[tuple[str, str]] = []
-        # Drop in reverse migration order because later constrained columns may
-        # reference earlier ones (for example provider_calls_dispatched checks
-        # provider_calls_reserved). SQLite correctly refuses to remove a column
-        # while a surviving CHECK constraint still depends on it.
-        for table, column in reversed(_migration_columns()):
+        for table, column in _migration_columns():
             # Inline SCHEMA indexes only cover base columns, so migration columns
             # are always droppable; guard anyway so a future indexed migration
             # column surfaces as an explicit failure rather than a false pass.
