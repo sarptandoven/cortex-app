@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 100" fill="none">
+  <rect width="144" height="100" rx="18" fill="#F7F8F5"/>
+  <clipPath id="left-cut">
+    <rect x="19.8" width="124.2" height="100"/>
+  </clipPath>
+  <mask id="cutout">
+    <rect width="144" height="100" fill="white"/>
+    <path d="M66.5 10.6a48 48 0 0 1 0 78.8 48 48 0 0 1 0-78.8Z" fill="black"/>
+  </mask>
+  <g fill="#11120F" mask="url(#cutout)">
+    <circle cx="39" cy="50" r="48" clip-path="url(#left-cut)"/>
+    <circle cx="94" cy="50" r="48"/>
+  </g>
+</svg>

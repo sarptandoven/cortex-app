@@ -1,5 +1,7 @@
 <div align="center">
 
+<a href="https://trydoppl.com"><img src=".github/brand/doppl-mark.svg" alt="Doppl" height="72" /></a>
+
 <img src="macos/Assets/AppIcon.iconset/icon_256x256.png" alt="Cortex" width="128" height="128" />
 
 # Cortex
