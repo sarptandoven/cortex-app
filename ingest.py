@@ -19,9 +19,11 @@ from datetime import datetime
 from instrumentation import setup_tracing, get_tracer
 setup_tracing(project_name="cortex")
 
-from anthropic import Anthropic
+import litellm
 
-client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+# Model routed through LiteLLM (Claude by default). Set CORTEX_MODEL to use any
+# other provider LiteLLM supports; credentials come from that provider's env var.
+DEFAULT_MODEL = os.environ.get("CORTEX_MODEL", "claude-opus-4-5")
 _tracer = get_tracer()
 
 
@@ -89,23 +91,27 @@ def extract_context(raw_text: str, source: str = "unknown") -> dict:
     now = datetime.now().isoformat()
     source_id = make_id("src_", source + now[:16])
 
-    response = client.messages.create(
-        model="claude-opus-4-5",
+    response = litellm.completion(
+        model=DEFAULT_MODEL,
         max_tokens=3000,
-        system=EXTRACTION_SYSTEM_PROMPT,
-        messages=[{
-            "role": "user",
-            "content": (
-                f"Source: {source}\n"
-                f"Source ID: {source_id}\n"
-                f"Captured: {now}\n\n"
-                f"---\n\n{truncated}\n\n---\n\n"
-                f"Extract context as JSON:"
-            )
-        }]
+        messages=[
+            {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Source: {source}\n"
+                    f"Source ID: {source_id}\n"
+                    f"Captured: {now}\n\n"
+                    f"---\n\n{truncated}\n\n---\n\n"
+                    f"Extract context as JSON:"
+                ),
+            },
+        ],
+        # Drop provider-unsupported params so one config works across providers.
+        drop_params=True,
     )
 
-    raw_output = response.content[0].text.strip()
+    raw_output = (response.choices[0].message.content or "").strip()
     extracted = _parse_json_response(raw_output)
 
     # Ensure required fields
