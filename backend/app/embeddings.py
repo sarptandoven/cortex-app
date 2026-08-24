@@ -17,6 +17,9 @@ from typing import Any
 VECTOR_DIMENSIONS = 384
 VECTOR_MODEL = "cortex-hash-v1"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+# LiteLLM embeddings: a provider prefixed model reaches Voyage, Cohere, Gemini,
+# Bedrock, and more through one interface. Override with CORTEX_EMBEDDING_MODEL.
+DEFAULT_LITELLM_EMBEDDING_MODEL = "openai/text-embedding-3-small"
 
 # Local, CPU-only, no-API-key neural embeddings (MinishLab model2vec, MIT).
 # potion-base-8M emits 256-dim vectors natively (NOT 384) — so it is not
@@ -153,7 +156,7 @@ def model2vec_available() -> bool:
 
 def configured_embedding_provider() -> str:
     raw = os.environ.get("CORTEX_EMBEDDING_PROVIDER", "").strip().lower()
-    if raw in {"hash", "openai", "model2vec"}:
+    if raw in {"hash", "openai", "model2vec", "litellm"}:
         return raw
     # No explicit override: prefer on-device semantic retrieval WHEN the bundled model2vec model is
     # actually present on disk; otherwise degrade to the deterministic hash embedder. CI (no bundled
@@ -166,6 +169,8 @@ def configured_embedding_model() -> str:
     provider = configured_embedding_provider()
     if provider == "openai":
         return os.environ.get("CORTEX_EMBEDDING_MODEL", DEFAULT_OPENAI_EMBEDDING_MODEL).strip() or DEFAULT_OPENAI_EMBEDDING_MODEL
+    if provider == "litellm":
+        return os.environ.get("CORTEX_EMBEDDING_MODEL", DEFAULT_LITELLM_EMBEDDING_MODEL).strip() or DEFAULT_LITELLM_EMBEDDING_MODEL
     if provider == "model2vec":
         return os.environ.get("CORTEX_EMBEDDING_MODEL", DEFAULT_MODEL2VEC_MODEL).strip() or DEFAULT_MODEL2VEC_MODEL
     return VECTOR_MODEL
@@ -208,7 +213,7 @@ def embedding_status(schema_dimensions: int | None = None) -> dict[str, Any]:
         "dimensions": dimensions,
         "schema_dimensions": schema,
         "index_compatible": dimensions == schema,
-        "network_required": provider == "openai",
+        "network_required": provider in ("openai", "litellm"),
         "strict": _strict_embeddings(),
         "degraded": degraded,
         "degraded_reason": "embedding_model_load_failed" if degraded else None,
@@ -228,6 +233,13 @@ def embed_text_result(text: str, dimensions: int = VECTOR_DIMENSIONS) -> Embeddi
         except Exception:
             # In strict mode a provider failure is fatal; otherwise degrade to the deterministic
             # hash fallback so retrieval never hard-fails offline.
+            if _strict_embeddings():
+                raise
+    elif provider == "litellm":
+        try:
+            return _litellm_embedding(text, resolved_dimensions)
+        except Exception:
+            # Same policy as the openai path: fatal in strict mode, otherwise degrade to hash.
             if _strict_embeddings():
                 raise
     elif provider == "model2vec":
@@ -310,6 +322,43 @@ def _openai_embedding(text: str, dimensions: int) -> EmbeddingResult:
         vector=[float(value) for value in vector],
         model=str(body.get("model") or model),
         provider="openai",
+        dimensions=dimensions,
+    )
+
+
+def _litellm_embedding(text: str, dimensions: int) -> EmbeddingResult:
+    """Embed via the LiteLLM SDK so a provider prefixed model (openai/..., voyage/...,
+    cohere/..., gemini/...) reaches any embedding provider LiteLLM supports.
+
+    Credentials come from that provider's own env var; an optional
+    CORTEX_LITELLM_BASE_URL / CORTEX_LITELLM_API_KEY points at a LiteLLM proxy.
+    Like the OpenAI path, a dimension mismatch raises so the caller can degrade
+    to hash (or fail in strict mode) rather than corrupt the vector index.
+    """
+    import litellm
+
+    model = configured_embedding_model()
+    kwargs: dict[str, Any] = {"model": model, "input": text, "drop_params": True}
+    # text-embedding-3 models honour an explicit output dimension; drop_params
+    # silently ignores it for models that do not support it.
+    if "text-embedding-3" in model:
+        kwargs["dimensions"] = dimensions
+    base_url = os.environ.get("CORTEX_LITELLM_BASE_URL", "").strip()
+    api_key = os.environ.get("CORTEX_LITELLM_API_KEY", "").strip()
+    if base_url:
+        kwargs["api_base"] = base_url
+    if api_key:
+        kwargs["api_key"] = api_key
+
+    response = litellm.embedding(**kwargs)
+    item = response.data[0]
+    vector = item["embedding"] if isinstance(item, dict) else item.embedding
+    if len(vector) != dimensions:
+        raise ValueError(f"LiteLLM embedding dimensions mismatch: expected {dimensions}, got {len(vector)}")
+    return EmbeddingResult(
+        vector=[float(value) for value in vector],
+        model=str(getattr(response, "model", None) or model),
+        provider="litellm",
         dimensions=dimensions,
     )
 
