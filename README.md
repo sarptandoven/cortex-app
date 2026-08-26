@@ -14,17 +14,6 @@ voice, preferences, decisions, and the graph of your world, then feeds it to Cla
 and any MCP client. Your tools stop starting from zero and start reasoning with your judgment loaded
 in, on hardware you own.
 
-<br/>
-
-<!-- Affiliation, sponsor & license — individual buttons: each bordered, rounded, spaced -->
-[<img src=".github/badges/waterloo.png" alt="University of Waterloo" height="30" />](https://uwaterloo.ca)
-[<img src=".github/badges/engineering.png" alt="Faculty of Engineering" height="30" />](https://uwaterloo.ca/engineering)
-[<img src=".github/badges/research.png" alt="Academic Research" height="30" />](https://uwaterloo.ca/research)
-[<img src=".github/badges/composio.png" alt="Sponsored by Composio" height="30" />](https://composio.dev)
-[<img src=".github/badges/mit.png" alt="MIT License" height="30" />](LICENSE)
-
-<br/>
-
 [![Download for macOS](https://img.shields.io/github/v/release/doppl-tech/releases?sort=semver&display_name=tag&label=Download%20for%20macOS&color=E4B429&labelColor=000000&logo=apple&logoColor=FDD54F&style=for-the-badge)](https://github.com/doppl-tech/releases/releases/latest)
 
 <br/>
