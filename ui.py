@@ -16,10 +16,14 @@ load_dotenv()
 from instrumentation import setup_tracing
 setup_tracing(project_name="cortex")
 
-from anthropic import Anthropic
+import litellm
 from redis_store import search_context, get_recent_context
 
-client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+# Model routed through LiteLLM: keep Claude as the default, but any provider
+# LiteLLM supports works by setting CORTEX_MODEL (e.g. "openai/gpt-4o",
+# "gemini/gemini-2.5-pro", "bedrock/..."). Credentials come from that
+# provider's own env var (ANTHROPIC_API_KEY by default).
+DEFAULT_MODEL = os.environ.get("CORTEX_MODEL", "claude-opus-4-5")
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -119,10 +123,7 @@ def ask_cortex(question: str, context_chunks: list[dict]) -> str:
         for c in context_chunks
     ])
 
-    response = client.messages.create(
-        model="claude-opus-4-5",
-        max_tokens=1000,
-        system="""You are Cortex — a personal AI that knows everything about the user based on their captured context.
+    system_prompt = """You are Cortex — a personal AI that knows everything about the user based on their captured context.
 
 You have access to the user's second brain: notes, decisions, insights, and memories captured from their AI chats, Slack, iMessage, and other apps.
 
@@ -130,13 +131,21 @@ Answer questions directly and personally, as if you are their most knowledgeable
 - Reference specific details from the context (dates, sources, exact decisions)
 - Be concise but complete
 - If the context is partial, say so and answer with what you have
-- Never say "based on the provided context" — just answer naturally""",
-        messages=[{
-            "role": "user",
-            "content": f"Context from my second brain:\n\n{context_text}\n\n---\n\nQuestion: {question}"
-        }]
+- Never say "based on the provided context" — just answer naturally"""
+    response = litellm.completion(
+        model=DEFAULT_MODEL,
+        max_tokens=1000,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": f"Context from my second brain:\n\n{context_text}\n\n---\n\nQuestion: {question}",
+            },
+        ],
+        # Drop provider-unsupported params so one config works across providers.
+        drop_params=True,
     )
-    return response.content[0].text
+    return response.choices[0].message.content or ""
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────

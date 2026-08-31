@@ -301,9 +301,8 @@ def _extract_with_claude_windowed(
 
 
 def _extract_with_claude(raw_text: str, source: str, author_aliases: Iterable[str] | None = None, self_authored: bool = False) -> dict[str, Any]:
-    from anthropic import Anthropic
+    import litellm
 
-    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     aliases = ", ".join(sorted(_identity_alias_tokens(author_aliases))[:12])
     alias_instruction = f"\nUser-authored aliases in speaker-based imports: {aliases}. Only treat preference, style, and negative records as user memory when authored by those aliases or an explicit user/human/me role." if aliases else ""
     prompt = """Extract Cortex memory as strict JSON with keys records, tasks, entities, summary.
@@ -312,13 +311,18 @@ tasks: list of {id, kind, content, status, importance, entity_ids, topics}
 entities: list of {id, kind, name, aliases, context}
 Kinds: claim, decision, event, preference, observation, style, negative, procedure. Layers: semantic, episodic, style, decision, preference, negative, procedural. Task kinds: action, question, decision-pending.
 Use stable IDs and keep each memory atomic. Return JSON only.""" + alias_instruction
-    response = client.messages.create(
+    # Routed through LiteLLM: the Anthropic top-level system prompt becomes a
+    # system message, and drop_params lets one config work across providers.
+    response = litellm.completion(
         model=os.environ.get("CORTEX_EXTRACTION_MODEL", "claude-opus-4-5"),
         max_tokens=2500,
-        system=prompt,
-        messages=[{"role": "user", "content": f"Source: {source}\n\n{raw_text[:CLAUDE_EXTRACTION_WINDOW_CHARS]}"}],
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": f"Source: {source}\n\n{raw_text[:CLAUDE_EXTRACTION_WINDOW_CHARS]}"},
+        ],
+        drop_params=True,
     )
-    text = response.content[0].text.strip()
+    text = (response.choices[0].message.content or "").strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     data = json.loads(text)

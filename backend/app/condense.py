@@ -184,12 +184,11 @@ def _condense_with_claude(section: dict, max_chars: int) -> Optional[dict]:
         return None
 
     try:
-        from anthropic import Anthropic
+        import litellm
 
         allowed_ids = set(_union_memory_ids(elements))
         by_id = _elements_by_id(elements)
 
-        client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
         model = os.environ.get(
             "CORTEX_CONDENSE_MODEL",
             os.environ.get("CORTEX_EXTRACTION_MODEL", "claude-opus-4-5"),
@@ -203,14 +202,18 @@ def _condense_with_claude(section: dict, max_chars: int) -> Optional[dict]:
         )
         user = _build_user_prompt(section, elements)
 
-        response = client.messages.create(
+        response = litellm.completion(
             model=model,
             max_tokens=300,
-            system=system,
-            messages=[{"role": "user", "content": user}],
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            # Drop provider-unsupported params so one config works across providers.
+            drop_params=True,
         )
 
-        text = response.content[0].text.strip()
+        text = (response.choices[0].message.content or "").strip()
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
         data = json.loads(text)
