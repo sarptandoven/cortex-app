@@ -78,6 +78,21 @@ CREATE TABLE IF NOT EXISTS import_records (
   FOREIGN KEY(capture_id) REFERENCES captures(id) ON DELETE SET NULL
 );
 
+-- `id` is deliberately a single-column, GLOBALLY unique primary key -- do NOT "fix" this into a
+-- composite PRIMARY KEY(user_id, id) the way `entities` below has. SQLite requires a foreign key's
+-- parent columns to be a PRIMARY KEY or UNIQUE, and five single-column child FKs point at
+-- memories(id): memory_entities, memory_topics, memory_relations (source_memory_id AND
+-- target_memory_id), and memory_vec_map -- whose memory_id is itself independently declared UNIQUE.
+-- Making this PK composite makes every one of them fail at runtime with
+--   OperationalError: foreign key mismatch - "memory_entities" referencing "memories"
+-- and the only escapes are rewriting all of those child tables to carry user_id, or keeping a
+-- standalone UNIQUE index on memories.id -- which re-imposes the exact global uniqueness the
+-- composite key was supposed to relax. (`entities` could go composite precisely because nothing
+-- FKs to entities(id).) The invariant this schema actually needs is therefore "memory/task ids are
+-- globally unique", enforced on write: see the cross-tenant collision guards in storage.py
+-- (_save_memory, _save_task, and both loops of rebuild_index_from_vault), which re-salt a derived
+-- id with user_id when it would otherwise collide with another tenant's row. Without them
+-- INSERT OR REPLACE resolves purely on this key and silently clobbers the other tenant.
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
   capture_id TEXT,
@@ -124,6 +139,9 @@ CREATE TABLE IF NOT EXISTS entities (
   PRIMARY KEY(user_id, id)
 );
 
+-- Single-column, globally unique PK for the same reason as `memories` above (task_entities and
+-- task_topics both carry single-column FKs to tasks(id)); uniqueness is enforced on write by the
+-- cross-tenant collision guards in storage.py.
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   capture_id TEXT,

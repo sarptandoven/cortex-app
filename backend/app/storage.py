@@ -21563,6 +21563,15 @@ class CortexStore:
                 )
                 if principal_row is not None and str(memory.get("superseded_by") or "").strip():
                     rebuilt_trust = round(rebuilt_trust * 0.5, 4)
+                # Cross-tenant collision guard (same as _save_memory): memories.id is the sole
+                # primary key, and in shared-vault "bucket" deployments a vault markdown file's
+                # frontmatter id is not trust-boundary-checked before rebuild. Re-salt with
+                # user_id only if the id already belongs to a different user, so an ordinary
+                # single-tenant rebuild round-trips ids unchanged.
+                memory_id = self._tenant_unique_id(
+                    conn, "memories", user_id, str(memory.get("id") or "")
+                )
+                memory["id"] = memory_id
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO memories
@@ -21638,6 +21647,10 @@ class CortexStore:
                 topics = task.get("topics", [])
                 entity_ids = task.get("entity_ids", [])
                 captured_at = task.get("captured_at") or timestamp
+                # Cross-tenant collision guard (same as _save_task); see the matching comment
+                # on the memories rebuild above.
+                task_id = self._tenant_unique_id(conn, "tasks", user_id, str(task.get("id") or ""))
+                task["id"] = task_id
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO tasks
@@ -28393,6 +28406,42 @@ class CortexStore:
             "age_seconds": _age_seconds(job.get("updated_at"), now=now),
         }
 
+    _TENANT_UNIQUE_TABLES = {"memories": "mem_", "tasks": "task_"}
+
+    def _tenant_unique_id(
+        self, conn, table: str, user_id: str, candidate: str, *, max_attempts: int = 8
+    ) -> str:
+        """Return an id for `user_id` that no OTHER tenant already owns in `table`.
+
+        `memories.id` / `tasks.id` are single-column primary keys (see the comment on the table
+        definitions in database.py for why they must stay globally unique), and INSERT OR REPLACE
+        resolves conflicts purely on that key — so writing an id another tenant owns silently
+        deletes their row. Re-salting once is NOT enough: the salted id can itself be owned by a
+        third tenant, which would clobber *them* instead (verified: tenant C holding
+        stable_id("mem_", "tenant-b:collide_mem") was erased when tenant B salted into it). So
+        chain deterministically until the id is free.
+
+        Deterministic and idempotent: the chain depends only on user_id and DB state, and the
+        `user_id != ?` predicate ignores this user's OWN row, so re-saving the same content
+        re-derives the same id instead of accumulating duplicates. The first hop is unchanged from
+        the original single-salt form, so ids already written stay stable.
+        """
+        prefix = self._TENANT_UNIQUE_TABLES[table]  # KeyError = caller bug, never user input
+        for _ in range(max_attempts):
+            taken = conn.execute(
+                f"SELECT 1 FROM {table} WHERE id = ? AND user_id != ? LIMIT 1",
+                (candidate, user_id),
+            ).fetchone()
+            if taken is None:
+                return candidate
+            candidate = stable_id(prefix, f"{user_id}:{candidate}")
+        # Unreachable short of an engineered pile-up of chained hash collisions each owned by a
+        # different tenant. Fail loudly rather than fall through and clobber someone's data.
+        raise ValueError(
+            f"could not derive a tenant-unique {table} id for user {user_id!r} "
+            f"after {max_attempts} attempts"
+        )
+
     def _token_hash(self, token: str, salt: str) -> str:
         return hashlib.sha256(f"{salt}:{token}".encode("utf-8")).hexdigest()
 
@@ -28437,13 +28486,35 @@ class CortexStore:
             memory_id = stable_id("mem_", f"{user_id}:{author_principal_id}:{base_memory_id}")
         if source_account and external_id:
             memory_id = stable_id("mem_", f"{user_id}:{capture_id}:{base_memory_id}")
+        # Cross-tenant collision guard: memories.id is the sole primary key (not composite with
+        # user_id), and on the default local/CLI/vault-import path (no principal, no
+        # source_account+external_id) memory_id is derived from content alone, or is whatever
+        # explicit id the caller supplied. Two different users can land on the identical id, and
+        # INSERT OR REPLACE resolves conflicts purely on the primary key — an unguarded write
+        # here would silently delete and replace the other tenant's row. Re-salt with user_id
+        # only in that collision case, so the ordinary (non-colliding) path keeps its id exactly
+        # as derived/supplied, preserving explicit-id passthrough for existing callers.
+        pre_collision_salt_memory_id = memory_id
+        memory_id = self._tenant_unique_id(conn, "memories", user_id, memory_id)
         # Anti-resurrection: the memory id is deterministic (derived from user+capture+content), so
         # re-processing a capture whose child memory the user explicitly FORGOT would recompute the
         # same id and re-insert it. If that memory was tombstoned, honor the forget — skip the
         # re-derivation entirely. The tombstone is per-(user,memory), so a genuinely new memory (new
         # capture or changed content -> different id) is never suppressed, and un-forgetting isn't a
         # feature. Returns None; the caller drops the record.
-        if self._is_tombstoned_in_conn(conn, user_id, "memory", memory_id):
+        #
+        # Checked against BOTH the pre- and post-cross-tenant-salt id: a memory tombstoned before
+        # any other tenant ever collided with its id was tombstoned under the plain derived id, but
+        # a re-derivation attempted *after* a different tenant's row has since taken that id salts
+        # to a different string above — checking only the post-salt id would miss the tombstone
+        # entirely and silently resurrect content the user explicitly forgot (tenant A forgets
+        # "m1", tenant B later saves its own unrelated memory under literal id "m1" in the same
+        # shared/bucket database, and tenant A's next resync of the same source re-derives "m1",
+        # salts away from B's row, and — without this second check — reinserts the forgotten memory).
+        if self._is_tombstoned_in_conn(conn, user_id, "memory", memory_id) or (
+            memory_id != pre_collision_salt_memory_id
+            and self._is_tombstoned_in_conn(conn, user_id, "memory", pre_collision_salt_memory_id)
+        ):
             return None
         kind = record.get("kind", "observation")
         # #17 deterministic layer: honor a valid explicit/kind layer, else classify by content via
@@ -32028,6 +32099,13 @@ class CortexStore:
 
     def _save_task(self, conn, capture_id: str, user_id: str, task: dict[str, Any], captured_at: str) -> dict[str, Any]:
         task_id = task["id"]
+        # Cross-tenant collision guard: tasks.id is the sole primary key (not composite with
+        # user_id), and the extractor derives it from content alone (or it's whatever explicit
+        # id the caller supplied), so two different users can land on the identical id. INSERT
+        # OR REPLACE resolves conflicts purely on the primary key, so an unguarded write would
+        # silently delete and replace the other tenant's row. Re-salt only in that collision
+        # case; see the matching guard in _save_memory for the same pattern.
+        task_id = self._tenant_unique_id(conn, "tasks", user_id, task_id)
         topics = task.get("topics", [])
         entity_ids = task.get("entity_ids", [])
         conn.execute(

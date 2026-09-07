@@ -493,6 +493,201 @@ class ShardingTests(unittest.TestCase):
         self.assertEqual(registry.list_sync_cursors("alice")[0]["cursor_value"], "alice-cursor")
         self.assertEqual(registry.list_sync_cursors("bob"), [])
 
+    def _shared_bucket_registry(self):
+        """Bucket mode with a single shard routes EVERY user into the same sqlite file — the
+        hosted deployment shape in which a cross-tenant id collision is actually reachable."""
+        registry = StoreRegistry.from_settings(self.settings(mode="bucket", shard_count=1))
+        self.assertEqual(
+            registry.assignment_for("tenant-a").db_path,
+            registry.assignment_for("tenant-b").db_path,
+        )
+        return registry
+
+    @staticmethod
+    def _colliding_extraction(content: str) -> dict:
+        """Two tenants submitting the SAME explicit record/task id — the collision under test."""
+        return {
+            "_timestamp": "2026-06-29T12:00:00Z",
+            "summary": content,
+            "records": [
+                {
+                    "id": "collide_mem",
+                    "kind": "observation",
+                    "layer": "semantic",
+                    "content": content,
+                    "confidence": "confirmed",
+                    "importance": 3,
+                    "topics": [],
+                    "entity_ids": [],
+                }
+            ],
+            "tasks": [
+                {"id": "collide_task", "kind": "action", "content": f"{content} task", "topics": [], "entity_ids": []}
+            ],
+            "entities": [],
+        }
+
+    def _save_colliding(self, registry, user_id: str, content: str) -> None:
+        registry.save_capture(
+            user_id=user_id,
+            content=f"{user_id} capture",
+            source="unit-test",
+            source_url=None,
+            title=user_id,
+            extracted=self._colliding_extraction(content),
+            auto_approve=True,
+        )
+
+    def _rows(self, registry, table: str) -> list[tuple]:
+        import sqlite3
+
+        conn = sqlite3.connect(registry.assignment_for("tenant-a").db_path)
+        try:
+            return conn.execute(f"SELECT id, user_id, content FROM {table} ORDER BY user_id").fetchall()
+        finally:
+            conn.close()
+
+    def test_colliding_memory_and_task_ids_do_not_clobber_another_tenant(self) -> None:
+        """Regression: memories.id / tasks.id are the sole PRIMARY KEY, and on the ordinary
+        local/CLI path an id is content-derived or caller-supplied with no user salt. INSERT OR
+        REPLACE resolves conflicts purely on that key, so an unguarded write silently DELETES the
+        first tenant's row. Both tenants must survive, each still owning its own content."""
+        registry = self._shared_bucket_registry()
+        self._save_colliding(registry, "tenant-a", "Tenant A private content")
+        self._save_colliding(registry, "tenant-b", "Tenant B private content")
+
+        memories = self._rows(registry, "memories")
+        self.assertEqual(len(memories), 2, f"both tenants' memories must survive, got {memories}")
+        self.assertEqual([row[1] for row in memories], ["tenant-a", "tenant-b"])
+        self.assertEqual(memories[0][2], "Tenant A private content")
+        self.assertEqual(memories[1][2], "Tenant B private content")
+        # The colliding id was re-salted for exactly one tenant, so the rows are distinct.
+        self.assertNotEqual(memories[0][0], memories[1][0])
+
+        tasks = self._rows(registry, "tasks")
+        self.assertEqual(len(tasks), 2, f"both tenants' tasks must survive, got {tasks}")
+        self.assertEqual([row[1] for row in tasks], ["tenant-a", "tenant-b"])
+        self.assertNotEqual(tasks[0][0], tasks[1][0])
+
+    def test_colliding_ids_keep_each_tenants_retrieval_isolated(self) -> None:
+        """The clobber's real damage is retrieval: after a collision each tenant must still find
+        its own memory and must never surface the other tenant's."""
+        registry = self._shared_bucket_registry()
+        self._save_colliding(registry, "tenant-a", "The aardvark decision is confidential")
+        self._save_colliding(registry, "tenant-b", "The bobcat decision is confidential")
+
+        a_hits = " ".join(str(hit.get("content", "")) for hit in registry.search("tenant-a", "confidential decision"))
+        b_hits = " ".join(str(hit.get("content", "")) for hit in registry.search("tenant-b", "confidential decision"))
+
+        self.assertIn("aardvark", a_hits, "tenant-a must still retrieve its own memory")
+        self.assertNotIn("bobcat", a_hits, "tenant-a must never retrieve tenant-b's memory")
+        self.assertIn("bobcat", b_hits, "tenant-b must still retrieve its own memory")
+        self.assertNotIn("aardvark", b_hits, "tenant-b must never retrieve tenant-a's memory")
+
+    def test_cross_tenant_salt_does_not_resurrect_a_forgotten_memory(self) -> None:
+        """The collision salt must not defeat anti-resurrection. A memory is tombstoned under its
+        PLAIN derived id; if another tenant later takes that id, the re-derivation salts to a
+        different string, so checking only the post-salt id would miss the tombstone and silently
+        restore content the user explicitly forgot."""
+        registry = self._shared_bucket_registry()
+
+        self._save_colliding(registry, "tenant-a", "Tenant A forgotten content")
+        a_before = self._rows(registry, "memories")
+        self.assertEqual(len(a_before), 1)
+        self.assertEqual(a_before[0][0], "collide_mem")
+
+        # Tenant A explicitly forgets it (tombstone is recorded under the plain id).
+        self.assertTrue(registry.delete_memory("tenant-a", "collide_mem"))
+        self.assertEqual(self._rows(registry, "memories"), [])
+
+        # Tenant B now takes that literal id for its own unrelated memory.
+        self._save_colliding(registry, "tenant-b", "Tenant B unrelated content")
+
+        # Tenant A resyncs the same source: re-derives "collide_mem", which now collides with B's
+        # row and salts away from it. The forget must still be honored.
+        self._save_colliding(registry, "tenant-a", "Tenant A forgotten content")
+
+        rows = self._rows(registry, "memories")
+        owners = [row[1] for row in rows]
+        self.assertNotIn("tenant-a", owners, f"tenant-a's forgotten memory must not be resurrected, got {rows}")
+        self.assertEqual(owners, ["tenant-b"], "tenant-b's memory must be untouched")
+
+    def test_salted_id_that_a_third_tenant_already_owns_does_not_clobber_them(self) -> None:
+        """Second-order collision: re-salting ONCE is not enough. The salted id can itself be owned
+        by a third tenant, and writing it would clobber *them* instead — the same bug one level
+        down. The derivation must chain until the id is genuinely free."""
+        from backend.app.extractor import stable_id
+
+        registry = self._shared_bucket_registry()
+        # The exact id tenant-b's first salt hop lands on.
+        first_hop = stable_id("mem_", "tenant-b:collide_mem")
+
+        # Tenant C already owns it, before anyone collides.
+        registry.save_capture(
+            user_id="tenant-c",
+            content="tenant-c capture",
+            source="unit-test",
+            source_url=None,
+            title="tenant-c",
+            extracted={
+                "_timestamp": "2026-06-29T12:00:00Z",
+                "summary": "Tenant C precious data",
+                "records": [
+                    {"id": first_hop, "kind": "observation", "layer": "semantic",
+                     "content": "Tenant C precious data", "confidence": "confirmed",
+                     "importance": 3, "topics": [], "entity_ids": []}
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+            auto_approve=True,
+        )
+        self._save_colliding(registry, "tenant-a", "Tenant A content")
+        self._save_colliding(registry, "tenant-b", "Tenant B content")
+
+        rows = self._rows(registry, "memories")
+        owners = {row[1] for row in rows}
+        self.assertEqual(
+            owners, {"tenant-a", "tenant-b", "tenant-c"},
+            f"all three tenants must survive a chained collision, got {rows}",
+        )
+        by_owner = {row[1]: row[2] for row in rows}
+        self.assertEqual(by_owner["tenant-c"], "Tenant C precious data", "tenant-c must not be clobbered")
+        self.assertEqual(len({row[0] for row in rows}), 3, "every row must have a distinct id")
+
+    def test_many_tenants_colliding_on_one_id_all_survive(self) -> None:
+        """Property check over the whole chain rather than one hand-picked collision: N tenants all
+        submit the SAME id, so each new writer must chain past every earlier one. No tenant may be
+        lost, every tenant must read back its own content, and ids must stay distinct."""
+        registry = self._shared_bucket_registry()
+        tenants = [f"tenant-{i:02d}" for i in range(12)]
+        for tenant in tenants:
+            self._save_colliding(registry, tenant, f"content owned by {tenant}")
+
+        rows = self._rows(registry, "memories")
+        self.assertEqual(len(rows), len(tenants), f"expected one row per tenant, got {len(rows)}")
+        self.assertEqual({row[1] for row in rows}, set(tenants), "no tenant may be dropped")
+        self.assertEqual(len({row[0] for row in rows}), len(tenants), "ids must all be distinct")
+        for row_id, owner, content in rows:
+            self.assertEqual(content, f"content owned by {owner}", f"{owner} must own its own content")
+
+    def test_repeated_saves_under_collision_stay_idempotent(self) -> None:
+        """The chained derivation must be deterministic: re-saving identical content must land on
+        the SAME id rather than chaining further and accumulating a duplicate row per save."""
+        registry = self._shared_bucket_registry()
+        self._save_colliding(registry, "tenant-a", "Tenant A content")
+        self._save_colliding(registry, "tenant-b", "Tenant B content")
+        after_first = self._rows(registry, "memories")
+
+        for _ in range(4):
+            self._save_colliding(registry, "tenant-b", "Tenant B content")
+
+        after_repeats = self._rows(registry, "memories")
+        self.assertEqual(
+            [row[0] for row in after_repeats], [row[0] for row in after_first],
+            "repeated saves must reuse the same ids, not accumulate duplicates",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
